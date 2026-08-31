@@ -29,12 +29,12 @@ jobs:
           cargo test -p vmm --lib --
           --test-threads=1
           vclock
-          theseus
+          pseudo::theseus
           devices::virtio::rng
           net::sim
-          branch
+          branch::tests
           orchestrator::tree
-          machine_config
+          vmm_config::machine_config
           vmm_config::entropy
           detrng
-          rate_limiter
+          rate_limiter::tests
