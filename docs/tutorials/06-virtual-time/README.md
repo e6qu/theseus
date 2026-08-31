@@ -1,4 +1,4 @@
-# Tutorial: Control the guest clock
+# Advanced guide: Control the guest clock
 
 ## Objective
 

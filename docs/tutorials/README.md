@@ -1,33 +1,40 @@
 # Tutorials
 
-A series of hands-on tutorials, ordered by increasing complexity. Each one
-stands alone: it states its objective, explains the specific problem it
-solves, gives you every command to run, and shows the output you should
-see. Terms are defined where they appear and in
-[terminology.md](../terminology.md).
+Theseus is currently operated through the forked `firecracker` binary and
+its Firecracker-compatible HTTP API over a Unix socket. There is not yet a
+separate `theseus` command-line program. The first two tutorials therefore
+stay at that real host boundary: launch the service, configure it with
+`curl`, and observe an ordinary C program in the guest. The third tutorial
+adds `theseus-sdk` only when the guest needs to make its own outcomes and
+inputs visible.
 
-All tutorials need a Linux+KVM host. On Apple Silicon, a privileged
-aarch64 Docker container provides `/dev/kvm`; each tutorial gives the exact
-command.
+All runnable tutorials need Linux with KVM. On Apple Silicon, use the
+privileged aarch64 Docker container shown in each guide.
 
-1. [Replay a failing test by seed](01-replay-by-seed/) — prove
-   that one seed makes two virtual machine boots byte-identical.
-2. [Control the random](02-control-the-random/) — force the
-   guest's random number generator to return values you chose.
-3. [Give the guest a voice](03-the-control-channel/) — make a
-   guest report results and accept commands through Theseus's device
-   channel.
-4. [Catch a partition-and-retry corruption](04-fault-hunting/) —
-   catch a duplicate-apply bug that only appears when a partition and a
-   retry collide, then replay it bit-for-bit.
-5. [Fork the machine mid-run](05-branching-timelines/) — pause
-   a running system, fork it into children that diverge only by seed and
-   fault schedule, and prove their isolation.
-6. [Control the guest clock](06-virtual-time/) — take control
-   of the guest's clock and learn exactly how deterministic the result is.
-7. [Run a container image as a virtual machine](07-container-images/)
-   — boot the artifact your CI builds, with the control channel wired in
-   and no changes to the image.
+## Start here: operate a deterministic service
 
-Related reading: [architecture.md](../architecture.md),
-[determinism.md](../determinism.md), [comparison.md](../comparison.md).
+1. [Run and replay the Theseus service](01-replay-by-seed/) — launch the
+   service, boot a plain C guest, and prove that the same `PUT /entropy`
+   seed gives the same bytes.
+2. [Script a guest through the service API](02-control-the-random/) — send
+   a chosen byte script to `PUT /entropy` and watch a plain C guest receive
+   exactly those values.
+3. [Instrument a guest with `theseus-sdk`](03-the-control-channel/) — add
+   lifecycle markers and an event loop when host-side configuration alone is
+   no longer enough to judge your program.
+4. [Find, replay, and fix a retry bug](04-fault-hunting/) — combine those
+   pieces in a small two-node protocol model: establish a healthy baseline,
+   inject a lost acknowledgement, replay the failure, then verify a fix.
+
+## Extend the workflow
+
+- [Run your own container image](07-container-images/) — package the
+  artifact your CI builds as a bootable guest without adding a guest driver.
+- [Explore branch timelines](05-branching-timelines/) — fork a captured
+  machine state into isolated futures with distinct seed and fault paths.
+- [Control virtual time](06-virtual-time/) — make event-driven timing
+  decisions repeatable and understand the precise boundary of that claim.
+
+The deeper design is documented in [architecture.md](../architecture.md),
+[determinism.md](../determinism.md), [control-channel.md](../control-channel.md),
+and [exploration.md](../exploration.md).
