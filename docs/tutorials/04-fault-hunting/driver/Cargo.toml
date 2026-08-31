@@ -1,0 +1,16 @@
+[package]
+name = "counter-driver"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+# Standalone tutorial driver: not part of any workspace.
+[workspace]
+
+[[bin]]
+name = "counter-driver"
+path = "src/main.rs"
+
+[dependencies]
+vmm = { path = "../../../../firecracker/src/vmm" }
+theseus-orchestrator = { path = "../../../../orchestrator" }

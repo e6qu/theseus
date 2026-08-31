@@ -23,7 +23,7 @@ From the repository root:
 
 ```sh
 docker run --rm -it --platform linux/arm64 --privileged \
-  -v "$PWD":/theseus -w /theseus rust:1.97.0 bash
+  -v "$PWD":/theseus -w /theseus rust:1.97.0-bookworm bash
 ```
 
 Inside the container, install dependencies and build the fork once:
@@ -38,7 +38,7 @@ cd /theseus/firecracker && cargo build -p firecracker
 From the repository root inside the container:
 
 ```sh
-sh /theseus/e2e/run.sh
+sh /theseus/docs/tutorials/01-replay-by-seed/run.sh
 ```
 
 The script downloads a guest kernel, packs a minimal initramfs whose init
@@ -50,7 +50,7 @@ see:
 hwrng (64 bytes): 28065689f706c281a35be8609b92dce6...
 hwrng (64 bytes): 28065689f706c281a35be8609b92dce6...
 hwrng (64 bytes): 70788b9d6210d1870cda0f02887c9e28...
-PASS: hwrng deterministic per seed (identical across same-seed runs, differs across seeds)
+PASS: identical across same-seed boots, different across seeds
 ```
 
 The first two lines are identical (seed 42); the third differs (seed
@@ -72,6 +72,6 @@ the failure exactly — the basis for every experiment that follows.
 
 ## Further reading
 
-- [determinism.md](../determinism.md) — every nondeterminism source and
+- [determinism.md](../../determinism.md) — every nondeterminism source and
   how the engine closes it
-- [terminology.md](../terminology.md) — seed, replay, and related terms
+- [terminology.md](../../terminology.md) — seed, replay, and related terms

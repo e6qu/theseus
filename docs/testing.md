@@ -9,7 +9,7 @@ Everything runs in Docker: a privileged aarch64 Linux container gets
 `/dev/kvm` on Apple Silicon.
 
 ```sh
-IMG=rust:1.97.0
+IMG=rust:1.97.0-bookworm
 docker run --rm --platform linux/arm64 --privileged \
   -v "$PWD":/theseus -w /theseus/firecracker $IMG sh -c \
   "apt-get update -qq && apt-get install -y -qq libclang-dev libseccomp-dev && \

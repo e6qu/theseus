@@ -12,7 +12,7 @@ name = "counter-guest"
 path = "main.rs"
 
 [dependencies]
-theseus-sdk = { path = "../../sdk" }
+theseus-sdk = { path = "../../../../sdk" }
 
 [profile.release]
 panic = "abort"

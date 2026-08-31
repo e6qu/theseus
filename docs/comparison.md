@@ -3,7 +3,7 @@
 Where Theseus sits in the landscape of property-based testing, deterministic
 simulation, and chaos tooling. Terms are defined in
 [terminology.md](terminology.md); a hands-on run is in
-[tutorial.md](tutorial.md).
+[tutorials/](tutorials/).
 
 ## The short version
 

@@ -13,7 +13,10 @@ e2e/*.cpio.gz
 # macOS metadata
 .DS_Store
 
-# Rust build artifacts (tutorial example)
-examples/counter-guest/target/
+# Tutorial artifacts
+docs/tutorials/01-replay-by-seed/vmlinux
+docs/tutorials/02-control-the-random/vmlinux
+docs/tutorials/04-fault-hunting/driver/target/
+docs/tutorials/04-fault-hunting/guest/target/
 
 orchestrator/pivot/target/

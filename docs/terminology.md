@@ -2,7 +2,7 @@
 
 Terms used across Theseus code and documentation. See
 [architecture.md](architecture.md) for structure and
-[tutorial.md](tutorial.md) for a hands-on run.
+[tutorials/](tutorials/) for hands-on runs.
 
 ## Core model
 
