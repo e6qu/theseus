@@ -1256,7 +1256,7 @@ mod tests {
 
     fn create_vmm_with_virtio_pci_device() -> Vmm {
         let mut vmm = default_vmm_with_pci();
-        let entropy = Arc::new(Mutex::new(Entropy::new(RateLimiter::default()).unwrap()));
+        let entropy = Arc::new(Mutex::new(Entropy::new(RateLimiter::default(), None).unwrap()));
         let mut event_manager = crate::EventManager::new().unwrap();
         vmm.device_manager
             .attach_boot_virtio_device(

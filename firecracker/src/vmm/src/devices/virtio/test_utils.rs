@@ -525,9 +525,10 @@ pub(crate) mod test {
                 }
 
                 addr += u64::from(len);
-                // Add small random gaps between descriptor addresses in order to make sure we
-                // don't blindly read contiguous memory.
-                addr += u64::from(vmm_sys_util::rand::xor_pseudo_rng_u32()) % 10;
+                // Add small deterministic gaps between descriptor addresses in order to make sure we
+                // don't blindly read contiguous memory. (Was: unseeded random gaps —
+                // nondeterministic test layout.)
+                addr += (i as u64 * 7 + 1) % 10;
             }
 
             // Mark the chain as available.

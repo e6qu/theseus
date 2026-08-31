@@ -21,11 +21,13 @@ pub mod device;
 mod event_handler;
 pub mod metrics;
 pub mod persist;
+pub mod sim;
 mod tap;
 pub mod test_utils;
 
 mod generated;
 
+pub use sim::{SimNet, SimNetConfig};
 pub use tap::{Tap, TapError};
 use vm_memory::VolatileMemoryError;
 

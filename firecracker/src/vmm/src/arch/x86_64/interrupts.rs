@@ -105,9 +105,8 @@ mod tests {
 
     #[test]
     fn test_apic_delivery_mode() {
-        let mut v: Vec<u32> = (0..20)
-            .map(|_| vmm_sys_util::rand::xor_pseudo_rng_u32())
-            .collect();
+        // Deterministic well-mixed values (was: unseeded xor_pseudo_rng).
+        let mut v: Vec<u32> = (0..20u32).map(|i| i.wrapping_mul(0x9E37_79B9)).collect();
 
         v.iter_mut()
             .for_each(|x| *x = set_apic_delivery_mode(*x, 2));

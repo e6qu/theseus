@@ -75,8 +75,14 @@ pub mod rate_limiter;
 pub mod acpi;
 /// Handles setup and initialization a `Vmm` object.
 pub mod builder;
+/// Theseus: in-memory timeline branching.
+pub mod branch;
 /// Types for guest configuration.
 pub mod cpu_config;
+/// Theseus: single-step code coverage (KVM_GUESTDBG).
+pub mod coverage;
+/// Theseus: deterministic host-side RNG (seeded, guest-visible uses only).
+pub mod detrng;
 pub(crate) mod device_manager;
 /// Emulates virtual and hardware devices.
 #[allow(missing_docs)]
@@ -90,6 +96,8 @@ pub mod gdb;
 pub mod logger;
 /// microVM Metadata Service MMDS
 pub mod mmds;
+/// Theseus orchestrator: timeline tree and child spawning.
+pub mod orchestrator;
 /// PCI specific emulation code.
 pub mod pci;
 /// Save/restore utilities.
@@ -143,6 +151,8 @@ use crate::devices::virtio::mem::{VIRTIO_MEM_DEV_ID, VirtioMemError, VirtioMemSt
 use crate::devices::virtio::net::Net;
 use crate::devices::virtio::pmem::device::Pmem;
 use crate::devices::virtio::rng::Entropy;
+use crate::devices::virtio::rng::device::ENTROPY_DEV_ID;
+use crate::devices::pseudo::ControlEvent;
 use crate::devices::virtio::vsock::{Vsock, VsockUnixBackend};
 use crate::logger::{METRICS, MetricsError, log_dev_preview_warning};
 use crate::mmds::data_store::Mmds;
@@ -220,6 +230,10 @@ pub enum VmmError {
     #[cfg(target_arch = "aarch64")]
     /// Invalid command line error.
     Cmdline,
+    /// Theseus: could not reseed the entropy device: {0}
+    ReseedEntropy(String),
+    /// Theseus: control channel unavailable: {0}
+    ControlChannel(String),
     /// Device manager error: {0}
     DeviceManager(#[from] device_manager::DeviceManagerCreateError),
     /// MMIO Device manager error: {0}
@@ -335,6 +349,64 @@ impl Vmm {
             });
 
         mmds
+    }
+
+    /// Theseus: re-seed the entropy device. Used by timeline branching — call
+    /// on a freshly restored child *before* it resumes, so its entropy stream
+    /// diverges from the parent's only by seed.
+    pub fn reseed_entropy(&mut self, seed: u64) -> Result<(), VmmError> {
+        self.device_manager
+            .with_virtio_device::<Entropy, _, _>(ENTROPY_DEV_ID, |dev| dev.reseed(seed))
+            .map_err(|err| VmmError::ReseedEntropy(err.to_string()))
+    }
+
+    /// Theseus: the next `n` bytes the entropy device would serve, without
+    /// consuming them. Used by the explorer to fingerprint timelines at
+    /// capture time (replay must reproduce probes exactly).
+    pub(crate) fn entropy_probe(&self, n: usize) -> Vec<u8> {
+        use rand_chacha::rand_core::RngCore;
+        self.device_manager
+            .with_virtio_device::<Entropy, _, _>(ENTROPY_DEV_ID, |dev| {
+                let mut buf = vec![0u8; n];
+                dev.rng_state().clone().fill_bytes(&mut buf);
+                buf
+            })
+            .expect("entropy device present")
+    }
+
+    /// Theseus: number of dirty guest-memory pages, if dirty tracking is
+    /// enabled — a memory-footprint coverage signal (and replay fingerprint:
+    /// deterministic timelines dirty the same pages). None when tracking is
+    /// off or the VM is not KVM-backed.
+    pub(crate) fn dirty_page_count(&self) -> Option<u64> {
+        let kvm_vm = self.vm.as_kvm()?;
+        let bitmap = kvm_vm.get_dirty_bitmap().ok()?;
+        Some(
+            bitmap
+                .values()
+                .map(|region| region.iter().map(|v| v.count_ones() as u64).sum::<u64>())
+                .sum(),
+        )
+    }
+
+    /// Theseus: push an event byte into the guest's control-channel FIFO.
+    pub fn push_control_event(&mut self, byte: u8) -> Result<(), VmmError> {
+        let dev = self
+            .device_manager
+            .mmio_platform_devices
+            .theseus
+            .as_ref()
+            .ok_or_else(|| VmmError::ControlChannel("device not registered".to_string()))?;
+        dev.inner.lock().expect("Poisoned lock").push_event(byte);
+        Ok(())
+    }
+
+    /// Theseus: drain guest→host control-channel events (commands/markers).
+    pub fn drain_control_events(&mut self) -> Vec<ControlEvent> {
+        match &self.device_manager.mmio_platform_devices.theseus {
+            Some(dev) => dev.inner.lock().expect("Poisoned lock").drain_event_log(),
+            None => Vec::new(),
+        }
     }
 
     /// Provides the Vmm shutdown exit code if there is one.

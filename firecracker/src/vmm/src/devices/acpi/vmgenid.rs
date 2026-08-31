@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use acpi_tables::{Aml, aml};
-use aws_lc_rs::rand;
 use serde::{Deserialize, Serialize};
 use vm_memory::{GuestAddress, GuestMemoryError};
 use vm_superio::Trigger;
@@ -92,7 +91,7 @@ impl VmGenId {
     // Create a 16-bytes random number
     fn make_genid() -> u128 {
         let mut gen_id_bytes = [0u8; 16];
-        rand::fill(&mut gen_id_bytes).expect("vmgenid: could not create new generation ID");
+        crate::detrng::fill_bytes(&mut gen_id_bytes);
         u128::from_le_bytes(gen_id_bytes)
     }
 

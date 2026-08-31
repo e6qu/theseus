@@ -83,6 +83,8 @@ pub enum KvmVcpuError {
     VcpuGetCpuid(kvm_ioctls::Error),
     /// Failed to get KVM TSC frequency: {0}
     VcpuGetTsc(kvm_ioctls::Error),
+    /// Failed to get TSC frequency while applying virtual time: {0}
+    VcpuGetTscFreq(#[from] GetTscError),
     /// Failed to set KVM vcpu cpuid: {0}
     VcpuSetCpuid(kvm_ioctls::Error),
     /// Failed to set KVM vcpu debug regs: {0}
@@ -154,6 +156,9 @@ pub struct KvmVcpu {
     ///
     /// `None` if `KVM_CAP_XSAVE2` not supported.
     xsave2_size: Option<usize>,
+    /// Cached TSC frequency for virtual-time TSC writes (lazily initialized
+    /// on first tick: the frequency is not available before vCPU configure).
+    tsc_khz_cache: Option<u32>,
 }
 
 /// Vcpu peripherals
@@ -184,6 +189,7 @@ impl KvmVcpu {
             peripherals: Default::default(),
             msrs_to_save: vm.msrs_to_save().to_vec(),
             xsave2_size: vm.xsave2_size(),
+            tsc_khz_cache: None,
         })
     }
 
@@ -643,6 +649,10 @@ impl KvmVcpu {
             xcrs,
             xsave,
             tsc_khz,
+            // Filled in by the vCPU-level SaveState handler (vstate::vcpu),
+            // which owns the virtual clock.
+            vclock: None,
+            vclock_exits: 0,
         })
     }
 
@@ -678,6 +688,41 @@ impl KvmVcpu {
     /// Scale the TSC frequency of this vCPU to the one provided as a parameter.
     pub fn set_tsc_khz(&self, tsc_freq: u32) -> Result<(), SetTscError> {
         self.fd.set_tsc_khz(tsc_freq).map_err(SetTscError)
+    }
+
+    /// Theseus (Track B′): force this vCPU's TSC to an absolute virtual value.
+    ///
+    /// Call only while the vCPU is between `KVM_RUN` invocations (quantum
+    /// boundary / paused), and pair it with
+    /// [`crate::arch::x86_64::vm::KvmVm::set_virtual_clock_ns`] so kvmclock and
+    /// TSC stay consistent. See [`crate::vstate::vclock::VirtualClock::tsc_value`]
+    /// for the value computation.
+    ///
+    /// NOTE: needs on-metal validation (no `/dev/kvm` in the dev container).
+    pub fn set_tsc(&self, tsc: u64) -> Result<(), KvmVcpuError> {
+        let msrs = Msrs::from_entries(&[kvm_bindings::kvm_msr_entry {
+            index: MSR_IA32_TSC,
+            data: tsc,
+            ..Default::default()
+        }])
+        .map_err(|_| KvmVcpuError::VcpuSetMsrsIncomplete)?;
+        let written = self.fd.set_msrs(&msrs).map_err(KvmVcpuError::VcpuSetMsrs)?;
+        if written != 1 {
+            return Err(KvmVcpuError::VcpuSetMsrsIncomplete);
+        }
+        Ok(())
+    }
+
+    /// Theseus (Track B′): step the guest's virtual time to `now_ns` by
+    /// writing the TSC. Caches the TSC frequency across ticks (it is constant
+    /// after vCPU configure; `KVM_GET_TSC_KHZ` would otherwise cost an ioctl
+    /// per tick).
+    pub fn apply_virtual_time(&mut self, now_ns: u64) -> Result<(), KvmVcpuError> {
+        if self.tsc_khz_cache.is_none() {
+            self.tsc_khz_cache = Some(self.get_tsc_khz()?);
+        }
+        let tsc_khz = self.tsc_khz_cache.unwrap();
+        self.set_tsc(crate::vstate::vclock::VirtualClock::tsc_value(now_ns, tsc_khz))
     }
 
     /// Use provided state to populate KVM internal state.
@@ -814,6 +859,14 @@ pub struct VcpuState {
     pub xsave: Xsave,
     /// Tsc khz.
     pub tsc_khz: Option<u32>,
+    /// Theseus (Track B′): virtual-clock bookkeeping. None = virtual time
+    /// disabled (or snapshot predates the feature). The guest-visible clock
+    /// itself rides in `saved_msrs` (TSC) and the VM's kvmclock state.
+    #[serde(default)]
+    pub vclock: Option<crate::vstate::vclock::VirtualClockState>,
+    /// Exits elapsed in the current quantum at snapshot time.
+    #[serde(default)]
+    pub vclock_exits: u64,
 }
 
 impl Debug for VcpuState {
@@ -873,6 +926,8 @@ mod tests {
                 xcrs: Default::default(),
                 xsave: Xsave::new(0).unwrap(),
                 tsc_khz: Some(0),
+                vclock: None,
+                vclock_exits: 0,
             }
         }
     }

@@ -34,7 +34,7 @@ use crate::devices::legacy::I8042Device;
 use crate::devices::legacy::RTCDevice;
 use crate::devices::legacy::SerialDevice;
 use crate::devices::legacy::serial::{SerialOut, SerialOutInner};
-use crate::devices::pseudo::BootTimer;
+use crate::devices::pseudo::{BootTimer, TheseusDevice};
 use crate::devices::virtio::ActivateError;
 use crate::devices::virtio::balloon::BalloonError;
 use crate::devices::virtio::block::BlockError;
@@ -220,6 +220,7 @@ impl DeviceManager {
         // Create keyboard emulator for reset event
         let i8042 = Arc::new(Mutex::new(I8042Device::new(reset_evt)?));
 
+
         // create pio dev manager with legacy devices
         let mut legacy_devices = PortIODeviceManager {
             stdio_serial: serial,
@@ -301,6 +302,20 @@ impl DeviceManager {
 
         self.mmio_platform_devices
             .register_mmio_boot_timer(&vm.common.mmio_bus, boot_timer)?;
+
+        Ok(())
+    }
+
+    /// Attaches the Theseus control channel to the VM. Always attached in
+    /// this fork (both architectures, MMIO).
+    pub(crate) fn attach_theseus_device(
+        &mut self,
+        vm: &KvmVm,
+    ) -> Result<(), AttachDeviceError> {
+        let theseus = Arc::new(Mutex::new(TheseusDevice::new()));
+
+        self.mmio_platform_devices
+            .register_mmio_theseus(&vm.common.mmio_bus, theseus)?;
 
         Ok(())
     }
@@ -793,6 +808,70 @@ pub(crate) mod tests {
     use crate::vmm_config::pmem::{PmemConfig, PmemConfigError};
     use crate::vstate::resources::ResourceAllocator;
 
+    /// Theseus: the control channel is registered on the MMIO bus at the
+    /// fixed platform slot and serves reads/writes — the same path a guest's
+    /// MMIO exits would take.
+    #[test]
+    fn test_theseus_mmio_roundtrip() {
+        use crate::arch::THESEUS_MEM_START;
+        use crate::devices::pseudo::ControlEvent;
+        use crate::devices::pseudo::theseus::CMD_SETUP_COMPLETE;
+        use crate::vstate::vm::tests::setup_vm_with_memory;
+
+        let vm = setup_vm_with_memory(0x1000);
+        let mut device_manager = default_device_manager();
+        device_manager.attach_theseus_device(&vm).unwrap();
+
+        // Guest reads the magic register.
+        let mut magic = [0u8; 4];
+        vm.common
+            .mmio_bus
+            .read(THESEUS_MEM_START, &mut magic)
+            .unwrap();
+        assert_eq!(&magic, b"THES");
+
+        // Guest pushes an event byte; status shows it pending; a read pops it.
+        {
+            let dev = device_manager
+                .mmio_platform_devices
+                .theseus
+                .as_ref()
+                .unwrap();
+            dev.inner.lock().unwrap().push_event(0xAB);
+        }
+        let mut byte = [0u8];
+        vm.common
+            .mmio_bus
+            .read(THESEUS_MEM_START + 4, &mut byte)
+            .unwrap();
+        assert_eq!(byte[0] & 1, 1);
+        vm.common
+            .mmio_bus
+            .read(THESEUS_MEM_START + 5, &mut byte)
+            .unwrap();
+        assert_eq!(byte[0], 0xAB);
+
+        // Guest issues setup-complete and a log marker.
+        vm.common
+            .mmio_bus
+            .write(THESEUS_MEM_START + 6, &[CMD_SETUP_COMPLETE])
+            .unwrap();
+        vm.common
+            .mmio_bus
+            .write(THESEUS_MEM_START + 7, &[0x42])
+            .unwrap();
+
+        let dev = device_manager
+            .mmio_platform_devices
+            .theseus
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            dev.inner.lock().unwrap().event_log(),
+            &[ControlEvent::SetupComplete, ControlEvent::GuestLog(0x42)]
+        );
+    }
+
     pub(crate) fn default_device_manager() -> DeviceManager {
         let mut resource_allocator = ResourceAllocator::new();
         let mmio_platform_devices = MMIOPlatformDevices::new();
@@ -913,8 +992,6 @@ pub(crate) mod tests {
             path_on_host: Some(f.as_path().to_str().unwrap().to_string()),
             rate_limiter: None,
             file_engine_type: None,
-            blk_size: None,
-            topology: None,
             socket: None,
         }
     }
@@ -1108,6 +1185,7 @@ pub(crate) mod tests {
             mtu: None,
             rx_rate_limiter: None,
             tx_rate_limiter: None,
+            sim: None,
         });
         vmm.hotplug_device(cfg, &mut evt_manager).unwrap();
         assert!(
@@ -1124,6 +1202,7 @@ pub(crate) mod tests {
             mtu: None,
             rx_rate_limiter: None,
             tx_rate_limiter: None,
+            sim: None,
         });
         assert!(matches!(
             vmm.hotplug_device(cfg2, &mut evt_manager),

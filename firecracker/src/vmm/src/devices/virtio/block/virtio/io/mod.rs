@@ -75,6 +75,7 @@ impl FileEngine {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn file(&self) -> &File {
         match self {
             FileEngine::Async(engine) => engine.file(),
@@ -176,7 +177,6 @@ impl FileEngine {
 #[cfg(test)]
 pub mod tests {
     #![allow(clippy::undocumented_unsafe_blocks)]
-    use std::os::unix::ffi::OsStrExt;
 
     use vm_memory::{GuestMemoryBackend, GuestMemoryRegion};
     use vmm_sys_util::tempfile::TempFile;
@@ -256,9 +256,7 @@ pub mod tests {
         let file = TempFile::new().unwrap().into_file();
         let mut engine = FileEngine::from_file(file, FileEngineType::Sync).unwrap();
 
-        let data = vmm_sys_util::rand::rand_alphanumerics(FILE_LEN as usize)
-            .as_bytes()
-            .to_vec();
+        let data = (0..FILE_LEN as usize).map(|i| b'a' + (i % 26) as u8).collect::<Vec<u8>>(); // deterministic content
 
         // Partial write
         let partial_len = 50;
@@ -340,9 +338,7 @@ pub mod tests {
         let file = TempFile::new().unwrap().into_file();
         let mut engine = FileEngine::from_file(file, FileEngineType::Async).unwrap();
 
-        let data = vmm_sys_util::rand::rand_alphanumerics(FILE_LEN as usize)
-            .as_bytes()
-            .to_vec();
+        let data = (0..FILE_LEN as usize).map(|i| b'a' + (i % 26) as u8).collect::<Vec<u8>>(); // deterministic content
 
         // Partial reads and writes cannot really be tested because io_uring will return an error
         // code for trying to write to unmapped memory.

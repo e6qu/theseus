@@ -19,11 +19,12 @@ use vm_allocator::AllocPolicy;
 
 use crate::EventManager;
 use crate::arch::BOOT_DEVICE_MEM_START;
+use crate::arch::THESEUS_MEM_START;
 #[cfg(target_arch = "aarch64")]
 use crate::arch::{RTC_MEM_START, SERIAL_MEM_START};
 #[cfg(target_arch = "aarch64")]
 use crate::devices::legacy::{RTCDevice, SerialDevice};
-use crate::devices::pseudo::BootTimer;
+use crate::devices::pseudo::{BootTimer, TheseusDevice};
 use crate::devices::virtio::device::{VirtioDevice, VirtioDeviceId, VirtioDeviceType};
 use crate::devices::virtio::transport::mmio::{IrqTrigger, MmioTransport};
 #[cfg(target_arch = "x86_64")]
@@ -350,6 +351,8 @@ impl MMIOVirtioDevices {
 pub struct MMIOPlatformDevices {
     /// Boot timer device
     pub(crate) boot_timer: Option<MMIODevice<BootTimer>>,
+    /// Theseus control channel device (guest↔host door).
+    pub(crate) theseus: Option<MMIODevice<TheseusDevice>>,
     #[cfg(target_arch = "aarch64")]
     /// Real-Time clock on Aarch64 platforms
     pub(crate) rtc: Option<MMIODevice<RTCDevice>>,
@@ -389,6 +392,37 @@ impl MMIOPlatformDevices {
             device.resources.len,
         )?;
         self.boot_timer = Some(device);
+
+        Ok(())
+    }
+
+    /// Register the Theseus control device. No IRQ: the guest polls the
+    /// status register; the orchestrator drives the host side. Like the boot
+    /// timer, it is not snapshotted (the event FIFO is transient — the
+    /// orchestrator re-drives it per branch).
+    pub fn register_mmio_theseus(
+        &mut self,
+        mmio_bus: &Bus,
+        theseus: Arc<Mutex<TheseusDevice>>,
+    ) -> Result<(), MmioError> {
+        let device_info = MMIODeviceInfo {
+            addr: THESEUS_MEM_START,
+            len: MMIO_LEN,
+            gsi: None,
+        };
+
+        let device = MMIODevice {
+            resources: device_info,
+            inner: theseus,
+            sub_id: None,
+        };
+
+        mmio_bus.insert(
+            device.inner.clone(),
+            device.resources.addr,
+            device.resources.len,
+        )?;
+        self.theseus = Some(device);
 
         Ok(())
     }

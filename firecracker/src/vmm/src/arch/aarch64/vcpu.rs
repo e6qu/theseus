@@ -100,6 +100,32 @@ pub enum KvmVcpuError {
     SaveState(VcpuArchError),
     /// Found unsupported KVM_ARM_VCPU_PMU_V3 bit set in vcpu features.
     UnsupportedPmuV3,
+    /// Failed to apply virtual time (KVM_ARM_VCPU_TIMER_OFF): {0}
+    ApplyVirtualTime(kvm_ioctls::Error),
+}
+
+/// KVM_REG_ARM_TIMER_CNT (Linux UAPI, arch/arm64/include/uapi/asm/kvm.h):
+/// ARM64_SYS_REG(3, 3, 14, 3, 2) — a KVM pseudo-register for the virtual
+/// counter value. Writing it between KVM_RUN calls re-anchors the guest's
+/// virtual counter to the written value.
+///
+/// Computed from raw UAPI primitives because the kvm-bindings 0.14
+/// `KVM_REG_ARM64` constant has the CORE coproc bits folded in.
+const KVM_REG_ARM_TIMER_CNT: u64 = 0x6000_0000_0000_0000  // KVM_REG_ARM64
+    | 0x0030_0000_0000_0000                               // KVM_REG_SIZE_U64
+    | (0x0013 << 16)                                    // KVM_REG_ARM64_SYSREG
+    | (3 << 14)                                         // op0
+    | (3 << 11)                                         // op1
+    | (14 << 7)                                         // crn
+    | (3 << 3)                                          // crm
+    | 2; // op2
+
+/// Read the counter frequency (CNTFRQ_EL0), in Hz.
+fn host_counter_freq_hz() -> u64 {
+    let val: u64;
+    // SAFETY: as above; CNTFRQ_EL0 is always readable at EL0.
+    unsafe { std::arch::asm!("mrs {}, cntfrq_el0", out(reg) val) };
+    val
 }
 
 /// Error type for [`KvmVcpu::configure`].
@@ -127,6 +153,28 @@ pub struct Peripherals {
 }
 
 impl KvmVcpu {
+    /// Theseus (Track B′): step the guest's virtual time to `now_ns`.
+    ///
+    /// aarch64 has no kvmclock/TSC MSR pair; the guest reads CNTVCT, which KVM
+    /// derives from the host physical counter minus a per-VM offset. The
+    /// per-vcpu `KVM_ARM_VCPU_TIMER_CTRL`/`TIMER_OFF` attribute does NOT exist
+    /// in Linux (only TIMER_IRQ_* are handled there — attr 0 returns ENXIO),
+    /// and the VM-scoped `KVM_VM_SET_COUNTER_OFFSET` fails with EBUSY once
+    /// vCPUs are running. The usable knob is the migration register
+    /// `KVM_REG_ARM_TIMER_CNT` via `KVM_SET_ONE_REG` (valid between `KVM_RUN`
+    /// calls — exactly our quantum boundaries): the kernel sets
+    /// `offset = host_phys_counter - value`, so the guest reads CNTVCT =
+    /// `value` at that moment and free-runs from there within the quantum
+    /// (the accepted B′ leak).
+    pub fn apply_virtual_time(&mut self, now_ns: u64) -> Result<(), KvmVcpuError> {
+        let freq = host_counter_freq_hz();
+        let virtual_counts = crate::vstate::vclock::VirtualClock::ticks_for_time(now_ns, freq);
+        self.fd
+            .set_one_reg(KVM_REG_ARM_TIMER_CNT, &virtual_counts.to_ne_bytes())
+            .map_err(KvmVcpuError::ApplyVirtualTime)?;
+        Ok(())
+    }
+
     /// Constructs a new kvm vcpu with arch specific functionality.
     ///
     /// # Arguments
@@ -521,6 +569,13 @@ pub struct VcpuState {
     pub kvi: kvm_vcpu_init,
     /// ipa for steal_time region
     pub pvtime_ipa: Option<u64>,
+    /// Theseus (Track B′): virtual-clock bookkeeping. None = virtual time
+    /// disabled (or snapshot predates the feature).
+    #[serde(default)]
+    pub vclock: Option<crate::vstate::vclock::VirtualClockState>,
+    /// Exits elapsed in the current quantum at snapshot time.
+    #[serde(default)]
+    pub vclock_exits: u64,
 }
 
 impl Debug for VcpuState {

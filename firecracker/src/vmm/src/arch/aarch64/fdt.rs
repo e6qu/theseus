@@ -8,7 +8,6 @@
 use std::ffi::CString;
 use std::fmt::Debug;
 
-use aws_lc_rs::rand;
 use vm_fdt::{Error as VmFdtError, FdtWriter, FdtWriterNode};
 use vm_memory::{GuestMemoryBackend, GuestMemoryError, GuestMemoryRegion};
 
@@ -280,7 +279,7 @@ fn create_chosen_node(
     fdt.property_u32("linux,pci-probe-only", 1)?;
 
     let mut rng_seed = [0u8; 64];
-    rand::fill(&mut rng_seed).expect("could not generate rng-seed");
+    crate::detrng::fill_bytes(&mut rng_seed);
     fdt.property("rng-seed", &rng_seed)?;
 
     fdt.end_node(chosen)?;
@@ -619,7 +618,9 @@ mod tests {
             "psci",
             "rtc@40001000",
             "uart@40002000",
-            "virtio_mmio@40003000",
+            // The Theseus control device occupies the 0x40003000 slot;
+            // dynamically allocated virtio devices start one slot later.
+            "virtio_mmio@40004000",
             "vmgenid",
             "ptp@2149572608",
         ];
