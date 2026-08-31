@@ -10,15 +10,15 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::EventManager;
-use crate::Vmm;
+use vmm::EventManager;
+use vmm::Vmm;
 use crate::branch::{BranchError, BranchPoint};
-use crate::persist::{RestoreFromSnapshotError, restore_from_microvm_state};
-use crate::resources::VmResources;
-use crate::seccomp::BpfThreadMap;
-use crate::vmm_config::instance_info::InstanceInfo;
-use crate::devices::virtio::net::SimNetConfig;
-use crate::vmm_config::snapshot::{
+use vmm::persist::{RestoreFromSnapshotError, restore_from_microvm_state};
+use vmm::resources::VmResources;
+use vmm::seccomp::BpfThreadMap;
+use vmm::vmm_config::instance_info::InstanceInfo;
+use vmm::devices::virtio::net::SimNetConfig;
+use vmm::vmm_config::snapshot::{
     LoadSnapshotParams, MemBackendConfig, MemBackendType, SnapshotLoadHugePageConfig,
 };
 
@@ -30,7 +30,7 @@ pub enum SpawnError {
     /// Could not restore the child microVM: {0}
     Restore(#[from] Box<RestoreFromSnapshotError>),
     /// Could not reseed the child's entropy device: {0}
-    Reseed(#[from] crate::VmmError),
+    Reseed(#[from] vmm::VmmError),
 }
 
 /// A spawned child timeline.
@@ -67,7 +67,7 @@ pub fn spawn_child(
     let mut microvm_state = branch.microvm_state()?;
 
     if let Some(cfg) = fault_cfg {
-        use crate::device_manager::VirtioDevicesState;
+        use vmm::VirtioDevicesState;
         // MMIO and PCI transport states are distinct types; apply the fault
         // config to every sim-backed net device in either.
         match &mut microvm_state.device_states.virtio_state {
@@ -124,13 +124,13 @@ mod tests {
     use rand_chacha::rand_core::{RngCore, SeedableRng};
 
     use super::*;
-    use crate::builder::build_microvm_for_boot;
-    use crate::persist::VmInfo;
-    use crate::rpc_interface::{RuntimeApiController, VmmAction};
-    use crate::seccomp::get_empty_filters;
-    use crate::test_utils::mock_resources::{MockBootSourceConfig, MockVmResources};
-    use crate::vmm_config::entropy::EntropyDeviceConfig;
-    use crate::{EventManager, FcExitCode};
+    use vmm::builder::build_microvm_for_boot;
+    use vmm::persist::VmInfo;
+    use vmm::rpc_interface::{RuntimeApiController, VmmAction};
+    use vmm::seccomp::get_empty_filters;
+    use vmm::test_utils::mock_resources::{MockBootSourceConfig, MockVmResources};
+    use vmm::vmm_config::entropy::EntropyDeviceConfig;
+    use vmm::{EventManager, FcExitCode};
 
     fn boot_parent(seed: u64) -> (Arc<Mutex<Vmm>>, EventManager, BpfThreadMap) {
         let boot_source_cfg = MockBootSourceConfig::new()
@@ -233,7 +233,7 @@ mod tests {
     /// with kernel CoW instead of a per-child RAM copy.
     #[test]
     fn test_branch_children_memory_is_cow() {
-        use crate::vstate::memory::GuestAddress;
+        use vmm::vstate::memory::GuestAddress;
         use vm_memory::Bytes;
 
         let (parent, mut event_manager, seccomp_filters) = boot_parent(42);
@@ -243,7 +243,7 @@ mod tests {
         let (child_b, _evmgr_b) = spawn(&mut branch, &seccomp_filters);
 
         #[cfg(target_arch = "aarch64")]
-        const DRAM_START: u64 = crate::arch::DRAM_MEM_START;
+        const DRAM_START: u64 = vmm::arch::DRAM_MEM_START;
         #[cfg(target_arch = "x86_64")]
         const DRAM_START: u64 = 0; // x86_64 guest RAM starts at 0
         let addr = GuestAddress(DRAM_START + 0x400000);
@@ -286,8 +286,8 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_spawn_child_with_fault_schedule() {
-        use crate::devices::virtio::net::SimNetConfig;
-        use crate::vmm_config::net::NetworkInterfaceConfig;
+        use vmm::devices::virtio::net::SimNetConfig;
+        use vmm::vmm_config::net::NetworkInterfaceConfig;
 
         // Parent with a sim-backed net device (no host tap needed).
         let boot_source_cfg = MockBootSourceConfig::new()
@@ -378,9 +378,9 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_guest_control_channel_roundtrip() {
-        use crate::devices::pseudo::ControlEvent;
-        use crate::test_utils::mock_resources::kernel_image_path;
-        use crate::vmm_config::boot_source::BootSourceConfig;
+        use vmm::devices::pseudo::ControlEvent;
+        use vmm::test_utils::mock_resources::kernel_image_path;
+        use vmm::vmm_config::boot_source::BootSourceConfig;
 
         let resources: VmResources = MockVmResources::new()
             .with_boot_source(BootSourceConfig {
@@ -422,9 +422,9 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_guest_virtual_time_is_reproducible() {
-        use crate::test_utils::mock_resources::kernel_image_path;
-        use crate::vmm_config::boot_source::BootSourceConfig;
-        use crate::vmm_config::machine_config::{MachineConfigUpdate, VirtualTimeConfig};
+        use vmm::test_utils::mock_resources::kernel_image_path;
+        use vmm::vmm_config::boot_source::BootSourceConfig;
+        use vmm::vmm_config::machine_config::{MachineConfigUpdate, VirtualTimeConfig};
 
         fn boot_and_read_vtime(virtual_time: Option<VirtualTimeConfig>) -> String {
             let serial = vmm_sys_util::tempfile::TempFile::new().unwrap();
@@ -507,9 +507,9 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_rust_guest_event_paths() {
-        use crate::devices::pseudo::ControlEvent;
-        use crate::test_utils::mock_resources::kernel_image_path;
-        use crate::vmm_config::boot_source::BootSourceConfig;
+        use vmm::devices::pseudo::ControlEvent;
+        use vmm::test_utils::mock_resources::kernel_image_path;
+        use vmm::vmm_config::boot_source::BootSourceConfig;
 
         let resources: VmResources = MockVmResources::new()
             .with_boot_source(BootSourceConfig {

@@ -5,7 +5,8 @@
 set -e
 
 E2E=/theseus/e2e
-FC=/fc/build/cargo_target/debug/firecracker
+FC_DIR=${FC_DIR:-/theseus/firecracker}
+FC=$FC_DIR/build/cargo_target/debug/firecracker
 KERNEL=$E2E/vmlinux
 INITRD=$E2E/initramfs.cpio.gz
 S3=https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.9/aarch64
@@ -89,7 +90,7 @@ fi
 
 # 5. Control channel: boot the bare-metal guest; it reads the magic register
 # over MMIO, prints it to serial, and issues setup-complete + a log marker.
-GUEST=/fc/src/vmm/src/test_utils/mock_resources/theseus_guest.bin
+GUEST=$FC_DIR/src/vmm/src/test_utils/mock_resources/theseus_guest.bin
 if [ -f "$GUEST" ]; then
     echo ">> boot 4 (control channel guest)"
     sock=/tmp/fc-door.sock
@@ -126,7 +127,8 @@ fi
 # THES:M markers over ttyS0.
 AGENT=/theseus/e2e/agent/target/aarch64-unknown-linux-musl/release/theseus-agent
 echo ">> building theseus-agent"
-( cd /theseus/e2e/agent && cargo build --release >/dev/null )
+rustup target add aarch64-unknown-linux-musl >/dev/null 2>&1 || true
+( cd /theseus/e2e/agent && cargo build --release 2>&1 | tail -2 )
 
 if [ -x "$AGENT" ]; then
     rm -rf /tmp/ir2 && mkdir -p /tmp/ir2

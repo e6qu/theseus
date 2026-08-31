@@ -11,9 +11,17 @@ diverge only by seed.
 
 ## What's here
 
-- **`firecracker/`** — the fork (upstream base `f3f65a3`; see
+The license boundary is also the directory boundary:
+
+- **`firecracker/`** — the fork (upstream base `f3f65a3`, Apache-2.0; see
   `firecracker/README-THESEUS.md` for provenance and the rationale for
   every deviation from vanilla upstream).
+- **`sdk/`** — `theseus-sdk`: the shared protocol contract (`no_std` guest
+  SDK: MMIO + serial transports, bus primitives).
+- **`engine/`** — `theseus-engine`: leaf deterministic components (`detrng`,
+  virtual clock, sim net backend, control door).
+- **`orchestrator/`** — `theseus-orchestrator`: timeline branching,
+  ground-truth coverage, the exploration engine.
 - **`PLAN.md`** — design notes and per-phase verification status.
 - **`e2e/`** — live-KVM proofs: seed-deterministic guest entropy, the MMIO
   control channel, and the Linux guest SDK transport.

@@ -20,11 +20,11 @@ use std::time::Duration;
 use crate::branch::{BranchError, BranchPoint};
 use crate::orchestrator::spawn::{SpawnError, spawn_child};
 use crate::orchestrator::tree::{NodeId, TimelineTree};
-use crate::persist::VmInfo;
-use crate::resources::VmResources;
-use crate::seccomp::BpfThreadMap;
-use crate::vmm_config::instance_info::InstanceInfo;
-use crate::{EventManager, FcExitCode, Vmm, VmmError};
+use vmm::persist::VmInfo;
+use vmm::resources::VmResources;
+use vmm::seccomp::BpfThreadMap;
+use vmm::vmm_config::instance_info::InstanceInfo;
+use vmm::{EventManager, FcExitCode, Vmm, VmmError};
 
 /// Errors from the exploration loop.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -36,7 +36,7 @@ pub enum ExplorerError {
     /// Vmm error: {0}
     Vmm(#[from] VmmError),
     /// Could not build the root microVM: {0}
-    Build(#[from] crate::builder::StartMicrovmError),
+    Build(#[from] vmm::builder::StartMicrovmError),
     /// Timed out waiting for a rendezvous marker from the guest. Carries the
     /// events collected while waiting (debugging rendezvous failures without
     /// a guest console).
@@ -57,8 +57,8 @@ pub struct FaultStrategy {
 
 impl FaultStrategy {
     /// The sim-net config for the child at `branch_idx`.
-    pub fn sim_config(&self, branch_idx: usize) -> crate::devices::virtio::net::SimNetConfig {
-        crate::devices::virtio::net::SimNetConfig {
+    pub fn sim_config(&self, branch_idx: usize) -> vmm::devices::virtio::net::SimNetConfig {
+        vmm::devices::virtio::net::SimNetConfig {
             seed: 0,
             loopback: true,
             drop_ppm: self.drop_ppm_base + self.drop_ppm_step * branch_idx as u32,
@@ -177,7 +177,7 @@ impl Explorer {
         seed: u64,
         await_setup: bool,
     ) -> Result<ExploredNode, ExplorerError> {
-        let mut collected: Vec<crate::devices::pseudo::ControlEvent> = Vec::new();
+        let mut collected: Vec<vmm::devices::pseudo::ControlEvent> = Vec::new();
 
         if config.rendezvous {
             vmm.lock().expect("Poisoned lock").resume_vm()?;
@@ -185,7 +185,7 @@ impl Explorer {
                 Self::wait_for_marker(
                     &vmm,
                     &mut collected,
-                    |ev| *ev == crate::devices::pseudo::ControlEvent::SetupComplete,
+                    |ev| *ev == vmm::devices::pseudo::ControlEvent::SetupComplete,
                     "setup-complete",
                 )?;
             }
@@ -199,7 +199,7 @@ impl Explorer {
             Self::wait_for_marker(
                 &vmm,
                 &mut collected,
-                |ev| *ev == crate::devices::pseudo::ControlEvent::GuestLog(0xFF),
+                |ev| *ev == vmm::devices::pseudo::ControlEvent::GuestLog(0xFF),
                 "done",
             )?;
         } else {
@@ -223,7 +223,7 @@ impl Explorer {
             let markers = collected
                 .iter()
                 .filter_map(|ev| match ev {
-                    crate::devices::pseudo::ControlEvent::GuestLog(byte) => Some(*byte),
+                    vmm::devices::pseudo::ControlEvent::GuestLog(byte) => Some(*byte),
                     _ => None,
                 })
                 .collect();
@@ -245,8 +245,8 @@ impl Explorer {
     /// Bounded by ~2s of host time.
     fn wait_for_marker(
         vmm: &Arc<Mutex<Vmm>>,
-        collected: &mut Vec<crate::devices::pseudo::ControlEvent>,
-        pred: impl Fn(&crate::devices::pseudo::ControlEvent) -> bool,
+        collected: &mut Vec<vmm::devices::pseudo::ControlEvent>,
+        pred: impl Fn(&vmm::devices::pseudo::ControlEvent) -> bool,
         what: &'static str,
     ) -> Result<(), ExplorerError> {
         if collected.iter().any(&pred) {
@@ -364,10 +364,10 @@ mod tests {
     use rand_chacha::rand_core::{RngCore, SeedableRng};
 
     use super::*;
-    use crate::builder::build_microvm_for_boot;
-    use crate::seccomp::get_empty_filters;
-    use crate::test_utils::mock_resources::{MockBootSourceConfig, MockVmResources};
-    use crate::vmm_config::entropy::EntropyDeviceConfig;
+    use vmm::builder::build_microvm_for_boot;
+    use vmm::seccomp::get_empty_filters;
+    use vmm::test_utils::mock_resources::{MockBootSourceConfig, MockVmResources};
+    use vmm::vmm_config::entropy::EntropyDeviceConfig;
 
     fn root_resources() -> VmResources {
         let boot_source_cfg = MockBootSourceConfig::new()
@@ -376,7 +376,7 @@ mod tests {
         let mut resources: VmResources = MockVmResources::new()
             .with_boot_source(boot_source_cfg)
             .with_vm_config(
-                crate::test_utils::mock_resources::MockVmConfig::new()
+                vmm::test_utils::mock_resources::MockVmConfig::new()
                     .with_dirty_page_tracking()
                     .into(),
             )
@@ -480,8 +480,8 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_explore_with_reactive_guest() {
-        use crate::test_utils::mock_resources::kernel_image_path;
-        use crate::vmm_config::boot_source::BootSourceConfig;
+        use vmm::test_utils::mock_resources::kernel_image_path;
+        use vmm::vmm_config::boot_source::BootSourceConfig;
 
         fn reactive_resources() -> VmResources {
             let mut resources: VmResources = MockVmResources::new()
@@ -577,8 +577,8 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_explore_with_rust_guest() {
-        use crate::test_utils::mock_resources::kernel_image_path;
-        use crate::vmm_config::boot_source::BootSourceConfig;
+        use vmm::test_utils::mock_resources::kernel_image_path;
+        use vmm::vmm_config::boot_source::BootSourceConfig;
 
         fn rust_guest_resources() -> VmResources {
             let mut resources: VmResources = MockVmResources::new()

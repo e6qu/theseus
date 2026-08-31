@@ -435,7 +435,8 @@ pub fn restore_from_snapshot(
 }
 
 /// Theseus: restore a microVM from an in-memory [`MicrovmState`] (e.g. a
-/// [`crate::branch::BranchPoint`]) instead of a snapshot file. Network/vsock
+/// branch point captured by the orchestrator crate) instead of a snapshot
+/// file. Network/vsock
 /// overrides are the caller's responsibility. `params.mem_backend` still
 /// applies — a branch point's memfd is passed as `/proc/self/fd/<n>` with
 /// [`MemBackendType::File`].

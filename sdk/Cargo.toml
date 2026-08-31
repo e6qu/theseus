@@ -11,3 +11,8 @@ path = "lib.rs"
 [features]
 default = []
 std = []
+
+[dependencies]
+slab = "0.4.12"
+thiserror = "2.0.18"
+displaydoc = "0.2.6"

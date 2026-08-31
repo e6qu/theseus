@@ -76,14 +76,13 @@ pub mod acpi;
 /// Handles setup and initialization a `Vmm` object.
 pub mod builder;
 /// Theseus: in-memory timeline branching.
-pub mod branch;
 /// Types for guest configuration.
 pub mod cpu_config;
 /// Theseus: single-step code coverage (KVM_GUESTDBG).
-pub mod coverage;
 /// Theseus: deterministic host-side RNG (seeded, guest-visible uses only).
-pub mod detrng;
+pub use theseus_engine::detrng;
 pub(crate) mod device_manager;
+pub use device_manager::VirtioDevicesState;
 /// Emulates virtual and hardware devices.
 #[allow(missing_docs)]
 pub mod devices;
@@ -97,7 +96,6 @@ pub mod logger;
 /// microVM Metadata Service MMDS
 pub mod mmds;
 /// Theseus orchestrator: timeline tree and child spawning.
-pub mod orchestrator;
 /// PCI specific emulation code.
 pub mod pci;
 /// Save/restore utilities.
@@ -363,7 +361,7 @@ impl Vmm {
     /// Theseus: the next `n` bytes the entropy device would serve, without
     /// consuming them. Used by the explorer to fingerprint timelines at
     /// capture time (replay must reproduce probes exactly).
-    pub(crate) fn entropy_probe(&self, n: usize) -> Vec<u8> {
+    pub fn entropy_probe(&self, n: usize) -> Vec<u8> {
         use rand_chacha::rand_core::RngCore;
         self.device_manager
             .with_virtio_device::<Entropy, _, _>(ENTROPY_DEV_ID, |dev| {
@@ -378,7 +376,7 @@ impl Vmm {
     /// enabled — a memory-footprint coverage signal (and replay fingerprint:
     /// deterministic timelines dirty the same pages). None when tracking is
     /// off or the VM is not KVM-backed.
-    pub(crate) fn dirty_page_count(&self) -> Option<u64> {
+    pub fn dirty_page_count(&self) -> Option<u64> {
         let kvm_vm = self.vm.as_kvm()?;
         let bitmap = kvm_vm.get_dirty_bitmap().ok()?;
         Some(

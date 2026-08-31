@@ -21,7 +21,7 @@ pub mod device;
 mod event_handler;
 pub mod metrics;
 pub mod persist;
-pub mod sim;
+pub use theseus_engine::simnet as sim;
 mod tap;
 pub mod test_utils;
 
