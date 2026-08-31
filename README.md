@@ -1,44 +1,63 @@
 # Theseus
 
-Deterministic simulation testing for whole distributed systems, built on a
-fork of [Firecracker](https://github.com/firecracker-microvm/firecracker).
+**Deterministic simulation testing for whole distributed systems** — run an
+entire system (services, dependencies, workloads) in an environment where
+every source of nondeterminism is seeded and replayable, then fork
+timelines into multiverses that diverge only by seed.
 
-Theseus runs an entire system — services, dependencies, workloads — inside a
-deterministic environment where every source of nondeterminism (entropy,
-time, scheduling, network faults) is controlled and seed-driven. A run is
-perfectly replayable; timelines can be branched into multiverses that
-diverge only by seed.
+Built on a fork of [Firecracker](https://github.com/firecracker-microvm/firecracker)
+(v1.17.0-dev, `f3f65a3`).
 
-## What's here
+## What it does
 
-The license boundary is also the directory boundary:
+- **Seeded everything a guest can observe**: entropy (virtio-rng, FDT
+  rng-seed, vmgenid, MMDS tokens, TCP ISNs), all from one seed — so two
+  boots with the same seed are byte-identical.
+- **Tick-stepped virtual time** (exit-counted quanta) on x86_64 and aarch64.
+- **A control channel** between guest and host (MMIO + serial console) with
+  a `no_std` guest SDK.
+- **Simulated network** with deterministic drops, partitions, and
+  per-branch fault schedules.
+- **In-memory timeline branching**: pause a VM, fork it, and run children
+  that differ only by seed — with kernel copy-on-write.
+- **A parallel exploration engine** that drives timelines through
+  rendezvous protocols and fingerprints every node (entropy probe, markers,
+  dirty pages).
+- **Ground-truth coverage** via single-stepping (`KVM_GUESTDBG`).
 
-- **`firecracker/`** — the fork (upstream base `f3f65a3`, Apache-2.0; see
-  `firecracker/README-THESEUS.md` for provenance and the rationale for
-  every deviation from vanilla upstream).
-- **`sdk/`** — `theseus-sdk`: the shared protocol contract (`no_std` guest
-  SDK: MMIO + serial transports, bus primitives).
-- **`engine/`** — `theseus-engine`: leaf deterministic components (`detrng`,
-  virtual clock, sim net backend, control door).
-- **`orchestrator/`** — `theseus-orchestrator`: timeline branching,
-  ground-truth coverage, the exploration engine.
-- **`PLAN.md`** — design notes and per-phase verification status.
-- **`e2e/`** — live-KVM proofs: seed-deterministic guest entropy, the MMIO
-  control channel, and the Linux guest SDK transport.
+Verified end to end: 761 `vmm` tests plus crate tests on real KVM, and four
+live boot proofs in `e2e/`.
 
-## The engine
+## Repository layout
 
-- Seeded entropy (guest-visible, snapshot-continuous) and a seeded
-  host-side RNG (`detrng`) for everything else a guest can observe.
-- A control channel (guest↔host door) over MMIO and serial console, with a
-  `no_std` guest SDK.
-- Simulated network with deterministic drops/partitions and per-branch
-  fault schedules.
-- Tick-stepped virtual time (exit-counted quanta) on x86_64 and aarch64.
-- In-memory timeline branching with kernel copy-on-write.
-- A parallel rendezvous explorer, plus ground-truth single-step coverage.
+| Path | What it is |
+|---|---|
+| [`firecracker/`](firecracker/) | The fork — Apache-2.0 upstream code plus marked deviations ([provenance](firecracker/README-THESEUS.md)) |
+| [`sdk/`](sdk/) | `theseus-sdk` — protocol contract, bus primitives, guest transports ([README](sdk/README.md)) |
+| [`engine/`](engine/) | `theseus-engine` — detrng, virtual clock, sim net, control door ([README](engine/README.md)) |
+| [`orchestrator/`](orchestrator/) | `theseus-orchestrator` — branching, coverage, explorer ([README](orchestrator/README.md)) |
+| [`e2e/`](e2e/) | Live-KVM end-to-end proofs ([README](e2e/README.md)) |
+| [`docs/`](docs/) | Design documentation |
 
-**Verification:** 802/802 tests on aarch64 KVM; e2e boot proofs in `e2e/`.
+## Documentation
+
+- [Architecture](docs/architecture.md) — crate layout, dependency direction, layers
+- [The determinism model](docs/determinism.md) — what's closed, what's leaked, replay fingerprints
+- [The control channel](docs/control-channel.md) — registers, serial transport, protocol rounds
+- [Exploration](docs/exploration.md) — branch points, timeline tree, parallel explorer, coverage
+- [Testing](docs/testing.md) — dev loop, e2e proofs, CI
+
+## Quickstart
+
+Requires a Linux+KVM host (on Apple Silicon, a privileged aarch64 Docker
+container works — see [docs/testing.md](docs/testing.md)):
+
+```sh
+cd firecracker && cargo test -p vmm --lib -- --test-threads=1   # 761 tests
+cargo test --manifest-path engine/Cargo.toml
+cargo test --manifest-path orchestrator/Cargo.toml
+sh e2e/run.sh                                                    # live proofs
+```
 
 ## License
 
@@ -46,7 +65,9 @@ Copyright 2026 Adrian Mârza
 (<https://www.linkedin.com/in/adrian-m%C3%A2rza-52606512a/>) and
 contributors to Theseus.
 
-Theseus is licensed under the **GNU Affero General Public License, version
-3.0 or later** (`AGPL-3.0-or-later`); see `LICENSE`. Files derived from
-Firecracker remain under the Apache License 2.0 — see `firecracker/LICENSE`
-and `firecracker/NOTICE`.
+Theseus-authored code (everything outside `firecracker/` that carries the
+Theseus header) is licensed under **AGPL-3.0-or-later** — see
+[LICENSE](LICENSE). Everything under `firecracker/` remains **Apache-2.0**
+([firecracker/LICENSE](firecracker/LICENSE), `firecracker/NOTICE`), with
+deviations marked in comments. The boundary is spelled out in
+[firecracker/README-THESEUS.md](firecracker/README-THESEUS.md).
