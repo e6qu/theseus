@@ -1,25 +1,25 @@
-# Tutorial 2: Script a guest through the service API
+# Tutorial 2: Script guest randomness
 
-## Objective
+Use the service API to choose the bytes an unchanged C guest reads. Complete
+tutorial 1 first; reuse its container and built `firecracker` binary.
 
-Choose the values a guest sees without modifying that guest or linking an
-SDK. You will configure the Theseus service's `PUT /entropy` endpoint with a
-byte script, boot a plain C program, and see it print `1 2 3 4`.
+## 1. Run the scripted guest
 
-## The service control
-
-`PUT /entropy` accepts both a fallback seed and a `script`. The service
-returns script bytes verbatim before continuing with the seeded ChaCha stream:
-
-```json
-{ "seed": 42, "script": [1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0] }
+```sh
+sh /theseus/docs/tutorials/02-control-the-random/run.sh
 ```
 
-Those bytes encode four little-endian `u64` values. The guest in
-[init.c](init.c) is plain C: it opens `/dev/hwrng`, reads four `u64`s, prints
-them, and exits. It has no Theseus dependency.
+The guest is [init.c](init.c). It opens `/dev/hwrng`, reads four `u64` values,
+prints them, and exits. It does not use `theseus-sdk`.
 
-The call that changes the guest's behavior is an ordinary API request:
+```text
+random() = 1 2 3 4
+PASS: random() returned 1, 2, 3, 4 — the values we scripted
+```
+
+## 2. See the control point
+
+The script starts the same service as tutorial 1, then sends this request:
 
 ```sh
 curl --unix-socket "$SOCK" -X PUT localhost/entropy \
@@ -27,49 +27,11 @@ curl --unix-socket "$SOCK" -X PUT localhost/entropy \
   -d "{\"seed\": 42, \"script\": [$SCRIPT]}"
 ```
 
-The tutorial script constructs `$SCRIPT` from the JSON bytes above after a
-small boot-time prefix consumed by Linux's entropy initialization.
+`script` is served before the seeded stream. Its bytes encode the four
+little-endian values `1`, `2`, `3`, and `4`. The helper script also accounts
+for the bytes Linux consumes while it initializes its entropy pool.
 
-## Setup
+Use this to force a randomized branch, retry count, or timeout choice. Next,
+make the guest report whether the chosen input produced the result you want.
 
-You need Linux with KVM. On Apple Silicon macOS, run this from the repository
-root:
-
-```sh
-docker run --rm -it --platform linux/arm64 --privileged \
-  -v "$PWD":/theseus -w /theseus rust:1.97.0-bookworm bash
-apt-get update -qq && apt-get install -y -qq libclang-dev libseccomp-dev gcc cpio curl
-cd /theseus/firecracker && cargo build -p firecracker
-```
-
-## Run it
-
-```sh
-sh /theseus/docs/tutorials/02-control-the-random/run.sh
-```
-
-The script builds the C initramfs, starts `firecracker --api-sock`, configures
-the boot and machine, sends the entropy JSON above, and starts the VM. You
-will see:
-
-```
-random() = 1 2 3 4
-PASS: random() returned 1, 2, 3, 4 — the values we scripted
-```
-
-The script deliberately reserves the bytes the Linux kernel consumes while
-seeding itself, then places the four values where the C program's read will
-land. Once the script is consumed, the seed supplies reproducible fallback
-bytes.
-
-## What you have now
-
-You can force a retry count, timeout choice, or randomized branch from the
-host API alone. The next tutorial is for the point where you need the guest to
-report a meaningful outcome, rather than only print a value.
-
-## Further reading
-
-- [determinism.md](../../determinism.md) — scripted and seeded entropy
-- [The Firecracker API](../../../firecracker/docs/api_requests/) — the
-  complete host API inherited by the fork
+See [the entropy model](../../determinism.md).
