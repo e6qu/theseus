@@ -1,0 +1,11 @@
+# Build outputs
+firecracker/build/
+firecracker/src/vmm/src/test_utils/mock_resources/theseus_guest_rs/target/
+e2e/agent/target/
+
+# e2e artifacts: downloaded guest kernel and built initramfs images
+e2e/vmlinux
+e2e/*.cpio.gz
+
+# macOS metadata
+.DS_Store
