@@ -31,7 +31,7 @@ aarch64 Docker container provides it. From the repository root:
 
 ```sh
 docker run --rm -it --platform linux/arm64 --privileged \
-  -v "$PWD":/theseus -w /theseus rust:1.97.0 bash
+  -v "$PWD":/theseus -w /theseus rust:1.97.0-bookworm bash
 apt-get update -qq && apt-get install -y -qq libclang-dev libseccomp-dev
 cd /theseus/firecracker && cargo build -p vmm
 ```
@@ -91,8 +91,8 @@ its determinism ends.
 
 ## Further reading
 
-- [determinism.md](../determinism.md) — the full list of what replays and
+- [determinism.md](../../determinism.md) — the full list of what replays and
   what leaks
-- [exploration.md](../exploration.md) — how ticks interact with branch
+- [exploration.md](../../exploration.md) — how ticks interact with branch
   points (every branch inherits identical clock state)
-- [terminology.md](../terminology.md) — quantum, tick, anchor, Track B′
+- [terminology.md](../../terminology.md) — quantum, tick, anchor, Track B′

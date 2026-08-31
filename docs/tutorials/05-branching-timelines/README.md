@@ -29,7 +29,7 @@ aarch64 Docker container provides it. From the repository root:
 
 ```sh
 docker run --rm -it --platform linux/arm64 --privileged \
-  -v "$PWD":/theseus -w /theseus rust:1.97.0 bash
+  -v "$PWD":/theseus -w /theseus rust:1.97.0-bookworm bash
 apt-get update -qq && apt-get install -y -qq libclang-dev libseccomp-dev
 cd /theseus/firecracker && cargo build -p vmm
 ```
@@ -84,8 +84,8 @@ same seed lineage, different faults.
 
 ## Further reading
 
-- [exploration.md](../exploration.md) — the timeline tree and the explorer
-- [determinism.md](../determinism.md) — the replay fingerprints each node
+- [exploration.md](../../exploration.md) — the timeline tree and the explorer
+- [determinism.md](../../determinism.md) — the replay fingerprints each node
   records
-- [terminology.md](../terminology.md) — branch point, multiverse,
+- [terminology.md](../../terminology.md) — branch point, multiverse,
   copy-on-write

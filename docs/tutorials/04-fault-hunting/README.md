@@ -46,7 +46,7 @@ aarch64 Docker container provides it. From the repository root:
 
 ```sh
 docker run --rm -it --platform linux/arm64 --privileged \
-  -v "$PWD":/theseus -w /theseus rust:1.97.0 bash
+  -v "$PWD":/theseus -w /theseus rust:1.97.0-bookworm bash
 apt-get update -qq && apt-get install -y -qq libclang-dev libseccomp-dev binutils
 rustup target add aarch64-unknown-none
 cd /theseus/firecracker && cargo build -p firecracker
@@ -55,7 +55,7 @@ cd /theseus/firecracker && cargo build -p firecracker
 ## Step 1 — Build the workload
 
 ```sh
-sh /theseus/examples/counter-guest/build.sh
+sh /theseus/docs/tutorials/04-fault-hunting/guest/build.sh
 ```
 
 This compiles the counter to a flat bootable image that the hypervisor
@@ -63,14 +63,13 @@ boots directly, without an operating system.
 
 ## Step 2 — Run the clean schedule
 
-The driver boots the guest with two increments and no partition. Run the
-test:
+The driver boots the guest with two increments and no partition. Run it:
 
 ```sh
-cd /theseus/orchestrator && cargo test --test counter_tutorial
+cd /theseus/docs/tutorials/04-fault-hunting/driver && cargo run
 ```
 
-Three assertions run. The first checks the clean run:
+The first assertion checks the clean run:
 
 ```
 events [0x05, 0x06]  →  markers [0x42, 0x01, 0x01, 0xFF]
@@ -108,7 +107,7 @@ flaky "sometimes" becomes a deterministic "every time this schedule runs."
 ## Step 5 — Fix and verify
 
 Make `apply` idempotent: ignore a command already seen. Edit
-`examples/counter-guest/main.rs` and change the duplicate branch of
+`docs/tutorials/04-fault-hunting/guest/main.rs` and change the duplicate branch of
 `apply` to skip the application (or report a distinct "deduplicated"
 marker). Rebuild the guest and rerun the test: the partition schedule
 produces no `0x02`, and the clean schedule is unchanged — the fix touched
@@ -122,7 +121,7 @@ only the bug.
 
 ## Further reading
 
-- [determinism.md](../determinism.md) — why seeded runs replay exactly
-- [control-channel.md](../control-channel.md) — the protocol the guest
+- [determinism.md](../../determinism.md) — why seeded runs replay exactly
+- [control-channel.md](../../control-channel.md) — the protocol the guest
   reports markers over
-- [terminology.md](../terminology.md) — marker, event, fault schedule
+- [terminology.md](../../terminology.md) — marker, event, fault schedule

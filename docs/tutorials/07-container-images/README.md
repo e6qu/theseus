@@ -34,7 +34,7 @@ From the repository root, start it like this:
 
 ```sh
 docker run --rm -it --platform linux/arm64 --privileged \
-  -v "$PWD":/theseus -w /theseus rust:1.97.0 bash
+  -v "$PWD":/theseus -w /theseus rust:1.97.0-bookworm bash
 ```
 
 Inside the container, install dependencies and build the fork once:
@@ -125,8 +125,8 @@ virtual time) applies to this VM unchanged.
 
 ## Further reading
 
-- [control-channel.md](../control-channel.md) — the serial transport the
+- [control-channel.md](../../control-channel.md) — the serial transport the
   pivot uses
-- [determinism.md](../determinism.md) — what replays and what does not
-- [terminology.md](../terminology.md) — flattening, pivot, and related
+- [determinism.md](../../determinism.md) — what replays and what does not
+- [terminology.md](../../terminology.md) — flattening, pivot, and related
   terms

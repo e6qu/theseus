@@ -33,7 +33,7 @@ aarch64 Docker container provides it. From the repository root:
 
 ```sh
 docker run --rm -it --platform linux/arm64 --privileged \
-  -v "$PWD":/theseus -w /theseus rust:1.97.0 bash
+  -v "$PWD":/theseus -w /theseus rust:1.97.0-bookworm bash
 apt-get update -qq && apt-get install -y -qq libclang-dev libseccomp-dev
 cd /theseus/firecracker && cargo build -p vmm
 ```
@@ -101,6 +101,6 @@ runs on this channel.
 
 ## Further reading
 
-- [control-channel.md](../control-channel.md) — the full register map and
+- [control-channel.md](../../control-channel.md) — the full register map and
   protocol rounds
-- [terminology.md](../terminology.md) — event, marker, rendezvous
+- [terminology.md](../../terminology.md) — event, marker, rendezvous
