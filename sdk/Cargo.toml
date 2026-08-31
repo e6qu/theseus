@@ -10,9 +10,9 @@ path = "lib.rs"
 
 [features]
 default = []
-std = []
+std = ["slab", "thiserror", "displaydoc"]
 
 [dependencies]
-slab = "0.4.12"
-thiserror = "2.0.18"
-displaydoc = "0.2.6"
+slab = { version = "0.4.12", optional = true }
+thiserror = { version = "2.0.18", optional = true }
+displaydoc = { version = "0.2.6", optional = true }

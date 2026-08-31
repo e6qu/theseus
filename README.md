@@ -28,6 +28,80 @@ Built on a fork of [Firecracker](https://github.com/firecracker-microvm/firecrac
 Verified end to end: 761 `vmm` tests plus crate tests on real KVM, and four
 live boot proofs in `e2e/`.
 
+## What Theseus investigates
+
+Theseus is built for the bugs that only appear when a system is stressed
+in ways you did not plan a test for:
+
+- **Concurrency and race conditions** — interleavings of threads and
+  processes that hand-written tests never schedule.
+- **Replication and consistency bugs** — split-brain, lost writes,
+  divergent replicas after partitions and rejoins. For a key-value store:
+  a committed write that vanishes after a failover. For a consensus
+  system: two leaders elected in the same term.
+- **Exactly-once violations** — a command applied twice when a retry
+  meets a lost acknowledgement (the tutorial's running example), or a
+  message delivered twice by a queue under reconnection.
+- **Crash recovery and durability** — a database that loses its last
+  write-ahead-log records when paused mid-fsync, or recovers to a torn
+  state.
+- **Timeout and election logic** — leader elections, lease expiry,
+  failover, and retry storms under controlled virtual time.
+- **Fault-handling logic** — what your code actually does on packet loss,
+  partitions, node crashes, slow or corrupt storage — not what it does in
+  a healthy environment.
+- **Flaky tests** — failures that appear once and never again; a seed
+  turns them into failures you can rerun every time.
+- **Fault-schedule regressions** — behavior changes under a fixed sweep
+  of drops, partitions, and seeds, compared across runs.
+
+## Container images as test targets
+
+Boot the artifact your CI already builds. Theseus takes a container image
+(`docker save` tar), a Dockerfile (build it, then save it), or a registry
+image (pull it, then save it), flattens the layers into a bootable
+initramfs, injects a static pivot init that wires up the control channel,
+and boots it — no guest driver, no image modification, no Dockerfile
+changes. The image's entrypoint runs unchanged. See
+[docs/tutorials/06-container-images.md](docs/tutorials/06-container-images.md).
+
+## Requirements for the system under test
+
+A system must satisfy the following to be tested with full replay:
+
+1. **Boots under Firecracker.** A kernel image plus an initramfs or
+   rootfs (aarch64 or x86_64). Any Linux workload; bare-metal guests work
+   too.
+2. **Event-driven workload.** The system takes its inputs through the
+   control channel (the Theseus SDK, bare-metal MMIO or the Linux serial
+   transport) rather than wall-clock sleeps or external networks.
+   Behavior you want replayed must follow from events, not host time.
+3. **Deterministic dependencies.** The simulated network backend is used
+   for networked systems; host-fd-backed devices (tap networking,
+   file-backed block storage) are outside deterministic mode. Rate
+   limiters are rejected when virtual time is enabled.
+4. **Optional: virtual time.** For timer-driven logic (timeouts,
+   elections), enable `machine-config.virtual_time` so those decisions
+   replay too.
+
+Seeded entropy is provided by the engine itself (the entropy device and
+the host-side random sources are seeded automatically from the run seed)
+— it is not something you need to configure per system.
+
+## Requirements from the user
+
+- **Package your system** as a Firecracker-bootable image (kernel plus
+  initramfs or rootfs).
+- **Wire inputs through the SDK** — events in, markers out. Bare-metal
+  guests use the MMIO device; Linux workloads use the serial transport.
+- **Emit markers for the outcomes you care about** — one call per
+  observable result. That is the entire instrumentation surface: nothing
+  needs to change in your system to *run* it, only to *judge* it.
+- **Choose seeds and fault schedules** for each run — or let the explorer
+  sweep them for you.
+- **Run on a Linux+KVM host** (on Apple Silicon, a privileged aarch64
+  Docker container works).
+
 ## Repository layout
 
 | Path | What it is |

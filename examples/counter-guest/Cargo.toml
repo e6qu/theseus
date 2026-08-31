@@ -1,0 +1,19 @@
+[package]
+name = "counter-guest"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+# Standalone crate: not part of any workspace (bare-metal target).
+[workspace]
+
+[[bin]]
+name = "counter-guest"
+path = "main.rs"
+
+[dependencies]
+theseus-sdk = { path = "../../sdk" }
+
+[profile.release]
+panic = "abort"
+lto = true
