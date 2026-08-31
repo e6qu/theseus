@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::RateLimiterConfig;
 use crate::VmmError;
 use crate::devices::virtio::device::VirtioDevice;
-use crate::devices::virtio::net::{Net, TapError};
+use crate::devices::virtio::net::{Net, SimNetConfig, TapError};
 use crate::logger::warn;
 use crate::rate_limiter::RateLimiter;
 use crate::utils::net::mac::MacAddr;
@@ -21,7 +21,8 @@ use crate::utils::net::mac::MacAddr;
 pub struct NetworkInterfaceConfig {
     /// ID of the guest network interface.
     pub iface_id: String,
-    /// Host level path for the guest network interface.
+    /// Host level path for the guest network interface. Ignored when `sim` is
+    /// set (the simulated backend has no host interface).
     pub host_dev_name: String,
     /// Guest MAC address.
     pub guest_mac: Option<MacAddr>,
@@ -31,6 +32,10 @@ pub struct NetworkInterfaceConfig {
     pub rx_rate_limiter: Option<RateLimiterConfig>,
     /// Rate Limiter for transmitted packages.
     pub tx_rate_limiter: Option<RateLimiterConfig>,
+    /// Theseus: use the deterministic simulated network backend instead of a
+    /// host tap device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim: Option<SimNetConfig>,
 }
 
 impl From<&Net> for NetworkInterfaceConfig {
@@ -44,6 +49,7 @@ impl From<&Net> for NetworkInterfaceConfig {
             mtu: net.mtu(),
             rx_rate_limiter: rx_rl.into_option(),
             tx_rate_limiter: tx_rl.into_option(),
+            sim: net.sim_config(),
         }
     }
 }
@@ -156,15 +162,26 @@ impl NetBuilder {
             .unwrap_or_default();
 
         // Create and return the Net device
-        crate::devices::virtio::net::Net::new(
-            cfg.iface_id,
-            &cfg.host_dev_name,
-            cfg.guest_mac,
-            rx_rate_limiter,
-            tx_rate_limiter,
-            cfg.mtu,
-        )
-        .map_err(NetworkInterfaceError::CreateNetworkDevice)
+        match cfg.sim {
+            Some(sim_config) => crate::devices::virtio::net::Net::new_with_sim(
+                cfg.iface_id,
+                sim_config,
+                cfg.guest_mac,
+                rx_rate_limiter,
+                tx_rate_limiter,
+                cfg.mtu,
+            )
+            .map_err(NetworkInterfaceError::CreateNetworkDevice),
+            None => crate::devices::virtio::net::Net::new(
+                cfg.iface_id,
+                &cfg.host_dev_name,
+                cfg.guest_mac,
+                rx_rate_limiter,
+                tx_rate_limiter,
+                cfg.mtu,
+            )
+            .map_err(NetworkInterfaceError::CreateNetworkDevice),
+        }
     }
 
     /// Returns a vec with the structures used to configure the net devices.
@@ -198,6 +215,7 @@ mod tests {
             mtu: None,
             rx_rate_limiter: RateLimiterConfig::default().into_option(),
             tx_rate_limiter: RateLimiterConfig::default().into_option(),
+            sim: None,
         }
     }
 
@@ -210,6 +228,7 @@ mod tests {
                 mtu: self.mtu,
                 rx_rate_limiter: None,
                 tx_rate_limiter: None,
+                sim: self.sim,
             }
         }
     }

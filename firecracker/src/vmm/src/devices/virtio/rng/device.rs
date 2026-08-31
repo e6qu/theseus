@@ -5,7 +5,8 @@ use std::io;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use aws_lc_rs::rand;
+use rand_chacha::ChaCha8Rng;
+use rand_chacha::rand_core::{RngCore, SeedableRng};
 use vm_memory::GuestMemoryError;
 use vmm_sys_util::eventfd::EventFd;
 
@@ -26,6 +27,14 @@ use crate::vstate::memory::GuestMemoryMmap;
 
 pub const ENTROPY_DEV_ID: &str = "rng";
 
+/// Seed used when no explicit seed is configured.
+///
+/// Theseus: entropy is deterministic by default — every VM launched without an
+/// explicit seed produces the identical entropy stream, which is exactly what
+/// deterministic replay requires. Deterministic per-seed behavior is the whole
+/// point of this fork; host entropy is never consulted.
+pub const DEFAULT_ENTROPY_SEED: u64 = 0;
+
 /// Maximum number of bytes `handle_one()` will serve per request.
 ///
 /// Overlapping descriptors within a single chain can cause `buffer.len()` to
@@ -40,8 +49,6 @@ pub enum EntropyError {
     EventFd(#[from] io::Error),
     /// Bad guest memory buffer: {0}
     GuestMemory(#[from] GuestMemoryError),
-    /// Could not get random bytes: {0}
-    Random(#[from] aws_lc_rs::error::Unspecified),
     /// Underlying IovDeque error: {0}
     IovDeque(#[from] IovDequeError),
 }
@@ -61,23 +68,34 @@ pub struct Entropy {
     // Device specific fields
     pub(crate) rate_limiter: RateLimiter,
 
+    /// The seed as configured (None means [`DEFAULT_ENTROPY_SEED`] was used).
+    seed: Option<u64>,
+    /// Deterministic entropy source. Serialized wholesale on snapshot so a
+    /// restored device continues the stream at the exact position it left off.
+    rng: ChaCha8Rng,
+
     buffer: IoVecBufferMut,
 }
 
 impl Entropy {
-    pub fn new(rate_limiter: RateLimiter) -> Result<Self, EntropyError> {
+    pub fn new(rate_limiter: RateLimiter, seed: Option<u64>) -> Result<Self, EntropyError> {
         let queues = vec![Queue::new(FIRECRACKER_MAX_QUEUE_SIZE); RNG_NUM_QUEUES];
-        Self::new_with_queues(queues, rate_limiter)
+        Self::new_with_queues(queues, rate_limiter, seed, None)
     }
 
     pub fn new_with_queues(
         queues: Vec<Queue>,
         rate_limiter: RateLimiter,
+        seed: Option<u64>,
+        rng_state: Option<ChaCha8Rng>,
     ) -> Result<Self, EntropyError> {
         let activate_event = EventFd::new(libc::EFD_NONBLOCK)?;
         let queue_events = (0..RNG_NUM_QUEUES)
             .map(|_| EventFd::new(libc::EFD_NONBLOCK))
             .collect::<Result<Vec<EventFd>, io::Error>>()?;
+
+        let rng = rng_state
+            .unwrap_or_else(|| ChaCha8Rng::seed_from_u64(seed.unwrap_or(DEFAULT_ENTROPY_SEED)));
 
         Ok(Self {
             avail_features: 1 << VIRTIO_F_VERSION_1,
@@ -87,6 +105,8 @@ impl Entropy {
             queues,
             queue_events,
             rate_limiter,
+            seed,
+            rng,
             buffer: IoVecBufferMut::new()?,
         })
     }
@@ -127,9 +147,9 @@ impl Entropy {
         let len = std::cmp::min(self.buffer.len(), MAX_ENTROPY_BYTES);
 
         let mut rand_bytes = vec![0; len as usize];
-        rand::fill(&mut rand_bytes).inspect_err(|_| {
-            METRICS.host_rng_fails.inc();
-        })?;
+        // Deterministic: bytes come from the seeded ChaCha stream, never from
+        // host entropy. Infallible, unlike the previous `aws_lc_rs` fill.
+        self.rng.fill_bytes(&mut rand_bytes);
 
         // It is ok to unwrap here. We are writing `len` bytes at offset 0.
         self.buffer.write_all_volatile_at(&rand_bytes, 0).unwrap();
@@ -237,6 +257,31 @@ impl Entropy {
 
     pub fn rate_limiter(&self) -> &RateLimiter {
         &self.rate_limiter
+    }
+
+    /// The seed as configured at build time (`None` = [`DEFAULT_ENTROPY_SEED`]).
+    pub fn seed(&self) -> Option<u64> {
+        self.seed
+    }
+
+    /// Current RNG stream state, for snapshotting.
+    pub(crate) fn rng_state(&self) -> &ChaCha8Rng {
+        &self.rng
+    }
+
+    /// Re-seed the entropy stream. Used by timeline branching: a child
+    /// restored from a branch point inherits the parent's stream state and
+    /// must be re-seeded *before the guest reads any entropy*, so that the
+    /// child diverges from the parent only by seed.
+    pub fn reseed(&mut self, seed: u64) {
+        self.seed = Some(seed);
+        self.rng = ChaCha8Rng::seed_from_u64(seed);
+    }
+
+    /// Mutable access to the stream, for tests that need to advance it.
+    #[cfg(test)]
+    pub(crate) fn rng_state_mut(&mut self) -> &mut ChaCha8Rng {
+        &mut self.rng
     }
 
     pub(crate) fn set_avail_features(&mut self, features: u64) {
@@ -353,7 +398,48 @@ mod tests {
     }
 
     fn default_entropy() -> Entropy {
-        Entropy::new(RateLimiter::default()).unwrap()
+        Entropy::new(RateLimiter::default(), None).unwrap()
+    }
+
+    #[test]
+    fn test_deterministic_stream() {
+        use crate::vstate::memory::GuestAddress;
+        use vm_memory::Bytes;
+
+        // Same seed -> identical byte streams across independent devices.
+        let mem = create_virtio_mem();
+
+        let gen_bytes = |seed: Option<u64>| -> Vec<u8> {
+            let mut th = VirtioTestHelper::<Entropy>::new(
+                &mem,
+                Entropy::new(RateLimiter::default(), seed).unwrap(),
+            );
+            th.activate_device(&mem);
+            // (descriptor index, len, flags); the helper picks the target address.
+            th.add_desc_chain(RNG_QUEUE, 0, &[(0, 64, VIRTQ_DESC_F_WRITE)]);
+            let data_addr = th.data_address();
+            let mut dev = th.device();
+            let desc = dev.queues_mut()[RNG_QUEUE].pop().unwrap().unwrap();
+            // SAFETY: This descriptor chain is only loaded into one buffer
+            dev.buffer = unsafe { IoVecBufferMut::from_descriptor_chain(&mem, desc).unwrap() };
+            assert_eq!(dev.handle_one().unwrap(), 64);
+            let mut out = vec![0u8; 64];
+            mem.read_slice(&mut out, GuestAddress(data_addr)).unwrap();
+            out
+        };
+
+        let a1 = gen_bytes(Some(42));
+        let a2 = gen_bytes(Some(42));
+        let b = gen_bytes(Some(43));
+        let dflt = gen_bytes(None);
+
+        assert_eq!(a1, a2, "same seed must produce identical entropy");
+        assert_ne!(a1, b, "different seeds must produce different entropy");
+        assert_eq!(dflt, gen_bytes(None), "default seed must be deterministic");
+        assert_ne!(
+            dflt, a1,
+            "default seed must differ from an explicit non-default seed"
+        );
     }
 
     #[test]
@@ -514,7 +600,7 @@ mod tests {
     fn test_bandwidth_rate_limiter() {
         let mem = create_virtio_mem();
         // Rate Limiter with 4000 bytes / sec allowance and no initial burst allowance
-        let device = Entropy::new(RateLimiter::new(4000, 0, 1000, 0, 0, 0)).unwrap();
+        let device = Entropy::new(RateLimiter::new(4000, 0, 1000, 0, 0, 0), None).unwrap();
         let mut th = VirtioTestHelper::<Entropy>::new(&mem, device);
 
         th.activate_device(&mem);
@@ -562,7 +648,7 @@ mod tests {
         let mem = create_virtio_mem();
         // Rate Limiter with unlimited bandwidth and allowance for 1 operation every 100 msec,
         // (10 ops/sec), without initial burst.
-        let device = Entropy::new(RateLimiter::new(0, 0, 0, 1, 0, 100)).unwrap();
+        let device = Entropy::new(RateLimiter::new(0, 0, 0, 1, 0, 100), None).unwrap();
         let mut th = VirtioTestHelper::<Entropy>::new(&mem, device);
 
         th.activate_device(&mem);

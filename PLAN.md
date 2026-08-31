@@ -1,0 +1,306 @@
+# Theseus: Deterministic Simulation Testing on a Firecracker Fork
+
+**Goal:** fork Firecracker and turn it into a deterministic execution environment for
+whole-system testing — virtual time, seeded entropy, simulated net/disk with fault
+injection, a guest↔host control channel, and cheap snapshot branching (the
+"multiverse"). Inspired by Antithesis's Determinator (bhyve fork), but on Linux/KVM
+with a Rust codebase.
+
+**Baseline:** `firecracker/` (Apache-2.0, commit `f3f65a3`). Analysis below is from
+code inspection of that commit.
+
+---
+
+## 1. Codebase map (what we cloned)
+
+| Path | Role | Relevance to us |
+|---|---|---|
+| `src/firecracker` | API server binary (HTTP over unix socket) + main loop | Where new config knobs (seed, fault schedule) enter |
+| `src/jailer` | Isolation: chroot, cgroups, namespaces (excluded from default build) | Keep as-is; orthogonal |
+| `src/vmm/src/vstate/vcpu.rs` | vCPU thread; `run()` → `run_emulation()` → `handle_kvm_exit()` | **Exit-handling hub.** MMIO read/write, FailEntry, InternalError, SystemEvent handled here |
+| `src/vmm/src/arch/x86_64/vcpu.rs` | Arch exits (`IoIn`/`IoOut` → PIO bus); TSC handling | TSC work is **snapshot-scaling only** (`get/set_tsc_khz`, `KVM_CLOCK_REALTIME` on restore). Guest time today = host time |
+| `src/vmm/src/vstate/vm.rs` | VM fd, guest memory registration, **userfaultfd** hooks (used for lazy snapshot restore) | uffd machinery reusable for CoW branching |
+| `src/vmm/src/vstate/memory.rs` | `GuestMemoryMmap` wrappers | unsafe hotspot; our new memory tricks live here |
+| `src/vmm/src/devices/virtio/` | net (host **tap**), block (host file + **io_uring**), vsock (unix socket), **rng** (`rand::fill` → host getrandom), balloon, mem, pmem | Devices are the fault-injection surface |
+| `src/vmm/src/devices/legacy/` | serial, i8042, rtc_pl031 (aarch64) | PIO bus pattern to copy for our control device |
+| `src/vmm/src/devices/pseudo/` | placeholder/pseudo devices | Template for a minimal custom device |
+| `src/vmm/src/device_manager/` | attach/restore, MMIO + PIO buses | Device insertion point |
+| `src/vmm/src/persist.rs` + `snapshot/` | `create_snapshot` / `load_snapshot`, versioned `MicrovmState`, **diff snapshots via KVM dirty bitmap** | Branching foundation — but serializes to files; no in-memory fork |
+| `src/vmm/src/dumbo/` | Firecracker's own TCP stack (used by MMDS) | In-tree reference for packet handling in a simulated NIC |
+| `src/vmm/src/gdb/` | gdbstub (feature-gated) | Debugging synergy later |
+
+**`unsafe` inventory:** 479 blocks. Hotspots: `virtio/iovec.rs` (30),
+`virtio/vhost_user.rs` (24), `virtio/queue.rs` (19), `io_uring/*` (~32),
+`vstate/memory.rs` (14), `virtio/net/*` (~23), `cpuid` (~17). Pattern: guest-memory
+access + kernel FFI + io_uring. Workspace lint `undocumented_unsafe_blocks = "warn"`
+is already enabled — keep that discipline.
+
+---
+
+## 2. Determinism insertion points (the fork's diff surface)
+
+Ordered by build sequence. Items 2.1–2.4 are easy wins; 2.5 (virtual time) is the
+design's critical piece — settled on Track B′ (below); 2.6–2.7 are the payoff.
+
+### 2.1 Seeded entropy — `devices/virtio/rng/device.rs`
+Today: `rand::fill()` (host `getrandom`) at lines ~129–135. **Replace with a seeded
+ChaCha RNG** whose seed arrives via the control channel / API. Trivial, safe Rust.
+Also audit `cpu_config/x86_64/cpuid` — guest `RDRAND`/`RDSEED` bypass virtio-rng;
+KVM userspace can't trap them, so v1 hides those CPUID bits (guest falls back to
+virtio-rng) and documents the limitation.
+
+### 2.1b Host-side entropy leaks — `detrng.rs` (found during Phase 5 sweep)
+Upstream draws guest-visible randomness from host entropy in more places than
+virtio-rng: aarch64 FDT `rng-seed`, vmgenid generation IDs, MMDS token keys,
+dumbo TCP ISNs. All now route through `detrng` — one seeded ChaCha stream per
+process, initialized from the run seed at VM build (boot and snapshot-restore
+paths). Also de-randomized the test harness: descriptor-gap injection and
+frame/payload generators in `test_utils`/`tap`/`block` tests and the APIC
+interrupt test used unseeded `vmm_sys_util::rand` — now deterministic patterns.
+Known scope note: `detrng` is per-process; deterministic under one-timeline-
+per-process (our target layout). Per-VM scoping would be needed for parallel
+in-process timelines.
+
+### 2.2 Control channel (our `VMCALL` equivalent)
+- **Custom MMIO device** (`devices/pseudo/theseus.rs`): magic ("THES"),
+  status, host→guest event FIFO, and guest→host command/log registers. No
+  IRQ — the guest polls, the orchestrator drives host-side.
+  **Simplified during implementation: MMIO on both arches** (one code path,
+  boot-timer precedent) at a fixed platform slot (`THESEUS_MEM_START` =
+  `0x40003000` on aarch64; after boot-timer slot on x86_64; the dynamic
+  virtio MMIO base moved one slot up on both). Always attached at build.
+  Not snapshotted (transient FIFO; orchestrator re-drives per branch).
+  Verified through the host-side MMIO bus on real KVM
+  (`device_manager::tests::test_theseus_mmio_roundtrip`).
+Every control-channel read is a **branch point** in the timeline tree — log them.
+
+### 2.3 Simulated network — `devices/virtio/net/`
+Today the TX/RX path terminates in a host tap fd (`tap.rs`). **Swap the backend**:
+keep the virtio frontend (guest sees a normal NIC), replace tap with an in-process
+deterministic switch: delivery order, latency, partitions, packet loss driven by the
+seeded RNG + fault schedule. All safe Rust on the data path except existing
+iovec/queue plumbing. `dumbo/` is the in-tree packet-handling reference.
+
+### 2.4 Simulated block device — `devices/virtio/block/`
+Today: host file + io_uring (nondeterministic completion timing). v1: synchronous
+in-process engine behind the virtio frontend with injected faults (latency, errors,
+torn writes). Skip io_uring in the sim path; determinism beats IOPS here.
+
+### 2.5 Virtual time — Track B′: tick-stepped clock, pure userspace
+Constraint found in analysis: **KVM's userspace API cannot trap `RDTSC`** (no VMX
+RDTSC-exiting knob), and the kvmclock pvclock page is maintained by KVM from the
+host clock. Firecracker today only *scales* TSC frequency on snapshot restore
+(`KVM_SET_TSC_KHZ`) and optionally sets `KVM_CLOCK_REALTIME` via `KVM_SET_CLOCK` —
+guest time = host time. Antithesis could virtualize time fully only because they own
+the whole hypervisor. So our design is:
+
+**Run the vCPU in bounded quanta. On each quantum boundary, advance the guest
+clock by a fixed simulated tick.** Key refinement made during implementation:
+quanta are **exit-counted, not host-timed** — a quantum ends after N
+guest-visible exits, counted in the vCPU thread. A host-time ticker would make
+tick boundaries nondeterministic relative to guest execution (host scheduling
+jitter); exit counting makes tick interleaving identical on every replay,
+since every guest-visible event flows through exits we already handle. On each
+boundary (between `KVM_RUN` calls — the only race-free moment), the vCPU
+thread advances `VirtualClock` and applies it via the uniform
+`KvmVcpu::apply_virtual_time(now_ns)`:
+- **x86_64**: write TSC MSR (`set_tsc`); kvmclock anchored once at boot via
+  `KvmVm::set_virtual_clock_ns(0)`.
+- **aarch64**: write `KVM_REG_ARM_TIMER_CNT` via `KVM_SET_ONE_REG`
+  (re-anchors the guest CNTVCT offset). Hard-won UAPI notes, from kernel
+  source: the per-vcpu `KVM_ARM_VCPU_TIMER_CTRL` group only handles
+  TIMER_IRQ_* attrs (TIMER_OFF → ENXIO); the VM-scoped
+  `KVM_VM_SET_COUNTER_OFFSET` EBUSYs once vCPUs run; and the write must happen
+  after `KVM_ARM_VCPU_INIT`, so the aarch64 anchor is applied by the vCPU
+  thread on first run (`vclock_anchored`).
+Deterministic at tick granularity; the counter free-runs only *within* a
+quantum (guest counter reads don't exit — accepted, documented leak; measured
+on metal as ≤ a few ticks of jitter from host preemption). Zero kernel work;
+no extra threads; no cross-thread `unsafe`. **Proven on aarch64 metal:**
+`test_guest_virtual_time_is_reproducible` boots a bare-metal guest that prints
+CNTVCT — anchored near zero and bounded-close across runs with virtual time
+on, divergent with it off. Rate limiters (host timerfds) rejected in
+deterministic mode.
+
+**Snapshot interaction (B′ + branching compose cleanly):** the virtual clock is VM
+state → save `virtual_now` in `MicrovmState`; on restore `KVM_SET_CLOCK` **without**
+`KVM_CLOCK_REALTIME` (that flag re-anchors to host wall time — the opposite of what
+we want); keep TSC consistent with kvmclock (TSC MSR restore ordering +
+`fix_zero_tsc_deadline_msr` already exist); keep `tsc_khz` constant across restores.
+Synergy: B′'s quanta are deterministic pause points — exactly where snapshots/forks
+should happen; branches forked from one snapshot inherit identical clock state and
+diverge only via seed.
+
+**Validation:** during Phases 1–2, log host-TSC delta per virtual tick and measure
+whether time-nondeterminism actually correlates with replay divergence. Escalate
+only if divergence persists in practice.
+
+**Rejected / parked alternatives:**
+- *Host time (do nothing)* — kills replay for time-sensitive logic (timeouts,
+  leader election); Phase 0 placeholder only.
+- *Guest-cooperative clock (SDK/faketime)* — leaks for uncooperative code; kept as
+  an optional complement for clock-reading app code, not as the mechanism.
+- *Out-of-tree KVM patch (RDTSC exiting, pinned pvclock)* — Antithesis-grade,
+  instruction-level fidelity, but months of kernel engineering; the B′ quanta
+  machinery is exactly what it would plug into, so the option stays open.
+- *Linux time namespaces (`CLONE_NEWTIME`)* — dead end: fixed offsets for
+  MONOTONIC/BOOTTIME only, designed for CRIU on host processes; invisible to KVM
+  guests (guest time comes from TSC + kvmclock, outside any namespace).
+
+### 2.6 Branching / multiverse — `branch.rs`, `persist.rs`
+**Implemented:** pause → `BranchPoint::capture` (MicrovmState bytes + guest RAM
+dump to memfd) → children restore through the existing snapshot path with the
+memfd as `/proc/self/fd/<n>`. Discovered during implementation: the snapshot-file
+memory path already maps `MAP_PRIVATE`, so **children get kernel copy-on-write
+for free** — no uffd write-protect layer needed (sibling isolation proven by
+`test_branch_children_memory_is_cow`). The only eager cost is one RAM dump per
+branch point, not per child; a `clone`-style shared-dump optimization is future
+work if profiling demands it. No new `unsafe` was needed after all.
+
+### 2.7 Orchestrator — `orchestrator/` (in the vmm crate)
+Tree + spawn + live explore loop, all proven on aarch64 KVM (see Phase 5).
+**Parallel fan-out landed**: children of a node run on scoped threads (one
+timeline per thread), results joined in spawn order so the tree stays
+deterministic. Finding: `event_manager::EventManager` is not `Send`
+(subscriber trait objects aren't), so capture is headless — vCPU threads
+handle MMIO synchronously and pause/probe/capture are `Vmm` methods.
+Constraint: parallel timelines must be free of host-fd-backed devices (tap,
+file-backed block); sim backends and the MMIO door are pump-free.
+**Guest SDK landed**: `src/theseus-sdk` (no_std, shared by host device and
+guest code — single source of truth for registers/commands/markers), and a
+Rust bare-metal guest (`mock_resources/theseus_guest_rs/`, built by its
+`build.sh` into a flat arm64 Image) whose event handling branches on input
+bytes — so input schedules drive divergent marker streams (proven in
+`test_explore_with_rust_guest`). **True code coverage landed**:
+`coverage.rs` single-steps the vCPU (`KVM_GUESTDBG_SINGLESTEP`) collecting
+executed guest PCs — zero guest instrumentation; MMIO instructions are
+counted and skipped (aarch64 fixed width; x86_64 errors honestly —
+variable-length skip unimplemented). Proven on metal: replay-identical
+coverage sets, divergent guests diverge. It is the ground-truth signal for
+small workloads and the validation reference for a future fast
+instrumentor. Remaining: the fast instrumentor (coverage.rs is its
+  validation reference).
+  **Linux-guest SDK transport landed**: `theseus_sdk::linux::TtyChannel` —
+  the control channel over the serial console (`THES:M:xx` markers out,
+  `THES:E:xx` events in) — no guest driver, works with stock kernels. e2e
+  proven with `e2e/agent` (static musl init binary): handshake-then-events
+  (input before guest UART init is dropped — the ready-marker handshake is
+  the protocol fix, not a workaround).
+
+---
+
+## 3. Roadmap
+
+- **Phase 0 — Baseline.** Linux + KVM host (bare metal; macOS dev machine can only
+  `cargo check --target x86_64-unknown-linux-gnu`). Build Firecracker, boot a guest,
+  run its test suite. Set up remote metal or a KVM-capable VM for the dev loop.
+- **Phase 1 — Door + seed.** Seeded virtio-rng (2.1), PIO control device (2.2a),
+  event-log skeleton. Proves guest↔host channel end-to-end.
+  **Status: DONE — including the first on-metal e2e proof.** `e2e/run.sh`
+  boots a real microVM (aarch64 KVM in the dev container, CI kernel +
+  custom initramfs) three times: seed 42 twice, seed 1337 once.
+  **PASS: `/dev/hwrng` is byte-identical across same-seed boots and differs
+  across seeds.** Honest finding recorded: the guest kernel's CSPRNG
+  (`/dev/urandom`) still diverges on same-seed boots because it mixes
+  timing-jitter entropy — a guest-internal leak the hypervisor cannot close
+  without guest cooperation (mirrors Antithesis's SDK model).   **Status: DONE — control channel now works on aarch64 too.** The device
+  moved from x86-only PIO to **MMIO on both architectures**
+  (`devices/pseudo/theseus.rs`, fixed platform slot, verified through the
+  MMIO bus on real KVM **and** by a live bare-metal guest — see Phase 4).
+  MAGIC register handles per-byte reads at any window offset (fixed during
+  guest bring-up). Rate limiters are host-timerfd based — a determinism
+  leak: `validate_deterministic_config` in builder.rs rejects rate limiters
+  when virtual time is enabled. Fixed the known upstream flake:
+  `test_token_bucket_auto_replenish_one` is now deterministic via the new
+  `TokenBucket::auto_replenish_at(now)` seam + synthetic clock (also the
+  future hook for virtual-time-driven replenishment, if rate limiters are
+  ever allowed in deterministic mode).
+- **Phase 2 — Simulated net.** Drop tap, deterministic switch + fault schedule (2.3).
+  First "interesting" faults (partition, delay).
+  **Status: DONE (device level).** `NetBackend::{Tap, Sim}` — the virtio-net
+  frontend is unchanged, the backend swaps: `PUT /network-interfaces` accepts a
+  `sim` object (`seed`, `loopback`, `drop_ppm`, `partitioned`). Sim backend:
+  loopback FIFO, total-partition toggle, seeded per-frame drops. RX pumped
+  synchronously after TX (no host fd); tap event registration skipped for sim.
+  Snapshot carries the sim config; in-flight frames intentionally dropped
+  (orchestrator re-drives traffic per branch). Frame *delay* deferred to
+  Phase 3 (needs virtual time). Multi-VM interconnection waits for the
+  orchestrator (Phase 5). Unit-tested on x86_64 via qemu-user; upstream
+  net-suite failures in container are tap/KVM-absent only (verified vs.
+  baseline).
+- **Phase 3 — Virtual time (B′).** Bounded quanta + tick-stepped kvmclock/TSC (2.5).
+  Validate replay using the tick-delta instrumentation; escalate to the KVM patch
+  only if measured divergence demands it.
+  **Status: PLUMBED END-TO-END (unit-verified).** `vstate/vclock.rs`
+  (`VirtualClock`, tested); KVM wrappers (`KvmVm::set_virtual_clock_ns`,
+  `KvmVcpu::set_tsc`); **exit-counted quanta** in the vCPU run loop
+  (`maybe_tick` on every handled exit — no ticker thread; see 2.5 for why);
+  config: `machine-config.virtual_time = {tick_ns, exits_per_tick}` (default
+  1ms / 1024 exits); anchoring at VM build; bookkeeping saved/restored in
+  `VcpuState.vclock`/`vclock_exits` (guest-visible clock rides existing TSC
+  MSR + kvmclock snapshot paths). Remaining (needs `/dev/kvm`): boot a guest
+  and measure replay divergence; validate TSC-write/kvmclock consistency and
+  TSC-deadline timer behavior on metal; disable/quantize host timerfds (rate
+  limiters) in deterministic mode.
+- **Phase 4 — First branch.** memfd snapshot + uffd CoW: one VM forks into 2
+  timelines with different seeds (2.6). The minimal multiverse.
+  **Status: PROVEN ON METAL (aarch64 KVM).** `branch.rs` `BranchPoint::capture`
+  + `orchestrator::spawn_child`, proven by a live test
+  (`orchestrator::spawn::tests::test_branch_children_diverge_only_by_seed`):
+  boot parent (entropy seed 42) → pause → capture (MicrovmState + memfd RAM)
+  → spawn two children → assert each child's entropy stream equals a fresh
+  ChaCha stream of its derived child seed (and they differ from each other)
+  → both resume and run cleanly. Eager RAM copy per branch; uffd/MAP_PRIVATE
+  CoW remains the optimization.
+- **Phase 5 — Orchestrator.** N-core fleet, branch tree, coverage-guided search (2.7).
+  **Status: LIVE LOOP PROVEN ON METAL (aarch64 KVM), WITH A REACTIVE GUEST.**
+  `orchestrator/explorer.rs`: `Explorer::explore` — boot root (seeded
+  entropy), run, push control-channel events, pause, capture branch point
+  with an **entropy probe** (per-node replay fingerprint), spawn children,
+  recurse DFS. `test_explore_is_deterministic` runs the whole loop twice and
+  asserts identical tree shape, seeds, and probes at every node, and that
+  each child's probe equals a fresh ChaCha stream of its own seed.
+  `test_explore_with_reactive_guest` drives the bare-metal Theseus guest
+  through a rendezvous protocol (guest: boot marker → setup-complete →
+  event-echo loop with 0x00 terminator + 0xFF done marker per round, looping
+  forever so branches resume into the wait state): root markers =
+  [0x42, events, 0xFF], child markers = [events, suffix, 0xFF], fully
+  deterministic across runs.   Protocol lesson encoded: branch suffixes start
+  at 1 because 0x00 is the terminator. Fault injection as a second branch
+  axis: `FaultStrategy` + `spawn_child` overrides sim-net config in the
+  captured state (proven: per-child drop_ppm/partition, deterministic).
+  Dirty-page fingerprints (`Vmm::dirty_page_count`, KVM dirty bitmap) are a
+  third replay fingerprint — memory-footprint coverage, proven deterministic
+  across runs.   Novelty-guided expansion order
+  (marker novelty, then seed) implemented. **True code coverage landed**:
+  `coverage.rs` single-steps the vCPU (`KVM_GUESTDBG_SINGLESTEP`) collecting
+  executed guest PCs — zero guest instrumentation; MMIO instructions are
+  counted and skipped (aarch64 fixed width; x86_64 errors honestly —
+  variable-length skip unimplemented). Proven on metal: replay-identical
+  coverage sets, divergent guests diverge. It is the ground-truth signal for
+  small workloads and the validation reference for a future fast
+  instrumentor. Remaining: a guest SDK crate wrapping the control-channel
+  protocol for real (Linux) workloads, parallel fan-out (one process per
+  timeline).
+
+## 4. Working agreements
+
+- **License:** Apache-2.0 — fork freely; keep `NOTICE`/attribution; track upstream
+  as a remote for security fixes (shallow clone now → full fetch when hacking starts).
+- **Unsafe policy:** reuse existing iovec/queue/memory abstractions wherever
+  possible; new `unsafe` only where measured (guest-memory fast path, uffd CoW,
+  io_uring); every block documented (lint already enforces this).
+- **Dev platform reality:** **KVM is available**: Docker Desktop on Apple
+  Silicon exposes `/dev/kvm` (aarch64) in `--privileged` containers — the full
+  vmm suite (786 tests incl. tap/network/KVM) runs green natively. x86_64-only
+  paths (control channel, virtual time) cross-compile and run unit tests under
+  qemu-user; their KVM ioctls still need x86 metal.
+- **Scope discipline:** VMM changes minimal; exploration logic in the orchestrator
+  crate; no QEMU-style feature creep (Firecracker's charter is our ally).
+
+## 5. Key references
+
+- Antithesis deterministic-hypervisor design (bhyve fork, virtual clock via PMC,
+  VMCALL channel): antithesis.com/blog/deterministic_hypervisor/
+- dhyve — open-source deterministic bhyve fork: github.com/pgraug/dhyve-src
+- rust-vmm crates (if we ever need pieces Firecracker doesn't expose)

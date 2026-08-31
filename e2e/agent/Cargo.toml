@@ -1,0 +1,19 @@
+[package]
+name = "theseus-agent"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+# Standalone crate (built for aarch64-unknown-linux-musl, static).
+[workspace]
+
+[[bin]]
+name = "theseus-agent"
+path = "src/main.rs"
+
+[dependencies]
+theseus-sdk = { path = "../../firecracker/src/theseus-sdk", features = ["std"] }
+libc = "0.2"
+
+[profile.release]
+panic = "abort"

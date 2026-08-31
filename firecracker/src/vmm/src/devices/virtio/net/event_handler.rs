@@ -5,7 +5,7 @@ use event_manager::{EventOps, Events, MutEventSubscriber};
 use vmm_sys_util::epoll::EventSet;
 
 use crate::devices::virtio::device::VirtioDevice;
-use crate::devices::virtio::net::device::Net;
+use crate::devices::virtio::net::device::{Net, NetBackend};
 use crate::devices::virtio::net::{RX_INDEX, TX_INDEX};
 use crate::logger::{IncMetric, error, warn};
 
@@ -46,11 +46,15 @@ impl Net {
         )) {
             error!("Failed to register tx queue event: {}", err);
         }
-        if let Err(err) = ops.add(Events::with_data(
-            &self.tap,
-            Self::PROCESS_TAP_RX,
-            EventSet::IN | EventSet::EDGE_TRIGGERED,
-        )) {
+        // The simulated backend has no host fd: RX is pumped synchronously
+        // after TX processing instead of via epoll.
+        if let NetBackend::Tap(tap) = &self.backend
+            && let Err(err) = ops.add(Events::with_data(
+                tap,
+                Self::PROCESS_TAP_RX,
+                EventSet::IN | EventSet::EDGE_TRIGGERED,
+            ))
+        {
             error!("Failed to register tap event: {}", err);
         }
     }

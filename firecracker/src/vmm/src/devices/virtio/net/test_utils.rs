@@ -52,7 +52,7 @@ pub fn default_net() -> Net {
         MmdsNetworkStack::default_ipv4_addr(),
         Arc::new(Mutex::new(Mmds::default())),
     );
-    enable(&net.tap);
+    enable(net.tap().unwrap());
 
     net
 }
@@ -72,7 +72,7 @@ pub fn default_net_no_mmds() -> Net {
         None,
     )
     .unwrap();
-    enable(&net.tap);
+    enable(net.tap().unwrap());
 
     net
 }
@@ -254,13 +254,11 @@ pub fn enable(tap: &Tap) {
 
 #[cfg(test)]
 pub(crate) fn inject_tap_tx_frame(net: &Net, len: usize) -> Vec<u8> {
-    use std::os::unix::ffi::OsStrExt;
 
     assert!(len >= vnet_hdr_len());
-    let tap_traffic_simulator = TapTrafficSimulator::new(if_index(&net.tap));
-    let mut frame = vmm_sys_util::rand::rand_alphanumerics(len - vnet_hdr_len())
-        .as_bytes()
-        .to_vec();
+    let tap_traffic_simulator = TapTrafficSimulator::new(if_index(net.tap().unwrap()));
+    // Deterministic frame content (was: unseeded rand_alphanumerics).
+        let mut frame = (0..len - vnet_hdr_len()).map(|i| b'a' + (i % 26) as u8).collect::<Vec<u8>>();
     tap_traffic_simulator.push_tx_packet(&frame);
     frame.splice(0..0, vec![b'\0'; vnet_hdr_len()]);
 
@@ -287,7 +285,6 @@ pub fn assign_queues(net: &mut Net, rxq: Queue, txq: Queue) {
 #[allow(clippy::cast_possible_truncation)]
 #[allow(clippy::undocumented_unsafe_blocks)]
 pub mod test {
-    use std::os::unix::ffi::OsStrExt;
     use std::sync::{Arc, Mutex, MutexGuard};
     use std::{cmp, fmt};
 
@@ -411,9 +408,10 @@ pub mod test {
                 }
 
                 addr += u64::from(len);
-                // Add small random gaps between descriptor addresses in order to make sure we
-                // don't blindly read contiguous memory.
-                addr += u64::from(vmm_sys_util::rand::xor_pseudo_rng_u32()) % 10;
+                // Add small deterministic gaps between descriptor addresses in order to make sure we
+                // don't blindly read contiguous memory. (Was: unseeded random gaps —
+                // nondeterministic test layout.)
+                addr += (i as u64 * 7 + 1) % 10;
             }
 
             // Mark the chain as available.
@@ -486,9 +484,8 @@ pub mod test {
         // Generates a frame of `frame_len` and writes it to the provided descriptor chain.
         // Doesn't generate an error if the descriptor chain is longer than `frame_len`.
         pub fn write_tx_frame(&self, desc_list: &[(u16, u32, u16)], frame_len: usize) -> Vec<u8> {
-            let mut frame = vmm_sys_util::rand::rand_alphanumerics(frame_len)
-                .as_bytes()
-                .to_vec();
+            // Deterministic frame content (was: unseeded rand_alphanumerics).
+            let mut frame = (0..frame_len).map(|i| b'a' + (i % 26) as u8).collect::<Vec<u8>>();
             let prefix_len = vnet_hdr_len() + ETH_HLEN as usize;
             frame.splice(..prefix_len, vec![0; prefix_len]);
 

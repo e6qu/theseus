@@ -120,8 +120,16 @@ impl TokenBucket {
     // Replenishes token bucket based on elapsed time. Should only be called internally by `Self`.
     #[allow(clippy::cast_possible_truncation)]
     fn auto_replenish(&mut self) {
-        // Compute time passed since last refill/update.
         let now = Instant::now();
+        self.auto_replenish_at(now);
+    }
+
+    /// Replenish as of a specific instant. The wall-clock wrapper
+    /// (`auto_replenish`) is the production path; this seam exists so tests
+    /// are deterministic (and so a virtual-time driver can replenish on
+    /// simulated time — Theseus).
+    fn auto_replenish_at(&mut self, now: Instant) {
+        // Compute time passed since last refill/update.
         let time_delta = (now - self.last_update).as_nanos();
 
         if time_delta >= u128::from(self.refill_time * NANOSEC_IN_ONE_MILLISEC) {
@@ -816,30 +824,28 @@ pub(crate) mod tests {
         tb.reduce(SIZE);
         assert_eq!(tb.budget(), 0);
 
-        // Auto-replenishing after 10 milliseconds should not yield any tokens
-        thread::sleep(Duration::from_millis(10));
-        tb.auto_replenish();
+        // Drive the bucket with a synthetic clock: the previous wall-clock
+        // version of this test flaked under host load (sleeps overshoot).
+        let t0 = *tb.get_last_update();
+
+        // Auto-replenishing 10 milliseconds in should not yield any tokens
+        tb.auto_replenish_at(t0 + Duration::from_millis(10));
         assert_eq!(tb.budget(), 0);
 
-        // Neither after 20.
-        thread::sleep(Duration::from_millis(10));
-        tb.auto_replenish();
+        // Neither at 20.
+        tb.auto_replenish_at(t0 + Duration::from_millis(20));
         assert_eq!(tb.budget(), 0);
 
-        // We should get 1 token after 100 millis
-        thread::sleep(Duration::from_millis(80));
-        tb.auto_replenish();
+        // We should get 1 token at 100 millis
+        tb.auto_replenish_at(t0 + Duration::from_millis(100));
         assert_eq!(tb.budget(), 1);
 
-        // So, 5 after 500 millis
-        thread::sleep(Duration::from_millis(400));
-        tb.auto_replenish();
+        // So, 5 at 500 millis
+        tb.auto_replenish_at(t0 + Duration::from_millis(500));
         assert_eq!(tb.budget(), 5);
 
-        // And be fully replenished after 1 second.
-        // Wait more here to make sure we do not overshoot
-        thread::sleep(Duration::from_millis(1000));
-        tb.auto_replenish();
+        // And be fully replenished past 1 second.
+        tb.auto_replenish_at(t0 + Duration::from_millis(2000));
         assert_eq!(tb.budget(), 10);
     }
 

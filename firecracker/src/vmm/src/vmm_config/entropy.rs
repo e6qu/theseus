@@ -17,6 +17,13 @@ use crate::rate_limiter::RateLimiter;
 pub struct EntropyDeviceConfig {
     /// Configuration for RateLimiter of Entropy device
     pub rate_limiter: Option<RateLimiterConfig>,
+    /// Seed for the deterministic entropy source.
+    ///
+    /// Theseus: if omitted, the default seed (0) is used, i.e. entropy is
+    /// deterministic by default. Two VMs launched with the same seed observe
+    /// identical entropy streams.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 }
 
 impl From<&Entropy> for EntropyDeviceConfig {
@@ -24,6 +31,7 @@ impl From<&Entropy> for EntropyDeviceConfig {
         let rate_limiter: RateLimiterConfig = dev.rate_limiter().into();
         EntropyDeviceConfig {
             rate_limiter: rate_limiter.into_option(),
+            seed: dev.seed(),
         }
     }
 }
@@ -55,7 +63,7 @@ impl EntropyDeviceBuilder {
             .rate_limiter
             .map(RateLimiter::from)
             .unwrap_or_default();
-        let dev = Arc::new(Mutex::new(Entropy::new(rate_limiter)?));
+        let dev = Arc::new(Mutex::new(Entropy::new(rate_limiter, config.seed)?));
         self.0 = Some(dev.clone());
 
         Ok(dev)
@@ -104,7 +112,7 @@ mod tests {
     #[test]
     fn test_set_device() {
         let mut builder = EntropyDeviceBuilder::new();
-        let device = Entropy::new(RateLimiter::default()).unwrap();
+        let device = Entropy::new(RateLimiter::default(), None).unwrap();
         assert!(builder.0.is_none());
         builder.set_device(Arc::new(Mutex::new(device)));
         assert!(builder.0.is_some());

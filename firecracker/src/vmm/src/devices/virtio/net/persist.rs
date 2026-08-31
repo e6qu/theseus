@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use super::device::Net;
+use super::sim::SimNetConfig;
 use super::{NET_NUM_QUEUES, NET_QUEUE_MAX_SIZE, TapError};
 use crate::devices::virtio::device::VirtioDeviceType;
 use crate::devices::virtio::persist::{PersistError as VirtioStateError, VirtioDeviceState};
@@ -36,6 +37,11 @@ pub struct NetConfigSpaceState {
 pub struct NetState {
     pub id: String,
     pub tap_if_name: String,
+    /// Simulated-backend config, if this device uses one. In-flight frames in
+    /// the sim RX queue are *not* snapshotted: the orchestrator re-drives
+    /// traffic per branch, so branches start with an empty queue.
+    #[serde(default)]
+    pub sim: Option<SimNetConfig>,
     rx_rate_limiter_state: RateLimiterState,
     tx_rate_limiter_state: RateLimiterState,
     /// The associated MMDS network stack.
@@ -77,6 +83,7 @@ impl Persist<'_> for Net {
         NetState {
             id: self.id.clone(),
             tap_if_name: self.iface_name(),
+            sim: self.sim_config(),
             rx_rate_limiter_state: self.rx_rate_limiter.save(),
             tx_rate_limiter_state: self.tx_rate_limiter.save(),
             mmds_ns: self.mmds_ns.as_ref().map(|mmds| mmds.save()),
@@ -95,14 +102,24 @@ impl Persist<'_> for Net {
         // RateLimiter::restore() can fail at creating a timerfd.
         let rx_rate_limiter = RateLimiter::restore((), &state.rx_rate_limiter_state)?;
         let tx_rate_limiter = RateLimiter::restore((), &state.tx_rate_limiter_state)?;
-        let mut net = Net::new(
-            state.id.clone(),
-            &state.tap_if_name,
-            state.config_space.guest_mac,
-            rx_rate_limiter,
-            tx_rate_limiter,
-            state.config_space.mtu,
-        )?;
+        let mut net = match state.sim {
+            Some(sim_config) => Net::new_with_sim(
+                state.id.clone(),
+                sim_config,
+                state.config_space.guest_mac,
+                rx_rate_limiter,
+                tx_rate_limiter,
+                state.config_space.mtu,
+            )?,
+            None => Net::new(
+                state.id.clone(),
+                &state.tap_if_name,
+                state.config_space.guest_mac,
+                rx_rate_limiter,
+                tx_rate_limiter,
+                state.config_space.mtu,
+            )?,
+        };
 
         // We trust the MMIOVirtioDevices::restore to pass us an MMDS data store reference if
         // there is at least one net device having the MMDS NS present and/or the mmds version was

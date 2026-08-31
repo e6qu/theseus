@@ -1,0 +1,13 @@
+[package]
+name = "theseus-sdk"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Theseus guest SDK: the control-channel contract, shared by host and guest"
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = []
+std = []

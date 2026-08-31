@@ -33,6 +33,7 @@ impl SyncFileEngine {
         SyncFileEngine { file }
     }
 
+    #[cfg(test)]
     pub fn file(&self) -> &File {
         &self.file
     }

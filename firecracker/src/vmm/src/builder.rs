@@ -79,6 +79,11 @@ pub enum StartMicrovmError {
     CreateNetDevice(crate::devices::virtio::net::NetError),
     /// Cannot create pmem device: {0}
     CreatePmemDevice(#[from] crate::devices::virtio::pmem::device::PmemError),
+    /// Rate limiters use host-wall-time timerfds and break determinism;
+    /// they cannot be combined with virtual time (Theseus).
+    RateLimiterWithVirtualTime,
+    /// Failed to apply virtual time: {0}
+    ApplyVirtualTime(String),
     /// Error creating legacy device: {0}
     #[cfg(target_arch = "x86_64")]
     CreateLegacyDevice(device_manager::legacy::LegacyDeviceError),
@@ -135,6 +140,34 @@ impl std::convert::From<linux_loader::cmdline::Error> for StartMicrovmError {
     }
 }
 
+/// Theseus: rate limiters fire on host-wall-time timerfds, which is a
+/// determinism leak. Reject them when virtual time is enabled.
+fn validate_deterministic_config(
+    vm_resources: &super::resources::VmResources,
+) -> Result<(), StartMicrovmError> {
+    if vm_resources.machine_config.virtual_time.is_none() {
+        return Ok(());
+    }
+    let has_rate_limiters = vm_resources
+        .entropy
+        .config()
+        .is_some_and(|c| c.rate_limiter.is_some())
+        || vm_resources
+            .net_builder
+            .configs()
+            .iter()
+            .any(|c| c.rx_rate_limiter.is_some() || c.tx_rate_limiter.is_some())
+        || vm_resources
+            .block
+            .configs()
+            .iter()
+            .any(|c| c.rate_limiter.is_some());
+    if has_rate_limiters {
+        return Err(StartMicrovmError::RateLimiterWithVirtualTime);
+    }
+    Ok(())
+}
+
 /// Builds and starts a microVM based on the current Firecracker VmResources configuration.
 ///
 /// The built microVM and all the created vCPUs start off in the paused state.
@@ -146,6 +179,7 @@ pub fn build_microvm_for_boot(
     event_manager: &mut EventManager,
     seccomp_filters: &BpfThreadMap,
 ) -> Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
+    validate_deterministic_config(vm_resources)?;
     // Timestamp for measuring microVM boot duration.
     let request_ts = TimestampUs::default();
 
@@ -177,6 +211,31 @@ pub fn build_microvm_for_boot(
     // Build custom CPU config if a custom template is provided.
     let mut vm = KvmVm::new(kvm)?;
     let mut vcpus = vm.create_vcpus(vm_resources.machine_config.vcpu_count)?;
+
+    // Theseus (Track B′): enable deterministic virtual time. The guest clock
+    // is anchored at virtual time zero (kvmclock on x86_64, CNTVCT offset on
+    // aarch64) and then stepped by the vCPU threads at each quantum boundary.
+    if let Some(virtual_time) = &vm_resources.machine_config.virtual_time {
+        #[cfg(target_arch = "x86_64")]
+        vm.set_virtual_clock_ns(0).map_err(VmError::Arch)?;
+        for vcpu in &mut vcpus {
+            vcpu.enable_virtual_time(virtual_time.tick_ns, virtual_time.exits_per_tick);
+            // aarch64: the counter offset can only be written after the
+            // KVM_ARM_VCPU_INIT ioctl, which happens at vCPU configure time —
+            // so the anchor is applied by the vCPU thread on first run
+            // (see `vclock_anchored` in vstate/vcpu.rs).
+        }
+    }
+
+    // Theseus: seed the process-wide deterministic RNG (FDT rng-seed, vmgenid,
+    // MMDS token keys, dumbo TCP ISNs) from the run seed. Default: 0.
+    crate::detrng::init(
+        vm_resources
+            .entropy
+            .config()
+            .map_or(0, |config| config.seed.unwrap_or(0)),
+    );
+
     vm.register_dram_memory_regions(guest_memory)?;
 
     // Allocate memory as soon as possible to make hotpluggable memory available to all consumers,
@@ -224,6 +283,10 @@ pub fn build_microvm_for_boot(
     if vm_resources.boot_timer {
         device_manager.attach_boot_timer_device(&kvm_vm, request_ts)?;
     }
+
+    // Theseus: the control channel is always attached (fixed MMIO slot right
+    // after the platform devices on both architectures).
+    device_manager.attach_theseus_device(&kvm_vm)?;
 
     if let Some(balloon) = vm_resources.balloon.get() {
         attach_balloon_device(
@@ -415,7 +478,8 @@ pub enum BuildMicrovmFromSnapshotError {
     RestoreVcpus(#[from] VcpuError),
     /// Failed to restore devices: {0}
     RestoreDevices(#[from] DeviceManagerPersistError),
-    /// clock_realtime is not supported on aarch64.
+    /// Could not attach the Theseus control device: {0}
+    AttachTheseusDevice(String),    /// clock_realtime is not supported on aarch64.
     UnsupportedClockRealtime,
 }
 
@@ -470,6 +534,24 @@ pub fn build_microvm_from_snapshot(
             .restore_state(state)
             .map_err(VcpuError::VcpuResponse)
             .map_err(BuildMicrovmFromSnapshotError::RestoreVcpus)?;
+
+        // Theseus (Track B′): restore virtual-time bookkeeping. The
+        // guest-visible clock (TSC MSR / CNTVCT offset, kvmclock) is restored
+        // through the regular KVM state paths above. Explicit choice:
+        // snapshots carrying virtual-clock state restore it; snapshots
+        // without it start a fresh clock if the feature is configured.
+        if let Some(virtual_time) = &vm_resources.machine_config.virtual_time {
+            match &state.vclock {
+                Some(vc_state) => vcpu.restore_virtual_time(
+                    vc_state,
+                    state.vclock_exits,
+                    virtual_time.exits_per_tick,
+                ),
+                None => {
+                    vcpu.enable_virtual_time(virtual_time.tick_ns, virtual_time.exits_per_tick)
+                }
+            }
+        }
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -509,6 +591,13 @@ pub fn build_microvm_from_snapshot(
     #[allow(unused_mut)]
     let mut device_manager =
         DeviceManager::restore(device_ctor_args, &microvm_state.device_states)?;
+
+    // Theseus: the control channel is transient state (like the boot timer)
+    // and is not part of the snapshot — attach it fresh on every restore, so
+    // branched timelines keep their guest↔host door.
+    device_manager
+        .attach_theseus_device(&kvm_vm)
+        .map_err(|err| BuildMicrovmFromSnapshotError::AttachTheseusDevice(err.to_string()))?;
 
     let vmm = Vmm {
         instance_info: instance_info.clone(),
@@ -905,8 +994,6 @@ pub(crate) mod tests {
                 ),
                 rate_limiter: None,
                 file_engine_type: None,
-                blk_size: None,
-                topology: None,
 
                 socket: None,
             };
@@ -1104,6 +1191,7 @@ pub(crate) mod tests {
             mtu: None,
             rx_rate_limiter: None,
             tx_rate_limiter: None,
+            sim: None,
         };
 
         let mut cmdline = default_kernel_cmdline();

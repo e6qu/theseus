@@ -124,6 +124,27 @@ impl KvmVm {
         Ok(())
     }
 
+    /// Theseus (Track B′): set the guest-visible kvmclock to an absolute
+    /// virtual time.
+    ///
+    /// `flags` is deliberately 0 — never `KVM_CLOCK_REALTIME`, which would
+    /// re-anchor the guest clock to host wall time and break replay.
+    ///
+    /// Call only while all vCPUs are between `KVM_RUN` invocations (i.e. at a
+    /// quantum boundary / paused), and keep each vCPU's TSC consistent via
+    /// [`crate::arch::x86_64::vcpu::KvmVcpu::set_tsc`] — kvmclock's
+    /// TSC-to-nanoseconds mapping is captured when the clock is written.
+    ///
+    /// NOTE: needs on-metal validation (no `/dev/kvm` in the dev container).
+    pub fn set_virtual_clock_ns(&self, now_ns: u64) -> Result<(), KvmVmError> {
+        let clock = kvm_clock_data {
+            clock: now_ns,
+            flags: 0,
+            ..Default::default()
+        };
+        self.fd().set_clock(&clock).map_err(KvmVmError::SetClock)
+    }
+
     /// Restores the KVM VM state.
     ///
     /// # Errors
