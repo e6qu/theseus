@@ -1,39 +1,59 @@
-# Tutorial: Replay a failing test by seed
+# Tutorial 1: Run and replay the Theseus service
 
 ## Objective
 
-Prove that a run in Theseus is perfectly replayable: boot the same guest
-twice with the same seed and see byte-identical randomness, then boot with
-a different seed and see it differ. When you finish, you will know that a
-failing run is never lost — you rerun the seed and see the same thing.
+Run Theseus through its public host surface: the `firecracker` service and
+its Unix-socket HTTP API. You will boot the same plain C program three times,
+configure its entropy with `PUT /entropy`, and prove that one seed gives one
+replayable byte stream. No Theseus SDK is involved yet.
 
-## The problem
+## What you operate
 
-Your test fails once in a hundred runs. The failure depends on randomness
-— an order of operations, a timeout value, a jitter — and when it fails
-you cannot reproduce it because the randomness is gone. The fix is to
-make randomness a pure function of a *seed*: a number you choose. Same
-seed, same bytes, every time.
+Theseus currently exposes its host interface through the forked
+`firecracker` binary:
+
+| You do this | The service receives |
+|---|---|
+| Start `firecracker --api-sock /tmp/theseus.sock` | a Unix-socket HTTP server |
+| `PUT /boot-source` | kernel and initramfs paths |
+| `PUT /machine-config` | vCPU and memory settings |
+| `PUT /entropy` | the seed for guest-visible entropy |
+| `PUT /actions` with `InstanceStart` | the command to boot |
+
+The guest is a small ordinary C program in [init.c](init.c). It reads
+`/dev/hwrng`, prints the bytes, and powers off. The companion
+[run.sh](run.sh) performs the API sequence above three times so that the
+experiment is repeatable.
+
+Once the kernel and C initramfs exist, one service boot is the following
+sequence (the script supplies the concrete paths and waits for the socket):
+
+```sh
+"$FC" --api-sock "$SOCK" --no-seccomp &
+curl --unix-socket "$SOCK" -X PUT localhost/boot-source \
+  -H 'Content-Type: application/json' \
+  -d "{\"kernel_image_path\": \"$KERNEL\", \"initrd_path\": \"$INITRAMFS\", \"boot_args\": \"console=ttyS0 reboot=k panic=-1\"}"
+curl --unix-socket "$SOCK" -X PUT localhost/machine-config \
+  -H 'Content-Type: application/json' -d '{"vcpu_count": 1, "mem_size_mib": 128}'
+curl --unix-socket "$SOCK" -X PUT localhost/entropy \
+  -H 'Content-Type: application/json' -d '{"seed": 42}'
+curl --unix-socket "$SOCK" -X PUT localhost/actions \
+  -H 'Content-Type: application/json' -d '{"action_type": "InstanceStart"}'
+```
 
 ## Setup
 
-You need a Linux machine with KVM (the kernel virtual machine feature).
-On Apple Silicon macOS, a privileged aarch64 Docker container provides it.
-From the repository root:
+You need Linux with KVM. On Apple Silicon macOS, start a privileged aarch64
+container from the repository root:
 
 ```sh
 docker run --rm -it --platform linux/arm64 --privileged \
   -v "$PWD":/theseus -w /theseus rust:1.97.0-bookworm bash
-```
-
-Inside the container, install dependencies and build the fork once:
-
-```sh
 apt-get update -qq && apt-get install -y -qq libclang-dev libseccomp-dev gcc cpio curl
 cd /theseus/firecracker && cargo build -p firecracker
 ```
 
-## Run it
+## Run the service experiment
 
 From the repository root inside the container:
 
@@ -41,37 +61,30 @@ From the repository root inside the container:
 sh /theseus/docs/tutorials/01-replay-by-seed/run.sh
 ```
 
-The script downloads a guest kernel, packs a minimal initramfs whose init
-reads 64 bytes from the guest's entropy device and prints them, and boots
-the guest three times: twice with seed 42, once with seed 1337. You will
-see:
+The script downloads a small Linux kernel on its first run, compiles
+`init.c` into an initramfs, then starts the service with seeds `42`, `42`,
+and `1337`. Its output includes:
 
 ```
-hwrng (64 bytes): 28065689f706c281a35be8609b92dce6...
-hwrng (64 bytes): 28065689f706c281a35be8609b92dce6...
-hwrng (64 bytes): 70788b9d6210d1870cda0f02887c9e28...
+seed 42:   hwrng (64 bytes): 28065689f706c281a35be8609b92dce6...
+seed 42:   hwrng (64 bytes): 28065689f706c281a35be8609b92dce6...
+seed 1337: hwrng (64 bytes): 70788b9d6210d1870cda0f02887c9e28...
 PASS: identical across same-seed boots, different across seeds
 ```
 
-The first two lines are identical (seed 42); the third differs (seed
-1337).
-
-## What just happened
-
-The guest's entropy device served bytes from a ChaCha stream initialized
-from the seed — not from host randomness. Same seed, same stream, every
-boot. The kernel's own random pool (`/dev/urandom`) still differs between
-boots because the guest kernel adds timing jitter — randomness generated
-inside the guest that no host can control. That is the boundary: what the
-host serves replays; what the guest adds on top does not.
+The first two runs are the same because `PUT /entropy` gave the service the
+same seed. The third differs because only that seed changed.
 
 ## What you have now
 
-A failing run is a seed. When a test breaks, you keep the seed and rerun
-the failure exactly — the basis for every experiment that follows.
+You can drive Theseus without linking a guest library: launch the service,
+configure a boot through its API, retain a seed, and replay the observable
+guest entropy exactly. Next, send a chosen input stream rather than merely
+seeding one.
 
 ## Further reading
 
-- [determinism.md](../../determinism.md) — every nondeterminism source and
-  how the engine closes it
-- [terminology.md](../../terminology.md) — seed, replay, and related terms
+- [determinism.md](../../determinism.md) — what is seeded and what remains
+  outside the replay boundary
+- [The Firecracker API](../../../firecracker/docs/api_requests/) — the
+  complete host API inherited by the fork

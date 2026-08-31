@@ -1,4 +1,4 @@
-# Tutorial: Run a container image as a virtual machine
+# Integration guide: Run a container image as a virtual machine
 
 ## Objective
 

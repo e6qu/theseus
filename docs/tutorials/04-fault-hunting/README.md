@@ -1,17 +1,18 @@
-# Tutorial: Catch a partition-and-retry corruption
+# Tutorial 4: Find, replay, and fix a retry bug
 
 ## Objective
 
-Reproduce a specific data-corruption bug: a replicated counter that
-counts one increment **twice** when a network partition drops the
-acknowledgement and the sender retries it. You will watch the counter
-behave correctly with no faults, inject the partition between command and
-acknowledgement, see the duplicate application appear as one marker byte,
-then replay the run and watch the corruption happen again, byte for byte.
+Apply the service controls and SDK contract from the first three tutorials to
+a specific failure: a replicated counter counts one increment **twice** when
+a lost acknowledgement causes a retry. You will establish a healthy baseline,
+inject the fault, see the invariant violation as a marker, replay it byte for
+byte, and verify a fix.
 
 ## The problem
 
-Node A sends increment commands; node B applies and acknowledges them.
+The workload models a two-node protocol inside one bare-metal guest to keep
+the example runnable and inspectable. Node A sends increment commands; node B
+applies and acknowledges them.
 Node A retries when no acknowledgement arrives. The invariant is "every
 command is applied exactly once."
 
@@ -61,7 +62,7 @@ sh /theseus/docs/tutorials/04-fault-hunting/guest/build.sh
 This compiles the counter to a flat bootable image that the hypervisor
 boots directly, without an operating system.
 
-## Step 2 — Run the clean schedule
+## Step 2 — Establish the healthy baseline
 
 The driver boots the guest with two increments and no partition. Run it:
 
@@ -78,7 +79,7 @@ events [0x05, 0x06]  →  markers [0x42, 0x01, 0x01, 0xFF]
 Boot marker, two first-time applications, round done. The system is
 correct when nothing goes wrong.
 
-## Step 3 — Inject the partition
+## Step 3 — Inject the fault
 
 The second assertion feeds `[0x05, 0xEE, 0x06]`: increment 5, partition,
 increment 6. The guest applies 5, loses its ack, retries 5, applies 6:
@@ -92,7 +93,7 @@ markers [0x42, 0x01, 0x02, 0x01, 0xFF]
 That single `0x02` is the bug, caught in the act — present only because
 the partition and the retry collided.
 
-## Step 4 — Replay it
+## Step 4 — Replay the failure
 
 The third assertion runs the same schedule again. The marker stream is
 byte-identical:
@@ -104,7 +105,7 @@ byte-identical:
 The run is seeded, so the replay always reproduces the bug exactly. A
 flaky "sometimes" becomes a deterministic "every time this schedule runs."
 
-## Step 5 — Fix and verify
+## Step 5 — Patch the invariant and verify it
 
 Make `apply` idempotent: ignore a command already seen. Edit
 `docs/tutorials/04-fault-hunting/guest/main.rs` and change the duplicate branch of

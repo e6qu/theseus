@@ -1,4 +1,4 @@
-# Tutorial: Fork the machine mid-run
+# Advanced guide: Fork the machine mid-run
 
 ## Objective
 
