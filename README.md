@@ -45,6 +45,7 @@ live boot proofs in `e2e/`.
 - [The determinism model](docs/determinism.md) — what's closed, what's leaked, replay fingerprints
 - [The control channel](docs/control-channel.md) — registers, serial transport, protocol rounds
 - [Exploration](docs/exploration.md) — branch points, timeline tree, parallel explorer, coverage
+- [Tutorial](docs/tutorial.md) — a full fault-hunting walkthrough (non-trivial)
 - [Testing](docs/testing.md) — dev loop, e2e proofs, CI
 
 ## Quickstart
