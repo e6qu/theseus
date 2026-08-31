@@ -102,3 +102,49 @@ fn counter_tutorial() {
         "replay is bit-for-bit identical"
     );
 }
+
+/// Branching carries state: a child resumed from a branch point sees the
+/// parent's applications as already-applied. The parent's round applied
+/// commands 0x05 and 0x06; the child's round replays them (both report the
+/// duplicate marker) plus a fresh command (applied once).
+#[test]
+fn counter_branching_inherits_state() {
+    let seccomp_filters = get_empty_filters();
+    let mut root_evmgr = EventManager::new().unwrap();
+    let explorer = Explorer::explore(
+        42,
+        &ExplorerConfig {
+            events: vec![0x05, 0x06],
+            branch_event_suffix: true,
+            rendezvous: true,
+            faults: None,
+            run_ms: 300,
+            branches_per_node: 1,
+            max_depth: 1,
+        },
+        &InstanceInfo::default(),
+        &seccomp_filters,
+        &mut root_evmgr,
+        |instance_info, evmgr, filters| {
+            Ok(build_microvm_for_boot(instance_info, &guest_resources(), evmgr, filters)?)
+        },
+        &VmResources::default,
+    )
+    .unwrap();
+
+    // Root: boot marker, two first-time applications, done.
+    assert_eq!(
+        explorer.tree.node(0).payload.as_ref().unwrap().markers,
+        vec![0x42, 0x01, 0x01, 0xFF],
+        "root markers"
+    );
+
+    // Child: events [0x05, 0x06, 0x01] (base + suffix 1). It resumes with
+    // the parent's applied state, so 0x05 and 0x06 are duplicates and only
+    // 0x01 is new.
+    assert_eq!(
+        explorer.tree.node(1).payload.as_ref().unwrap().markers,
+        vec![0x02, 0x02, 0x01, 0xFF],
+        "child inherits the parent's applied state"
+    );
+}
