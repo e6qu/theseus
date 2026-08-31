@@ -186,7 +186,7 @@ impl TokenAuthority {
     fn create_cipher() -> Result<RandomizedNonceKey, MmdsTokenError> {
         // Randomly generate a 256-bit key to be used for encryption/decryption purposes.
         let mut key = [0u8; KEY_LEN];
-        aws_lc_rs::rand::fill(&mut key).map_err(|_| MmdsTokenError::KeyGeneration)?;
+        crate::detrng::fill_bytes(&mut key);
 
         // Create cipher entity to handle encryption/decryption.
         RandomizedNonceKey::new(&AES_256_GCM, &key).map_err(|_| MmdsTokenError::KeyGeneration)

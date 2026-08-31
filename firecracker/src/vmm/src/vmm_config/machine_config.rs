@@ -5,6 +5,35 @@ use std::fmt::Debug;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::cpu_config::templates::{CpuTemplateType, CustomCpuTemplate, StaticCpuTemplate};
+use crate::vstate::vclock::DEFAULT_TICK_NS;
+
+/// Default number of guest-visible exits per quantum (Track B′). Quanta are
+/// exit-counted rather than host-timed so that tick boundaries are
+/// deterministic relative to guest execution.
+pub const DEFAULT_EXITS_PER_TICK: u64 = 1024;
+
+fn default_tick_ns() -> u64 {
+    DEFAULT_TICK_NS
+}
+
+fn default_exits_per_tick() -> u64 {
+    DEFAULT_EXITS_PER_TICK
+}
+
+/// Theseus (Track B′): virtual time configuration. When present, the guest
+/// clock advances deterministically — one `tick_ns` tick per
+/// `exits_per_tick` guest-visible exits — instead of following the host
+/// clock. x86_64 only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VirtualTimeConfig {
+    /// Virtual nanoseconds advanced per quantum.
+    #[serde(default = "default_tick_ns")]
+    pub tick_ns: u64,
+    /// Guest-visible exits per quantum.
+    #[serde(default = "default_exits_per_tick")]
+    pub exits_per_tick: u64,
+}
 
 /// The default memory size of the VM, in MiB.
 pub const DEFAULT_MEM_SIZE_MIB: usize = 128;
@@ -128,6 +157,9 @@ pub struct MachineConfig {
     /// Configures what page size Firecracker should use to back guest memory.
     #[serde(default)]
     pub huge_pages: HugePageConfig,
+    /// Theseus: deterministic virtual time (Track B′). None = host clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub virtual_time: Option<VirtualTimeConfig>,
     /// GDB socket address.
     #[cfg(feature = "gdb")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -170,6 +202,7 @@ impl Default for MachineConfig {
             cpu_template: None,
             track_dirty_pages: false,
             huge_pages: HugePageConfig::None,
+            virtual_time: None,
             #[cfg(feature = "gdb")]
             gdb_socket_path: None,
         }
@@ -203,6 +236,9 @@ pub struct MachineConfigUpdate {
     /// Configures what page size Firecracker should use to back guest memory.
     #[serde(default)]
     pub huge_pages: Option<HugePageConfig>,
+    /// Theseus: deterministic virtual time (Track B′).
+    #[serde(default)]
+    pub virtual_time: Option<VirtualTimeConfig>,
     /// GDB socket address.
     #[cfg(feature = "gdb")]
     #[serde(default)]
@@ -227,6 +263,7 @@ impl From<MachineConfig> for MachineConfigUpdate {
             cpu_template: cfg.static_template(),
             track_dirty_pages: Some(cfg.track_dirty_pages),
             huge_pages: Some(cfg.huge_pages),
+            virtual_time: cfg.virtual_time,
             #[cfg(feature = "gdb")]
             gdb_socket_path: cfg.gdb_socket_path,
         }
@@ -294,6 +331,7 @@ impl MachineConfig {
             cpu_template,
             track_dirty_pages: update.track_dirty_pages.unwrap_or(self.track_dirty_pages),
             huge_pages: page_config,
+            virtual_time: update.virtual_time.or(self.virtual_time),
             #[cfg(feature = "gdb")]
             gdb_socket_path: update.gdb_socket_path.clone(),
         })

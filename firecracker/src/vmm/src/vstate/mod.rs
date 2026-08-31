@@ -11,6 +11,8 @@ pub mod kvm;
 pub mod memory;
 /// Resource manager for devices.
 pub mod resources;
+/// Tick-stepped virtual clock (Theseus, Track B′).
+pub mod vclock;
 /// Module with Vcpu implementation.
 pub mod vcpu;
 /// Module with Vm implementation.

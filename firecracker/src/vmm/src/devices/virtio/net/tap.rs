@@ -219,7 +219,6 @@ impl AsRawFd for Tap {
 pub mod tests {
     #![allow(clippy::undocumented_unsafe_blocks)]
 
-    use std::os::unix::ffi::OsStrExt;
 
     use super::*;
     use crate::devices::virtio::net::generated;
@@ -301,11 +300,11 @@ pub mod tests {
         enable(&tap);
         let tap_traffic_simulator = TapTrafficSimulator::new(if_index(&tap));
 
-        let mut fragment1 = vmm_sys_util::rand::rand_bytes(PAYLOAD_SIZE);
+        let mut fragment1 = vec![0x11; PAYLOAD_SIZE]; // deterministic content
         fragment1.as_mut_slice()[..generated::ETH_HLEN as usize]
             .copy_from_slice(&[0; generated::ETH_HLEN as usize]);
-        let fragment2 = vmm_sys_util::rand::rand_bytes(PAYLOAD_SIZE);
-        let fragment3 = vmm_sys_util::rand::rand_bytes(PAYLOAD_SIZE);
+        let fragment2 = vec![0x22; PAYLOAD_SIZE]; // deterministic content
+        let fragment3 = vec![0x33; PAYLOAD_SIZE]; // deterministic content
 
         let scattered = IoVecBuffer::from(vec![
             fragment1.as_slice(),
@@ -343,14 +342,14 @@ pub mod tests {
 
         let mut rx_buffers = IoVecBufferMut::from(vec![buff1.as_mut_slice(), buff2.as_mut_slice()]);
 
-        let packet = vmm_sys_util::rand::rand_alphanumerics(2 * PAYLOAD_SIZE);
-        tap_traffic_simulator.push_tx_packet(packet.as_bytes());
+        let packet = vec![b'x'; 2 * PAYLOAD_SIZE]; // deterministic content
+        tap_traffic_simulator.push_tx_packet(&packet[..]);
         assert_eq!(
             tap.read_iovec(rx_buffers.as_iovec_mut_slice()).unwrap(),
             2 * PAYLOAD_SIZE + VNET_HDR_SIZE
         );
-        assert_eq!(&buff1[VNET_HDR_SIZE..], &packet.as_bytes()[..PAYLOAD_SIZE]);
-        assert_eq!(&buff2[..PAYLOAD_SIZE], &packet.as_bytes()[PAYLOAD_SIZE..]);
+        assert_eq!(&buff1[VNET_HDR_SIZE..], &packet[..PAYLOAD_SIZE]);
+        assert_eq!(&buff2[..PAYLOAD_SIZE], &packet[PAYLOAD_SIZE..]);
         assert_eq!(&buff2[PAYLOAD_SIZE..], &vec![0; PAYLOAD_SIZE])
     }
 }

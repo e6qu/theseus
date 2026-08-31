@@ -424,7 +424,39 @@ pub fn restore_from_snapshot(
             .clone_from(&vsock_override.uds_path);
     }
 
+    restore_from_microvm_state(
+        instance_info,
+        event_manager,
+        seccomp_filters,
+        microvm_state,
+        params,
+        vm_resources,
+    )
+}
+
+/// Theseus: restore a microVM from an in-memory [`MicrovmState`] (e.g. a
+/// [`crate::branch::BranchPoint`]) instead of a snapshot file. Network/vsock
+/// overrides are the caller's responsibility. `params.mem_backend` still
+/// applies — a branch point's memfd is passed as `/proc/self/fd/<n>` with
+/// [`MemBackendType::File`].
+pub fn restore_from_microvm_state(
+    instance_info: &InstanceInfo,
+    event_manager: &mut EventManager,
+    seccomp_filters: &BpfThreadMap,
+    microvm_state: MicrovmState,
+    params: &LoadSnapshotParams,
+    vm_resources: &mut VmResources,
+) -> Result<Arc<Mutex<Vmm>>, RestoreFromSnapshotError> {
     let track_dirty_pages = params.track_dirty_pages;
+
+    // Theseus: seed the process-wide deterministic RNG from the run seed,
+    // matching the from-scratch boot path.
+    crate::detrng::init(
+        vm_resources
+            .entropy
+            .config()
+            .map_or(0, |config| config.seed.unwrap_or(0)),
+    );
 
     let vcpu_count = microvm_state
         .vcpu_states
@@ -441,6 +473,7 @@ pub fn restore_from_snapshot(
             cpu_template: Some(microvm_state.vm_info.cpu_template),
             track_dirty_pages: Some(track_dirty_pages),
             huge_pages: Some(params.huge_pages.resolve(microvm_state.vm_info.huge_pages)),
+            virtual_time: None,
             #[cfg(feature = "gdb")]
             gdb_socket_path: None,
         })
@@ -721,6 +754,7 @@ mod tests {
             mtu: None,
             rx_rate_limiter: None,
             tx_rate_limiter: None,
+            sim: None,
         };
         insert_net_device(
             &mut vmm,

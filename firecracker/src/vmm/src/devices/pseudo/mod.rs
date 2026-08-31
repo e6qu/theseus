@@ -3,5 +3,8 @@
 
 //! Implements Firecracker specific devices (e.g. signal when boot is completed).
 mod boot_timer;
+/// Theseus control channel (guest↔host door), MMIO on all arches.
+pub mod theseus;
 
 pub use self::boot_timer::BootTimer;
+pub use self::theseus::{ControlEvent, THESEUS_MEM_LEN, TheseusDevice};

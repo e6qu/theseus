@@ -105,6 +105,17 @@ pub struct Vcpu {
     response_receiver: Option<Receiver<VcpuResponse>>,
     /// The transmitting end of the responses channel owned by the vcpu side.
     response_sender: Sender<VcpuResponse>,
+
+    /// Theseus (Track B′): the tick-stepped virtual clock, when enabled.
+    vclock: Option<crate::vstate::vclock::VirtualClock>,
+    /// Guest-visible exits elapsed in the current quantum.
+    exits_since_tick: u64,
+    /// Exits per quantum (tick boundary).
+    exits_per_tick: u64,
+    /// Whether the guest clock has been anchored to virtual time zero.
+    /// aarch64 can only write the counter offset after KVM_ARM_VCPU_INIT
+    /// (vCPU configure time), so the anchor is applied on first run.
+    vclock_anchored: bool,
 }
 
 /// States of the vCPU thread's run loop.
@@ -152,7 +163,75 @@ impl Vcpu {
             #[cfg(feature = "gdb")]
             gdb_event: None,
             kvm_vcpu,
+            vclock: None,
+            exits_since_tick: 0,
+            exits_per_tick: crate::vmm_config::machine_config::DEFAULT_EXITS_PER_TICK,
+            vclock_anchored: false,
         })
+    }
+
+    /// Theseus (Track B′): enable tick-stepped virtual time. `tick_ns` of
+    /// virtual time is applied per `exits_per_tick` guest-visible exits.
+    ///
+    /// Quanta are exit-counted, not host-timed: every event the guest can
+    /// observe flows through exits we handle, so tick boundaries land
+    /// identically on every replay of the same execution prefix.
+    pub fn enable_virtual_time(&mut self, tick_ns: u64, exits_per_tick: u64) {
+        self.vclock = Some(crate::vstate::vclock::VirtualClock::new(tick_ns));
+        self.exits_per_tick = exits_per_tick.max(1);
+        self.exits_since_tick = 0;
+        self.vclock_anchored = false;
+    }
+
+    /// Current virtual-clock state, if enabled.
+    pub fn vclock(&self) -> Option<&crate::vstate::vclock::VirtualClock> {
+        self.vclock.as_ref()
+    }
+
+    /// Restore virtual-clock bookkeeping from a snapshotted vCPU state.
+    /// (The guest-visible clock itself — TSC MSR and kvmclock — is restored
+    /// through the regular KVM state paths.)
+    ///
+    /// Callers must match on `VcpuState.vclock` themselves: `Some` → this
+    /// method; `None` → [`Vcpu::enable_virtual_time`] if the feature is
+    /// configured. No silent defaults.
+    pub fn restore_virtual_time(
+        &mut self,
+        vc_state: &crate::vstate::vclock::VirtualClockState,
+        exits: u64,
+        exits_per_tick: u64,
+    ) {
+        self.vclock = Some(crate::vstate::vclock::VirtualClock::restore(vc_state));
+        self.exits_per_tick = exits_per_tick.max(1);
+        self.exits_since_tick = exits;
+        self.vclock_anchored = false;
+    }
+
+    /// Advance the quantum counter; at each boundary, step the guest's clock.
+    ///
+    /// Called from the vCPU run loop between `KVM_RUN` invocations — the only
+    /// moment where writing the guest clock is race-free.
+    #[inline]
+    fn maybe_tick(&mut self) {
+        if self.vclock.is_none() {
+            return;
+        }
+        self.exits_since_tick += 1;
+        if self.exits_since_tick < self.exits_per_tick {
+            return;
+        }
+        self.exits_since_tick = 0;
+
+        // Safe: checked above.
+        let vclock = self.vclock.as_mut().unwrap();
+        vclock.advance();
+
+        // Arch-specific application: TSC write on x86_64, counter offset on
+        // aarch64. Both between KVM_RUN invocations.
+        if let Err(err) = self.kvm_vcpu.apply_virtual_time(vclock.now_ns()) {
+            error!("Failed to apply virtual time: {err:?}");
+            METRICS.vcpu.failures.inc();
+        }
     }
 
     /// Sets a MMIO bus for this vcpu.
@@ -243,7 +322,11 @@ impl Vcpu {
         loop {
             match self.run_emulation() {
                 // Emulation ran successfully, continue.
-                Ok(VcpuEmulation::Handled) => (),
+                Ok(VcpuEmulation::Handled) => {
+                    // Every handled exit is a guest-visible event we control;
+                    // counting them bounds quanta deterministically (Track B′).
+                    self.maybe_tick();
+                }
                 // Emulation was interrupted, check external events.
                 Ok(VcpuEmulation::Interrupted) => break,
                 // The guest requested a SHUTDOWN or RESET. This is ARM
@@ -343,6 +426,14 @@ impl Vcpu {
                 self.kvm_vcpu
                     .save_state()
                     .map(|vcpu_state| {
+                        // Attach Theseus virtual-time bookkeeping (both
+                        // arches' VcpuState carry the fields).
+                        let vcpu_state = {
+                            let mut state = vcpu_state;
+                            state.vclock = self.vclock.as_ref().map(|vc| vc.save());
+                            state.vclock_exits = self.exits_since_tick;
+                            state
+                        };
                         self.response_sender
                             .send(VcpuResponse::SavedState(Box::new(vcpu_state)))
                             .expect("vcpu channel unexpectedly closed");
@@ -405,6 +496,17 @@ impl Vcpu {
     ///
     /// Returns error or enum specifying whether emulation was handled or interrupted.
     pub fn run_emulation(&mut self) -> Result<VcpuEmulation, VcpuError> {
+        // Theseus: anchor the guest clock before the first KVM_RUN. On
+        // aarch64 the counter offset is only writable after vCPU init (which
+        // happens at configure time), so this is the earliest safe point.
+        if self.vclock.is_some() && !self.vclock_anchored {
+            if let Err(err) = self.kvm_vcpu.apply_virtual_time(0) {
+                error!("Failed to anchor virtual time: {err:?}");
+                METRICS.vcpu.failures.inc();
+            }
+            self.vclock_anchored = true;
+        }
+
         if self.kvm_vcpu.fd.get_kvm_run().immediate_exit == 1u8 {
             warn!("Requested a vCPU run with immediate_exit enabled. The operation was skipped");
             self.kvm_vcpu.fd.set_kvm_immediate_exit(0);

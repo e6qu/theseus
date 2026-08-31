@@ -1253,15 +1253,6 @@ definitions:
           This field is optional for virtio-block config and should be omitted for vhost-user-block configuration.
         enum: ["Sync", "Async"]
         default: "Sync"
-      blk_size:
-        type: integer
-        description:
-          Logical block size advertised to the guest via VIRTIO_BLK_F_BLK_SIZE.
-          This field is optional for virtio-block config and should be omitted
-          for vhost-user-block configuration.
-        default: 512
-      topology:
-        $ref: "#/definitions/BlockTopology"
 
       # VhostUserBlock specific parameters
       socket:
@@ -1269,28 +1260,6 @@ definitions:
         description:
           Path to the socket of vhost-user-block backend.
           This field is required for vhost-user-block config should be omitted for virtio-block configuration.
-
-  BlockTopology:
-    type: object
-    description:
-      Block device topology exposed to the guest via VIRTIO_BLK_F_TOPOLOGY.
-      When value is present, it is used instead of Firecracker defaults. All
-      I/O size fields are expressed in units of logical blocks. This field is
-      optional for virtio-block config and should be omitted for
-      vhost-user-block configuration.
-    properties:
-      physical_block_exp:
-        type: integer
-        description: log2 of the number of logical blocks per physical block.
-      alignment_offset:
-        type: integer
-        description: Offset of the first aligned logical block.
-      min_io_size:
-        type: integer
-        description: Suggested minimum I/O size, in units of logical blocks.
-      opt_io_size:
-        type: integer
-        description: Suggested optimal (maximum) I/O size, in units of logical blocks.
 
   Pmem:
     type: object
@@ -1480,6 +1449,26 @@ definitions:
           Which huge pages configuration should be used to back guest memory.
           "None" uses regular 4K pages. "Transparent" enables THP via
           madvise(MADV_HUGEPAGE). "2M" uses explicit hugetlbfs 2MB pages.
+      virtual_time:
+        $ref: "#/definitions/VirtualTime"
+
+  VirtualTime:
+    type: object
+    description: >-
+      Theseus — deterministic virtual time (Track B'). When set, the guest
+      clock advances by tick_ns per exits_per_tick guest-visible exits instead
+      of following the host clock. x86_64 only.
+    properties:
+      tick_ns:
+        type: integer
+        format: uint64
+        default: 1000000
+        description: Virtual nanoseconds advanced per quantum.
+      exits_per_tick:
+        type: integer
+        format: uint64
+        default: 1024
+        description: Guest-visible exits per quantum.
 
   MemoryBackend:
     type: object
@@ -1595,6 +1584,30 @@ definitions:
         $ref: "#/definitions/RateLimiter"
       tx_rate_limiter:
         $ref: "#/definitions/RateLimiter"
+      sim:
+        $ref: "#/definitions/SimNet"
+
+  SimNet:
+    type: object
+    description:
+      Theseus — use the deterministic simulated network backend instead of a
+      host tap device. `host_dev_name` is ignored when this is set.
+    properties:
+      seed:
+        type: integer
+        format: uint64
+        description: Seed for the deterministic drop stream (default 0).
+      loopback:
+        type: boolean
+        description: Loop TX frames back into the RX path (default true).
+      drop_ppm:
+        type: integer
+        description:
+          Deterministic per-frame drop probability, parts per million
+          (default 0).
+      partitioned:
+        type: boolean
+        description: Simulate a total network partition (default false).
 
   PartialDrive:
     type: object
@@ -1838,6 +1851,13 @@ definitions:
     properties:
       rate_limiter:
         $ref: "#/definitions/RateLimiter"
+      seed:
+        type: integer
+        format: uint64
+        description:
+          Seed for the deterministic entropy source. If omitted, the default
+          seed (0) is used. VMs launched with the same seed observe identical
+          entropy streams.
 
   SerialDevice:
     type: object

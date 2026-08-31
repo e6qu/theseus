@@ -740,6 +740,7 @@ mod tests {
                 mtu: None,
                 rx_rate_limiter: None,
                 tx_rate_limiter: None,
+                sim: None,
             };
             insert_net_device_with_mmds(
                 &mut vmm,
@@ -828,13 +829,6 @@ mod tests {
       "path_on_host": "{}",
       "rate_limiter": null,
       "io_engine": "Sync",
-      "blk_size": 512,
-      "topology": {{
-        "physical_block_exp": 0,
-        "alignment_offset": 0,
-        "min_io_size": 0,
-        "opt_io_size": 128
-      }},
       "socket": null
     }}
   ],

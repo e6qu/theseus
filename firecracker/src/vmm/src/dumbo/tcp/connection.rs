@@ -11,7 +11,6 @@ use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize, Wrapping};
 
 use bitflags::bitflags;
 #[cfg(not(feature = "fuzzing"))]
-use vmm_sys_util::rand::xor_pseudo_rng_u32;
 
 use crate::dumbo::ByteBuffer;
 use crate::dumbo::pdu::Incomplete;
@@ -252,8 +251,9 @@ impl Connection {
         // when fuzzing use a constant value to make it deterministic
         #[cfg(feature = "fuzzing")]
         let isn = Wrapping(0x12345678u32);
+        // Theseus: seeded, deterministic ISN (host entropy is a replay leak).
         #[cfg(not(feature = "fuzzing"))]
-        let isn = Wrapping(xor_pseudo_rng_u32());
+        let isn = Wrapping(crate::detrng::next_u32());
         let first_not_sent = isn + Wrapping(1);
         let remote_rwnd_edge = first_not_sent + Wrapping(u32::from(segment.window_size()));
 
