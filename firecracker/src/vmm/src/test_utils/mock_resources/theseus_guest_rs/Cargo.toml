@@ -1,0 +1,19 @@
+[package]
+name = "theseus-guest-rs"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+# Standalone crate: not part of the Firecracker workspace (bare-metal target).
+[workspace]
+
+[[bin]]
+name = "theseus-guest-rs"
+path = "main.rs"
+
+[dependencies]
+theseus-sdk = { path = "../../../../../theseus-sdk" }
+
+[profile.release]
+panic = "abort"
+lto = true
