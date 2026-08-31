@@ -27,7 +27,7 @@ use theseus_sdk::{
     OFS_COMMAND, OFS_EVENT, OFS_LOG, OFS_MAGIC, OFS_STATUS, STATUS_EVENTS_PENDING,
 };
 
-use crate::vstate::bus::BusDevice;
+use theseus_sdk::bus::BusDevice;
 
 /// Size of the MMIO register range.
 pub const THESEUS_MEM_LEN: u64 = 0x8;

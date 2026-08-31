@@ -13,6 +13,13 @@
 #[cfg(feature = "std")]
 extern crate std;
 
+/// Device bus primitives (BusDevice/Bus), shared by the host VMM and the
+/// Theseus engine. Moved out of `vmm::vstate` to keep the engine crate free
+/// of a vmm dependency (no dependency cycles). Requires `std` (enabled by
+/// the VMM; bare-metal guests use default-features = false).
+#[cfg(feature = "std")]
+pub mod bus;
+
 /// Magic value at the magic register: ASCII "THES" (little-endian).
 pub const MAGIC: u32 = u32::from_le_bytes(*b"THES");
 

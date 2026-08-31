@@ -24,25 +24,25 @@ use std::os::unix::io::AsRawFd;
 
 use memfd::MemfdOptions;
 
-use crate::Vmm;
-use crate::persist::{MicrovmState, VmInfo};
-use crate::snapshot::Snapshot;
-use crate::vstate::memory::{GuestMemoryExtension, GuestMemoryMmap};
+use vmm::Vmm;
+use vmm::persist::{MicrovmState, VmInfo};
+use vmm::snapshot::Snapshot;
+use vmm::vstate::memory::{GuestMemoryExtension, GuestMemoryMmap};
 use vm_memory::{GuestMemoryBackend, GuestMemoryRegion};
 
 /// Errors from branch-point capture.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
 pub enum BranchError {
     /// Could not save microVM state: {0}
-    SaveState(#[from] crate::persist::MicrovmStateError),
+    SaveState(#[from] vmm::persist::MicrovmStateError),
     /// Could not serialize microVM state: {0}
-    Serialize(#[from] crate::snapshot::SnapshotError),
+    Serialize(#[from] vmm::snapshot::SnapshotError),
     /// Could not deserialize microVM state: {0}
-    Deserialize(crate::snapshot::SnapshotError),
+    Deserialize(vmm::snapshot::SnapshotError),
     /// Guest memory I/O error: {0}
     MemoryIo(#[from] io::Error),
     /// Could not dump guest memory: {0}
-    MemoryDump(#[from] crate::vstate::memory::MemoryError),
+    MemoryDump(#[from] vmm::vstate::memory::MemoryError),
     /// Could not create memfd: {0}
     Memfd(memfd::Error),
 }
@@ -78,7 +78,7 @@ impl BranchPoint {
         let state_bytes = serialize_state(&vmm.save_state(vm_info)?)?;
 
         let kvm_vm = vmm.vm.as_kvm().ok_or_else(|| {
-            BranchError::SaveState(crate::persist::MicrovmStateError::NotAllowed(
+            BranchError::SaveState(vmm::persist::MicrovmStateError::NotAllowed(
                 "branching requires KVM".into(),
             ))
         })?;
@@ -165,8 +165,8 @@ pub fn dump_memory_to_memfd(mem: &GuestMemoryMmap) -> Result<(File, u64), Branch
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::single_region_mem;
-    use crate::vstate::memory::GuestAddress;
+    use vmm::test_utils::single_region_mem;
+    use vmm::vstate::memory::GuestAddress;
     use vm_memory::Bytes;
 
     #[test]

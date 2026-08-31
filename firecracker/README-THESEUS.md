@@ -11,6 +11,14 @@ absorbed into the Theseus repository on 2026-08-31.
   ("theseus: deterministic simulation testing layer"), one squashed commit
   on top of the base. The fork's `.git` was removed when absorbed; this
   document is the linkage.
+- **Layout:** the Theseus-authored code does **not** live in this tree. It
+  sits in sibling crates at the repository root: `../sdk` (protocol
+  contract, `no_std`, includes the device bus primitives moved out of
+  `vmm::vstate::bus`), `../engine` (detrng, vclock, sim net backend,
+  control door), and `../orchestrator` (branching, coverage, explorer).
+  This directory contains only upstream code plus clearly marked
+  deviations (below). Dependency direction: `vmm` → `engine` → `sdk`;
+  `orchestrator` → `vmm` (one-way, no cycles).
 - **Upstream sync:** there is no git remote. To sync, re-clone upstream and
   diff against this tree; all deviations are listed below and marked
   `Theseus` in code comments.

@@ -1,0 +1,17 @@
+[package]
+name = "theseus-engine"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Theseus engine: leaf deterministic components (host RNG, virtual clock, sim net, control door)"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+theseus-sdk = { path = "../sdk", features = ["std"] }
+rand_chacha = { version = "0.9.0", features = ["serde"] }
+serde = { version = "1.0.228", features = ["derive"] }
+
+[dev-dependencies]
+bitcode = { version = "0.6.9", features = ["serde"] }

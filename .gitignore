@@ -2,6 +2,9 @@
 firecracker/build/
 firecracker/src/vmm/src/test_utils/mock_resources/theseus_guest_rs/target/
 e2e/agent/target/
+engine/target/
+orchestrator/target/
+sdk/target/
 
 # e2e artifacts: downloaded guest kernel and built initramfs images
 e2e/vmlinux

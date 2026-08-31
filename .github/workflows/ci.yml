@@ -23,6 +23,17 @@ jobs:
         working-directory: firecracker
         run: cargo check --workspace
 
+      - name: Check theseus crates
+        run: |
+          cargo check --manifest-path sdk/Cargo.toml
+          cargo check --manifest-path engine/Cargo.toml
+          cargo check --manifest-path orchestrator/Cargo.toml
+
+      - name: Theseus crate tests
+        run: |
+          cargo test --manifest-path engine/Cargo.toml
+          cargo test --manifest-path orchestrator/Cargo.toml -- branch::tests orchestrator::tree
+
       - name: Deterministic unit suites
         working-directory: firecracker
         run: >-

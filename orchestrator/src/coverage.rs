@@ -44,7 +44,7 @@ pub struct Coverage {
 #[cfg(target_arch = "aarch64")]
 fn read_pc(vcpu: &VcpuFd) -> Result<u64, CoverageError> {
     let mut buf = [0u8; 8];
-    vcpu.get_one_reg(crate::arch::aarch64::regs::PC, &mut buf)
+    vcpu.get_one_reg(vmm::arch::aarch64::regs::PC, &mut buf)
         .map_err(CoverageError::ReadPc)?;
     Ok(u64::from_ne_bytes(buf))
 }
@@ -61,7 +61,7 @@ fn read_pc(vcpu: &VcpuFd) -> Result<u64, CoverageError> {
 /// destination register held — coverage, not functional emulation).
 #[cfg(target_arch = "aarch64")]
 fn skip_instruction(vcpu: &VcpuFd, pc: u64) -> Result<(), CoverageError> {
-    vcpu.set_one_reg(crate::arch::aarch64::regs::PC, &(pc + 4).to_ne_bytes())
+    vcpu.set_one_reg(vmm::arch::aarch64::regs::PC, &(pc + 4).to_ne_bytes())
         .map_err(CoverageError::WritePc)?;
     Ok(())
 }
@@ -143,30 +143,31 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_single_step_coverage_is_deterministic() {
-        use crate::arch::aarch64::regs::PC;
-        use crate::test_utils::single_region_mem_at_raw;
-        use crate::vstate::vm::tests::setup_vm;
+        use vmm::arch::aarch64::regs::PC;
+        use vmm::test_utils::single_region_mem_at_raw;
+        
         use vm_memory::Bytes;
 
         let guest = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/src/test_utils/mock_resources/theseus_guest.bin"
+            "/../firecracker/src/vmm/src/test_utils/mock_resources/theseus_guest.bin"
         ))
         .unwrap();
 
         let collect_once = || {
-            let mut vm = setup_vm();
-            let mem = single_region_mem_at_raw(crate::arch::DRAM_MEM_START, 0x100000);
+            let kvm = vmm::vstate::kvm::Kvm::new(vec![]).expect("Cannot create Kvm");
+            let mut vm = vmm::arch::aarch64::vm::KvmVm::new(kvm).expect("Cannot create new vm");
+            let mem = single_region_mem_at_raw(vmm::arch::DRAM_MEM_START, 0x100000);
             vm.register_dram_memory_regions(mem).unwrap();
-            let mut vcpu = crate::arch::aarch64::vcpu::KvmVcpu::new(0, &vm).unwrap();
+            let mut vcpu = vmm::arch::aarch64::vcpu::KvmVcpu::new(0, &vm).unwrap();
             vcpu.init(&[]).unwrap();
             vm.setup_irqchip(1).unwrap();
 
             vm.guest_memory()
-                .write_slice(&guest, crate::vstate::memory::GuestAddress(crate::arch::DRAM_MEM_START))
+                .write_slice(&guest, vmm::vstate::memory::GuestAddress(vmm::arch::DRAM_MEM_START))
                 .unwrap();
             vcpu.fd
-                .set_one_reg(PC, &crate::arch::DRAM_MEM_START.to_ne_bytes())
+                .set_one_reg(PC, &vmm::arch::DRAM_MEM_START.to_ne_bytes())
                 .unwrap();
 
             collect(&mut vcpu.fd, 10_000, 32).unwrap()
@@ -181,7 +182,7 @@ mod tests {
         // Sane: the guest is ~60 instructions to its event loop; the entry
         // branch target (DRAM start + 64-byte header) must be covered.
         assert!(
-            a.pcs.contains(&(crate::arch::DRAM_MEM_START + 0x40)),
+            a.pcs.contains(&(vmm::arch::DRAM_MEM_START + 0x40)),
             "entry point not in coverage: {:?}",
             a.pcs
         );
@@ -195,14 +196,14 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_coverage_detects_divergence() {
-        use crate::arch::aarch64::regs::PC;
-        use crate::test_utils::single_region_mem_at_raw;
-        use crate::vstate::vm::tests::setup_vm;
+        use vmm::arch::aarch64::regs::PC;
+        use vmm::test_utils::single_region_mem_at_raw;
+        
         use vm_memory::Bytes;
 
         let original = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/src/test_utils/mock_resources/theseus_guest.bin"
+            "/../firecracker/src/vmm/src/test_utils/mock_resources/theseus_guest.bin"
         ))
         .unwrap();
         // Redirect the entry branch (offset 0): `b 0x40` -> `b 0xc0`
@@ -211,17 +212,18 @@ mod tests {
         redirected[0..4].copy_from_slice(&0x14000030u32.to_le_bytes());
 
         let collect_with = |code: &[u8]| {
-            let mut vm = setup_vm();
-            let mem = single_region_mem_at_raw(crate::arch::DRAM_MEM_START, 0x100000);
+            let kvm = vmm::vstate::kvm::Kvm::new(vec![]).expect("Cannot create Kvm");
+            let mut vm = vmm::arch::aarch64::vm::KvmVm::new(kvm).expect("Cannot create new vm");
+            let mem = single_region_mem_at_raw(vmm::arch::DRAM_MEM_START, 0x100000);
             vm.register_dram_memory_regions(mem).unwrap();
-            let mut vcpu = crate::arch::aarch64::vcpu::KvmVcpu::new(0, &vm).unwrap();
+            let mut vcpu = vmm::arch::aarch64::vcpu::KvmVcpu::new(0, &vm).unwrap();
             vcpu.init(&[]).unwrap();
             vm.setup_irqchip(1).unwrap();
             vm.guest_memory()
-                .write_slice(code, crate::vstate::memory::GuestAddress(crate::arch::DRAM_MEM_START))
+                .write_slice(code, vmm::vstate::memory::GuestAddress(vmm::arch::DRAM_MEM_START))
                 .unwrap();
             vcpu.fd
-                .set_one_reg(PC, &crate::arch::DRAM_MEM_START.to_ne_bytes())
+                .set_one_reg(PC, &vmm::arch::DRAM_MEM_START.to_ne_bytes())
                 .unwrap();
             collect(&mut vcpu.fd, 10_000, 32).unwrap()
         };
@@ -231,14 +233,14 @@ mod tests {
 
         // The banner print loop lives right after the header branch target;
         // the redirected guest never executes it.
-        let banner_loop_pc = crate::arch::DRAM_MEM_START + 0x4c;
+        let banner_loop_pc = vmm::arch::DRAM_MEM_START + 0x4c;
         assert!(a.pcs.contains(&banner_loop_pc), "original should print");
         assert!(
             !b.pcs.contains(&banner_loop_pc),
             "redirected guest must skip the banner loop"
         );
         // Both reach the marker section.
-        let marker_pc = crate::arch::DRAM_MEM_START + 0xc0;
+        let marker_pc = vmm::arch::DRAM_MEM_START + 0xc0;
         assert!(a.pcs.contains(&marker_pc) && b.pcs.contains(&marker_pc));
         assert_ne!(a.pcs, b.pcs, "divergent guests must diverge in coverage");
     }
