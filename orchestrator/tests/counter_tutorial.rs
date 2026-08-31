@@ -39,6 +39,7 @@ fn guest_resources() -> VmResources {
         .insert(EntropyDeviceConfig {
             rate_limiter: None,
             seed: Some(42),
+            script: None,
         })
         .unwrap();
     resources

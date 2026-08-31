@@ -24,6 +24,10 @@ pub struct EntropyDeviceConfig {
     /// identical entropy streams.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+    /// Scripted bytes served verbatim before the seeded stream (value
+    /// injection: make the guest's randomness return chosen values).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<Vec<u8>>,
 }
 
 impl From<&Entropy> for EntropyDeviceConfig {
@@ -32,6 +36,7 @@ impl From<&Entropy> for EntropyDeviceConfig {
         EntropyDeviceConfig {
             rate_limiter: rate_limiter.into_option(),
             seed: dev.seed(),
+            script: None,
         }
     }
 }
@@ -64,6 +69,9 @@ impl EntropyDeviceBuilder {
             .map(RateLimiter::from)
             .unwrap_or_default();
         let dev = Arc::new(Mutex::new(Entropy::new(rate_limiter, config.seed)?));
+        if let Some(script) = config.script {
+            dev.lock().expect("Poisoned lock").set_script(script);
+        }
         self.0 = Some(dev.clone());
 
         Ok(dev)

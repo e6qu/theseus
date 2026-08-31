@@ -75,6 +75,9 @@ pub struct Entropy {
     rng: ChaCha8Rng,
 
     buffer: IoVecBufferMut,
+    /// Scripted bytes served verbatim before the ChaCha stream (Theseus: inject
+    /// chosen values into the guest's random stream).
+    script: std::collections::VecDeque<u8>,
 }
 
 impl Entropy {
@@ -108,7 +111,19 @@ impl Entropy {
             seed,
             rng,
             buffer: IoVecBufferMut::new()?,
+            script: Default::default(),
         })
+    }
+
+    /// Set scripted bytes to serve verbatim before the ChaCha stream.
+    /// Theseus: inject chosen values into the guest's random stream.
+    pub fn set_script(&mut self, bytes: Vec<u8>) {
+        self.script = bytes.into();
+    }
+
+    /// The scripted bytes not yet served.
+    pub(crate) fn script(&self) -> Vec<u8> {
+        self.script.iter().copied().collect()
     }
 
     fn signal_used_queue(&self) -> Result<(), DeviceError> {
@@ -147,9 +162,17 @@ impl Entropy {
         let len = std::cmp::min(self.buffer.len(), MAX_ENTROPY_BYTES);
 
         let mut rand_bytes = vec![0; len as usize];
-        // Deterministic: bytes come from the seeded ChaCha stream, never from
-        // host entropy. Infallible, unlike the previous `aws_lc_rs` fill.
-        self.rng.fill_bytes(&mut rand_bytes);
+        // Scripted bytes first (verbatim); the ChaCha stream fills the rest.
+        let scripted = std::cmp::min(len as usize, self.script.len());
+        for byte in rand_bytes.iter_mut().take(scripted) {
+            *byte = self.script.pop_front().unwrap();
+        }
+        if scripted < len as usize {
+            // Deterministic: bytes come from the seeded ChaCha stream, never
+            // from host entropy. Infallible, unlike the previous
+            // `aws_lc_rs` fill.
+            self.rng.fill_bytes(&mut rand_bytes[scripted..]);
+        }
 
         // It is ok to unwrap here. We are writing `len` bytes at offset 0.
         self.buffer.write_all_volatile_at(&rand_bytes, 0).unwrap();
@@ -440,6 +463,50 @@ mod tests {
             dflt, a1,
             "default seed must differ from an explicit non-default seed"
         );
+    }
+
+    /// Theseus: scripted bytes are served verbatim before the ChaCha stream
+    /// continues. Value injection: make the guest's randomness return chosen
+    /// values.
+    #[test]
+    fn test_script_served_before_stream() {
+        let mem = create_virtio_mem();
+        let mut th = VirtioTestHelper::<Entropy>::new(
+            &mem,
+            Entropy::new(RateLimiter::default(), Some(42)).unwrap(),
+        );
+        th.activate_device(&mem);
+        th.add_desc_chain(RNG_QUEUE, 0, &[(0, 16, VIRTQ_DESC_F_WRITE)]);
+        let data_addr = th.data_address();
+
+        let mut dev = th.device();
+        dev.set_script(vec![1, 2, 3]);
+        let desc = dev.queues_mut()[RNG_QUEUE].pop().unwrap().unwrap();
+        // SAFETY: This descriptor chain is only loaded into one buffer
+        dev.buffer = unsafe { IoVecBufferMut::from_descriptor_chain(&mem, desc).unwrap() };
+        assert_eq!(dev.handle_one().unwrap(), 16);
+
+        let mut out = vec![0u8; 16];
+        vm_memory::Bytes::read_slice(&mem, &mut out, crate::vstate::memory::GuestAddress(data_addr))
+            .unwrap();
+
+        // The first three bytes are the script; the rest is the seeded stream.
+        assert_eq!(&out[..3], &[1, 2, 3], "script must be served verbatim first");
+
+        // The remainder matches the seeded ChaCha stream from byte 3 onward.
+        let mut expected = [0u8; 16];
+        rand_chacha::rand_core::RngCore::fill_bytes(
+            &mut rand_chacha::ChaCha8Rng::seed_from_u64(42),
+            &mut expected,
+        );
+        assert_eq!(
+            &out[3..],
+            &expected[..13],
+            "stream must continue after the script"
+        );
+
+        // The script is consumed: a second request serves pure stream.
+        assert_eq!(dev.script(), Vec::<u8>::new());
     }
 
     #[test]

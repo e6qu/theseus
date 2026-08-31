@@ -386,6 +386,7 @@ mod tests {
             .insert(EntropyDeviceConfig {
                 rate_limiter: None,
                 seed: Some(42),
+                script: None,
             })
             .unwrap();
         resources
@@ -496,6 +497,7 @@ mod tests {
                 .insert(EntropyDeviceConfig {
                     rate_limiter: None,
                     seed: Some(42),
+                    script: None,
                 })
                 .unwrap();
             resources
@@ -593,6 +595,7 @@ mod tests {
                 .insert(EntropyDeviceConfig {
                     rate_limiter: None,
                     seed: Some(42),
+                    script: None,
                 })
                 .unwrap();
             resources
