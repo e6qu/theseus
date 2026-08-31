@@ -1,0 +1,40 @@
+name: ci
+
+# Runs on pull requests only. Not on raw pushes, not on main.
+on:
+  pull_request:
+
+jobs:
+  check-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libclang-dev libseccomp-dev
+
+      - name: Install Rust (pinned toolchain)
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Check workspace
+        working-directory: firecracker
+        run: cargo check --workspace
+
+      - name: Deterministic unit suites
+        working-directory: firecracker
+        run: >-
+          cargo test -p vmm --lib --
+          --test-threads=1
+          vclock
+          theseus
+          devices::virtio::rng
+          net::sim
+          branch
+          orchestrator::tree
+          machine_config
+          vmm_config::entropy
+          detrng
+          rate_limiter
