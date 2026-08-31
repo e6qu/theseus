@@ -25,6 +25,9 @@ pub struct EntropyState {
     /// at the exact position it was snapshotted at. This is what makes entropy
     /// deterministic across snapshot/branch boundaries.
     rng_state: ChaCha8Rng,
+    /// Scripted bytes not yet served (Theseus value injection).
+    #[serde(default)]
+    script: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -53,6 +56,7 @@ impl Persist<'_> for Entropy {
             rate_limiter_state: self.rate_limiter().save(),
             seed: self.seed(),
             rng_state: self.rng_state().clone(),
+            script: self.script(),
         }
     }
 
@@ -76,6 +80,7 @@ impl Persist<'_> for Entropy {
         )?;
         entropy.set_avail_features(state.virtio_state.avail_features);
         entropy.set_acked_features(state.virtio_state.acked_features);
+        entropy.set_script(state.script.clone());
 
         Ok(entropy)
     }

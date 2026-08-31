@@ -1858,6 +1858,14 @@ definitions:
           Seed for the deterministic entropy source. If omitted, the default
           seed (0) is used. VMs launched with the same seed observe identical
           entropy streams.
+      script:
+        type: array
+        items:
+          type: integer
+          format: uint8
+        description:
+          Theseus — scripted bytes served verbatim before the seeded stream
+          (value injection into the guest's random stream).
 
   SerialDevice:
     type: object

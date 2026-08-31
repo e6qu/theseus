@@ -120,7 +120,7 @@ What you can and cannot do today:
 
 A path from "the artifact CI already builds" to "a seeded, replayable
 virtual machine that talks the Theseus protocol" — without rebuilding or
-modifying the image. Every other tutorial's machinery (branching, faults,
+modifying the image. The rest of the engine (branching, fault schedules,
 virtual time) applies to this VM unchanged.
 
 ## Further reading
