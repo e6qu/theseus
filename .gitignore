@@ -12,3 +12,8 @@ e2e/*.cpio.gz
 
 # macOS metadata
 .DS_Store
+
+# Rust build artifacts (tutorial example)
+examples/counter-guest/target/
+
+orchestrator/pivot/target/

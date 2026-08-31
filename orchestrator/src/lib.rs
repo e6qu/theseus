@@ -7,4 +7,5 @@
 
 pub mod branch;
 pub mod coverage;
+pub mod oci;
 pub mod orchestrator;
