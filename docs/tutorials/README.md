@@ -1,25 +1,26 @@
 # Tutorials
 
-Start with the first four tutorials in order. They use Theseus at its current
-host surface: the forked `firecracker` binary and its Unix-socket HTTP API.
-Tutorials 1 and 2 use plain C guests. Tutorial 3 introduces `theseus-sdk`
-only when the guest must report an outcome. Tutorial 4 uses those pieces to
-find and replay a bug.
+Run the first four tutorials in order. Each directory is complete: make it
+your working directory and use the published Theseus image named in its
+README. No tutorial needs a Theseus source checkout.
 
-All commands need Linux with KVM. On Apple Silicon, run them in the privileged
-aarch64 container from tutorial 1.
+All runners need Linux with KVM and Docker. Tutorials 1 and 2 currently use
+the arm64 runtime, because that is where the matching deterministic-CRNG
+kernel module is shipped.
 
-1. [Run and replay a VM](01-replay-by-seed/) — seed the service and replay a
-   plain C guest.
-2. [Script guest randomness](02-control-the-random/) — choose the bytes a
-   plain C guest receives.
-3. [Instrument a guest](03-the-control-channel/) — use `theseus-sdk` for
-   events and markers.
-4. [Find and replay a retry bug](04-fault-hunting/) — establish a baseline,
-   inject a fault, reproduce it, and verify a fix.
+1. [Replay `/dev/urandom`](01-replay-by-seed/) — replay ordinary Linux random
+   devices with a seed.
+2. [Choose the random input](02-control-the-random/) — select a new random
+   stream without changing the guest.
+3. [Instrument a guest](03-the-control-channel/) — use the published
+   `theseus-sdk` package for markers and events.
+4. [Read a serial device](04-read-serial/) — feed a UART/TTY value into a
+   guest, as you would on a Raspberry Pi.
 
-Afterward, use the focused guides for [container images](07-container-images/),
-[branching](05-branching-timelines/), and [virtual time](06-virtual-time/).
+For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
+and the focused guides for [container images](../guides/container-images/),
+[branching](../guides/branching-timelines/), and
+[virtual time](../guides/virtual-time/).
 
 For design details, see [determinism](../determinism.md),
 [the control channel](../control-channel.md), and [exploration](../exploration.md).

@@ -1,0 +1,17 @@
+[package]
+name = "theseus-sdk-tutorial"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[[bin]]
+name = "theseus-sdk-tutorial"
+path = "main.rs"
+
+[dependencies]
+theseus-sdk = { path = "vendor" }
+
+[profile.release]
+panic = "abort"
+lto = true

@@ -1,6 +1,6 @@
-# Tutorial 4: Find and replay a retry bug
+# Developer exercise: Find and replay a retry bug
 
-Use the service controls and guest markers from tutorials 1–3 to expose a
+Use the service controls and guest markers to expose a
 duplicate-apply bug. The sample models a two-node protocol inside one
 bare-metal guest: a lost acknowledgement makes node A retry, and node B
 applies the command again.
@@ -12,13 +12,13 @@ Use the Linux+KVM container from tutorial 1, then run:
 ```sh
 apt-get install -y -qq binutils
 rustup target add aarch64-unknown-none
-sh /theseus/docs/tutorials/04-fault-hunting/guest/build.sh
+sh /theseus/docs/developer/fault-hunting/guest/build.sh
 ```
 
 ## 2. Run the healthy schedule
 
 ```sh
-cd /theseus/docs/tutorials/04-fault-hunting/driver && cargo run
+cd /theseus/docs/developer/fault-hunting/driver && cargo run
 ```
 
 The driver first sends two increments with no fault:

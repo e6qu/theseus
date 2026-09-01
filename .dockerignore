@@ -1,0 +1,4 @@
+.git
+**/target
+firecracker/build
+**/__pycache__

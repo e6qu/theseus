@@ -1,54 +1,25 @@
-# Tutorial 3: Instrument a guest with `theseus-sdk`
+# Tutorial 3: Mark guest state with `theseus-sdk`
 
-The service can now supply inputs. Add `theseus-sdk` so the guest can report
-its state and result back to the host.
+This directory is a complete bare-metal guest. It gets `theseus-sdk` from the
+published GitHub release, not from a Theseus checkout.
 
-## 1. Add the guest contract
-
-Use a `ControlChannel` to report boot and readiness, consume events, and
-report the result:
-
-```rust
-let door = unsafe { ControlChannel::new(DOOR_ADDRESS) };
-door.detect();
-door.marker(0x42);          // booted
-door.command(0x01);         // ready
-loop {
-    door.wait_events();
-    let event = door.pop_event();
-    door.marker(if event == 0x00 { 0xFF } else { event });
-}
-```
-
-The complete example is
-[`theseus_guest_rs/main.rs`](../../../firecracker/src/vmm/src/test_utils/mock_resources/theseus_guest_rs/main.rs).
-
-## 2. Run the lifecycle check
-
-Use the Linux+KVM container from tutorial 1:
+Choose a published short commit SHA, then build it:
 
 ```sh
-cargo test --manifest-path /theseus/orchestrator/Cargo.toml --lib \
-  spawn::tests::test_guest_control_channel_roundtrip
+export THESEUS_TAG=<12-character-sha>
+rustup target add aarch64-unknown-none
+sh ./build.sh
 ```
 
-The host receives `[0x42, 0x01]`: booted, then ready.
+`build.sh` downloads the SDK package into `vendor/`, builds the guest, and
+writes `guest.bin` in this directory.
 
-## 3. Send an event
+The guest uses `ControlChannel` to do three things:
 
-```sh
-cargo test --manifest-path /theseus/orchestrator/Cargo.toml --lib \
-  spawn::tests::test_rust_guest_event_paths
-```
+1. Detect the Theseus control device.
+2. Emit `MARKER_BOOT` and `CMD_SETUP_COMPLETE`.
+3. Echo events as markers, then emit `MARKER_DONE`.
 
-The host receives:
-
-```text
-[boot 0x42, setup 0x01, high-path 0xB0, echo 0x90, done 0xFF]
-```
-
-Markers are the property surface for your guest. Use them in the next tutorial
-to catch a failure under a fault schedule.
-
-See [the control-channel reference](../../control-channel.md) and
-[the SDK README](../../../sdk/README.md).
+Markers are the small, stable contract between a guest and the Theseus
+service. Keep values meaningful: for example, use one marker for “ready” and
+one for a failed invariant.

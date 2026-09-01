@@ -1,0 +1,8 @@
+#!/bin/busybox sh
+/bin/busybox mount -t devtmpfs devtmpfs /dev
+
+# A Raspberry Pi exposes its UART as a TTY too (commonly ttyAMA0 or ttyS0).
+# This guest's NS16550 UART is ttyS0.
+IFS= read -r measurement </dev/ttyS0
+printf 'sensor reading: %s\n' "$measurement" >/dev/ttyS0
+/bin/busybox poweroff -f
