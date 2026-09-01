@@ -12,6 +12,7 @@ theseus test --dry-run [theseus.toml]
 theseus test [--output replay-dir] [theseus.toml]
 theseus replay replay-dir
 theseus explore [--output exploration-dir] [theseus.toml]
+theseus report [--output report-dir] result-dir
 theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
@@ -39,6 +40,22 @@ channel. It needs the published Linux runtime bundle, KVM, and a guest that
 uses `theseus-sdk` to send `SETUP_COMPLETE` and a done marker. It leaves an
 output directory even if exploration fails, so the locked plan and
 `result.json` are available for inspection.
+
+`report` turns an existing replay, Compose topology replay, or exploration
+directory into one offline `index.html`. It embeds no external assets and reads
+only files within the selected result directory. Open it directly in a browser:
+
+```sh
+theseus report theseus-replay
+open theseus-replay/theseus-report/index.html
+```
+
+The report shows checks and serial logs for one timeline, service checks and
+applied faults for a topology, and the search tree plus dirty-page coverage
+proxy for an exploration. It also prints the appropriate copy-paste command:
+locked single-timeline bundles use `theseus replay`; topology and exploration
+reports preserve the source command because those runners do not yet have a
+bundle-local replay mode.
 
 ```toml
 [explore]

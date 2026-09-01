@@ -49,3 +49,24 @@ fn test_dry_run_prints_a_replayable_plan_without_kvm() {
     assert_eq!(plan["format"], "theseus-run-plan-v1");
     assert_eq!(plan["run"]["seed"], 42);
 }
+
+#[test]
+fn report_writes_a_static_page_without_kvm() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("recording");
+    fs::create_dir(&input).unwrap();
+    fs::write(
+        input.join("result.json"),
+        r#"{"format":"theseus-result-v1","status":"passed","error":null,"checks":[]}"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["report", "recording"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(input.join("theseus-report/index.html").is_file());
+}

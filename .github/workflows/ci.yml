@@ -65,4 +65,5 @@ jobs:
           sh -n docs/tutorials/07-storage-faults/run.sh
           sh -n docs/tutorials/08-explore-sdk-guest/build.sh
           sh -n docs/tutorials/08-explore-sdk-guest/run.sh
+          sh -n docs/tutorials/09-inspect-report/run.sh
           ! rg -n '/dev/hwrng|(^|[[:space:]])/theseus/|\.\./\.\./\.\.' docs/tutorials

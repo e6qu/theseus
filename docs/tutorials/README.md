@@ -24,6 +24,8 @@ kernel module is shipped.
    memory-only virtio disk.
 8. [Explore an SDK guest](08-explore-sdk-guest/) — branch a control-channel
    guest within a fixed timeline budget.
+9. [Inspect a recorded exploration](09-inspect-report/) — write one local,
+   standalone timeline report without needing KVM.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),
