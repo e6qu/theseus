@@ -9,7 +9,7 @@ use vmm_sys_util::eventfd::EventFd;
 use super::BlockError;
 use super::persist::{BlockConstructorArgs, BlockState};
 use super::vhost_user::device::{VhostUserBlock, VhostUserBlockConfig};
-use super::virtio::device::{VirtioBlock, VirtioBlockConfig};
+use super::virtio::device::{SimulatedBlockConfig, VirtioBlock, VirtioBlockConfig};
 use crate::devices::virtio::ActivateError;
 use crate::devices::virtio::device::{VirtioDevice, VirtioDeviceType};
 use crate::devices::virtio::queue::{InvalidAvailIdx, Queue};
@@ -40,6 +40,21 @@ impl Block {
             ))
         } else {
             Err(BlockError::InvalidBlockConfig)
+        }
+    }
+
+    /// Create a Theseus memory-only block device for deterministic topology tests.
+    pub fn new_simulated(config: SimulatedBlockConfig) -> Result<Block, BlockError> {
+        Ok(Self::Virtio(
+            VirtioBlock::new_simulated(config).map_err(BlockError::VirtioBackend)?,
+        ))
+    }
+
+    pub fn pump_simulated(&mut self) {
+        if let Self::Virtio(block) = self
+            && block.is_simulated()
+        {
+            block.pump_simulated();
         }
     }
 

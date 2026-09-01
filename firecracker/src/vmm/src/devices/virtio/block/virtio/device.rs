@@ -6,6 +6,7 @@
 // found in the THIRD-PARTY file.
 
 use std::cmp;
+use std::collections::VecDeque;
 use std::convert::From;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom};
@@ -15,6 +16,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use block_io::FileEngine;
+use rand_chacha::ChaCha8Rng;
+use rand_chacha::rand_core::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use vm_memory::ByteValued;
 use vmm_sys_util::eventfd::EventFd;
@@ -103,6 +106,29 @@ impl DiskProperties {
             file_engine: FileEngine::from_file(disk_image, file_engine_type)
                 .map_err(VirtioBlockError::FileEngine)?,
             nsectors: disk_size >> SECTOR_SHIFT,
+            image_id,
+        })
+    }
+
+    fn anonymous(size_bytes: u64, id: &str) -> Result<Self, VirtioBlockError> {
+        let memfd = memfd::MemfdOptions::default()
+            .create("theseus_simulated_block")
+            .map_err(|error| {
+                VirtioBlockError::BackingFile(std::io::Error::other(error), id.to_owned())
+            })?;
+        memfd
+            .as_file()
+            .set_len(size_bytes)
+            .map_err(|error| VirtioBlockError::BackingFile(error, id.to_owned()))?;
+        let mut image_id = [0; VIRTIO_BLK_ID_BYTES as usize];
+        let bytes = id.as_bytes();
+        image_id[..bytes.len().min(image_id.len())]
+            .copy_from_slice(&bytes[..bytes.len().min(image_id.len())]);
+        Ok(Self {
+            file_path: format!("memory://theseus/{id}"),
+            file_engine: FileEngine::from_file(memfd.into_file(), FileEngineType::Sync)
+                .map_err(VirtioBlockError::FileEngine)?,
+            nsectors: size_bytes >> SECTOR_SHIFT,
             image_id,
         })
     }
@@ -198,6 +224,94 @@ pub struct VirtioBlockConfig {
     pub file_engine_type: FileEngineType,
 }
 
+/// A memory-only block device controlled by Theseus topology plans.
+#[derive(Debug, Clone)]
+pub struct SimulatedBlockConfig {
+    pub drive_id: String,
+    pub size_mib: u32,
+    pub seed: u64,
+    pub error_ppm: u32,
+    pub latency_rounds: u32,
+    pub torn_write_bytes: Option<u32>,
+    pub corrupt_read_xor: Option<u8>,
+}
+
+#[derive(Debug)]
+struct DelayedSimulatedRequest {
+    request: Request,
+    pending: PendingRequest,
+    rounds_remaining: u32,
+}
+
+#[derive(Debug)]
+pub(crate) struct SimulatedBlock {
+    bytes: Vec<u8>,
+    error_ppm: u32,
+    latency_rounds: u32,
+    torn_write_bytes: Option<u32>,
+    corrupt_read_xor: Option<u8>,
+    rng: ChaCha8Rng,
+    delayed: VecDeque<DelayedSimulatedRequest>,
+}
+
+impl SimulatedBlock {
+    fn new(config: &SimulatedBlockConfig) -> Result<Self, VirtioBlockError> {
+        let size_bytes = u64::from(config.size_mib)
+            .checked_mul(1024 * 1024)
+            .ok_or(VirtioBlockError::Config)?;
+        let len = usize::try_from(size_bytes).map_err(|_| VirtioBlockError::Config)?;
+        Ok(Self {
+            bytes: vec![0; len],
+            error_ppm: config.error_ppm,
+            latency_rounds: config.latency_rounds,
+            torn_write_bytes: config.torn_write_bytes,
+            corrupt_read_xor: config.corrupt_read_xor,
+            rng: ChaCha8Rng::seed_from_u64(config.seed),
+            delayed: VecDeque::new(),
+        })
+    }
+
+    pub(crate) fn should_fail(&mut self) -> bool {
+        self.error_ppm != 0 && self.rng.next_u32() % 1_000_000 < self.error_ppm
+    }
+
+    pub(crate) fn read(&self, offset: usize, len: usize) -> &[u8] {
+        &self.bytes[offset..offset + len]
+    }
+
+    pub(crate) fn write(&mut self, offset: usize, data: &[u8]) {
+        let len = self
+            .torn_write_bytes
+            .map_or(data.len(), |limit| data.len().min(limit as usize));
+        self.bytes[offset..offset + len].copy_from_slice(&data[..len]);
+    }
+
+    pub(crate) fn corrupt_read_xor(&self) -> Option<u8> {
+        self.corrupt_read_xor
+    }
+
+    pub(crate) fn defer(&mut self, request: Request, pending: PendingRequest) {
+        self.delayed.push_back(DelayedSimulatedRequest {
+            request,
+            pending,
+            rounds_remaining: self.latency_rounds,
+        });
+    }
+
+    fn next_ready(&mut self) -> Option<DelayedSimulatedRequest> {
+        let request = self.delayed.front_mut()?;
+        if request.rounds_remaining > 1 {
+            request.rounds_remaining -= 1;
+            return None;
+        }
+        self.delayed.pop_front()
+    }
+
+    pub(crate) fn has_latency(&self) -> bool {
+        self.latency_rounds > 0
+    }
+}
+
 impl TryFrom<&BlockDeviceConfig> for VirtioBlockConfig {
     type Error = VirtioBlockError;
 
@@ -264,6 +378,7 @@ pub struct VirtioBlock {
     pub rate_limiter: RateLimiter,
     pub is_io_engine_throttled: bool,
     pub metrics: Arc<BlockDeviceMetrics>,
+    simulated: Option<SimulatedBlock>,
 }
 
 macro_rules! unwrap_async_file_engine_or_return {
@@ -284,10 +399,42 @@ impl VirtioBlock {
     /// The given file must be seekable and sizable.
     pub fn new(config: VirtioBlockConfig) -> Result<VirtioBlock, VirtioBlockError> {
         let disk_properties = DiskProperties::new(
-            config.path_on_host,
+            config.path_on_host.clone(),
             config.is_read_only,
             config.file_engine_type,
         )?;
+
+        Self::from_disk(config, disk_properties, None)
+    }
+
+    /// Create a memory-only virtio block device for deterministic topology tests.
+    pub fn new_simulated(config: SimulatedBlockConfig) -> Result<VirtioBlock, VirtioBlockError> {
+        let size_bytes = u64::from(config.size_mib)
+            .checked_mul(1024 * 1024)
+            .ok_or(VirtioBlockError::Config)?;
+        let disk_properties = DiskProperties::anonymous(size_bytes, &config.drive_id)?;
+        let simulated = SimulatedBlock::new(&config)?;
+        Self::from_disk(
+            VirtioBlockConfig {
+                drive_id: config.drive_id,
+                partuuid: None,
+                is_root_device: false,
+                cache_type: CacheType::Writeback,
+                is_read_only: false,
+                path_on_host: disk_properties.file_path.clone(),
+                rate_limiter: None,
+                file_engine_type: FileEngineType::Sync,
+            },
+            disk_properties,
+            Some(simulated),
+        )
+    }
+
+    fn from_disk(
+        config: VirtioBlockConfig,
+        disk_properties: DiskProperties,
+        simulated: Option<SimulatedBlock>,
+    ) -> Result<VirtioBlock, VirtioBlockError> {
 
         let rate_limiter = config
             .rate_limiter
@@ -332,6 +479,7 @@ impl VirtioBlock {
             rate_limiter,
             is_io_engine_throttled: false,
             metrics: BlockMetricsPerDevice::alloc(config.drive_id),
+            simulated,
         })
     }
 
@@ -403,12 +551,22 @@ impl VirtioBlock {
                             break;
                         }
 
-                        request.process(
-                            &mut self.disk,
-                            head.index,
-                            &active_state.mem,
-                            &self.metrics,
-                        )
+                        if let Some(simulated) = self.simulated.as_mut() {
+                            request.process_simulated(
+                                simulated,
+                                &self.disk.image_id,
+                                head.index,
+                                &active_state.mem,
+                                &self.metrics,
+                            )
+                        } else {
+                            request.process(
+                                &mut self.disk,
+                                head.index,
+                                &active_state.mem,
+                                &self.metrics,
+                            )
+                        }
                     }
                     Err(err) => {
                         error!("Failed to parse available descriptor chain: {:?}", err);
@@ -528,6 +686,42 @@ impl VirtioBlock {
                 self.process_queue(0).unwrap()
             }
         }
+    }
+
+    /// Advance deterministic latency for this memory-only device by one runner round.
+    pub fn pump_simulated(&mut self) {
+        let Some(simulated) = self.simulated.as_mut() else {
+            return;
+        };
+        let active_state = self.device_state.active_state().unwrap();
+        let queue = &mut self.queues[0];
+        let mut used_any = false;
+        while let Some(request) = simulated.next_ready() {
+            let finished = request.request.finish_simulated(
+                simulated,
+                &self.disk.image_id,
+                request.pending,
+                &active_state.mem,
+                &self.metrics,
+            );
+            used_any = true;
+            queue
+                .add_used(finished.desc_idx, finished.num_bytes_to_mem)
+                .unwrap_or_else(|error| error!("Failed to complete simulated block request: {error}"));
+        }
+        if used_any {
+            queue.advance_used_ring_idx();
+            if queue.prepare_kick() {
+                active_state
+                    .interrupt
+                    .trigger(VirtioInterruptType::Queue(0))
+                    .unwrap_or_else(|_| self.metrics.event_fails.inc());
+            }
+        }
+    }
+
+    pub fn is_simulated(&self) -> bool {
+        self.simulated.is_some()
     }
 
     /// Update the backing file and the config space of the block device.
@@ -1833,5 +2027,27 @@ mod tests {
             );
             assert_eq!(block.disk.image_id, id.as_slice());
         }
+    }
+
+    #[test]
+    fn simulated_storage_is_seeded_memory_with_torn_writes() {
+        let config = SimulatedBlockConfig {
+            drive_id: "data".to_owned(),
+            size_mib: 1,
+            seed: 42,
+            error_ppm: 500_000,
+            latency_rounds: 2,
+            torn_write_bytes: Some(2),
+            corrupt_read_xor: Some(1),
+        };
+        let mut first = SimulatedBlock::new(&config).unwrap();
+        let mut second = SimulatedBlock::new(&config).unwrap();
+        let first_faults: Vec<_> = (0..16).map(|_| first.should_fail()).collect();
+        let second_faults: Vec<_> = (0..16).map(|_| second.should_fail()).collect();
+        assert_eq!(first_faults, second_faults);
+        first.write(0, &[1, 2, 3, 4]);
+        assert_eq!(first.read(0, 4), &[1, 2, 0, 0]);
+        assert!(first.has_latency());
+        assert_eq!(first.corrupt_read_xor(), Some(1));
     }
 }

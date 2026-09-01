@@ -78,6 +78,14 @@ loopback = true
 drop_ppm = 0
 partitioned = false
 
+[[storage]]
+id = "data"
+size_mib = 64
+error_ppm = 0
+latency_rounds = 2
+torn_write_bytes = 512
+corrupt_read_xor = 1
+
 [[checks]]
 name = "finished"
 kind = "serial_contains"
@@ -99,7 +107,12 @@ delivery point: `ready`, after the guest announces that it can receive input.
 The replay bundle preserves the resulting plan verbatim. The runner delivers
 serial bytes only after the `THES:M:42` ready marker.
 Network drop and partition settings are recorded but intentionally rejected by
-this single-VM runner. Use the Compose planner below to describe a topology.
+this single-VM runner. Simulated storage is also recorded in the plan but runs
+only through the Linux Compose executor below. Each entry creates a memory-only
+virtio disk: `error_ppm` injects deterministic I/O errors, `latency_rounds`
+delays requests by topology pumps, `torn_write_bytes` preserves only a write
+prefix while reporting success, and `corrupt_read_xor` changes returned bytes.
+Use the Compose planner below to run either topology feature.
 
 ## Compose topology planning
 
@@ -144,7 +157,8 @@ theseus compose test
 ```
 
 `compose plan` prints the immutable service artifact plans and sorted network
-membership. `compose test` uses the `theseus-topology` executor included in a
+membership. It also records each memory-only simulated storage device and its
+derived seed. `compose test` uses the `theseus-topology` executor included in a
 published Linux runtime bundle. It copies and re-checks each service’s
 Firecracker, kernel, and initramfs before booting; then it connects service
 NICs through an in-process deterministic switch and pumps them in sorted

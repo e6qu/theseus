@@ -1,0 +1,26 @@
+version = 1
+
+[runtime]
+firecracker = "runtime/firecracker"
+
+[guest]
+kernel = "guest/vmlinux"
+initramfs = "guest/initramfs.cpio.gz"
+
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+timeout_secs = 10
+
+[[storage]]
+id = "data"
+size_mib = 4
+latency_rounds = 2
+torn_write_bytes = 16
+corrupt_read_xor = 1
+
+[[checks]]
+name = "storage fault observed"
+kind = "serial_contains"
+value = "storage fault observed"

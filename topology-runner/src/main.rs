@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use theseus_engine::simnet::{SharedSimSwitch, SimSwitch};
 use vmm::builder::build_microvm_for_boot;
+use vmm::devices::virtio::block::device::Block;
+use vmm::devices::virtio::block::virtio::device::SimulatedBlockConfig;
 use vmm::devices::virtio::net::{Net, SimNetConfig};
 use vmm::rate_limiter::RateLimiter;
 use vmm::resources::VmResources;
@@ -75,6 +77,8 @@ struct RunPlan {
     #[serde(default)]
     network: NetworkConfig,
     #[serde(default)]
+    storage: Vec<StoragePlan>,
+    #[serde(default)]
     events: Vec<serde_json::Value>,
     #[serde(default)]
     checks: Vec<CheckPlan>,
@@ -112,6 +116,17 @@ struct NetworkConfig {
     loopback: bool,
     drop_ppm: u32,
     partitioned: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct StoragePlan {
+    id: String,
+    size_mib: u32,
+    seed: u64,
+    error_ppm: u32,
+    latency_rounds: u32,
+    torn_write_bytes: Option<u32>,
+    corrupt_read_xor: Option<u8>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -164,7 +179,7 @@ impl ServiceVm {
         self.vmm
             .lock()
             .expect("VMM lock poisoned")
-            .pump_simulated_network();
+            .pump_simulated_devices();
     }
     fn exited(&self) -> Option<FcExitCode> {
         self.vmm
@@ -550,6 +565,19 @@ fn build_service(
         })
         .map_err(|error| error.to_string())?;
     resources.serial_out_path = Some(serial.to_path_buf());
+    for storage in &service.run.storage {
+        let block = Block::new_simulated(SimulatedBlockConfig {
+            drive_id: storage.id.clone(),
+            size_mib: storage.size_mib,
+            seed: storage.seed,
+            error_ppm: storage.error_ppm,
+            latency_rounds: storage.latency_rounds,
+            torn_write_bytes: storage.torn_write_bytes,
+            corrupt_read_xor: storage.corrupt_read_xor,
+        })
+        .map_err(|error| format!("service {name}: cannot create storage {:?}: {error}", storage.id))?;
+        resources.block.add_virtio_device(Arc::new(Mutex::new(block)));
+    }
     for network in &service.networks {
         let switch = switches
             .get(network)
