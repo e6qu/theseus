@@ -126,7 +126,6 @@ fn execute(plan: &RunPlan) -> Result<Vec<NodeRecord>, String> {
     .map_err(|error| error.to_string())?;
 
     Ok(explorer
-        .tree
         .search_order()
         .iter()
         .copied()
