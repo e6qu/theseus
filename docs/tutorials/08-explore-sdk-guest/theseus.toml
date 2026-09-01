@@ -1,0 +1,23 @@
+version = 1
+
+[runtime]
+firecracker = "runtime/firecracker"
+
+[guest]
+kernel = "guest.bin"
+initramfs = "empty-initramfs.cpio"
+
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+timeout_secs = 10
+
+[explore]
+max_nodes = 7
+branches_per_node = 2
+max_depth = 2
+rendezvous = true
+branch_event_suffix = true
+novelty = "markers"
+events = ["90"]

@@ -28,6 +28,7 @@ pub enum LoadError {
     },
     InvalidNetworkDropRate(u32),
     InvalidRunConfig(String),
+    InvalidExplore(String),
     InvalidStorage(String),
     InvalidCheck(String),
     InvalidPath {
@@ -66,6 +67,7 @@ impl fmt::Display for LoadError {
                 )
             }
             Self::InvalidRunConfig(reason) => write!(formatter, "run: {reason}"),
+            Self::InvalidExplore(reason) => write!(formatter, "explore: {reason}"),
             Self::InvalidStorage(reason) => write!(formatter, "storage: {reason}"),
             Self::InvalidCheck(reason) => write!(formatter, "checks: {reason}"),
             Self::InvalidPath { field, reason } => write!(formatter, "{field}: {reason}"),
@@ -91,6 +93,8 @@ struct Manifest {
     network: Network,
     #[serde(default)]
     storage: Vec<Storage>,
+    #[serde(default)]
+    explore: Option<Explore>,
     #[serde(default)]
     checks: Vec<Check>,
 }
@@ -168,6 +172,32 @@ struct Storage {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Explore {
+    max_nodes: u32,
+    branches_per_node: u32,
+    max_depth: u32,
+    #[serde(default = "default_explore_run_ms")]
+    run_ms: u64,
+    #[serde(default)]
+    rendezvous: bool,
+    #[serde(default)]
+    branch_event_suffix: bool,
+    #[serde(default)]
+    novelty: Novelty,
+    #[serde(default)]
+    events: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Novelty {
+    #[default]
+    Markers,
+    Coverage,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Check {
     name: String,
     kind: CheckKind,
@@ -193,6 +223,8 @@ pub struct RunPlan {
     pub network: NetworkPlan,
     #[serde(default)]
     pub storage: Vec<StoragePlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explore: Option<ExplorePlan>,
     #[serde(default)]
     pub checks: Vec<CheckPlan>,
 }
@@ -245,6 +277,18 @@ pub struct StoragePlan {
     pub latency_rounds: u32,
     pub torn_write_bytes: Option<u32>,
     pub corrupt_read_xor: Option<u8>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ExplorePlan {
+    pub max_nodes: u32,
+    pub branches_per_node: u32,
+    pub max_depth: u32,
+    pub run_ms: u64,
+    pub rendezvous: bool,
+    pub branch_event_suffix: bool,
+    pub novelty: Novelty,
+    pub events_hex: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -350,6 +394,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
         })
         .collect::<Result<_, LoadError>>()?;
     let storage = storage_plan(manifest.storage, manifest.run.seed)?;
+    let explore = explore_plan(manifest.explore)?;
 
     Ok(RunPlan {
         format: "theseus-run-plan-v1".to_owned(),
@@ -370,6 +415,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             partitioned: manifest.network.partitioned,
         },
         storage,
+        explore,
         checks: manifest
             .checks
             .into_iter()
@@ -380,6 +426,59 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             })
             .collect(),
     })
+}
+
+fn explore_plan(explore: Option<Explore>) -> Result<Option<ExplorePlan>, LoadError> {
+    const MAX_NODES: u32 = 1024;
+    let Some(explore) = explore else {
+        return Ok(None);
+    };
+    if explore.max_nodes == 0 || explore.max_nodes > MAX_NODES {
+        return Err(LoadError::InvalidExplore(format!(
+            "explore.max_nodes must be between 1 and {MAX_NODES}"
+        )));
+    }
+    if explore.branches_per_node == 0 {
+        return Err(LoadError::InvalidExplore(
+            "explore.branches_per_node must be greater than zero".to_owned(),
+        ));
+    }
+    if explore.run_ms == 0 {
+        return Err(LoadError::InvalidExplore(
+            "explore.run_ms must be greater than zero".to_owned(),
+        ));
+    }
+    if !explore.rendezvous {
+        return Err(LoadError::InvalidExplore(
+            "rendezvous must be true; host-time exploration is not replayable".to_owned(),
+        ));
+    }
+    let events_hex = explore
+        .events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| {
+            let bytes = decode_hex(event).map_err(|reason| {
+                LoadError::InvalidExplore(format!("events[{index}]: {reason}"))
+            })?;
+            if bytes.len() != 1 || bytes[0] == 0 {
+                return Err(LoadError::InvalidExplore(format!(
+                    "events[{index}] must be one non-zero byte"
+                )));
+            }
+            Ok(hex(bytes))
+        })
+        .collect::<Result<_, LoadError>>()?;
+    Ok(Some(ExplorePlan {
+        max_nodes: explore.max_nodes,
+        branches_per_node: explore.branches_per_node,
+        max_depth: explore.max_depth,
+        run_ms: explore.run_ms,
+        rendezvous: explore.rendezvous,
+        branch_event_suffix: explore.branch_event_suffix,
+        novelty: explore.novelty,
+        events_hex,
+    }))
 }
 
 fn storage_plan(storage: Vec<Storage>, run_seed: u64) -> Result<Vec<StoragePlan>, LoadError> {
@@ -452,6 +551,10 @@ fn storage_plan(storage: Vec<Storage>, run_seed: u64) -> Result<Vec<StoragePlan>
 
 fn default_timeout_secs() -> u64 {
     30
+}
+
+fn default_explore_run_ms() -> u64 {
+    100
 }
 
 fn artifact(dir: &Path, field: &'static str, value: &Path) -> Result<ArtifactPlan, LoadError> {
@@ -719,5 +822,35 @@ size_mib = 0
         );
         let error = load_plan(directory.path().join("test/theseus.toml")).unwrap_err();
         assert!(error.to_string().contains("size_mib"));
+    }
+
+    #[test]
+    fn normalizes_a_bounded_rendezvous_exploration_contract() {
+        let directory = fixture(
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+[guest]
+kernel = "guest/vmlinux"
+initramfs = "guest/initramfs.cpio"
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+[explore]
+max_nodes = 7
+branches_per_node = 2
+max_depth = 2
+rendezvous = true
+branch_event_suffix = true
+novelty = "coverage"
+events = ["90", "0a"]
+"#,
+        );
+        let plan = load_plan(directory.path().join("test/theseus.toml")).unwrap();
+        let explore = plan.explore.unwrap();
+        assert_eq!(explore.max_nodes, 7);
+        assert_eq!(explore.events_hex, ["90", "0a"]);
+        assert!(matches!(explore.novelty, Novelty::Coverage));
     }
 }

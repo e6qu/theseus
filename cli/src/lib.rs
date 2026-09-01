@@ -7,9 +7,13 @@
 //! is what the executor and replay bundle will consume in P6.2.
 
 mod compose;
+mod explore;
 mod manifest;
 mod runner;
 
 pub use compose::{load_compose_plan, test_compose, ComposeError, ComposePlan};
-pub use manifest::{load_plan, CheckKind, LoadError, RunPlan};
+pub use explore::{ExploreError, explore};
+pub use manifest::{
+    ArtifactPlan, CheckKind, ExplorePlan, LoadError, Novelty, RunPlan, load_plan,
+};
 pub use runner::{replay, test, ReplayResult, RunError, TestResult};

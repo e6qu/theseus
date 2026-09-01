@@ -17,7 +17,8 @@ COPY . .
 
 RUN cargo build --manifest-path firecracker/Cargo.toml --release -p firecracker \
     && cargo build --manifest-path cli/Cargo.toml --release --locked \
-    && cargo build --manifest-path topology-runner/Cargo.toml --release --locked
+    && cargo build --manifest-path topology-runner/Cargo.toml --release --locked \
+    && cargo build --manifest-path explorer-runner/Cargo.toml --release --locked
 
 # rebuild.sh normally installs its CI-machine dependencies itself.  The image
 # above already has the smaller, fixed set needed to produce the tutorial
@@ -39,6 +40,7 @@ RUN apt-get update -qq \
 COPY --from=build /src/firecracker/build/cargo_target/release/firecracker /usr/local/bin/firecracker
 COPY --from=build /src/cli/target/release/theseus /usr/local/bin/theseus
 COPY --from=build /src/topology-runner/target/release/theseus-topology /usr/local/bin/theseus-topology
+COPY --from=build /src/explorer-runner/target/release/theseus-explorer /usr/local/bin/theseus-explorer
 COPY --from=build /out/ /opt/theseus/
 
 # Deliberately no entrypoint: a tutorial mounts itself at /tutorial and runs
