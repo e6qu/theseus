@@ -66,9 +66,9 @@ sim config is rewritten in the captured state at spawn).
 - **Guest-internal jitter entropy.** The Linux kernel's CSPRNG mixes
   timing jitter, so `/dev/urandom` diverges even on same-seed boots. A
   hypervisor cannot close this without guest cooperation.
-- **`detrng` is process-global.** Deterministic under one-timeline-per-
-  process. Parallel in-process timelines interleave it; per-VM scoping is
-  the follow-up if that becomes the model.
+- **`detrng` owns one stream per VM timeline.** Parallel in-process timelines
+  enter distinct streams, so their
+  host-side random calls cannot interleave.
 - **io_uring / file-backed block.** Not simulated yet; deterministic mode
   expects sim or inert storage backends.
 

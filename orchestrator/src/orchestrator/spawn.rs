@@ -10,17 +10,17 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use vmm::EventManager;
-use vmm::Vmm;
 use crate::branch::{BranchError, BranchPoint};
-use vmm::persist::{RestoreFromSnapshotError, restore_from_microvm_state};
+use vmm::devices::virtio::net::SimNetConfig;
+use vmm::persist::{restore_from_microvm_state, RestoreFromSnapshotError};
 use vmm::resources::VmResources;
 use vmm::seccomp::BpfThreadMap;
 use vmm::vmm_config::instance_info::InstanceInfo;
-use vmm::devices::virtio::net::SimNetConfig;
 use vmm::vmm_config::snapshot::{
     LoadSnapshotParams, MemBackendConfig, MemBackendType, SnapshotLoadHugePageConfig,
 };
+use vmm::EventManager;
+use vmm::Vmm;
 
 /// Errors from spawning a child timeline.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -40,6 +40,8 @@ pub struct ChildVm {
     pub vmm: Arc<Mutex<Vmm>>,
     /// The seed this child diverges with.
     pub seed: u64,
+    /// Host-side deterministic stream for this child timeline.
+    pub host_rng: vmm::detrng::Stream,
 }
 
 /// Spawn a child timeline from a branch point.
@@ -64,6 +66,7 @@ pub fn spawn_child(
     vm_resources: &mut VmResources,
 ) -> Result<ChildVm, SpawnError> {
     let seed = branch.child_seed();
+    let host_rng = vmm::detrng::Stream::seeded(seed);
     let mut microvm_state = branch.microvm_state()?;
 
     if let Some(cfg) = fault_cfg {
@@ -103,25 +106,31 @@ pub fn spawn_child(
         huge_pages: SnapshotLoadHugePageConfig::Snapshot,
     };
 
-    let vmm = restore_from_microvm_state(
-        instance_info,
-        event_manager,
-        seccomp_filters,
-        microvm_state,
-        &params,
-        vm_resources,
-    )
+    let vmm = vmm::detrng::with_stream(&host_rng, || {
+        restore_from_microvm_state(
+            instance_info,
+            event_manager,
+            seccomp_filters,
+            microvm_state,
+            &params,
+            vm_resources,
+        )
+    })
     .map_err(Box::new)?;
 
     vmm.lock().expect("Poisoned lock").reseed_entropy(seed)?;
 
-    Ok(ChildVm { vmm, seed })
+    Ok(ChildVm {
+        vmm,
+        seed,
+        host_rng,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use rand_chacha::ChaCha8Rng;
     use rand_chacha::rand_core::{RngCore, SeedableRng};
+    use rand_chacha::ChaCha8Rng;
 
     use super::*;
     use vmm::builder::build_microvm_for_boot;
@@ -133,9 +142,7 @@ mod tests {
     use vmm::{EventManager, FcExitCode};
 
     fn boot_parent(seed: u64) -> (Arc<Mutex<Vmm>>, EventManager, BpfThreadMap) {
-        let boot_source_cfg = MockBootSourceConfig::new()
-            .with_default_boot_args()
-            .into();
+        let boot_source_cfg = MockBootSourceConfig::new().with_default_boot_args().into();
         let mut resources: VmResources = MockVmResources::new()
             .with_boot_source(boot_source_cfg)
             .into();
@@ -164,19 +171,14 @@ mod tests {
 
     fn capture_branch(vmm: &Arc<Mutex<Vmm>>, evmgr: &mut EventManager, seed: u64) -> BranchPoint {
         let mut controller = RuntimeApiController::new(vmm.clone());
-        controller
-            .handle_request(VmmAction::Pause, evmgr)
-            .unwrap();
+        controller.handle_request(VmmAction::Pause, evmgr).unwrap();
         let vm_info = VmInfo::from(&*vmm.lock().unwrap());
         let bp = BranchPoint::capture(&mut vmm.lock().unwrap(), &vm_info, seed).unwrap();
         vmm.lock().unwrap().stop(FcExitCode::Ok);
         bp
     }
 
-    fn spawn(
-        branch: &mut BranchPoint,
-        seccomp_filters: &BpfThreadMap,
-    ) -> (ChildVm, EventManager) {
+    fn spawn(branch: &mut BranchPoint, seccomp_filters: &BpfThreadMap) -> (ChildVm, EventManager) {
         let mut resources = VmResources::default();
         let mut evmgr = EventManager::new().unwrap();
         let child = spawn_child(
@@ -234,8 +236,8 @@ mod tests {
     /// with kernel CoW instead of a per-child RAM copy.
     #[test]
     fn test_branch_children_memory_is_cow() {
-        use vmm::vstate::memory::GuestAddress;
         use vm_memory::Bytes;
+        use vmm::vstate::memory::GuestAddress;
 
         let (parent, mut event_manager, seccomp_filters) = boot_parent(42);
         let mut branch = capture_branch(&parent, &mut event_manager, 42);
@@ -248,8 +250,24 @@ mod tests {
         #[cfg(target_arch = "x86_64")]
         const DRAM_START: u64 = 0; // x86_64 guest RAM starts at 0
         let addr = GuestAddress(DRAM_START + 0x400000);
-        let mem_a = child_a.vmm.lock().unwrap().vm.as_kvm().unwrap().guest_memory().clone();
-        let mem_b = child_b.vmm.lock().unwrap().vm.as_kvm().unwrap().guest_memory().clone();
+        let mem_a = child_a
+            .vmm
+            .lock()
+            .unwrap()
+            .vm
+            .as_kvm()
+            .unwrap()
+            .guest_memory()
+            .clone();
+        let mem_b = child_b
+            .vmm
+            .lock()
+            .unwrap()
+            .vm
+            .as_kvm()
+            .unwrap()
+            .guest_memory()
+            .clone();
 
         // Same content before the write.
         let mut before_a = [0u8; 16];
@@ -265,7 +283,10 @@ mod tests {
         // Child B and the branch point's memfd are unchanged.
         let mut after_b = [0u8; 16];
         mem_b.read_slice(&mut after_b, addr).unwrap();
-        assert_eq!(after_b, before_b, "sibling observed another timeline's write");
+        assert_eq!(
+            after_b, before_b,
+            "sibling observed another timeline's write"
+        );
 
         use std::os::unix::fs::FileExt;
         let mut backing = vec![0u8; 16];
@@ -275,7 +296,11 @@ mod tests {
             .memory_file()
             .read_exact_at(&mut backing, 0x400000)
             .unwrap();
-        assert_eq!(&backing[..], &before_b[..], "branch point memfd was mutated");
+        assert_eq!(
+            &backing[..],
+            &before_b[..],
+            "branch point memfd was mutated"
+        );
 
         child_a.vmm.lock().unwrap().stop(FcExitCode::Ok);
         child_b.vmm.lock().unwrap().stop(FcExitCode::Ok);
@@ -291,9 +316,7 @@ mod tests {
         use vmm::vmm_config::net::NetworkInterfaceConfig;
 
         // Parent with a sim-backed net device (no host tap needed).
-        let boot_source_cfg = MockBootSourceConfig::new()
-            .with_default_boot_args()
-            .into();
+        let boot_source_cfg = MockBootSourceConfig::new().with_default_boot_args().into();
         let mut resources: VmResources = MockVmResources::new()
             .with_boot_source(boot_source_cfg)
             .into();
@@ -545,11 +568,11 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                ControlEvent::GuestLog(0x42),       // boot
+                ControlEvent::GuestLog(0x42), // boot
                 ControlEvent::SetupComplete,
-                ControlEvent::GuestLog(0xB0),       // high path for 0x90
-                ControlEvent::GuestLog(0x90),       // echo
-                ControlEvent::GuestLog(0xFF),       // done
+                ControlEvent::GuestLog(0xB0), // high path for 0x90
+                ControlEvent::GuestLog(0x90), // echo
+                ControlEvent::GuestLog(0xFF), // done
             ],
             "rust guest marker stream wrong: {events:?}"
         );
