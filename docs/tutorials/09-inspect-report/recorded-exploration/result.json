@@ -1,0 +1,29 @@
+{
+  "format": "theseus-exploration-result-v1",
+  "status": "passed",
+  "error": null,
+  "nodes": [
+    {
+      "search_index": 0,
+      "id": 0,
+      "parent": null,
+      "depth": 0,
+      "seed": 42,
+      "seed_path": [42],
+      "entropy_probe_hex": "f4c6a3",
+      "markers_hex": "4290ff",
+      "dirty_pages": 12
+    },
+    {
+      "search_index": 1,
+      "id": 1,
+      "parent": 0,
+      "depth": 1,
+      "seed": 2747395685,
+      "seed_path": [42, 2747395685],
+      "entropy_probe_hex": "bc15e9",
+      "markers_hex": "9001ff",
+      "dirty_pages": 14
+    }
+  ]
+}

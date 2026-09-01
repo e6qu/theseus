@@ -9,11 +9,11 @@
 mod compose;
 mod explore;
 mod manifest;
+mod report;
 mod runner;
 
 pub use compose::{load_compose_plan, test_compose, ComposeError, ComposePlan};
-pub use explore::{ExploreError, explore};
-pub use manifest::{
-    ArtifactPlan, CheckKind, ExplorePlan, LoadError, Novelty, RunPlan, load_plan,
-};
+pub use explore::{explore, ExploreError};
+pub use manifest::{load_plan, ArtifactPlan, CheckKind, ExplorePlan, LoadError, Novelty, RunPlan};
+pub use report::{report, ReportError};
 pub use runner::{replay, test, ReplayResult, RunError, TestResult};

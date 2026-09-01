@@ -5,7 +5,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use theseus_cli::{explore, load_compose_plan, load_plan, replay, test, test_compose};
+use theseus_cli::{explore, load_compose_plan, load_plan, replay, report, test, test_compose};
 
 const USAGE: &str = "Usage:
   theseus validate [theseus.toml]
@@ -13,6 +13,7 @@ const USAGE: &str = "Usage:
   theseus test [--output replay-dir] [theseus.toml]
   theseus replay replay-dir
   theseus explore [--output exploration-dir] [theseus.toml]
+  theseus report [--output report-dir] result-dir
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
@@ -73,6 +74,18 @@ fn run(args: Vec<String>) -> Result<(), String> {
         [command, bundle] if command == "replay" => {
             let result = replay(bundle).map_err(|error| error.to_string())?;
             println!("replay passed; logs: {}", result.logs.display());
+            Ok(())
+        }
+        [command, flag, output, input] if command == "report" && flag == "--output" => {
+            let index = report(input, output).map_err(|error| error.to_string())?;
+            println!("report: {}", index.display());
+            Ok(())
+        }
+        [command, input] if command == "report" => {
+            let input = PathBuf::from(input);
+            let index =
+                report(&input, input.join("theseus-report")).map_err(|error| error.to_string())?;
+            println!("report: {}", index.display());
             Ok(())
         }
         [command, flag, output, rest @ ..] if command == "explore" && flag == "--output" => {
