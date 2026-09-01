@@ -8,12 +8,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::{LoadError, RunPlan, load_plan};
+use crate::{ArtifactPlan, LoadError, RunPlan, load_plan};
 
 #[derive(Debug)]
 pub enum ExploreError {
     Manifest(LoadError),
     Invalid(String),
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     Write {
         path: PathBuf,
         source: std::io::Error,
@@ -26,6 +30,7 @@ impl fmt::Display for ExploreError {
         match self {
             Self::Manifest(error) => error.fmt(formatter),
             Self::Invalid(reason) => formatter.write_str(reason),
+            Self::Read { path, source } => write!(formatter, "cannot read {}: {source}", path.display()),
             Self::Write { path, source } => write!(formatter, "cannot write {}: {source}", path.display()),
             Self::Execute(reason) => write!(formatter, "exploration failed: {reason}"),
         }
@@ -38,6 +43,34 @@ impl std::error::Error for ExploreError {}
 pub fn explore(path: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<PathBuf, ExploreError> {
     let plan = load_plan(path).map_err(ExploreError::Manifest)?;
     validate(&plan)?;
+    execute_plan(&plan, output)
+}
+
+/// Re-run a recorded exploration using only its locked artifacts.
+pub fn replay_exploration(
+    bundle: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+) -> Result<PathBuf, ExploreError> {
+    let bundle = fs::canonicalize(bundle.as_ref()).map_err(|source| ExploreError::Read {
+        path: bundle.as_ref().to_path_buf(),
+        source,
+    })?;
+    let plan_path = bundle.join("explore-plan.json");
+    let mut plan: RunPlan = serde_json::from_slice(
+        &fs::read(&plan_path).map_err(|source| ExploreError::Read {
+            path: plan_path.clone(),
+            source,
+        })?,
+    )
+    .map_err(|error| ExploreError::Invalid(format!("cannot parse {}: {error}", plan_path.display())))?;
+    plan.runtime.firecracker = locked_artifact(&bundle, "firecracker", &plan.runtime.firecracker)?;
+    plan.guest.kernel = locked_artifact(&bundle, "kernel", &plan.guest.kernel)?;
+    plan.guest.initramfs = locked_artifact(&bundle, "initramfs", &plan.guest.initramfs)?;
+    validate(&plan)?;
+    execute_plan(&plan, output)
+}
+
+fn execute_plan(plan: &RunPlan, output: impl AsRef<Path>) -> Result<PathBuf, ExploreError> {
     let output = output.as_ref().to_path_buf();
     if output.exists() {
         return Err(ExploreError::Invalid(format!(
@@ -84,6 +117,25 @@ pub fn explore(path: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<PathB
     }
 }
 
+fn locked_artifact(bundle: &Path, name: &str, expected: &ArtifactPlan) -> Result<ArtifactPlan, ExploreError> {
+    let path = fs::canonicalize(bundle.join("artifacts").join(name)).map_err(|source| {
+        ExploreError::Read {
+            path: bundle.join("artifacts").join(name),
+            source,
+        }
+    })?;
+    if !path.starts_with(bundle) {
+        return Err(ExploreError::Invalid(format!(
+            "replay artifact escapes exploration bundle: {}",
+            path.display()
+        )));
+    }
+    Ok(ArtifactPlan {
+        path: path.display().to_string(),
+        sha256: expected.sha256.clone(),
+    })
+}
+
 fn validate(plan: &RunPlan) -> Result<(), ExploreError> {
     if plan.explore.is_none() {
         return Err(ExploreError::Invalid(
@@ -108,6 +160,7 @@ fn validate(plan: &RunPlan) -> Result<(), ExploreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn rejects_a_manifest_without_an_exploration_contract() {
@@ -122,5 +175,25 @@ mod tests {
         )
         .unwrap();
         assert!(validate(&plan).unwrap_err().to_string().contains("no [explore]"));
+    }
+
+    #[test]
+    fn replay_uses_the_bundle_copy_not_the_recorded_source_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let artifacts = directory.path().join("artifacts");
+        fs::create_dir(&artifacts).unwrap();
+        fs::write(artifacts.join("kernel"), b"locked kernel").unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let locked = locked_artifact(
+            &root,
+            "kernel",
+            &ArtifactPlan {
+                path: "/removed/source/kernel".to_owned(),
+                sha256: "digest".to_owned(),
+            },
+        )
+        .unwrap();
+        assert!(Path::new(&locked.path).starts_with(root));
+        assert_eq!(locked.sha256, "digest");
     }
 }

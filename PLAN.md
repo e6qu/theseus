@@ -300,9 +300,10 @@ below must have a runnable example and narrow acceptance tests.
 | P6.5 | **`faults: add lifecycle and clock schedules`** | **DONE (PR #18).** Declarative, replayable service pause/restart and virtual-clock-jump schedules, scoped to one service. | Storage corruption/torn writes, arbitrary host process faults, or thread scheduling controls. |
 | P6.6 | **`faults: add deterministic storage faults`** | **DONE (PR #19).** The simulated block backend exposes errors, latency, torn writes, and corrupt reads through the same manifest/replay format. | Real host-disk fault injection. |
 | P6.7 | **`explorer: make search guidance product-facing`** | **DONE (PR #20).** Branch budgets, coverage/marker novelty controls, failure preservation, and deterministic test reports through the CLI. | RL training infrastructure or a graphical multiverse debugger. |
-| P6.8 | **`reports: add local timeline inspection`** | A local static report with timeline tree, faults, logs, checks, coverage summaries, and copy-paste replay commands. | A hosted multi-user UI or causality analysis equivalent. |
+| P6.8 | **`reports: add local timeline inspection`** | **DONE (PR #21).** A local static report with timeline tree, faults, logs, checks, coverage summaries, and copy-paste replay commands. | A hosted multi-user UI or causality analysis equivalent. |
+| P6.9 | **`replay: make every result bundle self-contained`** | Locked Compose and exploration bundles replay through the CLI without their source Compose file or manifest. | Cross-version replay guarantees or search minimization. |
 
-**Current PR: P6.8 only.** The manifest is an execution contract, not a second
+**Current PR: P6.9 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what

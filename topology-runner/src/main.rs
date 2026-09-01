@@ -258,22 +258,19 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ));
     }
     fs::create_dir_all(&output).map_err(|error| error.to_string())?;
-    fs::write(
-        output.join("replay-plan.json"),
-        serde_json::to_vec_pretty(&topology).unwrap(),
-    )
-    .map_err(|error| error.to_string())?;
     execute(topology, &output)
 }
 
-fn execute(topology: TopologyPlan, output: &Path) -> Result<(), String> {
+fn execute(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
     let mut switches: BTreeMap<String, SharedSimSwitch> = topology
         .networks
         .keys()
         .map(|name| (name.clone(), Arc::new(Mutex::new(SimSwitch::new()))))
         .collect();
     let mut services = BTreeMap::new();
-    for (name, service) in &topology.services {
+    let names = topology.services.keys().cloned().collect::<Vec<_>>();
+    for name in &names {
+        let service = &topology.services[name];
         if !service.run.events.is_empty() {
             return Err(format!(
                 "service {name:?} has serial events; topology serial injection is not available yet"
@@ -283,18 +280,40 @@ fn execute(topology: TopologyPlan, output: &Path) -> Result<(), String> {
         fs::create_dir_all(service_dir.join("artifacts")).map_err(|error| error.to_string())?;
         let kernel = lock_artifact(&service_dir, "kernel", &service.run.guest.kernel)?;
         let initramfs = lock_artifact(&service_dir, "initramfs", &service.run.guest.initramfs)?;
-        let _runtime = lock_artifact(
+        let runtime = lock_artifact(
             &service_dir,
             "firecracker",
             &service.run.runtime.firecracker,
         )?;
+        let locked = topology.services.get_mut(name).expect("topology service missing");
+        locked.run.runtime.firecracker.path = fs::canonicalize(runtime)
+            .map_err(|error| error.to_string())?
+            .display()
+            .to_string();
+        locked.run.guest.kernel.path = fs::canonicalize(kernel)
+            .map_err(|error| error.to_string())?
+            .display()
+            .to_string();
+        locked.run.guest.initramfs.path = fs::canonicalize(initramfs)
+            .map_err(|error| error.to_string())?
+            .display()
+            .to_string();
+    }
+    fs::write(
+        output.join("replay-plan.json"),
+        serde_json::to_vec_pretty(&topology).unwrap(),
+    )
+    .map_err(|error| error.to_string())?;
+    for name in &names {
+        let service = &topology.services[name];
+        let service_dir = output.join("services").join(name);
         let serial = service_dir.join("serial.log");
         let vm = build_service(
             name,
             0,
             service,
-            &kernel,
-            &initramfs,
+            Path::new(&service.run.guest.kernel.path),
+            Path::new(&service.run.guest.initramfs.path),
             &serial,
             &mut switches,
         )?;

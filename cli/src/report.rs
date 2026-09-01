@@ -81,15 +81,8 @@ struct Node {
 }
 
 #[derive(Deserialize)]
-struct SourcePlan {
-    #[serde(default)]
-    manifest: String,
-}
-
-#[derive(Deserialize)]
 struct TopologyPlan {
     format: String,
-    compose: String,
 }
 
 #[derive(Deserialize)]
@@ -208,7 +201,7 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
 
 fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, ReportError> {
     result.nodes.sort_by_key(|node| node.search_index);
-    let source: SourcePlan = read_json(root, Path::new("explore-plan.json"))?;
+    let _: serde_json::Value = read_json(root, Path::new("explore-plan.json"))?;
     let populated = result
         .nodes
         .iter()
@@ -237,10 +230,10 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
         kind: "deterministic timeline search".to_owned(),
         status: result.status,
         error: result.error,
-        command_label: "Run the recorded source manifest again".to_owned(),
+        command_label: "Replay this locked exploration".to_owned(),
         command: format!(
-            "theseus explore --output exploration-rerun {}",
-            shell_quote(Path::new(&source.manifest))
+            "theseus explore --replay {} --output exploration-rerun",
+            shell_quote(root)
         ),
         checks: Vec::new(),
         faults: Vec::new(),
@@ -306,10 +299,10 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
         kind: "deterministic service topology".to_owned(),
         status: if failed { "failed" } else { "passed" }.to_owned(),
         error: (!errors.is_empty()).then(|| errors.join("\n")),
-        command_label: "Run the recorded source topology again".to_owned(),
+        command_label: "Replay this locked topology".to_owned(),
         command: format!(
-            "theseus compose test --output topology-rerun {}",
-            shell_quote(Path::new(&plan.compose))
+            "theseus compose replay {} --output topology-rerun",
+            shell_quote(root)
         ),
         checks,
         faults,

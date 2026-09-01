@@ -351,19 +351,6 @@ pub fn test_compose(
             output.display()
         )));
     }
-    let runner = std::env::current_exe()
-        .map_err(|error| ComposeError::Invalid(format!("cannot locate theseus binary: {error}")))?
-        .parent()
-        .map(|directory| directory.join("theseus-topology"))
-        .ok_or_else(|| {
-            ComposeError::Invalid("theseus binary has no parent directory".to_owned())
-        })?;
-    if !runner.is_file() {
-        return Err(ComposeError::Invalid(format!(
-            "missing Linux topology runner beside theseus: {}; use a published Linux runtime bundle",
-            runner.display()
-        )));
-    }
     let plan_file = output.with_extension("topology-plan.json");
     if plan_file.exists() {
         return Err(ComposeError::Invalid(format!(
@@ -381,23 +368,68 @@ pub fn test_compose(
         path: plan_file.clone(),
         source,
     })?;
+    execute_topology(&plan_file, &output)?;
+    let _ = fs::remove_file(&plan_file);
+    Ok(output)
+}
+
+/// Re-run a recorded topology using its locked service artifacts.
+pub fn replay_compose(
+    bundle: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+) -> Result<PathBuf, ComposeError> {
+    let bundle = fs::canonicalize(bundle.as_ref()).map_err(|source| ComposeError::Read {
+        path: bundle.as_ref().to_path_buf(),
+        source,
+    })?;
+    let plan = bundle.join("replay-plan.json");
+    if !plan.is_file() {
+        return Err(ComposeError::Invalid(format!(
+            "topology replay has no replay-plan.json: {}",
+            bundle.display()
+        )));
+    }
+    let output = output.as_ref().to_path_buf();
+    if output.exists() {
+        return Err(ComposeError::Invalid(format!(
+            "replay output already exists: {}",
+            output.display()
+        )));
+    }
+    execute_topology(&plan, &output)?;
+    Ok(output)
+}
+
+fn execute_topology(plan: &Path, output: &Path) -> Result<(), ComposeError> {
+    let runner = std::env::current_exe()
+        .map_err(|error| ComposeError::Invalid(format!("cannot locate theseus binary: {error}")))?
+        .parent()
+        .map(|directory| directory.join("theseus-topology"))
+        .ok_or_else(|| {
+            ComposeError::Invalid("theseus binary has no parent directory".to_owned())
+        })?;
+    if !runner.is_file() {
+        return Err(ComposeError::Invalid(format!(
+            "missing Linux topology runner beside theseus: {}; use a published Linux runtime bundle",
+            runner.display()
+        )));
+    }
     let status = Command::new(&runner)
         .arg("--plan")
-        .arg(&plan_file)
+        .arg(plan)
         .arg("--output")
-        .arg(&output)
+        .arg(output)
         .status()
         .map_err(|error| {
             ComposeError::Invalid(format!("cannot start {}: {error}", runner.display()))
         })?;
-    let _ = fs::remove_file(&plan_file);
     if !status.success() {
         return Err(ComposeError::Invalid(format!(
             "topology runner failed; inspect {}",
             output.display()
         )));
     }
-    Ok(output)
+    Ok(())
 }
 
 #[cfg(test)]

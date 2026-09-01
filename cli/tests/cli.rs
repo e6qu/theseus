@@ -70,3 +70,16 @@ fn report_writes_a_static_page_without_kvm() {
     assert!(output.status.success(), "{output:?}");
     assert!(input.join("theseus-report/index.html").is_file());
 }
+
+#[test]
+fn help_lists_bundle_local_replay_commands() {
+    let output = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .arg("--help")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert!(help.contains("explore --replay exploration-dir"));
+    assert!(help.contains("compose replay replay-dir"));
+}
