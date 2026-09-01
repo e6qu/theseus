@@ -13,6 +13,8 @@
 //! exploration must produce identical probes at every node: that is the
 //! replay property at loop level, checked continuously.
 
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -43,6 +45,8 @@ pub enum ExplorerError {
     RendezvousTimeout(&'static str, String),
     /// Recorded seed path is not a valid path for this exploration contract: {0}
     SeedPath(String),
+    /// Could not read a captured serial log: {0}
+    SerialLog(#[from] std::io::Error),
 }
 
 /// Deterministic fault schedule: which simulated-network faults each child
@@ -98,6 +102,17 @@ pub struct ExplorerConfig {
     pub max_nodes: usize,
     /// The deterministic signal used to choose which children expand first.
     pub novelty: NoveltyStrategy,
+    /// Directory where each timeline writes its serial console output. Files
+    /// are named after the timeline seed so sibling logs never share a sink.
+    pub serial_log_dir: Option<PathBuf>,
+}
+
+impl ExplorerConfig {
+    fn serial_log_path(&self, seed: u64) -> Option<PathBuf> {
+        self.serial_log_dir
+            .as_ref()
+            .map(|directory| directory.join(format!("{seed}.log")))
+    }
 }
 
 /// A deterministic exploration signal. `DirtyPages` is a cheap memory-footprint
@@ -119,6 +134,8 @@ pub struct ExploredNode {
     pub entropy_probe: Vec<u8>,
     /// Guest log markers drained at capture time — the v1 coverage signal.
     pub markers: Vec<u8>,
+    /// Bytes written to this timeline's serial console before capture.
+    pub serial_log: Vec<u8>,
     /// Dirty guest pages at capture time, if dirty tracking is enabled — a
     /// memory-footprint coverage signal. Deterministic timelines dirty the
     /// same pages.
@@ -245,6 +262,9 @@ impl Explorer {
                     })?
             };
             let mut resources = child_resources();
+            if let Some(path) = config.serial_log_path(seed) {
+                resources.serial_out_path = Some(path);
+            }
             let mut event_manager = EventManager::new().expect("event manager creation failed");
             let child = {
                 let branch = &explorer
@@ -361,10 +381,15 @@ impl Explorer {
         let branch_point =
             BranchPoint::capture(&mut vmm.lock().expect("Poisoned lock"), &vm_info, seed)?;
         vmm.lock().expect("Poisoned lock").stop(FcExitCode::Ok);
+        let serial_log = match config.serial_log_path(seed) {
+            Some(path) => fs::read(path)?,
+            None => Vec::new(),
+        };
         Ok(ExploredNode {
             branch_point,
             entropy_probe,
             markers,
+            serial_log,
             dirty_pages,
         })
     }
@@ -440,6 +465,19 @@ impl Explorer {
         for branch_idx in 0..config.branches_per_node.min(available) {
             let mut resources = child_resources();
             let mut evmgr = EventManager::new().unwrap();
+            let child_seed = {
+                let branch = &self
+                    .tree
+                    .node(node)
+                    .payload
+                    .as_ref()
+                    .expect("captured exploration node")
+                    .branch_point;
+                branch.child_seed_at(branch.branch_count())
+            };
+            if let Some(path) = config.serial_log_path(child_seed) {
+                resources.serial_out_path = Some(path);
+            }
             let child = spawn_child(
                 &mut self.tree.payload_mut(node).branch_point,
                 config.faults.map(|f| f.sim_config(branch_idx)),
@@ -562,6 +600,7 @@ mod tests {
             max_depth: 1,
             max_nodes: 3,
             novelty: NoveltyStrategy::Markers,
+            serial_log_dir: None,
         };
         let seccomp_filters = get_empty_filters();
 
@@ -673,6 +712,7 @@ mod tests {
             max_depth: 1,
             max_nodes: 3,
             novelty: NoveltyStrategy::Markers,
+            serial_log_dir: None,
         };
         let seccomp_filters = get_empty_filters();
 
@@ -777,6 +817,7 @@ mod tests {
             max_depth: 1,
             max_nodes: 3,
             novelty: NoveltyStrategy::Markers,
+            serial_log_dir: None,
         };
         let seccomp_filters = get_empty_filters();
 

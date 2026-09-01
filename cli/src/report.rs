@@ -94,6 +94,8 @@ struct Node {
     entropy_probe_hex: String,
     markers_hex: String,
     dirty_pages: Option<u64>,
+    #[serde(default)]
+    serial_log: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -251,6 +253,22 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
             ),
         })
     };
+    let logs = result
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            node.serial_log.as_deref().map(|serial_log| {
+                maybe_log(
+                    root,
+                    Path::new(serial_log),
+                    &format!("Timeline #{} serial log", node.search_index),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect();
     Ok(ReportModel {
         title: "Exploration".to_owned(),
         kind: "deterministic timeline search".to_owned(),
@@ -275,7 +293,7 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
         )),
         checks: result.checks,
         faults: Vec::new(),
-        logs: Vec::new(),
+        logs,
         nodes: result.nodes,
         coverage,
         minimization: result.minimization,
@@ -469,7 +487,7 @@ app.append(el('h1',m.title)); app.append(el('p',m.kind));
 const status=el('p','Status: '+m.status);status.className='status '+m.status;app.append(status);
 if(m.error){{const e=section('Error');e.append(el('pre',m.error));}}
 const replay=section(m.command_label);replay.append(el('pre',m.command));
-if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
+if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));if(n.serial_log){{d.append(el('p','serial log: '+n.serial_log));}}d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
 if(m.replay_verification){{const s=section('Targeted replay verification');s.append(table([[m.replay_verification.status,m.replay_verification.detail]],['Status','Detail']));}}
@@ -539,8 +557,11 @@ mod tests {
         );
         write_json(
             &directory.path().join("result.json"),
-            r#"{"format":"theseus-exploration-result-v1","status":"failed","error":null,"checks":[{"name":"every timeline completed","kind":"marker_seen","status":"failed","detail":"missing ff"}],"nodes":[{"search_index":0,"id":0,"parent":null,"depth":0,"seed":1,"seed_path":[1],"entropy_probe_hex":"aa","markers_hex":"42","dirty_pages":3},{"search_index":1,"id":1,"parent":0,"depth":1,"seed":2,"seed_path":[1,2],"entropy_probe_hex":"bb","markers_hex":"43","dirty_pages":5}],"minimization":{"original_events_hex":["01","02","03"],"minimized_events_hex":["02"]}}"#,
+            r#"{"format":"theseus-exploration-result-v1","status":"failed","error":null,"checks":[{"name":"every timeline completed","kind":"marker_seen","status":"failed","detail":"missing ff"}],"nodes":[{"search_index":0,"id":0,"parent":null,"depth":0,"seed":1,"seed_path":[1],"entropy_probe_hex":"aa","markers_hex":"42","dirty_pages":3,"serial_log":"serial/1.log"},{"search_index":1,"id":1,"parent":0,"depth":1,"seed":2,"seed_path":[1,2],"entropy_probe_hex":"bb","markers_hex":"43","dirty_pages":5,"serial_log":"serial/2.log"}],"minimization":{"original_events_hex":["01","02","03"],"minimized_events_hex":["02"]}}"#,
         );
+        fs::create_dir(directory.path().join("serial")).unwrap();
+        fs::write(directory.path().join("serial/1.log"), b"root ready\n").unwrap();
+        fs::write(directory.path().join("serial/2.log"), b"child ready\n").unwrap();
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
         assert!(html.contains("Timeline tree"));
@@ -551,5 +572,7 @@ mod tests {
         assert!(html.contains("--minimize"));
         assert!(html.contains("--snapshot"));
         assert!(html.contains("Event minimization"));
+        assert!(html.contains("Timeline #1 serial log"));
+        assert!(html.contains("child ready"));
     }
 }

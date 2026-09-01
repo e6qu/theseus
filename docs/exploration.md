@@ -49,12 +49,12 @@ the MMIO door are pump-free by construction.
 
 ## Properties
 
-Add `marker_seen` and `marker_not_seen` checks to an exploration manifest.
-Their `value` is one hexadecimal byte. Each check applies to every captured
-timeline, not merely the root. A failed result names the first seed paths that
-violated it; replaying the locked bundle preserves the full tree and checks.
-Serial-log checks are intentionally unavailable here: the headless explorer
-has no serial-log transport.
+Add `marker_seen`, `marker_not_seen`, `serial_contains`, or
+`serial_not_contains` checks to an exploration manifest. Marker values are one
+hexadecimal byte; serial values are UTF-8 text. Each check applies to every
+captured timeline, not merely the root. A failed result names the first seed
+paths that violated it. The bundle records each timeline's serial console as
+`serial/<seed>.log`, and the static report shows those logs.
 
 ## Reproduce one timeline
 
