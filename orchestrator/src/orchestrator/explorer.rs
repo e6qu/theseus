@@ -18,7 +18,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::branch::{BranchError, BranchPoint};
-use crate::orchestrator::spawn::{spawn_child, SpawnError};
+use crate::orchestrator::spawn::{spawn_child, spawn_child_at, SpawnError};
 use crate::orchestrator::tree::{NodeId, TimelineTree};
 use vmm::persist::VmInfo;
 use vmm::resources::VmResources;
@@ -41,6 +41,8 @@ pub enum ExplorerError {
     /// events collected while waiting (debugging rendezvous failures without
     /// a guest console).
     RendezvousTimeout(&'static str, String),
+    /// Recorded seed path is not a valid path for this exploration contract: {0}
+    SeedPath(String),
 }
 
 /// Deterministic fault schedule: which simulated-network faults each child
@@ -170,6 +172,108 @@ impl Explorer {
             search_order: vec![0],
         };
         explorer.expand(0, config, instance_info, seccomp_filters, child_resources)?;
+        Ok(explorer)
+    }
+
+    /// Replay exactly one recorded root-to-node seed path. This re-executes
+    /// each ancestor needed to reach the target but never creates siblings,
+    /// so a failing path does not require replaying the whole search tree.
+    pub fn explore_path<F>(
+        seed_path: &[u64],
+        config: &ExplorerConfig,
+        instance_info: &InstanceInfo,
+        seccomp_filters: &BpfThreadMap,
+        root_evmgr: &mut EventManager,
+        build_root: impl FnOnce(
+            &InstanceInfo,
+            &mut EventManager,
+            &BpfThreadMap,
+        ) -> Result<Arc<Mutex<Vmm>>, ExplorerError>,
+        child_resources: &F,
+    ) -> Result<Self, ExplorerError>
+    where
+        F: Fn() -> VmResources,
+    {
+        let (&root_seed, children) = seed_path
+            .split_first()
+            .ok_or_else(|| ExplorerError::SeedPath("path must contain the root seed".to_owned()))?;
+        if children.len() > config.max_depth as usize {
+            return Err(ExplorerError::SeedPath(format!(
+                "path depth {} exceeds max_depth {}",
+                children.len(),
+                config.max_depth
+            )));
+        }
+        if seed_path.len() > config.max_nodes {
+            return Err(ExplorerError::SeedPath(format!(
+                "path has {} nodes but max_nodes is {}",
+                seed_path.len(),
+                config.max_nodes
+            )));
+        }
+
+        let root_rng = vmm::detrng::Stream::seeded(root_seed);
+        let root_vmm = vmm::detrng::with_stream(&root_rng, || {
+            build_root(instance_info, root_evmgr, seccomp_filters)
+        })?;
+        let root_node = vmm::detrng::with_stream(&root_rng, || {
+            Self::run_and_capture(root_vmm, &config.events, config, root_seed, true)
+        })?;
+        let mut explorer = Explorer {
+            tree: TimelineTree::new(root_seed, root_node),
+            search_order: vec![0],
+        };
+        let mut parent = 0;
+
+        for &seed in children {
+            let branch_idx = {
+                let branch = &explorer
+                    .tree
+                    .node(parent)
+                    .payload
+                    .as_ref()
+                    .expect("captured exploration node")
+                    .branch_point;
+                (0..config.branches_per_node)
+                    .find(|&index| branch.child_seed_at(index as u64) == seed)
+                    .ok_or_else(|| {
+                        ExplorerError::SeedPath(format!(
+                            "seed {seed} is not one of {} children of {}",
+                            config.branches_per_node,
+                            explorer.tree.node(parent).seed
+                        ))
+                    })?
+            };
+            let mut resources = child_resources();
+            let mut event_manager = EventManager::new().expect("event manager creation failed");
+            let child = {
+                let branch = &explorer
+                    .tree
+                    .node(parent)
+                    .payload
+                    .as_ref()
+                    .expect("captured exploration node")
+                    .branch_point;
+                spawn_child_at(
+                    branch,
+                    branch_idx as u64,
+                    config.faults.map(|faults| faults.sim_config(branch_idx)),
+                    instance_info,
+                    &mut event_manager,
+                    seccomp_filters,
+                    &mut resources,
+                )?
+            };
+            let mut events = config.events.clone();
+            if config.branch_event_suffix {
+                events.push(branch_idx as u8 + 1);
+            }
+            let node = vmm::detrng::with_stream(&child.host_rng, || {
+                Self::run_and_capture(child.vmm, &events, config, child.seed, false)
+            })?;
+            parent = explorer.tree.add_child(parent, child.seed, node);
+            explorer.search_order.push(parent);
+        }
         Ok(explorer)
     }
 

@@ -96,9 +96,15 @@ impl BranchPoint {
     /// The seed for the next child timeline. Each call returns a fresh,
     /// deterministic value.
     pub fn child_seed(&mut self) -> u64 {
-        let seed = splitmix64(self.base_seed ^ (self.branch_count << 32));
+        let seed = self.child_seed_at(self.branch_count);
         self.branch_count += 1;
         seed
+    }
+
+    /// The deterministic seed for `branch_index`, without consuming a child
+    /// slot. Targeted replay uses this to restore only one recorded path.
+    pub fn child_seed_at(&self, branch_index: u64) -> u64 {
+        splitmix64(self.base_seed ^ (branch_index << 32))
     }
 
     /// Deserialize the captured microVM state.
@@ -211,5 +217,20 @@ mod tests {
         let unique: std::collections::HashSet<u64> = seeds_a.iter().copied().collect();
         assert_eq!(unique.len(), 4);
         assert_ne!(splitmix64(7), splitmix64(8));
+    }
+
+    #[test]
+    fn test_targeted_child_seed_does_not_consume_a_branch_slot() {
+        let mut branch = BranchPoint {
+            state_bytes: Vec::new(),
+            memory: File::open("/dev/null").unwrap(),
+            mem_size: 0,
+            base_seed: 7,
+            branch_count: 0,
+        };
+        let first = branch.child_seed_at(0);
+        assert_eq!(branch.child_seed(), first);
+        assert_eq!(branch.branch_count(), 1);
+        assert_eq!(branch.child_seed_at(1), branch.child_seed());
     }
 }

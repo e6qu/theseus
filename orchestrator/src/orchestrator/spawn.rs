@@ -66,6 +66,48 @@ pub fn spawn_child(
     vm_resources: &mut VmResources,
 ) -> Result<ChildVm, SpawnError> {
     let seed = branch.child_seed();
+    spawn_child_with_seed(
+        branch,
+        seed,
+        fault_cfg,
+        instance_info,
+        event_manager,
+        seccomp_filters,
+        vm_resources,
+    )
+}
+
+/// Restore one deterministic child without consuming a branch slot. Used by
+/// targeted path replay, where the selected child index is already recorded.
+pub fn spawn_child_at(
+    branch: &BranchPoint,
+    branch_index: u64,
+    fault_cfg: Option<SimNetConfig>,
+    instance_info: &InstanceInfo,
+    event_manager: &mut EventManager,
+    seccomp_filters: &BpfThreadMap,
+    vm_resources: &mut VmResources,
+) -> Result<ChildVm, SpawnError> {
+    spawn_child_with_seed(
+        branch,
+        branch.child_seed_at(branch_index),
+        fault_cfg,
+        instance_info,
+        event_manager,
+        seccomp_filters,
+        vm_resources,
+    )
+}
+
+fn spawn_child_with_seed(
+    branch: &BranchPoint,
+    seed: u64,
+    fault_cfg: Option<SimNetConfig>,
+    instance_info: &InstanceInfo,
+    event_manager: &mut EventManager,
+    seccomp_filters: &BpfThreadMap,
+    vm_resources: &mut VmResources,
+) -> Result<ChildVm, SpawnError> {
     let host_rng = vmm::detrng::Stream::seeded(seed);
     let mut microvm_state = branch.microvm_state()?;
 

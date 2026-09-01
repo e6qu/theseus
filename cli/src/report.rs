@@ -111,6 +111,7 @@ struct ReportModel {
     error: Option<String>,
     command_label: String,
     command: String,
+    path_command: Option<String>,
     checks: Vec<Check>,
     faults: Vec<Fault>,
     logs: Vec<Log>,
@@ -189,6 +190,7 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
         error: result.error,
         command_label: "Replay this locked bundle".to_owned(),
         command: format!("theseus replay {}", shell_quote(root)),
+        path_command: None,
         checks: result.checks,
         faults: Vec::new(),
         logs: maybe_log(root, Path::new("serial.log"), "Serial log")?
@@ -235,6 +237,10 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
             "theseus explore --replay {} --output exploration-rerun",
             shell_quote(root)
         ),
+        path_command: Some(format!(
+            "theseus explore --replay {} --seed-path ",
+            shell_quote(root)
+        )),
         checks: result.checks,
         faults: Vec::new(),
         logs: Vec::new(),
@@ -304,6 +310,7 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
             "theseus compose replay {} --output topology-rerun",
             shell_quote(root)
         ),
+        path_command: None,
         checks,
         faults,
         logs,
@@ -424,7 +431,7 @@ app.append(el('h1',m.title)); app.append(el('p',m.kind));
 const status=el('p','Status: '+m.status);status.className='status '+m.status;app.append(status);
 if(m.error){{const e=section('Error');e.append(el('pre',m.error));}}
 const replay=section(m.commandLabel);replay.append(el('pre',m.command));
-if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
+if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
 if(m.checks.length){{const s=section('Checks');s.append(table(m.checks.map(c=>[c.name,c.kind,c.status,c.detail]),['Name','Kind','Status','Detail']));}}
 if(m.faults.length){{const s=section('Applied faults');s.append(table(m.faults.map(f=>[String(f.round),f.kind,f.detail]),['Round','Kind','Detail']));}}
@@ -500,5 +507,6 @@ mod tests {
         assert!(html.contains("Dirty-page footprint"));
         assert!(html.contains("every timeline completed"));
         assert!(html.contains("exploration-rerun"));
+        assert!(html.contains("--seed-path"));
     }
 }

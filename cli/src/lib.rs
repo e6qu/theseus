@@ -13,7 +13,7 @@ mod report;
 mod runner;
 
 pub use compose::{load_compose_plan, replay_compose, test_compose, ComposeError, ComposePlan};
-pub use explore::{explore, replay_exploration, ExploreError};
+pub use explore::{explore, replay_exploration, replay_exploration_path, ExploreError};
 pub use manifest::{
     load_plan, ArtifactPlan, CheckKind, CheckPlan, ExplorePlan, LoadError, Novelty, RunPlan,
 };

@@ -302,9 +302,10 @@ below must have a runnable example and narrow acceptance tests.
 | P6.8 | **`reports: add local timeline inspection`** | **DONE (PR #21).** A local static report with timeline tree, faults, logs, checks, coverage summaries, and copy-paste replay commands. | A hosted multi-user UI or causality analysis equivalent. |
 | P6.9 | **`replay: make every result bundle self-contained`** | **DONE (PR #22).** Locked Compose and exploration bundles replay through the CLI without their source Compose file or manifest. | Cross-version replay guarantees or search minimization. |
 | P7.0 | **`entropy: isolate host randomness per timeline`** | **DONE (PR #23).** VM-owned host-side ChaCha streams across parallel exploration timelines. | A distributed coordinator or randomness outside Theseus VM execution. |
-| P7.1 | **`explorer: evaluate marker properties per timeline`** | Marker pass/fail properties for every captured timeline, retained in locked exploration results and reports. | Serial-log properties in the headless explorer, automatic minimization, or a fast code-coverage instrumentor. |
+| P7.1 | **`explorer: evaluate marker properties per timeline`** | **DONE (PR #24).** Marker pass/fail properties for every captured timeline, retained in locked exploration results and reports. | Serial-log properties in the headless explorer, automatic minimization, or a fast code-coverage instrumentor. |
+| P7.2 | **`replay: reproduce one exploration timeline`** | Replay one recorded root-to-node seed path without rebuilding its sibling subtrees. | Automatic minimization, snapshot export, or a fast code-coverage instrumentor. |
 
-**Current PR: P7.1 only.** The manifest is an execution contract, not a second
+**Current PR: P7.2 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what

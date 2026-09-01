@@ -290,6 +290,10 @@ pub struct ExplorePlan {
     pub branch_event_suffix: bool,
     pub novelty: Novelty,
     pub events_hex: Vec<String>,
+    /// A root-to-node seed path injected only by `theseus explore --replay`.
+    /// User manifests cannot set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_seed_path: Option<Vec<u64>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -479,6 +483,7 @@ fn explore_plan(explore: Option<Explore>) -> Result<Option<ExplorePlan>, LoadErr
         branch_event_suffix: explore.branch_event_suffix,
         novelty: explore.novelty,
         events_hex,
+        replay_seed_path: None,
     }))
 }
 
@@ -853,5 +858,6 @@ events = ["90", "0a"]
         assert_eq!(explore.max_nodes, 7);
         assert_eq!(explore.events_hex, ["90", "0a"]);
         assert!(matches!(explore.novelty, Novelty::Coverage));
+        assert!(explore.replay_seed_path.is_none());
     }
 }

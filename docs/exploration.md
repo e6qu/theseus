@@ -56,6 +56,20 @@ violated it; replaying the locked bundle preserves the full tree and checks.
 Serial-log checks are intentionally unavailable here: the headless explorer
 has no serial-log transport.
 
+## Reproduce one timeline
+
+Every timeline in a static exploration report includes a copyable command for
+its seed path. It replays the root and only the selected child at each branch;
+it does not rerun siblings or the whole search tree:
+
+```sh
+theseus explore --replay exploration-dir --seed-path 42,123,456 \
+  --output timeline-replay
+```
+
+The path starts with the root seed. Theseus rejects a path that does not match
+the locked branch contract.
+
 ## Fingerprints per node
 
 Every captured node records three fingerprints (see

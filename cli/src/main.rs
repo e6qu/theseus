@@ -5,7 +5,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use theseus_cli::{explore, load_compose_plan, load_plan, replay, replay_compose, replay_exploration, report, test, test_compose};
+use theseus_cli::{explore, load_compose_plan, load_plan, replay, replay_compose, replay_exploration, replay_exploration_path, report, test, test_compose};
 
 const USAGE: &str = "Usage:
   theseus validate [theseus.toml]
@@ -13,7 +13,7 @@ const USAGE: &str = "Usage:
   theseus test [--output replay-dir] [theseus.toml]
   theseus replay replay-dir
   theseus explore [--output exploration-dir] [theseus.toml]
-  theseus explore --replay exploration-dir [--output exploration-dir]
+  theseus explore --replay exploration-dir [--seed-path seed,...] [--output exploration-dir]
   theseus report [--output report-dir] result-dir
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
@@ -33,6 +33,17 @@ fn manifest_path(args: &[String]) -> Result<PathBuf, String> {
         [path] => Ok(PathBuf::from(path)),
         _ => Err(USAGE.to_owned()),
     }
+}
+
+fn seed_path(value: &str) -> Result<Vec<u64>, String> {
+    let path = value
+        .split(',')
+        .map(|seed| seed.parse::<u64>().map_err(|_| USAGE.to_owned()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if path.is_empty() || value.is_empty() {
+        return Err(USAGE.to_owned());
+    }
+    Ok(path)
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
@@ -88,6 +99,29 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let index =
                 report(&input, input.join("theseus-report")).map_err(|error| error.to_string())?;
             println!("report: {}", index.display());
+            Ok(())
+        }
+        [command, replay, bundle, path_flag, path, output_flag, output]
+            if command == "explore"
+                && replay == "--replay"
+                && path_flag == "--seed-path"
+                && output_flag == "--output" =>
+        {
+            let result = replay_exploration_path(bundle, seed_path(path)?, output)
+                .map_err(|error| error.to_string())?;
+            println!("exploration path replay passed: {}", result.display());
+            Ok(())
+        }
+        [command, replay, bundle, path_flag, path]
+            if command == "explore" && replay == "--replay" && path_flag == "--seed-path" =>
+        {
+            let result = replay_exploration_path(
+                bundle,
+                seed_path(path)?,
+                format!("{bundle}-path-replay"),
+            )
+            .map_err(|error| error.to_string())?;
+            println!("exploration path replay passed: {}", result.display());
             Ok(())
         }
         [command, flag, bundle, output_flag, output]
@@ -175,6 +209,18 @@ fn compose_path(args: &[String]) -> Result<PathBuf, String> {
         [] => Ok(PathBuf::from("compose.yaml")),
         [path] => Ok(PathBuf::from(path)),
         _ => Err(format!("{USAGE}\n\n{COMPOSE_USAGE}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_a_root_to_node_seed_path() {
+        assert_eq!(seed_path("42,7,9").unwrap(), vec![42, 7, 9]);
+        assert!(seed_path("42,,9").is_err());
+        assert!(seed_path("").is_err());
     }
 }
 
