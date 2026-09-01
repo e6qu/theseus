@@ -1,0 +1,19 @@
+name: lifecycle-clock
+
+services:
+  service:
+    x-theseus:
+      manifest: service/theseus.toml
+      faults:
+        - at_round: 2
+          kind: pause
+          duration_rounds: 2
+        - at_round: 5
+          kind: restart
+        - at_round: 7
+          kind: clock_jump
+          nanoseconds: 10000000000
+    networks: [backplane]
+
+networks:
+  backplane: {}

@@ -126,6 +126,10 @@ impl SimSwitch {
         Ok(())
     }
 
+    fn detach(&mut self, port: &str) {
+        self.ports.remove(port);
+    }
+
     fn deliver(&mut self, source: &str, include_source: bool, frame: &[u8]) {
         for (port, queue) in &mut self.ports {
             if include_source || port != source {
@@ -251,6 +255,17 @@ impl SimNet {
     }
 }
 
+impl Drop for SimNet {
+    fn drop(&mut self) {
+        if let (Some(switch), Some(endpoint)) = (&self.switch, &self.endpoint) {
+            switch
+                .lock()
+                .expect("simulated switch lock poisoned")
+                .detach(endpoint);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,7 +377,7 @@ mod tests {
     #[test]
     fn test_shared_switch_rejects_duplicate_ports() {
         let switch = Arc::new(Mutex::new(SimSwitch::new()));
-        SimNet::new_with_switch(Default::default(), switch.clone(), "api").unwrap();
+        let _api = SimNet::new_with_switch(Default::default(), switch.clone(), "api").unwrap();
         assert_eq!(
             SimNet::new_with_switch(Default::default(), switch, "api").unwrap_err(),
             SimSwitchError::DuplicatePort("api".to_owned())

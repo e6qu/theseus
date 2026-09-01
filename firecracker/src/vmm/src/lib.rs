@@ -137,6 +137,7 @@ use vmm_sys_util::terminal::Terminal;
 use vstate::vcpu::{self, VcpuSendEventError};
 
 use crate::cpu_config::templates::CpuConfiguration;
+use crate::devices::pseudo::ControlEvent;
 use crate::devices::virtio::balloon::device::{HintingStatus, StartHintingCmd};
 use crate::devices::virtio::balloon::{
     BALLOON_DEV_ID, Balloon, BalloonConfig, BalloonError, BalloonStats,
@@ -150,7 +151,6 @@ use crate::devices::virtio::net::Net;
 use crate::devices::virtio::pmem::device::Pmem;
 use crate::devices::virtio::rng::Entropy;
 use crate::devices::virtio::rng::device::ENTROPY_DEV_ID;
-use crate::devices::pseudo::ControlEvent;
 use crate::devices::virtio::vsock::{Vsock, VsockUnixBackend};
 use crate::logger::{METRICS, MetricsError, log_dev_preview_warning};
 use crate::mmds::data_store::Mmds;
@@ -557,6 +557,30 @@ impl Vmm {
         kvm_vm.pause_vcpus()?;
         self.instance_info.state = VmState::Paused;
         Ok(())
+    }
+
+    /// Apply a recorded forward jump to the guest virtual clock.
+    ///
+    /// The jump is performed while vCPUs are paused, then the prior run state
+    /// is restored. It is rejected unless deterministic virtual time is
+    /// enabled by the guest's machine configuration.
+    pub fn jump_virtual_time(&mut self, delta_ns: u64) -> Result<(), VmmError> {
+        if delta_ns == 0 {
+            return Err(VmmError::VcpuMessage);
+        }
+        let was_running = self.instance_info.state == VmState::Running;
+        if was_running {
+            self.pause_vm()?;
+        }
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        let result = kvm_vm.jump_virtual_time(delta_ns);
+        if was_running {
+            self.resume_vm()?;
+        }
+        result
     }
 
     /// Injects CTRL+ALT+DEL keystroke combo in the i8042 device.

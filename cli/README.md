@@ -116,6 +116,15 @@ services:
   api:
     x-theseus:
       manifest: api/theseus.toml
+      faults:
+        - at_round: 12
+          kind: pause
+          duration_rounds: 3
+        - at_round: 24
+          kind: restart
+        - at_round: 36
+          kind: clock_jump
+          nanoseconds: 1000000000
     networks: [backplane]
   worker:
     x-theseus:
@@ -139,8 +148,13 @@ membership. `compose test` uses the `theseus-topology` executor included in a
 published Linux runtime bundle. It copies and re-checks each service’s
 Firecracker, kernel, and initramfs before booting; then it connects service
 NICs through an in-process deterministic switch and pumps them in sorted
-service-name order. The replay directory contains `replay-plan.json` and, for
-each service, locked artifacts, `serial.log`, and `result.json`.
+service-name order. `at_round` is a global scheduler round, not elapsed host
+time. Faults are scoped to the service that declares them and must be strictly
+ordered. `pause` resumes after `duration_rounds`; `restart` cold-boots from
+locked artifacts; and `clock_jump` advances the guest's enabled virtual clock
+by `nanoseconds`. The replay directory contains `replay-plan.json` and, for
+each service, locked artifacts, one serial log per boot, applied faults, and
+`result.json`.
 
 `compose test` needs Linux and KVM. macOS keeps supporting `compose validate`
 and `compose plan`; it reports a direct missing-runner error for execution.

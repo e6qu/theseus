@@ -26,7 +26,7 @@ pub struct VirtualClock {
     now_ns: u64,
     /// Virtual time advanced per quantum.
     tick_ns: u64,
-    /// Number of quanta elapsed. `now_ns == tick_ns * tick_count` always.
+    /// Number of normal quanta elapsed. Explicit clock jumps do not change it.
     tick_count: u64,
 }
 
@@ -56,6 +56,18 @@ impl VirtualClock {
     pub fn advance(&mut self) {
         self.tick_count += 1;
         self.now_ns += self.tick_ns;
+    }
+
+    /// Move time forward without adding a scheduling quantum.
+    ///
+    /// This is for an explicit, recorded fault only. Normal execution must
+    /// use [`Self::advance`].
+    pub fn jump(&mut self, delta_ns: u64) {
+        assert!(delta_ns > 0, "clock jump must be non-zero");
+        self.now_ns = self
+            .now_ns
+            .checked_add(delta_ns)
+            .expect("virtual time overflow during clock jump");
     }
 
     /// Current virtual time in nanoseconds.
@@ -101,11 +113,13 @@ impl VirtualClock {
         }
     }
 
-    /// Restore from snapshotted state. Panics if the state is inconsistent
-    /// (`now_ns != tick_ns * tick_count`).
+    /// Restore from snapshotted state.
+    ///
+    /// `now_ns` may be ahead of `tick_ns * tick_count` when a recorded clock
+    /// jump was applied before the snapshot.
     pub fn restore(state: &VirtualClockState) -> Self {
         assert!(
-            state.now_ns == state.tick_ns * state.tick_count,
+            state.tick_ns > 0 && state.now_ns >= state.tick_ns.saturating_mul(state.tick_count),
             "inconsistent virtual clock state"
         );
         VirtualClock {
@@ -153,7 +167,10 @@ mod tests {
     #[test]
     fn test_tsc_value() {
         // 1 second at 2.5 GHz = 2_500_000_000 ticks.
-        assert_eq!(VirtualClock::tsc_value(1_000_000_000, 2_500_000), 2_500_000_000);
+        assert_eq!(
+            VirtualClock::tsc_value(1_000_000_000, 2_500_000),
+            2_500_000_000
+        );
         // Zero time is zero TSC.
         assert_eq!(VirtualClock::tsc_value(0, 2_500_000), 0);
         // Large uptimes don't overflow the u128 intermediate: ~100 years at
@@ -185,6 +202,16 @@ mod tests {
             tick_count: 1,
         };
         let _ = VirtualClock::restore(&bad);
+    }
+
+    #[test]
+    fn test_clock_jump_does_not_add_a_quantum() {
+        let mut clock = VirtualClock::new(1_000);
+        clock.advance();
+        clock.jump(10_000);
+        assert_eq!(clock.now_ns(), 11_000);
+        assert_eq!(clock.tick_count(), 1);
+        assert_eq!(VirtualClock::restore(&clock.save()), clock);
     }
 
     #[test]

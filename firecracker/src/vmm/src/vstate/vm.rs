@@ -319,6 +319,28 @@ impl KvmVm {
         Ok(())
     }
 
+    /// Advance every paused vCPU's deterministic virtual clock by `delta_ns`.
+    pub fn jump_virtual_time(&self, delta_ns: u64) -> Result<(), crate::VmmError> {
+        let mut handles = self.vcpus_handles();
+        handles
+            .iter_mut()
+            .try_for_each(|handle| handle.send_event(crate::VcpuEvent::JumpVirtualTime(delta_ns)))
+            .map_err(|_| crate::VmmError::VcpuMessage)?;
+
+        if handles
+            .iter()
+            .map(|handle| {
+                handle
+                    .response_receiver()
+                    .recv_timeout(crate::RECV_TIMEOUT_SEC)
+            })
+            .any(|response| !matches!(response, Ok(crate::VcpuResponse::VirtualTimeJumped)))
+        {
+            return Err(crate::VmmError::VcpuMessage);
+        }
+        Ok(())
+    }
+
     /// Saves vCPU states by requesting each vCPU thread to serialize its state.
     pub fn save_vcpu_states(
         &self,

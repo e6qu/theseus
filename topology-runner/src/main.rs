@@ -43,6 +43,26 @@ struct ServicePlan {
     manifest: String,
     run: RunPlan,
     networks: Vec<String>,
+    #[serde(default)]
+    faults: Vec<FaultPlan>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct FaultPlan {
+    at_round: u64,
+    kind: FaultKind,
+    #[serde(default)]
+    duration_rounds: Option<u64>,
+    #[serde(default)]
+    nanoseconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FaultKind {
+    Pause,
+    Restart,
+    ClockJump,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -120,8 +140,17 @@ struct CheckResult {
 struct ServiceResult {
     status: &'static str,
     serial_log: String,
+    serial_logs: Vec<String>,
     error: Option<String>,
     checks: Vec<CheckResult>,
+    faults: Vec<AppliedFault>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AppliedFault {
+    round: u64,
+    kind: &'static str,
+    detail: String,
 }
 
 struct ServiceVm {
@@ -149,6 +178,38 @@ impl ServiceVm {
             .expect("VMM lock poisoned")
             .stop(FcExitCode::Ok);
     }
+
+    fn pause(&self) -> Result<(), String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .pause_vm()
+            .map_err(|error| error.to_string())
+    }
+
+    fn resume(&self) -> Result<(), String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .resume_vm()
+            .map_err(|error| error.to_string())
+    }
+
+    fn jump_virtual_time(&self, nanoseconds: u64) -> Result<(), String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .jump_virtual_time(nanoseconds)
+            .map_err(|error| error.to_string())
+    }
+}
+
+struct ServiceRuntime {
+    vm: ServiceVm,
+    serial_logs: Vec<PathBuf>,
+    next_fault: usize,
+    paused_until: Option<u64>,
+    faults: Vec<AppliedFault>,
 }
 
 fn main() -> std::process::ExitCode {
@@ -197,7 +258,6 @@ fn execute(topology: TopologyPlan, output: &Path) -> Result<(), String> {
         .map(|name| (name.clone(), Arc::new(Mutex::new(SimSwitch::new()))))
         .collect();
     let mut services = BTreeMap::new();
-    let mut logs = BTreeMap::new();
     for (name, service) in &topology.services {
         if !service.run.events.is_empty() {
             return Err(format!(
@@ -214,17 +274,28 @@ fn execute(topology: TopologyPlan, output: &Path) -> Result<(), String> {
             &service.run.runtime.firecracker,
         )?;
         let serial = service_dir.join("serial.log");
-        let vm = build_service(name, service, &kernel, &initramfs, &serial, &mut switches)?;
-        logs.insert(name.clone(), serial);
-        services.insert(name.clone(), vm);
+        let vm = build_service(
+            name,
+            0,
+            service,
+            &kernel,
+            &initramfs,
+            &serial,
+            &mut switches,
+        )?;
+        services.insert(
+            name.clone(),
+            ServiceRuntime {
+                vm,
+                serial_logs: vec![serial],
+                next_fault: 0,
+                paused_until: None,
+                faults: Vec::new(),
+            },
+        );
     }
     for service in services.values() {
-        service
-            .vmm
-            .lock()
-            .unwrap()
-            .resume_vm()
-            .map_err(|error| error.to_string())?;
+        service.vm.resume()?;
     }
     let timeout = topology
         .services
@@ -233,34 +304,77 @@ fn execute(topology: TopologyPlan, output: &Path) -> Result<(), String> {
         .max()
         .unwrap_or(1);
     let deadline = Instant::now() + Duration::from_secs(timeout);
-    while Instant::now() < deadline && services.values().any(|service| service.exited().is_none()) {
-        for service in services.values_mut() {
-            service.pump();
+    let mut round = 0;
+    while Instant::now() < deadline
+        && services
+            .values()
+            .any(|service| service.vm.exited().is_none())
+    {
+        round += 1;
+        for name in topology.services.keys() {
+            let mut service = services.remove(name).expect("topology service missing");
+            apply_scheduled_faults(
+                round,
+                name,
+                &topology.services[name],
+                &output.join("services").join(name),
+                &mut service,
+                &mut switches,
+            )?;
+            if service.paused_until.is_none() && service.vm.exited().is_none() {
+                service.vm.pump();
+            }
+            services.insert(name.clone(), service);
         }
     }
     let mut failed = false;
     for (name, service) in &services {
-        let exit = service.exited();
+        let exit = service.vm.exited();
         let (exit_status, error) = match exit {
             Some(FcExitCode::Ok) => ("passed", None),
             Some(code) => ("failed", Some(format!("guest exited with {code:?}"))),
-            None => ("failed", Some("guest did not exit before topology timeout".to_owned())),
+            None => (
+                "failed",
+                Some("guest did not exit before topology timeout".to_owned()),
+            ),
         };
-        let mut checks = evaluate_checks(&topology.services[name].run.checks, &logs[name]);
-        checks.insert(0, CheckResult {
-            name: "guest_exit".to_owned(),
-            status: exit_status,
-            detail: error.clone().unwrap_or_else(|| "guest exited with status 0".to_owned()),
-        });
-        let status = if checks.iter().all(|check| check.status == "passed") { "passed" } else { "failed" };
-        if status == "failed" { failed = true; }
-        let result = ServiceResult { status, serial_log: logs[name].display().to_string(), error, checks };
+        let mut checks = evaluate_checks(&topology.services[name].run.checks, &service.serial_logs);
+        checks.insert(
+            0,
+            CheckResult {
+                name: "guest_exit".to_owned(),
+                status: exit_status,
+                detail: error
+                    .clone()
+                    .unwrap_or_else(|| "guest exited with status 0".to_owned()),
+            },
+        );
+        let status = if checks.iter().all(|check| check.status == "passed") {
+            "passed"
+        } else {
+            "failed"
+        };
+        if status == "failed" {
+            failed = true;
+        }
+        let result = ServiceResult {
+            status,
+            serial_log: service.serial_logs[0].display().to_string(),
+            serial_logs: service
+                .serial_logs
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            error,
+            checks,
+            faults: service.faults.clone(),
+        };
         fs::write(
             output.join("services").join(name).join("result.json"),
             serde_json::to_vec_pretty(&result).unwrap(),
         )
         .map_err(|error| error.to_string())?;
-        service.stop();
+        service.vm.stop();
     }
     if failed {
         Err(format!(
@@ -272,8 +386,98 @@ fn execute(topology: TopologyPlan, output: &Path) -> Result<(), String> {
     }
 }
 
-fn evaluate_checks(checks: &[CheckPlan], serial: &Path) -> Vec<CheckResult> {
-    let serial = fs::read(serial).unwrap_or_default();
+fn apply_scheduled_faults(
+    round: u64,
+    name: &str,
+    plan: &ServicePlan,
+    service_dir: &Path,
+    service: &mut ServiceRuntime,
+    switches: &mut BTreeMap<String, SharedSimSwitch>,
+) -> Result<(), String> {
+    if service.paused_until == Some(round) {
+        if service.vm.exited().is_none() {
+            service.vm.resume()?;
+            service.faults.push(AppliedFault {
+                round,
+                kind: "resume",
+                detail: "pause duration elapsed".to_owned(),
+            });
+        }
+        service.paused_until = None;
+    }
+
+    while plan
+        .faults
+        .get(service.next_fault)
+        .is_some_and(|fault| fault.at_round == round)
+    {
+        let fault = &plan.faults[service.next_fault];
+        service.next_fault += 1;
+        if service.vm.exited().is_some() {
+            service.faults.push(AppliedFault {
+                round,
+                kind: fault_kind_name(&fault.kind),
+                detail: "skipped because the service had already exited".to_owned(),
+            });
+            continue;
+        }
+        match &fault.kind {
+            FaultKind::Pause => {
+                let duration = fault.duration_rounds.expect("validated pause fault");
+                service.vm.pause()?;
+                service.paused_until = Some(round + duration);
+                service.faults.push(AppliedFault {
+                    round,
+                    kind: "pause",
+                    detail: format!("paused for {duration} scheduler rounds"),
+                });
+            }
+            FaultKind::Restart => {
+                service.vm.stop();
+                let serial = service_dir.join(format!("serial-{}.log", service.serial_logs.len()));
+                let kernel = service_dir.join("artifacts/kernel");
+                let initramfs = service_dir.join("artifacts/initramfs");
+                let replacement = build_service(
+                    name,
+                    service.serial_logs.len(),
+                    plan,
+                    &kernel,
+                    &initramfs,
+                    &serial,
+                    switches,
+                )?;
+                replacement.resume()?;
+                service.vm = replacement;
+                service.serial_logs.push(serial);
+                service.faults.push(AppliedFault {
+                    round,
+                    kind: "restart",
+                    detail: "cold-restarted from locked service artifacts".to_owned(),
+                });
+            }
+            FaultKind::ClockJump => {
+                let nanoseconds = fault.nanoseconds.expect("validated clock jump fault");
+                service.vm.jump_virtual_time(nanoseconds)?;
+                service.faults.push(AppliedFault {
+                    round,
+                    kind: "clock_jump",
+                    detail: format!("advanced virtual clock by {nanoseconds} ns"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn fault_kind_name(kind: &FaultKind) -> &'static str {
+    match kind {
+        FaultKind::Pause => "pause",
+        FaultKind::Restart => "restart",
+        FaultKind::ClockJump => "clock_jump",
+    }
+}
+
+fn evaluate_checks(checks: &[CheckPlan], serial_logs: &[PathBuf]) -> Vec<CheckResult> {
     checks
         .iter()
         .map(|check| {
@@ -281,7 +485,12 @@ fn evaluate_checks(checks: &[CheckPlan], serial: &Path) -> Vec<CheckResult> {
                 CheckKind::MarkerSeen => format!("THES:M:{}", check.value).into_bytes(),
                 _ => check.value.as_bytes().to_vec(),
             };
-            let contains = serial.windows(needle.len()).any(|window| window == needle);
+            let contains = serial_logs.iter().any(|path| {
+                fs::read(path)
+                    .unwrap_or_default()
+                    .windows(needle.len())
+                    .any(|window| window == needle)
+            });
             let passed = match check.kind {
                 CheckKind::SerialContains | CheckKind::MarkerSeen => contains,
                 CheckKind::SerialNotContains => !contains,
@@ -289,7 +498,11 @@ fn evaluate_checks(checks: &[CheckPlan], serial: &Path) -> Vec<CheckResult> {
             CheckResult {
                 name: check.name.clone(),
                 status: if passed { "passed" } else { "failed" },
-                detail: if passed { "serial log satisfied check".to_owned() } else { "serial log did not satisfy check".to_owned() },
+                detail: if passed {
+                    "serial log satisfied check".to_owned()
+                } else {
+                    "serial log did not satisfy check".to_owned()
+                },
             }
         })
         .collect()
@@ -297,6 +510,7 @@ fn evaluate_checks(checks: &[CheckPlan], serial: &Path) -> Vec<CheckResult> {
 
 fn build_service(
     name: &str,
+    instance: usize,
     service: &ServicePlan,
     kernel: &Path,
     initramfs: &Path,
@@ -350,7 +564,7 @@ fn build_service(
                 partitioned: service.run.network.partitioned,
             },
             switch,
-            format!("{network}/{name}"),
+            format!("{network}/{name}-{instance}"),
             None,
             RateLimiter::default(),
             RateLimiter::default(),
