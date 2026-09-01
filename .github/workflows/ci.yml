@@ -60,4 +60,5 @@ jobs:
           sh -n docs/tutorials/03-the-control-channel/build.sh
           sh -n docs/tutorials/04-read-serial/run.sh
           sh -n docs/tutorials/05-compose-topology/run.sh
+          sh -n docs/tutorials/06-lifecycle-clock/run.sh
           ! rg -n '/dev/hwrng|(^|[[:space:]])/theseus/|\.\./\.\./\.\.' docs/tutorials

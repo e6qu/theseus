@@ -1,6 +1,6 @@
 # Tutorials
 
-Run the first four tutorials in order. Each directory is complete: make it
+Each directory is complete: make it
 your working directory and use the published Theseus image named in its
 README. No tutorial needs a Theseus source checkout.
 
@@ -18,6 +18,8 @@ kernel module is shipped.
    guest, as you would on a Raspberry Pi.
 5. [Run two connected services](05-compose-topology/) — connect two guests
    through a deterministic Compose backplane.
+6. [Schedule a service fault](06-lifecycle-clock/) — pause, restart, and jump
+   one service's virtual clock at deterministic topology rounds.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

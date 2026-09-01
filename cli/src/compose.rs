@@ -15,7 +15,7 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{load_plan, LoadError, RunPlan};
+use crate::{LoadError, RunPlan, load_plan};
 
 #[derive(Debug)]
 pub enum ComposeError {
@@ -80,6 +80,37 @@ struct ComposeService {
 #[serde(deny_unknown_fields)]
 struct ServiceTheseus {
     manifest: PathBuf,
+    #[serde(default)]
+    faults: Vec<ComposeFault>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeFault {
+    at_round: u64,
+    kind: FaultKind,
+    #[serde(default)]
+    duration_rounds: Option<u64>,
+    #[serde(default)]
+    nanoseconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FaultKind {
+    Pause,
+    Restart,
+    ClockJump,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FaultPlan {
+    pub at_round: u64,
+    pub kind: FaultKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_rounds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nanoseconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,6 +129,7 @@ pub struct ComposeServicePlan {
     pub manifest: String,
     pub run: RunPlan,
     pub networks: Vec<String>,
+    pub faults: Vec<FaultPlan>,
 }
 
 /// Load a Compose topology and lock every referenced service artifact into a
@@ -177,12 +209,18 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
             service: name.clone(),
             source: Box::new(source),
         })?;
+        let faults = validate_faults(
+            &name,
+            service.theseus.faults,
+            run.run.virtual_time.is_some(),
+        )?;
         services.insert(
             name,
             ComposeServicePlan {
                 manifest: manifest.display().to_string(),
                 run,
                 networks: networks.into_iter().collect(),
+                faults,
             },
         );
     }
@@ -198,6 +236,91 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         services,
         networks,
     })
+}
+
+fn validate_faults(
+    service: &str,
+    faults: Vec<ComposeFault>,
+    has_virtual_time: bool,
+) -> Result<Vec<FaultPlan>, ComposeError> {
+    let mut previous_round = 0;
+    let mut paused_until = 0;
+    let mut plans = Vec::with_capacity(faults.len());
+    for fault in faults {
+        if fault.at_round == 0 {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} fault at_round must be greater than zero"
+            )));
+        }
+        if fault.at_round <= previous_round {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} faults must use strictly increasing at_round values"
+            )));
+        }
+        if fault.at_round < paused_until {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} fault at round {} falls within a pause ending at round {paused_until}",
+                fault.at_round
+            )));
+        }
+        let plan = match fault.kind {
+            FaultKind::Pause => {
+                let duration = fault.duration_rounds.ok_or_else(|| {
+                    ComposeError::Invalid(format!(
+                        "service {service:?} pause fault requires duration_rounds"
+                    ))
+                })?;
+                if duration == 0 || fault.nanoseconds.is_some() {
+                    return Err(ComposeError::Invalid(format!(
+                        "service {service:?} pause fault requires a positive duration_rounds and no nanoseconds"
+                    )));
+                }
+                paused_until = fault.at_round.checked_add(duration).ok_or_else(|| {
+                    ComposeError::Invalid(format!("service {service:?} pause duration overflows"))
+                })?;
+                FaultPlan {
+                    at_round: fault.at_round,
+                    kind: FaultKind::Pause,
+                    duration_rounds: Some(duration),
+                    nanoseconds: None,
+                }
+            }
+            FaultKind::Restart => {
+                if fault.duration_rounds.is_some() || fault.nanoseconds.is_some() {
+                    return Err(ComposeError::Invalid(format!(
+                        "service {service:?} restart fault takes no duration_rounds or nanoseconds"
+                    )));
+                }
+                FaultPlan {
+                    at_round: fault.at_round,
+                    kind: FaultKind::Restart,
+                    duration_rounds: None,
+                    nanoseconds: None,
+                }
+            }
+            FaultKind::ClockJump => {
+                let nanoseconds = fault.nanoseconds.ok_or_else(|| {
+                    ComposeError::Invalid(format!(
+                        "service {service:?} clock_jump fault requires nanoseconds"
+                    ))
+                })?;
+                if !has_virtual_time || nanoseconds == 0 || fault.duration_rounds.is_some() {
+                    return Err(ComposeError::Invalid(format!(
+                        "service {service:?} clock_jump requires virtual_time, positive nanoseconds, and no duration_rounds"
+                    )));
+                }
+                FaultPlan {
+                    at_round: fault.at_round,
+                    kind: FaultKind::ClockJump,
+                    duration_rounds: None,
+                    nanoseconds: Some(nanoseconds),
+                }
+            }
+        };
+        previous_round = plan.at_round;
+        plans.push(plan);
+    }
+    Ok(plans)
 }
 
 fn validate_name(kind: &str, value: &str) -> Result<(), ComposeError> {
@@ -299,7 +422,7 @@ mod tests {
             fs::write(root.join("guest/initramfs.cpio"), b"initramfs").unwrap();
             fs::write(
                 root.join("theseus.toml"),
-                "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\n[guest]\nkernel = 'guest/vmlinux'\ninitramfs = 'guest/initramfs.cpio'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n",
+                "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\n[guest]\nkernel = 'guest/vmlinux'\ninitramfs = 'guest/initramfs.cpio'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
             )
             .unwrap();
         }
@@ -334,5 +457,39 @@ mod tests {
         );
         let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
         assert!(error.to_string().contains("undeclared network"));
+    }
+
+    #[test]
+    fn locks_per_service_lifecycle_and_clock_schedule() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n      faults:\n        - at_round: 2\n          kind: pause\n          duration_rounds: 3\n        - at_round: 6\n          kind: restart\n        - at_round: 8\n          kind: clock_jump\n          nanoseconds: 1000000000\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(plan.services["api"].faults.len(), 3);
+        let json = serde_json::to_value(&plan).unwrap();
+        assert_eq!(json["services"]["api"]["faults"][2]["kind"], "clock_jump");
+    }
+
+    #[test]
+    fn rejects_clock_jump_without_virtual_time() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n      faults:\n        - at_round: 1\n          kind: clock_jump\n          nanoseconds: 1\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        let manifest = directory.path().join("api/theseus.toml");
+        let input = fs::read_to_string(&manifest).unwrap();
+        fs::write(
+            manifest,
+            input.replace(
+                "[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+                "",
+            ),
+        )
+        .unwrap();
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("clock_jump requires virtual_time")
+        );
     }
 }

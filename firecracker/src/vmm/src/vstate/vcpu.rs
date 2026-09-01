@@ -207,6 +207,18 @@ impl Vcpu {
         self.vclock_anchored = false;
     }
 
+    fn jump_virtual_time(&mut self, delta_ns: u64) -> Result<(), VcpuError> {
+        let clock = self.vclock.as_mut().ok_or_else(|| {
+            VcpuError::FaultyKvmExit("virtual time is not enabled for this vCPU".to_owned())
+        })?;
+        clock.jump(delta_ns);
+        self.kvm_vcpu
+            .apply_virtual_time(clock.now_ns())
+            .map_err(VcpuError::VcpuResponse)?;
+        self.vclock_anchored = true;
+        Ok(())
+    }
+
     /// Advance the quantum counter; at each boundary, step the guest's clock.
     ///
     /// Called from the vCPU run loop between `KVM_RUN` invocations — the only
@@ -384,6 +396,13 @@ impl Vcpu {
                     )))
                     .expect("vcpu channel unexpectedly closed");
             }
+            Ok(VcpuEvent::JumpVirtualTime(_)) => {
+                self.response_sender
+                    .send(VcpuResponse::NotAllowed(String::from(
+                        "virtual clock jump is unavailable while running",
+                    )))
+                    .expect("vcpu channel unexpectedly closed");
+            }
             Ok(VcpuEvent::Finish) => return VcpuRunState::Finished,
             // Unhandled exit of the other end.
             Err(TryRecvError::Disconnected) => {
@@ -460,6 +479,20 @@ impl Vcpu {
                             .expect("vcpu channel unexpectedly closed");
                     });
 
+                VcpuRunState::Paused
+            }
+            Ok(VcpuEvent::JumpVirtualTime(delta_ns)) => {
+                self.jump_virtual_time(delta_ns)
+                    .map(|_| {
+                        self.response_sender
+                            .send(VcpuResponse::VirtualTimeJumped)
+                            .expect("vcpu channel unexpectedly closed");
+                    })
+                    .unwrap_or_else(|err| {
+                        self.response_sender
+                            .send(VcpuResponse::Error(err))
+                            .expect("vcpu channel unexpectedly closed");
+                    });
                 VcpuRunState::Paused
             }
             Ok(VcpuEvent::Finish) => VcpuRunState::Finished,
@@ -644,6 +677,8 @@ pub enum VcpuEvent {
     SaveState,
     /// Event to dump CPU configuration of a paused Vcpu.
     DumpCpuConfig,
+    /// Advance a paused vCPU's deterministic virtual clock.
+    JumpVirtualTime(u64),
 }
 
 /// List of responses that the Vcpu reports.
@@ -662,6 +697,8 @@ pub enum VcpuResponse {
     SavedState(Box<VcpuState>),
     /// Vcpu is in the state where CPU config is dumped.
     DumpedCpuConfig(Box<CpuConfiguration>),
+    /// A virtual-clock jump was applied while paused.
+    VirtualTimeJumped,
 }
 
 impl fmt::Debug for VcpuResponse {
@@ -675,6 +712,7 @@ impl fmt::Debug for VcpuResponse {
             Error(err) => write!(f, "VcpuResponse::Error({:?})", err),
             NotAllowed(reason) => write!(f, "VcpuResponse::NotAllowed({})", reason),
             DumpedCpuConfig(_) => write!(f, "VcpuResponse::DumpedCpuConfig"),
+            VirtualTimeJumped => write!(f, "VcpuResponse::VirtualTimeJumped"),
         }
     }
 }
@@ -944,14 +982,16 @@ pub(crate) mod tests {
             // Guard match with no wildcard to make sure we catch new enum variants.
             match self {
                 Paused | Resumed | Exited(_) => (),
-                Error(_) | NotAllowed(_) | SavedState(_) | DumpedCpuConfig(_) => (),
+                Error(_) | NotAllowed(_) | SavedState(_) | DumpedCpuConfig(_)
+                | VirtualTimeJumped => (),
             };
             match (self, other) {
                 (Paused, Paused) | (Resumed, Resumed) => true,
                 (Exited(code), Exited(other_code)) => code == other_code,
                 (NotAllowed(_), NotAllowed(_))
                 | (SavedState(_), SavedState(_))
-                | (DumpedCpuConfig(_), DumpedCpuConfig(_)) => true,
+                | (DumpedCpuConfig(_), DumpedCpuConfig(_))
+                | (VirtualTimeJumped, VirtualTimeJumped) => true,
                 (Error(err), Error(other_err)) => {
                     format!("{:?}", err) == format!("{:?}", other_err)
                 }
