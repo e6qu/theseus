@@ -11,9 +11,7 @@ use event_manager::EventManager;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use theseus_cli::{ArtifactPlan, CheckKind, CheckPlan, ExplorePlan, Novelty, RunPlan};
-use theseus_orchestrator::orchestrator::explorer::{
-    Explorer, ExplorerConfig, NoveltyStrategy,
-};
+use theseus_orchestrator::orchestrator::explorer::{Explorer, ExplorerConfig, NoveltyStrategy};
 use theseus_orchestrator::orchestrator::tree::NodeId;
 use vmm::builder::build_microvm_for_boot;
 use vmm::resources::VmResources;
@@ -23,7 +21,14 @@ use vmm::vmm_config::entropy::EntropyDeviceConfig;
 use vmm::vmm_config::instance_info::InstanceInfo;
 use vmm::vmm_config::machine_config::{MachineConfigUpdate, VirtualTimeConfig};
 
-const USAGE: &str = "Usage: theseus-explorer --plan explore-plan.json --output exploration-dir [--minimize]";
+const USAGE: &str = "Usage: theseus-explorer --plan explore-plan.json --output exploration-dir [--minimize|--snapshot]";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Explore,
+    Minimize,
+    Snapshot,
+}
 
 #[derive(Serialize)]
 struct ResultRecord {
@@ -62,6 +67,17 @@ struct NodeRecord {
     dirty_pages: Option<u64>,
 }
 
+#[derive(Serialize)]
+struct SnapshotRecord {
+    format: &'static str,
+    state: &'static str,
+    memory: &'static str,
+    seed_path: Vec<u64>,
+    entropy_probe_hex: String,
+    markers_hex: String,
+    dirty_pages: Option<u64>,
+}
+
 struct Execution {
     nodes: Vec<NodeRecord>,
     checks: Vec<CheckResult>,
@@ -78,16 +94,25 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
-    let (plan_path, output, minimize) = match args.as_slice() {
+    let (plan_path, output, mode) = match args.as_slice() {
         [flag_plan, plan_path, flag_output, output]
             if flag_plan == "--plan" && flag_output == "--output" =>
         {
-            (plan_path, output, false)
+            (plan_path, output, Mode::Explore)
         }
         [flag_plan, plan_path, flag_output, output, flag_minimize]
-            if flag_plan == "--plan" && flag_output == "--output" && flag_minimize == "--minimize" =>
+            if flag_plan == "--plan"
+                && flag_output == "--output"
+                && flag_minimize == "--minimize" =>
         {
-            (plan_path, output, true)
+            (plan_path, output, Mode::Minimize)
+        }
+        [flag_plan, plan_path, flag_output, output, flag_snapshot]
+            if flag_plan == "--plan"
+                && flag_output == "--output"
+                && flag_snapshot == "--snapshot" =>
+        {
+            (plan_path, output, Mode::Snapshot)
         }
         _ => return Err(USAGE.to_owned()),
     };
@@ -97,7 +122,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
     .map_err(|error| format!("cannot parse exploration plan: {error}"))?;
     let output = PathBuf::from(output);
     if output.exists() {
-        return Err(format!("exploration output already exists: {}", output.display()));
+        return Err(format!(
+            "exploration output already exists: {}",
+            output.display()
+        ));
     }
     fs::create_dir_all(output.join("artifacts")).map_err(|error| error.to_string())?;
     let mut plan = lock_plan(plan, &output)?;
@@ -108,10 +136,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
         .as_ref()
         .map(|explore| explore.events_hex.clone())
         .unwrap_or_default();
-    let result = if minimize {
+    let result = if mode == Mode::Minimize {
         minimize_events(&mut plan)
     } else {
-        execute(&plan)
+        execute(&plan, (mode == Mode::Snapshot).then_some(&output))
     };
     write_plan(&output, &plan)?;
     match result {
@@ -132,7 +160,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 None,
                 execution.checks,
                 execution.nodes,
-                minimize.then(|| Minimization {
+                (mode == Mode::Minimize).then(|| Minimization {
                     original_events_hex,
                     minimized_events_hex: plan
                         .explore
@@ -142,7 +170,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         .clone(),
                 }),
             )?;
-            if minimize || failed.is_empty() {
+            if mode == Mode::Minimize || mode == Mode::Snapshot || failed.is_empty() {
                 Ok(())
             } else {
                 Err(format!("checks failed: {}", failed.join(", ")))
@@ -166,7 +194,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
 /// of failed named properties. This is deterministic and yields a 1-minimal
 /// event sequence, not a globally minimal one.
 fn minimize_events(plan: &mut RunPlan) -> Result<Execution, String> {
-    let baseline = execute(plan)?;
+    let baseline = execute(plan, None)?;
     let expected = failed_names(&baseline);
     if expected.is_empty() {
         return Err("minimization requires a property-failing seed path".to_owned());
@@ -182,13 +210,13 @@ fn minimize_events(plan: &mut RunPlan) -> Result<Execution, String> {
             .as_mut()
             .expect("exploration plan was executed")
             .events_hex = candidate.to_vec();
-        execute(plan).is_ok_and(|execution| failed_names(&execution) == expected)
+        execute(plan, None).is_ok_and(|execution| failed_names(&execution) == expected)
     });
     plan.explore
         .as_mut()
         .expect("exploration plan was executed")
         .events_hex = minimized;
-    execute(plan)
+    execute(plan, None)
 }
 
 fn failed_names(execution: &Execution) -> Vec<String> {
@@ -221,13 +249,19 @@ fn reduce_events(
     }
 }
 
-fn execute(plan: &RunPlan) -> Result<Execution, String> {
+fn execute(plan: &RunPlan, snapshot_output: Option<&Path>) -> Result<Execution, String> {
     let explore = plan
         .explore
         .as_ref()
         .ok_or_else(|| "exploration plan has no [explore] contract".to_owned())?;
     if !explore.rendezvous {
-        return Err("exploration requires explore.rendezvous = true; host-time runs are not replayable".to_owned());
+        return Err(
+            "exploration requires explore.rendezvous = true; host-time runs are not replayable"
+                .to_owned(),
+        );
+    }
+    if snapshot_output.is_some() && explore.replay_seed_path.is_none() {
+        return Err("snapshot export requires a targeted replay seed path".to_owned());
     }
     if !plan.events.is_empty()
         || !plan.storage.is_empty()
@@ -280,6 +314,10 @@ fn execute(plan: &RunPlan) -> Result<Execution, String> {
     }
     .map_err(|error| error.to_string())?;
 
+    if let Some(output) = snapshot_output {
+        export_snapshot(&explorer, output)?;
+    }
+
     let nodes = explorer
         .search_order()
         .iter()
@@ -304,6 +342,39 @@ fn execute(plan: &RunPlan) -> Result<Execution, String> {
         .collect::<Vec<_>>();
     let checks = evaluate_checks(&plan.checks, &nodes)?;
     Ok(Execution { nodes, checks })
+}
+
+fn export_snapshot(explorer: &Explorer, output: &Path) -> Result<(), String> {
+    let id = *explorer
+        .search_order()
+        .last()
+        .ok_or_else(|| "snapshot export requires a captured timeline".to_owned())?;
+    let node = explorer.tree.node(id);
+    let payload = node
+        .payload
+        .as_ref()
+        .ok_or_else(|| "snapshot export target was not captured".to_owned())?;
+    payload
+        .branch_point
+        .export_snapshot(
+            &output.join("snapshot.state"),
+            &output.join("snapshot.memory"),
+        )
+        .map_err(|error| error.to_string())?;
+    let snapshot = SnapshotRecord {
+        format: "theseus-exploration-snapshot-v1",
+        state: "snapshot.state",
+        memory: "snapshot.memory",
+        seed_path: explorer.tree.seed_path(id),
+        entropy_probe_hex: hex(&payload.entropy_probe),
+        markers_hex: hex(&payload.markers),
+        dirty_pages: payload.dirty_pages,
+    };
+    fs::write(
+        output.join("snapshot.json"),
+        serde_json::to_vec_pretty(&snapshot).unwrap(),
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Exploration has no serial-log transport. A marker property therefore
@@ -409,10 +480,14 @@ fn resources_from_plan(plan: &RunPlan) -> Result<VmResources, String> {
         .update_machine_config(&MachineConfigUpdate {
             vcpu_count: Some(plan.run.vcpu_count),
             mem_size_mib: Some(plan.run.mem_size_mib as usize),
-            virtual_time: plan.run.virtual_time.as_ref().map(|time| VirtualTimeConfig {
-                tick_ns: time.tick_ns,
-                exits_per_tick: time.exits_per_tick as u64,
-            }),
+            virtual_time: plan
+                .run
+                .virtual_time
+                .as_ref()
+                .map(|time| VirtualTimeConfig {
+                    tick_ns: time.tick_ns,
+                    exits_per_tick: time.exits_per_tick as u64,
+                }),
             ..Default::default()
         })
         .map_err(|error| error.to_string())?;
@@ -464,7 +539,11 @@ fn write_plan(output: &Path, plan: &RunPlan) -> Result<(), String> {
     .map_err(|error| error.to_string())
 }
 
-fn lock_artifact(output: &Path, name: &str, artifact: &ArtifactPlan) -> Result<ArtifactPlan, String> {
+fn lock_artifact(
+    output: &Path,
+    name: &str,
+    artifact: &ArtifactPlan,
+) -> Result<ArtifactPlan, String> {
     let bytes = fs::read(&artifact.path)
         .map_err(|error| format!("cannot read {}: {error}", artifact.path))?;
     if hex(Sha256::digest(&bytes)) != artifact.sha256 {
@@ -581,8 +660,7 @@ mod tests {
                 .map(str::to_owned)
                 .collect(),
             |events| {
-                events.iter().any(|event| event == "02")
-                    && events.iter().any(|event| event == "03")
+                events.iter().any(|event| event == "02") && events.iter().any(|event| event == "03")
             },
         );
         assert_eq!(minimized, vec!["02".to_owned(), "03".to_owned()]);
