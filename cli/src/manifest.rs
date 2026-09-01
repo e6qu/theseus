@@ -105,6 +105,8 @@ struct Run {
     seed: u64,
     vcpu_count: u8,
     mem_size_mib: u32,
+    #[serde(default = "default_timeout_secs")]
+    timeout_secs: u64,
     #[serde(default)]
     virtual_time: Option<VirtualTime>,
 }
@@ -112,8 +114,8 @@ struct Run {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VirtualTime {
-    tick_ns: u64,
-    exits_per_tick: u32,
+    pub tick_ns: u64,
+    pub exits_per_tick: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,9 +142,9 @@ struct Network {
     partitioned: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RunPlan {
-    pub format: &'static str,
+    pub format: String,
     pub manifest: String,
     pub runtime: RuntimePlan,
     pub guest: GuestPlan,
@@ -151,38 +153,39 @@ pub struct RunPlan {
     pub network: NetworkPlan,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ArtifactPlan {
     pub path: String,
     pub sha256: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RuntimePlan {
     pub firecracker: ArtifactPlan,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GuestPlan {
     pub kernel: ArtifactPlan,
     pub initramfs: ArtifactPlan,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RunPlanConfig {
     pub seed: u64,
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
+    pub timeout_secs: u64,
     pub virtual_time: Option<VirtualTime>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EventPlan {
     pub when: EventWhen,
     pub data_hex: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NetworkPlan {
     pub loopback: bool,
     pub drop_ppm: u32,
@@ -223,6 +226,11 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             "mem_size_mib must be greater than zero".to_owned(),
         ));
     }
+    if manifest.run.timeout_secs == 0 {
+        return Err(LoadError::InvalidRunConfig(
+            "timeout_secs must be greater than zero".to_owned(),
+        ));
+    }
     if let Some(virtual_time) = &manifest.run.virtual_time {
         if virtual_time.tick_ns == 0 || virtual_time.exits_per_tick == 0 {
             return Err(LoadError::InvalidRunConfig(
@@ -256,7 +264,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
         .collect::<Result<_, LoadError>>()?;
 
     Ok(RunPlan {
-        format: "theseus-run-plan-v1",
+        format: "theseus-run-plan-v1".to_owned(),
         manifest: manifest_path.display().to_string(),
         runtime: RuntimePlan { firecracker },
         guest: GuestPlan { kernel, initramfs },
@@ -264,6 +272,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             seed: manifest.run.seed,
             vcpu_count: manifest.run.vcpu_count,
             mem_size_mib: manifest.run.mem_size_mib,
+            timeout_secs: manifest.run.timeout_secs,
             virtual_time: manifest.run.virtual_time,
         },
         events,
@@ -273,6 +282,10 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             partitioned: manifest.network.partitioned,
         },
     })
+}
+
+fn default_timeout_secs() -> u64 {
+    30
 }
 
 fn artifact(dir: &Path, field: &'static str, value: &Path) -> Result<ArtifactPlan, LoadError> {

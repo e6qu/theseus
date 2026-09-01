@@ -7,5 +7,7 @@
 //! is what the executor and replay bundle will consume in P6.2.
 
 mod manifest;
+mod runner;
 
 pub use manifest::{load_plan, LoadError, RunPlan};
+pub use runner::{replay, test, ReplayResult, RunError, TestResult};

@@ -293,7 +293,7 @@ below must have a runnable example and narrow acceptance tests.
 
 | Order | One PR | Delivers | Explicitly does not deliver |
 |---|---|---|---|
-| P6.1 | **`cli: add Theseus test manifest v1`** | A published `theseus` CLI; `theseus validate` and `theseus test --dry-run`; a versioned, self-contained `theseus.toml` that resolves artifact paths relative to its directory and produces a canonical run plan (kernel/initramfs, seed, virtual-time settings, events, and simulated-network settings). | Compose/Kubernetes, property evaluation, UI, or automatic input generation. A dry run must never require KVM. |
+| P6.1 | **`cli: add Theseus test manifest v1`** | **DONE (PR #14).** A published `theseus` CLI; `theseus validate` and `theseus test --dry-run`; a versioned, self-contained `theseus.toml` that resolves artifact paths relative to its directory and produces a canonical run plan (kernel/initramfs, seed, virtual-time settings, events, and simulated-network settings). | Compose/Kubernetes, property evaluation, UI, or automatic input generation. A dry run must never require KVM. |
 | P6.2 | **`cli: execute and replay one timeline`** | `theseus test` launches one Firecracker timeline from that manifest, records its immutable replay bundle (artifact digests, resolved config, seed, events, faults, guest serial log), and `theseus replay <bundle>` reruns it. | Branch fan-out, minimization, or a distributed topology. |
 | P6.3 | **`checks: add built-in and custom properties`** | Explicit test outcomes: no guest crash, bounded completion/liveness, serial/marker expectations, and named user checks. Results are part of the replay bundle. | Assertion cataloging across languages or a hosted reporting service. |
 | P6.4 | **`runner: add Docker Compose topology`** | A small, documented Compose subset mapped to deterministic Theseus guests and simulated links, with per-service logs and artifact locking. | Kubernetes and unrestricted Docker compatibility. |
@@ -302,7 +302,7 @@ below must have a runnable example and narrow acceptance tests.
 | P6.7 | **`explorer: make search guidance product-facing`** | Branch budgets, coverage/marker novelty controls, failure preservation, and deterministic test reports through the CLI. | RL training infrastructure or a graphical multiverse debugger. |
 | P6.8 | **`reports: add local timeline inspection`** | A local static report with timeline tree, faults, logs, checks, coverage summaries, and copy-paste replay commands. | A hosted multi-user UI or causality analysis equivalent. |
 
-**Current PR: P6.1 only.** The manifest is an execution contract, not a second
+**Current PR: P6.2 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so P6.2 can execute exactly what

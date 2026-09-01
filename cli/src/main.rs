@@ -5,11 +5,13 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use theseus_cli::load_plan;
+use theseus_cli::{load_plan, replay, test};
 
 const USAGE: &str = "Usage:
   theseus validate [theseus.toml]
   theseus test --dry-run [theseus.toml]
+  theseus test [--output replay-dir] [theseus.toml]
+  theseus replay replay-dir
 
 The manifest path defaults to ./theseus.toml. Relative artifact paths are
 resolved from the directory containing that manifest.";
@@ -44,10 +46,27 @@ fn run(args: Vec<String>) -> Result<(), String> {
             );
             Ok(())
         }
-        [command, ..] if command == "test" => Err(
-            "`theseus test` will execute one timeline in P6.2; use `theseus test --dry-run` in P6.1"
-                .to_owned(),
-        ),
+        [command, flag, output, rest @ ..] if command == "test" && flag == "--output" => {
+            let manifest = manifest_path(rest)?;
+            let result = test(&manifest, output).map_err(|error| error.to_string())?;
+            println!("passed: {}", result.bundle.display());
+            Ok(())
+        }
+        [command, rest @ ..] if command == "test" => {
+            let manifest = manifest_path(rest)?;
+            let output = manifest
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("theseus-replay");
+            let result = test(&manifest, output).map_err(|error| error.to_string())?;
+            println!("passed: {}", result.bundle.display());
+            Ok(())
+        }
+        [command, bundle] if command == "replay" => {
+            let result = replay(bundle).map_err(|error| error.to_string())?;
+            println!("replay passed; logs: {}", result.logs.display());
+            Ok(())
+        }
         _ => Err(USAGE.to_owned()),
     }
 }
