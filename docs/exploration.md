@@ -72,6 +72,10 @@ the locked branch contract. It also compares the selected timeline's entropy
 probe, markers, and dirty-page count with the recorded result. A mismatch makes
 the replay fail and is shown in its static report.
 
+Replay without `--seed-path` rebuilds the full recorded tree and verifies every
+seed path and fingerprint. It fails if the search produces a different tree or
+any captured timeline differs.
+
 ## Minimize a failing path
 
 After a marker property fails, minimize its base event sequence:

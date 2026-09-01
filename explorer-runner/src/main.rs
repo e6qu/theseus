@@ -11,7 +11,8 @@ use event_manager::EventManager;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use theseus_cli::{
-    ArtifactPlan, CheckKind, CheckPlan, ExplorePlan, Novelty, ReplayFingerprint, RunPlan,
+    ArtifactPlan, CheckKind, CheckPlan, ExplorePlan, Novelty, ReplayFingerprint, ReplayTreeNode,
+    RunPlan,
 };
 use theseus_orchestrator::orchestrator::explorer::{Explorer, ExplorerConfig, NoveltyStrategy};
 use theseus_orchestrator::orchestrator::tree::NodeId;
@@ -374,12 +375,18 @@ fn execute(
         })
         .collect::<Vec<_>>();
     let checks = evaluate_checks(&plan.checks, &nodes)?;
-    let replay_verification = explore.replay_expected.as_ref().map(|expected| {
-        verify_fingerprint(
-            expected,
-            nodes.last().expect("targeted replay has one node"),
-        )
-    });
+    let replay_verification = explore
+        .replay_expected_tree
+        .as_deref()
+        .map(|expected| verify_tree(expected, &nodes))
+        .or_else(|| {
+            explore.replay_expected.as_ref().map(|expected| {
+                verify_fingerprint(
+                    expected,
+                    nodes.last().expect("targeted replay has one node"),
+                )
+            })
+        });
     if replay_verification
         .as_ref()
         .is_none_or(|verification| verification.status == "passed")
@@ -396,9 +403,7 @@ fn execute(
 }
 
 fn verify_fingerprint(expected: &ReplayFingerprint, actual: &NodeRecord) -> ReplayVerification {
-    let matched = expected.entropy_probe_hex == actual.entropy_probe_hex
-        && expected.markers_hex == actual.markers_hex
-        && expected.dirty_pages == actual.dirty_pages;
+    let matched = fingerprint_matches(expected, actual);
     ReplayVerification {
         status: if matched { "passed" } else { "failed" },
         detail: if matched {
@@ -407,6 +412,52 @@ fn verify_fingerprint(expected: &ReplayFingerprint, actual: &NodeRecord) -> Repl
             "recorded fingerprint differs from this replay".to_owned()
         },
     }
+}
+
+fn verify_tree(expected: &[ReplayTreeNode], actual: &[NodeRecord]) -> ReplayVerification {
+    if expected.len() != actual.len() {
+        return ReplayVerification {
+            status: "failed",
+            detail: format!(
+                "recorded {} timelines, replay captured {}",
+                expected.len(),
+                actual.len()
+            ),
+        };
+    }
+    for (expected, actual) in expected.iter().zip(actual) {
+        if expected.seed_path != actual.seed_path {
+            return ReplayVerification {
+                status: "failed",
+                detail: format!(
+                    "recorded seed path {:?}, replay captured {:?}",
+                    expected.seed_path, actual.seed_path
+                ),
+            };
+        }
+        if !fingerprint_matches(&expected.fingerprint, actual) {
+            return ReplayVerification {
+                status: "failed",
+                detail: format!(
+                    "recorded fingerprint differs at seed path {:?}",
+                    actual.seed_path
+                ),
+            };
+        }
+    }
+    ReplayVerification {
+        status: "passed",
+        detail: format!(
+            "recorded entropy, markers, and dirty-page fingerprints reproduced for {} timelines",
+            actual.len()
+        ),
+    }
+}
+
+fn fingerprint_matches(expected: &ReplayFingerprint, actual: &NodeRecord) -> bool {
+    expected.entropy_probe_hex == actual.entropy_probe_hex
+        && expected.markers_hex == actual.markers_hex
+        && expected.dirty_pages == actual.dirty_pages
 }
 
 fn export_snapshot(explorer: &Explorer, output: &Path) -> Result<(), String> {
@@ -809,5 +860,40 @@ mod tests {
 
         recorded.markers_hex = "ff".to_owned();
         assert_eq!(verify_fingerprint(&expected, &recorded).status, "failed");
+    }
+
+    #[test]
+    fn whole_tree_replay_verifies_paths_and_fingerprints() {
+        let mut root = node(0, vec![42], "42ff");
+        root.entropy_probe_hex = "aa".to_owned();
+        root.dirty_pages = Some(3);
+        let mut child = node(1, vec![42, 7], "90ff");
+        child.entropy_probe_hex = "bb".to_owned();
+        child.dirty_pages = Some(5);
+        let expected = vec![
+            ReplayTreeNode {
+                seed_path: vec![42],
+                fingerprint: ReplayFingerprint {
+                    entropy_probe_hex: "aa".to_owned(),
+                    markers_hex: "42ff".to_owned(),
+                    dirty_pages: Some(3),
+                },
+            },
+            ReplayTreeNode {
+                seed_path: vec![42, 7],
+                fingerprint: ReplayFingerprint {
+                    entropy_probe_hex: "bb".to_owned(),
+                    markers_hex: "90ff".to_owned(),
+                    dirty_pages: Some(5),
+                },
+            },
+        ];
+        assert_eq!(verify_tree(&expected, &[root, child]).status, "passed");
+
+        let short = &expected[..1];
+        assert_eq!(
+            verify_tree(short, &[node(0, vec![42], "42ff")]).status,
+            "failed"
+        );
     }
 }
