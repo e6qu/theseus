@@ -68,6 +68,9 @@ struct NodeRecord {
     entropy_probe_hex: String,
     markers_hex: String,
     dirty_pages: Option<u64>,
+    serial_log: String,
+    #[serde(skip)]
+    serial: Vec<u8>,
 }
 
 #[derive(Serialize)]
@@ -138,6 +141,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ));
     }
     fs::create_dir_all(output.join("artifacts")).map_err(|error| error.to_string())?;
+    let serial_logs = output.join("serial");
+    fs::create_dir(&serial_logs).map_err(|error| error.to_string())?;
     let mut plan = lock_plan(plan, &output)?;
     write_plan(&output, &plan)?;
 
@@ -147,9 +152,13 @@ fn run(args: Vec<String>) -> Result<(), String> {
         .map(|explore| explore.events_hex.clone())
         .unwrap_or_default();
     let result = if mode == Mode::Minimize {
-        minimize_events(&mut plan)
+        minimize_events(&mut plan, &serial_logs)
     } else {
-        execute(&plan, (mode == Mode::Snapshot).then_some(&output))
+        execute(
+            &plan,
+            (mode == Mode::Snapshot).then_some(&output),
+            &serial_logs,
+        )
     };
     write_plan(&output, &plan)?;
     match result {
@@ -215,8 +224,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
 /// Greedily remove events until removing any remaining event changes the set
 /// of failed named properties. This is deterministic and yields a 1-minimal
 /// event sequence, not a globally minimal one.
-fn minimize_events(plan: &mut RunPlan) -> Result<Execution, String> {
-    let baseline = execute(plan, None)?;
+fn minimize_events(plan: &mut RunPlan, serial_logs: &Path) -> Result<Execution, String> {
+    let baseline = execute(plan, None, serial_logs)?;
     let expected = failed_names(&baseline);
     if expected.is_empty() {
         return Err("minimization requires a property-failing seed path".to_owned());
@@ -232,13 +241,13 @@ fn minimize_events(plan: &mut RunPlan) -> Result<Execution, String> {
             .as_mut()
             .expect("exploration plan was executed")
             .events_hex = candidate.to_vec();
-        execute(plan, None).is_ok_and(|execution| failed_names(&execution) == expected)
+        execute(plan, None, serial_logs).is_ok_and(|execution| failed_names(&execution) == expected)
     });
     plan.explore
         .as_mut()
         .expect("exploration plan was executed")
         .events_hex = minimized;
-    execute(plan, None)
+    execute(plan, None, serial_logs)
 }
 
 fn failed_names(execution: &Execution) -> Vec<String> {
@@ -271,7 +280,11 @@ fn reduce_events(
     }
 }
 
-fn execute(plan: &RunPlan, snapshot_output: Option<&Path>) -> Result<Execution, String> {
+fn execute(
+    plan: &RunPlan,
+    snapshot_output: Option<&Path>,
+    serial_logs: &Path,
+) -> Result<Execution, String> {
     let explore = plan
         .explore
         .as_ref()
@@ -296,8 +309,8 @@ fn execute(plan: &RunPlan, snapshot_output: Option<&Path>) -> Result<Execution, 
         );
     }
     validate_checks(&plan.checks)?;
-    let resources = resources_from_plan(plan)?;
-    let config = explorer_config(explore)?;
+    let resources = resources_from_plan(plan, Some(serial_log_path(serial_logs, plan.run.seed)))?;
+    let config = explorer_config(explore, Some(serial_logs.to_path_buf()))?;
     let mut event_manager = EventManager::new().map_err(|error| error.to_string())?;
     let filters = get_empty_filters();
     let explorer = if let Some(seed_path) = &explore.replay_seed_path {
@@ -355,6 +368,8 @@ fn execute(plan: &RunPlan, snapshot_output: Option<&Path>) -> Result<Execution, 
                 entropy_probe_hex: hex(&payload.entropy_probe),
                 markers_hex: hex(&payload.markers),
                 dirty_pages: payload.dirty_pages,
+                serial_log: format!("serial/{}.log", node.seed),
+                serial: payload.serial_log.clone(),
             }
         })
         .collect::<Vec<_>>();
@@ -427,31 +442,49 @@ fn export_snapshot(explorer: &Explorer, output: &Path) -> Result<(), String> {
     .map_err(|error| error.to_string())
 }
 
-/// Exploration has no serial-log transport. A marker property therefore
-/// applies to every captured timeline's raw control-channel marker stream.
 fn evaluate_checks(checks: &[CheckPlan], nodes: &[NodeRecord]) -> Result<Vec<CheckResult>, String> {
     checks
         .iter()
         .map(|check| {
-            let (kind, must_be_present) = match check.kind {
-                CheckKind::MarkerSeen => ("marker_seen", true),
-                CheckKind::MarkerNotSeen => ("marker_not_seen", false),
-                CheckKind::SerialContains | CheckKind::SerialNotContains => {
-                    return Err(format!(
-                        "check {:?} uses a serial-log kind unavailable during exploration; use marker_seen or marker_not_seen",
-                        check.name
-                    ));
+            let (kind, must_be_present, value) = match check.kind {
+                CheckKind::MarkerSeen | CheckKind::MarkerNotSeen => {
+                    let marker = marker_byte(&check.value).map_err(|reason| {
+                        format!("check {:?} has invalid marker value: {reason}", check.name)
+                    })?;
+                    (
+                        if matches!(check.kind, CheckKind::MarkerSeen) {
+                            "marker_seen"
+                        } else {
+                            "marker_not_seen"
+                        },
+                        matches!(check.kind, CheckKind::MarkerSeen),
+                        format!("marker {marker:02x}"),
+                    )
                 }
+                CheckKind::SerialContains | CheckKind::SerialNotContains => (
+                    if matches!(check.kind, CheckKind::SerialContains) {
+                        "serial_contains"
+                    } else {
+                        "serial_not_contains"
+                    },
+                    matches!(check.kind, CheckKind::SerialContains),
+                    format!("serial text {:?}", check.value),
+                ),
             };
-            let marker = marker_byte(&check.value).map_err(|reason| {
-                format!("check {:?} has invalid marker value: {reason}", check.name)
-            })?;
             let violating = nodes
                 .iter()
-                .filter(|node| node.markers_hex.as_bytes().chunks_exact(2).any(|hex| {
-                    u8::from_str_radix(std::str::from_utf8(hex).expect("hex is ASCII"), 16)
-                        .is_ok_and(|value| value == marker)
-                }) != must_be_present)
+                .filter(|node| {
+                    let present = match check.kind {
+                        CheckKind::MarkerSeen | CheckKind::MarkerNotSeen => marker_present(
+                            &node.markers_hex,
+                            marker_byte(&check.value).expect("validated marker"),
+                        ),
+                        CheckKind::SerialContains | CheckKind::SerialNotContains => {
+                            contains(&node.serial, check.value.as_bytes())
+                        }
+                    };
+                    present != must_be_present
+                })
                 .collect::<Vec<_>>();
             if violating.is_empty() {
                 Ok(CheckResult {
@@ -459,9 +492,13 @@ fn evaluate_checks(checks: &[CheckPlan], nodes: &[NodeRecord]) -> Result<Vec<Che
                     kind,
                     status: "passed",
                     detail: format!(
-                        "all {} captured timelines {} marker {marker:02x}",
+                        "all {} captured timelines {} {value}",
                         nodes.len(),
-                        if must_be_present { "emitted" } else { "avoided" }
+                        if must_be_present {
+                            "contained"
+                        } else {
+                            "avoided"
+                        }
                     ),
                 })
             } else {
@@ -477,8 +514,12 @@ fn evaluate_checks(checks: &[CheckPlan], nodes: &[NodeRecord]) -> Result<Vec<Che
                     kind,
                     status: "failed",
                     detail: format!(
-                        "{} marker {marker:02x}: {timelines}{}",
-                        if must_be_present { "missing" } else { "emitted by" },
+                        "{} {value}: {timelines}{}",
+                        if must_be_present {
+                            "missing"
+                        } else {
+                            "present in"
+                        },
                         if extra == 0 {
                             String::new()
                         } else {
@@ -499,12 +540,7 @@ fn validate_checks(checks: &[CheckPlan]) -> Result<(), String> {
                     format!("check {:?} has invalid marker value: {reason}", check.name)
                 })?;
             }
-            CheckKind::SerialContains | CheckKind::SerialNotContains => {
-                return Err(format!(
-                    "check {:?} uses a serial-log kind unavailable during exploration; use marker_seen or marker_not_seen",
-                    check.name
-                ));
-            }
+            CheckKind::SerialContains | CheckKind::SerialNotContains => {}
         }
     }
     Ok(())
@@ -517,7 +553,21 @@ fn marker_byte(value: &str) -> Result<u8, &'static str> {
     u8::from_str_radix(value, 16).map_err(|_| "expected one two-digit hexadecimal byte")
 }
 
-fn resources_from_plan(plan: &RunPlan) -> Result<VmResources, String> {
+fn marker_present(markers_hex: &str, marker: u8) -> bool {
+    markers_hex.as_bytes().chunks_exact(2).any(|hex| {
+        u8::from_str_radix(std::str::from_utf8(hex).expect("hex is ASCII"), 16)
+            .is_ok_and(|value| value == marker)
+    })
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+fn resources_from_plan(plan: &RunPlan, serial_log: Option<PathBuf>) -> Result<VmResources, String> {
     let mut resources = VmResources::default();
     resources
         .build_boot_source(BootSourceConfig {
@@ -549,10 +599,14 @@ fn resources_from_plan(plan: &RunPlan) -> Result<VmResources, String> {
             script: None,
         })
         .map_err(|error| error.to_string())?;
+    resources.serial_out_path = serial_log;
     Ok(resources)
 }
 
-fn explorer_config(plan: &ExplorePlan) -> Result<ExplorerConfig, String> {
+fn explorer_config(
+    plan: &ExplorePlan,
+    serial_log_dir: Option<PathBuf>,
+) -> Result<ExplorerConfig, String> {
     let events = plan
         .events_hex
         .iter()
@@ -571,7 +625,12 @@ fn explorer_config(plan: &ExplorePlan) -> Result<ExplorerConfig, String> {
             Novelty::Markers => NoveltyStrategy::Markers,
             Novelty::Coverage => NoveltyStrategy::DirtyPages,
         },
+        serial_log_dir,
     })
+}
+
+fn serial_log_path(directory: &Path, seed: u64) -> PathBuf {
+    directory.join(format!("{seed}.log"))
 }
 
 fn lock_plan(mut plan: RunPlan, output: &Path) -> Result<RunPlan, String> {
@@ -645,16 +704,19 @@ mod tests {
     use super::*;
 
     fn node(search_index: usize, seed_path: Vec<u64>, markers_hex: &str) -> NodeRecord {
+        let seed = *seed_path.last().unwrap();
         NodeRecord {
             search_index,
             id: search_index as NodeId,
             parent: None,
             depth: seed_path.len().saturating_sub(1) as u32,
-            seed: *seed_path.last().unwrap(),
+            seed,
             seed_path,
             entropy_probe_hex: String::new(),
             markers_hex: markers_hex.to_owned(),
             dirty_pages: None,
+            serial_log: format!("serial/{seed}.log"),
+            serial: Vec::new(),
         }
     }
 
@@ -693,15 +755,30 @@ mod tests {
     }
 
     #[test]
-    fn rejects_serial_properties() {
-        let checks = vec![CheckPlan {
-            name: "serial".to_owned(),
-            kind: CheckKind::SerialContains,
-            value: "done".to_owned(),
-        }];
-        assert!(validate_checks(&checks)
-            .unwrap_err()
-            .contains("serial-log kind unavailable"));
+    fn serial_properties_apply_to_every_captured_timeline() {
+        let mut nodes = vec![node(0, vec![42], "ff"), node(1, vec![42, 7], "ff")];
+        nodes[0].serial = b"booted\nfinished\n".to_vec();
+        nodes[1].serial = b"booted\nfinished\n".to_vec();
+        let checks = vec![
+            CheckPlan {
+                name: "finished".to_owned(),
+                kind: CheckKind::SerialContains,
+                value: "finished".to_owned(),
+            },
+            CheckPlan {
+                name: "no panic".to_owned(),
+                kind: CheckKind::SerialNotContains,
+                value: "panic".to_owned(),
+            },
+        ];
+
+        let result = evaluate_checks(&checks, &nodes).unwrap();
+        assert!(result.iter().all(|check| check.status == "passed"));
+
+        nodes[1].serial.clear();
+        let result = evaluate_checks(&checks[..1], &nodes).unwrap();
+        assert_eq!(result[0].status, "failed");
+        assert!(result[0].detail.contains("#1 [42, 7]"));
     }
 
     #[test]

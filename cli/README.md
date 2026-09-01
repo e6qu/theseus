@@ -235,9 +235,10 @@ checks in the manifest for the behavior that matters to your system:
 `result.json` records every check, its pass/fail status, and a concise detail.
 Names must be unique; `guest_exit` and `completion` are reserved.
 
-During `theseus explore`, use only `marker_seen` and `marker_not_seen`, with a
-single two-digit hexadecimal byte as `value`. Each property must hold for every
-captured timeline. Serial-log checks need the one-timeline or Compose runner.
+During `theseus explore`, every check applies to every captured timeline.
+`marker_seen` and `marker_not_seen` use a single two-digit hexadecimal byte;
+`serial_contains` and `serial_not_contains` use UTF-8 text. The bundle stores
+each timeline's console at `serial/<seed>.log` and the static report shows it.
 Use `theseus explore --replay exploration-dir --seed-path seed,...` to replay
 one recorded root-to-node path without creating its siblings. Theseus verifies
 its recorded entropy, marker, and dirty-page fingerprints before accepting it.
