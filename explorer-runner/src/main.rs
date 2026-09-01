@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use event_manager::EventManager;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use theseus_cli::{ArtifactPlan, CheckKind, CheckPlan, ExplorePlan, Novelty, RunPlan};
+use theseus_cli::{
+    ArtifactPlan, CheckKind, CheckPlan, ExplorePlan, Novelty, ReplayFingerprint, RunPlan,
+};
 use theseus_orchestrator::orchestrator::explorer::{Explorer, ExplorerConfig, NoveltyStrategy};
 use theseus_orchestrator::orchestrator::tree::NodeId;
 use vmm::builder::build_microvm_for_boot;
@@ -38,6 +40,7 @@ struct ResultRecord {
     checks: Vec<CheckResult>,
     nodes: Vec<NodeRecord>,
     minimization: Option<Minimization>,
+    replay_verification: Option<ReplayVerification>,
 }
 
 #[derive(Serialize)]
@@ -78,9 +81,16 @@ struct SnapshotRecord {
     dirty_pages: Option<u64>,
 }
 
+#[derive(Serialize)]
+struct ReplayVerification {
+    status: &'static str,
+    detail: String,
+}
+
 struct Execution {
     nodes: Vec<NodeRecord>,
     checks: Vec<CheckResult>,
+    replay_verification: Option<ReplayVerification>,
 }
 
 fn main() -> std::process::ExitCode {
@@ -150,9 +160,13 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 .filter(|check| check.status == "failed")
                 .map(|check| check.name.clone())
                 .collect::<Vec<_>>();
+            let replay_failed = execution
+                .replay_verification
+                .as_ref()
+                .is_some_and(|verification| verification.status == "failed");
             write_result(
                 &output,
-                if failed.is_empty() {
+                if failed.is_empty() && !replay_failed {
                     "passed"
                 } else {
                     "failed"
@@ -169,11 +183,18 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         .events_hex
                         .clone(),
                 }),
+                execution.replay_verification,
             )?;
-            if mode == Mode::Minimize || mode == Mode::Snapshot || failed.is_empty() {
+            if mode == Mode::Minimize
+                || (!replay_failed && (mode == Mode::Snapshot || failed.is_empty()))
+            {
                 Ok(())
             } else {
-                Err(format!("checks failed: {}", failed.join(", ")))
+                Err(if replay_failed {
+                    "replay fingerprint changed".to_owned()
+                } else {
+                    format!("checks failed: {}", failed.join(", "))
+                })
             }
         }
         Err(error) => {
@@ -183,6 +204,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 Some(error.clone()),
                 Vec::new(),
                 Vec::new(),
+                None,
                 None,
             )?;
             Err(error)
@@ -314,10 +336,6 @@ fn execute(plan: &RunPlan, snapshot_output: Option<&Path>) -> Result<Execution, 
     }
     .map_err(|error| error.to_string())?;
 
-    if let Some(output) = snapshot_output {
-        export_snapshot(&explorer, output)?;
-    }
-
     let nodes = explorer
         .search_order()
         .iter()
@@ -341,7 +359,39 @@ fn execute(plan: &RunPlan, snapshot_output: Option<&Path>) -> Result<Execution, 
         })
         .collect::<Vec<_>>();
     let checks = evaluate_checks(&plan.checks, &nodes)?;
-    Ok(Execution { nodes, checks })
+    let replay_verification = explore.replay_expected.as_ref().map(|expected| {
+        verify_fingerprint(
+            expected,
+            nodes.last().expect("targeted replay has one node"),
+        )
+    });
+    if replay_verification
+        .as_ref()
+        .is_none_or(|verification| verification.status == "passed")
+    {
+        if let Some(output) = snapshot_output {
+            export_snapshot(&explorer, output)?;
+        }
+    }
+    Ok(Execution {
+        nodes,
+        checks,
+        replay_verification,
+    })
+}
+
+fn verify_fingerprint(expected: &ReplayFingerprint, actual: &NodeRecord) -> ReplayVerification {
+    let matched = expected.entropy_probe_hex == actual.entropy_probe_hex
+        && expected.markers_hex == actual.markers_hex
+        && expected.dirty_pages == actual.dirty_pages;
+    ReplayVerification {
+        status: if matched { "passed" } else { "failed" },
+        detail: if matched {
+            "recorded entropy, markers, and dirty-page fingerprints reproduced".to_owned()
+        } else {
+            "recorded fingerprint differs from this replay".to_owned()
+        },
+    }
 }
 
 fn export_snapshot(explorer: &Explorer, output: &Path) -> Result<(), String> {
@@ -564,6 +614,7 @@ fn write_result(
     checks: Vec<CheckResult>,
     nodes: Vec<NodeRecord>,
     minimization: Option<Minimization>,
+    replay_verification: Option<ReplayVerification>,
 ) -> Result<(), String> {
     fs::write(
         output.join("result.json"),
@@ -574,6 +625,7 @@ fn write_result(
             checks,
             nodes,
             minimization,
+            replay_verification,
         })
         .unwrap(),
     )
@@ -664,5 +716,21 @@ mod tests {
             },
         );
         assert_eq!(minimized, vec!["02".to_owned(), "03".to_owned()]);
+    }
+
+    #[test]
+    fn targeted_replay_verifies_every_recorded_fingerprint() {
+        let mut recorded = node(0, vec![42, 7], "42ff");
+        recorded.entropy_probe_hex = "aa".to_owned();
+        recorded.dirty_pages = Some(3);
+        let expected = ReplayFingerprint {
+            entropy_probe_hex: "aa".to_owned(),
+            markers_hex: "42ff".to_owned(),
+            dirty_pages: Some(3),
+        };
+        assert_eq!(verify_fingerprint(&expected, &recorded).status, "passed");
+
+        recorded.markers_hex = "ff".to_owned();
+        assert_eq!(verify_fingerprint(&expected, &recorded).status, "failed");
     }
 }

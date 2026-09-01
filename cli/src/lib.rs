@@ -18,7 +18,8 @@ pub use explore::{
     snapshot_exploration_path, ExploreError,
 };
 pub use manifest::{
-    load_plan, ArtifactPlan, CheckKind, CheckPlan, ExplorePlan, LoadError, Novelty, RunPlan,
+    load_plan, ArtifactPlan, CheckKind, CheckPlan, ExplorePlan, LoadError, Novelty,
+    ReplayFingerprint, RunPlan,
 };
 pub use report::{report, ReportError};
 pub use runner::{replay, test, ReplayResult, RunError, TestResult};

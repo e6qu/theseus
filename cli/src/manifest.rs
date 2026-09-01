@@ -294,6 +294,18 @@ pub struct ExplorePlan {
     /// User manifests cannot set it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay_seed_path: Option<Vec<u64>>,
+    /// Fingerprint recorded for a targeted replay. Injected from the locked
+    /// result; user manifests cannot set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_expected: Option<ReplayFingerprint>,
+}
+
+/// Guest-visible fingerprints that a targeted replay must reproduce.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ReplayFingerprint {
+    pub entropy_probe_hex: String,
+    pub markers_hex: String,
+    pub dirty_pages: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -484,6 +496,7 @@ fn explore_plan(explore: Option<Explore>) -> Result<Option<ExplorePlan>, LoadErr
         novelty: explore.novelty,
         events_hex,
         replay_seed_path: None,
+        replay_expected: None,
     }))
 }
 

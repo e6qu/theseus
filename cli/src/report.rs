@@ -58,6 +58,14 @@ struct ResultRecord {
     nodes: Vec<Node>,
     #[serde(default)]
     minimization: Option<Minimization>,
+    #[serde(default)]
+    replay_verification: Option<ReplayVerification>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct ReplayVerification {
+    status: String,
+    detail: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -128,6 +136,7 @@ struct ReportModel {
     nodes: Vec<Node>,
     coverage: Option<Coverage>,
     minimization: Option<Minimization>,
+    replay_verification: Option<ReplayVerification>,
 }
 
 #[derive(Serialize)]
@@ -212,6 +221,7 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
         nodes: Vec::new(),
         coverage: None,
         minimization: None,
+        replay_verification: None,
     })
 }
 
@@ -269,6 +279,7 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
         nodes: result.nodes,
         coverage,
         minimization: result.minimization,
+        replay_verification: result.replay_verification,
     })
 }
 
@@ -342,6 +353,7 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
         nodes: Vec::new(),
         coverage: None,
         minimization: None,
+        replay_verification: None,
     })
 }
 
@@ -460,6 +472,7 @@ const replay=section(m.command_label);replay.append(el('pre',m.command));
 if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
+if(m.replay_verification){{const s=section('Targeted replay verification');s.append(table([[m.replay_verification.status,m.replay_verification.detail]],['Status','Detail']));}}
 if(m.checks.length){{const s=section('Checks');s.append(table(m.checks.map(c=>[c.name,c.kind,c.status,c.detail]),['Name','Kind','Status','Detail']));}}
 if(m.faults.length){{const s=section('Applied faults');s.append(table(m.faults.map(f=>[String(f.round),f.kind,f.detail]),['Round','Kind','Detail']));}}
 if(m.logs.length){{const s=section('Logs');m.logs.forEach(log=>{{s.append(el('h3',log.label));s.append(el('pre',log.text));}});}}
