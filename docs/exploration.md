@@ -70,6 +70,20 @@ theseus explore --replay exploration-dir --seed-path 42,123,456 \
 The path starts with the root seed. Theseus rejects a path that does not match
 the locked branch contract.
 
+## Minimize a failing path
+
+After a marker property fails, minimize its base event sequence:
+
+```sh
+theseus explore --minimize exploration-dir --seed-path 42,123,456 \
+  --output minimized
+```
+
+Theseus removes events greedily while preserving the exact set of failed named
+checks. The result is deterministic and **1-minimal**: no remaining individual
+event can be removed. It does not claim a globally smallest sequence. The
+minimized bundle contains its locked plan and records both event sequences.
+
 ## Fingerprints per node
 
 Every captured node records three fingerprints (see

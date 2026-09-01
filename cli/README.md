@@ -237,3 +237,5 @@ single two-digit hexadecimal byte as `value`. Each property must hold for every
 captured timeline. Serial-log checks need the one-timeline or Compose runner.
 Use `theseus explore --replay exploration-dir --seed-path seed,...` to replay
 one recorded root-to-node path without creating its siblings.
+Use `theseus explore --minimize exploration-dir --seed-path seed,...` to reduce
+a property-failing path to a deterministic 1-minimal event sequence.

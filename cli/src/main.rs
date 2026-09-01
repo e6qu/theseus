@@ -5,7 +5,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use theseus_cli::{explore, load_compose_plan, load_plan, replay, replay_compose, replay_exploration, replay_exploration_path, report, test, test_compose};
+use theseus_cli::{explore, load_compose_plan, load_plan, minimize_exploration_path, replay, replay_compose, replay_exploration, replay_exploration_path, report, test, test_compose};
 
 const USAGE: &str = "Usage:
   theseus validate [theseus.toml]
@@ -14,6 +14,7 @@ const USAGE: &str = "Usage:
   theseus replay replay-dir
   theseus explore [--output exploration-dir] [theseus.toml]
   theseus explore --replay exploration-dir [--seed-path seed,...] [--output exploration-dir]
+  theseus explore --minimize exploration-dir --seed-path seed,... [--output exploration-dir]
   theseus report [--output report-dir] result-dir
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
@@ -99,6 +100,29 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let index =
                 report(&input, input.join("theseus-report")).map_err(|error| error.to_string())?;
             println!("report: {}", index.display());
+            Ok(())
+        }
+        [command, minimize, bundle, path_flag, path, output_flag, output]
+            if command == "explore"
+                && minimize == "--minimize"
+                && path_flag == "--seed-path"
+                && output_flag == "--output" =>
+        {
+            let result = minimize_exploration_path(bundle, seed_path(path)?, output)
+                .map_err(|error| error.to_string())?;
+            println!("minimized failing path: {}", result.display());
+            Ok(())
+        }
+        [command, minimize, bundle, path_flag, path]
+            if command == "explore" && minimize == "--minimize" && path_flag == "--seed-path" =>
+        {
+            let result = minimize_exploration_path(
+                bundle,
+                seed_path(path)?,
+                format!("{bundle}-minimized"),
+            )
+            .map_err(|error| error.to_string())?;
+            println!("minimized failing path: {}", result.display());
             Ok(())
         }
         [command, replay, bundle, path_flag, path, output_flag, output]

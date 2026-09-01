@@ -56,6 +56,14 @@ struct ResultRecord {
     checks: Vec<Check>,
     #[serde(default)]
     nodes: Vec<Node>,
+    #[serde(default)]
+    minimization: Option<Minimization>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct Minimization {
+    original_events_hex: Vec<String>,
+    minimized_events_hex: Vec<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -112,11 +120,13 @@ struct ReportModel {
     command_label: String,
     command: String,
     path_command: Option<String>,
+    minimize_path_command: Option<String>,
     checks: Vec<Check>,
     faults: Vec<Fault>,
     logs: Vec<Log>,
     nodes: Vec<Node>,
     coverage: Option<Coverage>,
+    minimization: Option<Minimization>,
 }
 
 #[derive(Serialize)]
@@ -191,6 +201,7 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
         command_label: "Replay this locked bundle".to_owned(),
         command: format!("theseus replay {}", shell_quote(root)),
         path_command: None,
+        minimize_path_command: None,
         checks: result.checks,
         faults: Vec::new(),
         logs: maybe_log(root, Path::new("serial.log"), "Serial log")?
@@ -198,6 +209,7 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
             .collect(),
         nodes: Vec::new(),
         coverage: None,
+        minimization: None,
     })
 }
 
@@ -241,11 +253,16 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
             "theseus explore --replay {} --seed-path ",
             shell_quote(root)
         )),
+        minimize_path_command: Some(format!(
+            "theseus explore --minimize {} --seed-path ",
+            shell_quote(root)
+        )),
         checks: result.checks,
         faults: Vec::new(),
         logs: Vec::new(),
         nodes: result.nodes,
         coverage,
+        minimization: result.minimization,
     })
 }
 
@@ -311,11 +328,13 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
             shell_quote(root)
         ),
         path_command: None,
+        minimize_path_command: None,
         checks,
         faults,
         logs,
         nodes: Vec::new(),
         coverage: None,
+        minimization: None,
     })
 }
 
@@ -430,9 +449,10 @@ const table=(rows,heads)=>{{const t=el('table'),tr=el('tr');heads.forEach(h=>tr.
 app.append(el('h1',m.title)); app.append(el('p',m.kind));
 const status=el('p','Status: '+m.status);status.className='status '+m.status;app.append(status);
 if(m.error){{const e=section('Error');e.append(el('pre',m.error));}}
-const replay=section(m.commandLabel);replay.append(el('pre',m.command));
-if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
+const replay=section(m.command_label);replay.append(el('pre',m.command));
+if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
+if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
 if(m.checks.length){{const s=section('Checks');s.append(table(m.checks.map(c=>[c.name,c.kind,c.status,c.detail]),['Name','Kind','Status','Detail']));}}
 if(m.faults.length){{const s=section('Applied faults');s.append(table(m.faults.map(f=>[String(f.round),f.kind,f.detail]),['Round','Kind','Detail']));}}
 if(m.logs.length){{const s=section('Logs');m.logs.forEach(log=>{{s.append(el('h3',log.label));s.append(el('pre',log.text));}});}}
@@ -499,7 +519,7 @@ mod tests {
         );
         write_json(
             &directory.path().join("result.json"),
-            r#"{"format":"theseus-exploration-result-v1","status":"passed","error":null,"checks":[{"name":"every timeline completed","kind":"marker_seen","status":"passed","detail":"all timelines emitted ff"}],"nodes":[{"search_index":0,"id":0,"parent":null,"depth":0,"seed":1,"seed_path":[1],"entropy_probe_hex":"aa","markers_hex":"42","dirty_pages":3},{"search_index":1,"id":1,"parent":0,"depth":1,"seed":2,"seed_path":[1,2],"entropy_probe_hex":"bb","markers_hex":"43","dirty_pages":5}]}"#,
+            r#"{"format":"theseus-exploration-result-v1","status":"failed","error":null,"checks":[{"name":"every timeline completed","kind":"marker_seen","status":"failed","detail":"missing ff"}],"nodes":[{"search_index":0,"id":0,"parent":null,"depth":0,"seed":1,"seed_path":[1],"entropy_probe_hex":"aa","markers_hex":"42","dirty_pages":3},{"search_index":1,"id":1,"parent":0,"depth":1,"seed":2,"seed_path":[1,2],"entropy_probe_hex":"bb","markers_hex":"43","dirty_pages":5}],"minimization":{"original_events_hex":["01","02","03"],"minimized_events_hex":["02"]}}"#,
         );
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
@@ -508,5 +528,7 @@ mod tests {
         assert!(html.contains("every timeline completed"));
         assert!(html.contains("exploration-rerun"));
         assert!(html.contains("--seed-path"));
+        assert!(html.contains("--minimize"));
+        assert!(html.contains("Event minimization"));
     }
 }
