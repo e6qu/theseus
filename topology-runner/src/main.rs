@@ -142,6 +142,7 @@ enum CheckKind {
     SerialContains,
     SerialNotContains,
     MarkerSeen,
+    MarkerNotSeen,
 }
 
 #[derive(Debug, Serialize)]
@@ -516,7 +517,9 @@ fn evaluate_checks(checks: &[CheckPlan], serial_logs: &[PathBuf]) -> Vec<CheckRe
         .iter()
         .map(|check| {
             let needle = match check.kind {
-                CheckKind::MarkerSeen => format!("THES:M:{}", check.value).into_bytes(),
+                CheckKind::MarkerSeen | CheckKind::MarkerNotSeen => {
+                    format!("THES:M:{}", check.value).into_bytes()
+                }
                 _ => check.value.as_bytes().to_vec(),
             };
             let contains = serial_logs.iter().any(|path| {
@@ -527,7 +530,7 @@ fn evaluate_checks(checks: &[CheckPlan], serial_logs: &[PathBuf]) -> Vec<CheckRe
             });
             let passed = match check.kind {
                 CheckKind::SerialContains | CheckKind::MarkerSeen => contains,
-                CheckKind::SerialNotContains => !contains,
+                CheckKind::SerialNotContains | CheckKind::MarkerNotSeen => !contains,
             };
             CheckResult {
                 name: check.name.clone(),

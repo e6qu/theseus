@@ -210,6 +210,7 @@ pub enum CheckKind {
     SerialContains,
     SerialNotContains,
     MarkerSeen,
+    MarkerNotSeen,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
