@@ -21,3 +21,13 @@ rendezvous = true
 branch_event_suffix = true
 novelty = "markers"
 events = ["90"]
+
+[[checks]]
+name = "every timeline completed"
+kind = "marker_seen"
+value = "ff"
+
+[[checks]]
+name = "no timeline emitted an error"
+kind = "marker_not_seen"
+value = "ee"

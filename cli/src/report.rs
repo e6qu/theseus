@@ -235,7 +235,7 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
             "theseus explore --replay {} --output exploration-rerun",
             shell_quote(root)
         ),
-        checks: Vec::new(),
+        checks: result.checks,
         faults: Vec::new(),
         logs: Vec::new(),
         nodes: result.nodes,
@@ -492,12 +492,13 @@ mod tests {
         );
         write_json(
             &directory.path().join("result.json"),
-            r#"{"format":"theseus-exploration-result-v1","status":"passed","error":null,"nodes":[{"search_index":0,"id":0,"parent":null,"depth":0,"seed":1,"seed_path":[1],"entropy_probe_hex":"aa","markers_hex":"42","dirty_pages":3},{"search_index":1,"id":1,"parent":0,"depth":1,"seed":2,"seed_path":[1,2],"entropy_probe_hex":"bb","markers_hex":"43","dirty_pages":5}]}"#,
+            r#"{"format":"theseus-exploration-result-v1","status":"passed","error":null,"checks":[{"name":"every timeline completed","kind":"marker_seen","status":"passed","detail":"all timelines emitted ff"}],"nodes":[{"search_index":0,"id":0,"parent":null,"depth":0,"seed":1,"seed_path":[1],"entropy_probe_hex":"aa","markers_hex":"42","dirty_pages":3},{"search_index":1,"id":1,"parent":0,"depth":1,"seed":2,"seed_path":[1,2],"entropy_probe_hex":"bb","markers_hex":"43","dirty_pages":5}]}"#,
         );
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
         assert!(html.contains("Timeline tree"));
         assert!(html.contains("Dirty-page footprint"));
+        assert!(html.contains("every timeline completed"));
         assert!(html.contains("exploration-rerun"));
     }
 }

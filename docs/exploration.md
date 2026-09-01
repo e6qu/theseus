@@ -47,6 +47,15 @@ synchronously and pause/probe/capture are `Vmm` methods, so no
 parallel timelines must not use host-fd-backed devices; sim backends and
 the MMIO door are pump-free by construction.
 
+## Properties
+
+Add `marker_seen` and `marker_not_seen` checks to an exploration manifest.
+Their `value` is one hexadecimal byte. Each check applies to every captured
+timeline, not merely the root. A failed result names the first seed paths that
+violated it; replaying the locked bundle preserves the full tree and checks.
+Serial-log checks are intentionally unavailable here: the headless explorer
+has no serial-log transport.
+
 ## Fingerprints per node
 
 Every captured node records three fingerprints (see

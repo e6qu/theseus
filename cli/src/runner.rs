@@ -591,6 +591,11 @@ fn evaluate_checks(
                 let found = contains(&serial, marker.as_bytes());
                 ("marker_seen", marker.into_bytes(), found)
             }
+            CheckKind::MarkerNotSeen => {
+                let marker = format!("THES:M:{}", check.value);
+                let found = !contains(&serial, marker.as_bytes());
+                ("marker_not_seen", marker.into_bytes(), found)
+            }
         };
         let display = String::from_utf8_lossy(&expected);
         if found {
@@ -1001,6 +1006,11 @@ mem_size_mib = 128
                 name: "ready".to_owned(),
                 kind: CheckKind::MarkerSeen,
                 value: "42".to_owned(),
+            },
+            CheckPlan {
+                name: "no error".to_owned(),
+                kind: CheckKind::MarkerNotSeen,
+                value: "ee".to_owned(),
             },
         ];
         let serial_log = directory.path().join("serial.log");

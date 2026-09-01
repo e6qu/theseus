@@ -218,14 +218,20 @@ and `compose plan`; it reports a direct missing-runner error for execution.
 
 ## Checks
 
-Every result has two built-in checks: `guest_exit` requires exit status zero,
-and `completion` requires exit before `timeout_secs`. Add named checks in the
-manifest for the behavior that matters to your system:
+One-timeline results have two built-in checks: `guest_exit` requires exit
+status zero, and `completion` requires exit before `timeout_secs`. Add named
+checks in the manifest for the behavior that matters to your system:
 
 - `serial_contains` — a UTF-8 string must appear in `serial.log`.
 - `serial_not_contains` — a UTF-8 string must not appear in `serial.log`.
 - `marker_seen` — a Theseus marker such as `THES:M:ff` must appear. Give the
   byte(s) after `THES:M:` as `value`.
+- `marker_not_seen` — a Theseus marker such as `THES:M:ee` must not appear.
+  Give the byte(s) after `THES:M:` as `value`.
 
 `result.json` records every check, its pass/fail status, and a concise detail.
 Names must be unique; `guest_exit` and `completion` are reserved.
+
+During `theseus explore`, use only `marker_seen` and `marker_not_seen`, with a
+single two-digit hexadecimal byte as `value`. Each property must hold for every
+captured timeline. Serial-log checks need the one-timeline or Compose runner.
