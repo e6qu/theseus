@@ -6,6 +6,7 @@ engine/target/
 orchestrator/target/
 sdk/target/
 cli/target/
+explorer-runner/target/
 
 # e2e artifacts: downloaded guest kernel and built initramfs images
 e2e/vmlinux

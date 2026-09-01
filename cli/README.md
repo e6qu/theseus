@@ -11,6 +11,7 @@ theseus validate [theseus.toml]
 theseus test --dry-run [theseus.toml]
 theseus test [--output replay-dir] [theseus.toml]
 theseus replay replay-dir
+theseus explore [--output exploration-dir] [theseus.toml]
 theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
@@ -30,6 +31,31 @@ unchanged.
 
 The CLI is released for Linux amd64/arm64 and macOS arm64. macOS supports
 validation and planning only: a Firecracker timeline needs Linux and KVM.
+
+## Explore an SDK guest
+
+`theseus explore` branches a single guest through the in-process control
+channel. It needs the published Linux runtime bundle, KVM, and a guest that
+uses `theseus-sdk` to send `SETUP_COMPLETE` and a done marker. It leaves an
+output directory even if exploration fails, so the locked plan and
+`result.json` are available for inspection.
+
+```toml
+[explore]
+max_nodes = 7
+branches_per_node = 2
+max_depth = 2
+rendezvous = true
+branch_event_suffix = true
+novelty = "markers" # or "coverage"
+events = ["90"]
+```
+
+`max_nodes` is a hard cap, including the root. `markers` ranks children by
+new SDK marker bytes; `coverage` ranks by a deterministic dirty-page coverage
+proxy. Every result node records its seed path, marker stream,
+entropy probe, and dirty-page count. Use a seed path as the replay recipe;
+P6.8 will add the static timeline viewer.
 
 ## Test directory
 

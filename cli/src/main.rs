@@ -5,13 +5,14 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use theseus_cli::{load_compose_plan, load_plan, replay, test, test_compose};
+use theseus_cli::{explore, load_compose_plan, load_plan, replay, test, test_compose};
 
 const USAGE: &str = "Usage:
   theseus validate [theseus.toml]
   theseus test --dry-run [theseus.toml]
   theseus test [--output replay-dir] [theseus.toml]
   theseus replay replay-dir
+  theseus explore [--output exploration-dir] [theseus.toml]
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
@@ -72,6 +73,22 @@ fn run(args: Vec<String>) -> Result<(), String> {
         [command, bundle] if command == "replay" => {
             let result = replay(bundle).map_err(|error| error.to_string())?;
             println!("replay passed; logs: {}", result.logs.display());
+            Ok(())
+        }
+        [command, flag, output, rest @ ..] if command == "explore" && flag == "--output" => {
+            let manifest = manifest_path(rest)?;
+            let result = explore(&manifest, output).map_err(|error| error.to_string())?;
+            println!("exploration passed: {}", result.display());
+            Ok(())
+        }
+        [command, rest @ ..] if command == "explore" => {
+            let manifest = manifest_path(rest)?;
+            let output = manifest
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("theseus-exploration");
+            let result = explore(&manifest, output).map_err(|error| error.to_string())?;
+            println!("exploration passed: {}", result.display());
             Ok(())
         }
         [command, subcommand, rest @ ..] if command == "compose" && subcommand == "validate" => {

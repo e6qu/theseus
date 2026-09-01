@@ -92,6 +92,18 @@ pub struct ExplorerConfig {
     pub branches_per_node: usize,
     /// Maximum tree depth (root = 0).
     pub max_depth: u32,
+    /// Hard cap on captured timelines, including the root.
+    pub max_nodes: usize,
+    /// The deterministic signal used to choose which children expand first.
+    pub novelty: NoveltyStrategy,
+}
+
+/// A deterministic exploration signal. `DirtyPages` is a cheap memory-footprint
+/// coverage proxy; it is distinct from the optional single-step PC collector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoveltyStrategy {
+    Markers,
+    DirtyPages,
 }
 
 /// A node's payload: the captured branch point, plus the fingerprints
@@ -116,6 +128,8 @@ pub struct ExploredNode {
 pub struct Explorer {
     /// The timeline tree built so far.
     pub tree: TimelineTree<ExploredNode>,
+    /// Actual deterministic search order after applying the novelty policy.
+    search_order: Vec<NodeId>,
 }
 
 /// Bytes probed from each timeline's entropy device at capture time.
@@ -149,9 +163,15 @@ impl Explorer {
 
         let mut explorer = Explorer {
             tree: TimelineTree::new(root_seed, root_node),
+            search_order: vec![0],
         };
         explorer.expand(0, config, instance_info, seccomp_filters, child_resources)?;
         Ok(explorer)
+    }
+
+    /// Node order in which the novelty-guided search expanded timelines.
+    pub fn search_order(&self) -> &[NodeId] {
+        &self.search_order
     }
 
     /// Run one timeline, headless (no EventManager pumping): the vCPU thread
@@ -289,11 +309,27 @@ impl Explorer {
             return Ok(());
         }
 
+        let available = config.max_nodes.saturating_sub(self.tree.len());
+        if available == 0 {
+            return Ok(());
+        }
+
+        let mut seen_markers = std::collections::BTreeSet::new();
+        let mut seen_dirty_pages = std::collections::BTreeSet::new();
+        for id in self.tree.exploration_order() {
+            if let Some(payload) = self.tree.node(id).payload.as_ref() {
+                seen_markers.extend(payload.markers.iter().copied());
+                if let Some(dirty_pages) = payload.dirty_pages {
+                    seen_dirty_pages.insert(dirty_pages);
+                }
+            }
+        }
+
         // Spawn children sequentially (each takes &mut from the branch
         // point), then run them on their own threads — one timeline per
         // thread, results joined in spawn order so the tree is deterministic.
         let mut spawned = Vec::new();
-        for branch_idx in 0..config.branches_per_node {
+        for branch_idx in 0..config.branches_per_node.min(available) {
             let mut resources = child_resources();
             let mut evmgr = EventManager::new().unwrap();
             let child = spawn_child(
@@ -328,30 +364,37 @@ impl Explorer {
                 .collect()
         });
 
-        let mut children: Vec<(NodeId, Vec<u8>)> = Vec::new();
+        let mut children: Vec<(NodeId, Vec<u8>, Option<u64>)> = Vec::new();
         for result in results {
             let (seed, explored) = result?;
             let markers = explored.markers.clone();
-            children.push((self.tree.add_child(node, seed, explored), markers));
+            let dirty_pages = explored.dirty_pages;
+            children.push((
+                self.tree.add_child(node, seed, explored),
+                markers,
+                dirty_pages,
+            ));
         }
 
-        // Deterministic novelty ordering: most-novel markers first, then by
-        // seed. Computed against the marker set seen before this expansion.
-        let mut seen: std::collections::BTreeSet<u8> = std::collections::BTreeSet::new();
-        for id in self.tree.exploration_order() {
-            if let Some(payload) = self.tree.node(id).payload.as_ref() {
-                seen.extend(payload.markers.iter().copied());
-            }
-        }
-        children.sort_by_key(|(id, markers)| {
-            let novelty = markers.iter().filter(|m| !seen.contains(m)).count();
+        // Compare only with timelines that existed before this expansion.
+        // Siblings are then tie-broken by seed, so their order is replayable.
+        children.sort_by_key(|(id, markers, dirty_pages)| {
+            let novelty = match config.novelty {
+                NoveltyStrategy::Markers => markers
+                    .iter()
+                    .filter(|marker| !seen_markers.contains(marker))
+                    .count(),
+                NoveltyStrategy::DirtyPages => dirty_pages
+                    .is_some_and(|pages| !seen_dirty_pages.contains(&pages)) as usize,
+            };
             (
                 std::cmp::Reverse(novelty),
                 self.tree.node(*id).seed,
             )
         });
 
-        for (child_id, _) in children {
+        for (child_id, _, _) in children {
+            self.search_order.push(child_id);
             self.expand(child_id, config, instance_info, seccomp_filters, child_resources)?;
         }
         Ok(())
@@ -405,6 +448,8 @@ mod tests {
             run_ms: 150,
             branches_per_node: 2,
             max_depth: 1,
+            max_nodes: 3,
+            novelty: NoveltyStrategy::Markers,
         };
         let seccomp_filters = get_empty_filters();
 
@@ -511,6 +556,8 @@ mod tests {
             run_ms: 300,
             branches_per_node: 2,
             max_depth: 1,
+            max_nodes: 3,
+            novelty: NoveltyStrategy::Markers,
         };
         let seccomp_filters = get_empty_filters();
 
@@ -610,6 +657,8 @@ mod tests {
             run_ms: 300,
             branches_per_node: 2,
             max_depth: 1,
+            max_nodes: 3,
+            novelty: NoveltyStrategy::Markers,
         };
         let seccomp_filters = get_empty_filters();
 

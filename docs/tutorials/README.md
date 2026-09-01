@@ -22,6 +22,8 @@ kernel module is shipped.
    one service's virtual clock at deterministic topology rounds.
 7. [Inject storage faults](07-storage-faults/) — exercise a deterministic,
    memory-only virtio disk.
+8. [Explore an SDK guest](08-explore-sdk-guest/) — branch a control-channel
+   guest within a fixed timeline budget.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),
