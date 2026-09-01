@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::{load_plan, ArtifactPlan, LoadError, ReplayFingerprint, ReplayTreeNode, RunPlan};
 
@@ -143,22 +144,23 @@ struct RecordedNode {
     entropy_probe_hex: String,
     markers_hex: String,
     dirty_pages: Option<u64>,
+    #[serde(default)]
+    serial_log: Option<String>,
 }
 
 fn recorded_tree(bundle: &Path) -> Result<Vec<ReplayTreeNode>, ExploreError> {
     let result = recorded_result(bundle)?;
-    Ok(result
+    result
         .nodes
         .into_iter()
-        .map(|node| ReplayTreeNode {
-            seed_path: node.seed_path,
-            fingerprint: ReplayFingerprint {
-                entropy_probe_hex: node.entropy_probe_hex,
-                markers_hex: node.markers_hex,
-                dirty_pages: node.dirty_pages,
-            },
+        .map(|node| {
+            let seed_path = node.seed_path.clone();
+            Ok(ReplayTreeNode {
+                seed_path,
+                fingerprint: recorded_node_fingerprint(bundle, node)?,
+            })
         })
-        .collect())
+        .collect()
 }
 
 fn recorded_fingerprint(
@@ -176,11 +178,51 @@ fn recorded_fingerprint(
                 bundle.join("result.json").display()
             ))
         })?;
+    recorded_node_fingerprint(bundle, node)
+}
+
+fn recorded_node_fingerprint(
+    bundle: &Path,
+    node: RecordedNode,
+) -> Result<ReplayFingerprint, ExploreError> {
     Ok(ReplayFingerprint {
         entropy_probe_hex: node.entropy_probe_hex,
         markers_hex: node.markers_hex,
         dirty_pages: node.dirty_pages,
+        serial_sha256: node
+            .serial_log
+            .as_deref()
+            .map(|serial_log| recorded_serial_digest(bundle, serial_log))
+            .transpose()?,
     })
+}
+
+fn recorded_serial_digest(bundle: &Path, serial_log: &str) -> Result<String, ExploreError> {
+    let bundle = fs::canonicalize(bundle).map_err(|source| ExploreError::Read {
+        path: bundle.to_path_buf(),
+        source,
+    })?;
+    let path = fs::canonicalize(bundle.join(serial_log)).map_err(|source| ExploreError::Read {
+        path: bundle.join(serial_log),
+        source,
+    })?;
+    if !path.starts_with(&bundle) {
+        return Err(ExploreError::Invalid(format!(
+            "replay serial log escapes exploration bundle: {}",
+            path.display()
+        )));
+    }
+    Ok(hex(Sha256::digest(
+        fs::read(&path).map_err(|source| ExploreError::Read { path, source })?,
+    )))
+}
+
+fn hex(bytes: impl AsRef<[u8]>) -> String {
+    bytes
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn recorded_result(bundle: &Path) -> Result<RecordedResult, ExploreError> {
@@ -414,13 +456,20 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         fs::write(
             directory.path().join("result.json"),
-            r#"{"format":"theseus-exploration-result-v1","nodes":[{"seed_path":[1],"entropy_probe_hex":"aa","markers_hex":"ff","dirty_pages":2},{"seed_path":[1,2],"entropy_probe_hex":"bb","markers_hex":"90ff","dirty_pages":3}]}"#,
+            r#"{"format":"theseus-exploration-result-v1","nodes":[{"seed_path":[1],"entropy_probe_hex":"aa","markers_hex":"ff","dirty_pages":2,"serial_log":"serial/1.log"},{"seed_path":[1,2],"entropy_probe_hex":"bb","markers_hex":"90ff","dirty_pages":3}]}"#,
         )
         .unwrap();
+        fs::create_dir(directory.path().join("serial")).unwrap();
+        fs::write(directory.path().join("serial/1.log"), b"ready\n").unwrap();
 
         let tree = recorded_tree(directory.path()).unwrap();
         assert_eq!(tree.len(), 2);
         assert_eq!(tree[1].seed_path, vec![1, 2]);
         assert_eq!(tree[1].fingerprint.entropy_probe_hex, "bb");
+        assert_eq!(
+            tree[0].fingerprint.serial_sha256,
+            Some(hex(Sha256::digest(b"ready\n")))
+        );
+        assert_eq!(tree[1].fingerprint.serial_sha256, None);
     }
 }

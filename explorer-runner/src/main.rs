@@ -458,6 +458,10 @@ fn fingerprint_matches(expected: &ReplayFingerprint, actual: &NodeRecord) -> boo
     expected.entropy_probe_hex == actual.entropy_probe_hex
         && expected.markers_hex == actual.markers_hex
         && expected.dirty_pages == actual.dirty_pages
+        && expected
+            .serial_sha256
+            .as_ref()
+            .is_none_or(|expected| *expected == hex(Sha256::digest(&actual.serial)))
 }
 
 fn export_snapshot(explorer: &Explorer, output: &Path) -> Result<(), String> {
@@ -851,13 +855,18 @@ mod tests {
         let mut recorded = node(0, vec![42, 7], "42ff");
         recorded.entropy_probe_hex = "aa".to_owned();
         recorded.dirty_pages = Some(3);
+        recorded.serial = b"ready\n".to_vec();
         let expected = ReplayFingerprint {
             entropy_probe_hex: "aa".to_owned(),
             markers_hex: "42ff".to_owned(),
             dirty_pages: Some(3),
+            serial_sha256: Some(hex(Sha256::digest(b"ready\n"))),
         };
         assert_eq!(verify_fingerprint(&expected, &recorded).status, "passed");
 
+        recorded.serial.clear();
+        assert_eq!(verify_fingerprint(&expected, &recorded).status, "failed");
+        recorded.serial = b"ready\n".to_vec();
         recorded.markers_hex = "ff".to_owned();
         assert_eq!(verify_fingerprint(&expected, &recorded).status, "failed");
     }
@@ -877,6 +886,7 @@ mod tests {
                     entropy_probe_hex: "aa".to_owned(),
                     markers_hex: "42ff".to_owned(),
                     dirty_pages: Some(3),
+                    serial_sha256: None,
                 },
             },
             ReplayTreeNode {
@@ -885,6 +895,7 @@ mod tests {
                     entropy_probe_hex: "bb".to_owned(),
                     markers_hex: "90ff".to_owned(),
                     dirty_pages: Some(5),
+                    serial_sha256: None,
                 },
             },
         ];

@@ -310,6 +310,10 @@ pub struct ReplayFingerprint {
     pub entropy_probe_hex: String,
     pub markers_hex: String,
     pub dirty_pages: Option<u64>,
+    /// Digest of the captured serial console, when the source exploration
+    /// bundle recorded one. Older bundles omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_sha256: Option<String>,
 }
 
 /// The expected fingerprint of one seed path during a whole-tree replay.
