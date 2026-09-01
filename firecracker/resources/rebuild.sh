@@ -167,6 +167,14 @@ function build_al_kernel {
     cat "$@" >.config
     make olddefconfig
     make -j $(nproc) $target
+
+    # The deterministic random-device tutorial loads this ARM module before
+    # the guest reads /dev/random or /dev/urandom.
+    if [[ "$KERNEL_VERSION" == "6.1" && "$arch" == "aarch64" ]]; then
+        make modules_prepare
+        make M="$PWD/../theseus-rng" KBUILD_MODPOST_WARN=1 modules
+    fi
+
     LATEST_VERSION=$(cat include/config/kernel.release)
     flavour=$(basename $KERNEL_CFG .config |grep -Po "\d+\.\d+\K(-.*)" || true)
     # Strip off everything after the last number - sometimes AL kernels have some stuff there.
@@ -175,8 +183,14 @@ function build_al_kernel {
     OUTPUT_FILE=$OUTPUT_DIR/vmlinux-$normalized_version$flavour
     cp -v $binary_path $OUTPUT_FILE
     cp -v .config $OUTPUT_FILE.config
+    if [[ "$KERNEL_VERSION" == "6.1" && "$arch" == "aarch64" ]]; then
+        cp -v ../theseus-rng/theseus_rng.ko "$OUTPUT_DIR/theseus_rng-$normalized_version$flavour.ko"
+    fi
     if [ -n "$bzimage_path" ]; then
         cp -v $bzimage_path $OUTPUT_DIR/bzImage-$normalized_version$flavour
+    fi
+    if [[ "$KERNEL_VERSION" == "6.1" && "$arch" == "aarch64" ]]; then
+        make M="$PWD/../theseus-rng" clean
     fi
 
     # Undo any patches previously applied, so that we can build the same kernel with different
