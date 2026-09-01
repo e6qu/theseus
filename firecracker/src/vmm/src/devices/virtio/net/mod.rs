@@ -27,7 +27,7 @@ pub mod test_utils;
 
 mod generated;
 
-pub use sim::{SimNet, SimNetConfig};
+pub use sim::{SharedSimSwitch, SimNet, SimNetConfig, SimSwitchError};
 pub use tap::{Tap, TapError};
 use vm_memory::VolatileMemoryError;
 
@@ -55,6 +55,8 @@ pub enum NetError {
     EventFd(io::Error),
     /// IO error: {0}
     IO(io::Error),
+    /// Could not attach the NIC to the deterministic topology switch: {0}
+    SimSwitch(#[from] SimSwitchError),
     /// Error writing in guest memory: {0}
     GuestMemoryError(#[from] VolatileMemoryError),
     /// The VNET header is missing from the frame

@@ -5,16 +5,23 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use theseus_cli::{load_plan, replay, test};
+use theseus_cli::{load_compose_plan, load_plan, replay, test, test_compose};
 
 const USAGE: &str = "Usage:
   theseus validate [theseus.toml]
   theseus test --dry-run [theseus.toml]
   theseus test [--output replay-dir] [theseus.toml]
   theseus replay replay-dir
+  theseus compose validate [compose.yaml]
+  theseus compose plan [compose.yaml]
+  theseus compose test [--output replay-dir] [compose.yaml]
 
 The manifest path defaults to ./theseus.toml. Relative artifact paths are
 resolved from the directory containing that manifest.";
+
+const COMPOSE_USAGE: &str = "Compose accepts a small Theseus-only subset. Each service must set
+x-theseus.manifest to a relative theseus.toml path; services join named networks.
+Run `theseus compose plan` to inspect the locked service artifacts and links.";
 
 fn manifest_path(args: &[String]) -> Result<PathBuf, String> {
     match args {
@@ -67,7 +74,49 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("replay passed; logs: {}", result.logs.display());
             Ok(())
         }
+        [command, subcommand, rest @ ..] if command == "compose" && subcommand == "validate" => {
+            let path = compose_path(rest)?;
+            let plan = load_compose_plan(&path).map_err(|error| error.to_string())?;
+            println!("valid: {} ({} services)", plan.compose, plan.services.len());
+            Ok(())
+        }
+        [command, subcommand, rest @ ..] if command == "compose" && subcommand == "plan" => {
+            let path = compose_path(rest)?;
+            let plan = load_compose_plan(&path).map_err(|error| error.to_string())?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&plan)
+                    .map_err(|error| format!("could not serialize compose plan: {error}"))?
+            );
+            Ok(())
+        }
+        [command, subcommand, flag, output, rest @ ..]
+            if command == "compose" && subcommand == "test" && flag == "--output" =>
+        {
+            let compose = compose_path(rest)?;
+            let result = test_compose(&compose, output).map_err(|error| error.to_string())?;
+            println!("passed: {}", result.display());
+            Ok(())
+        }
+        [command, subcommand, rest @ ..] if command == "compose" && subcommand == "test" => {
+            let compose = compose_path(rest)?;
+            let output = compose
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("theseus-compose-replay");
+            let result = test_compose(&compose, output).map_err(|error| error.to_string())?;
+            println!("passed: {}", result.display());
+            Ok(())
+        }
         _ => Err(USAGE.to_owned()),
+    }
+}
+
+fn compose_path(args: &[String]) -> Result<PathBuf, String> {
+    match args {
+        [] => Ok(PathBuf::from("compose.yaml")),
+        [path] => Ok(PathBuf::from(path)),
+        _ => Err(format!("{USAGE}\n\n{COMPOSE_USAGE}")),
     }
 }
 

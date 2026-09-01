@@ -11,6 +11,9 @@ theseus validate [theseus.toml]
 theseus test --dry-run [theseus.toml]
 theseus test [--output replay-dir] [theseus.toml]
 theseus replay replay-dir
+theseus compose validate [compose.yaml]
+theseus compose plan [compose.yaml]
+theseus compose test [--output replay-dir] [compose.yaml]
 ```
 
 `validate` checks the manifest and artifacts. `test --dry-run` prints the
@@ -96,7 +99,51 @@ delivery point: `ready`, after the guest announces that it can receive input.
 The replay bundle preserves the resulting plan verbatim. The runner delivers
 serial bytes only after the `THES:M:42` ready marker.
 Network drop and partition settings are recorded but intentionally rejected by
-this single-VM runner; P6.4 will add a deterministic topology to apply them.
+this single-VM runner. Use the Compose planner below to describe a topology.
+
+## Compose topology planning
+
+Use a small, strict Compose subset to describe a set of Theseus test
+directories. Each service names its own `theseus.toml`; the plan locks the
+runtime, kernel, and initramfs digest for every service. It accepts only named
+networks and `x-theseus.manifest`. Docker images, ports, volumes, host
+networks, `depends_on`, and other host-oriented Compose features are rejected.
+
+```yaml
+name: example
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+  worker:
+    x-theseus:
+      manifest: worker/theseus.toml
+    networks: [backplane]
+
+networks:
+  backplane: {}
+```
+
+Run these commands from the directory containing `compose.yaml`:
+
+```sh
+theseus compose validate
+theseus compose plan
+theseus compose test
+```
+
+`compose plan` prints the immutable service artifact plans and sorted network
+membership. `compose test` uses the `theseus-topology` executor included in a
+published Linux runtime bundle. It copies and re-checks each service’s
+Firecracker, kernel, and initramfs before booting; then it connects service
+NICs through an in-process deterministic switch and pumps them in sorted
+service-name order. The replay directory contains `replay-plan.json` and, for
+each service, locked artifacts, `serial.log`, and `result.json`.
+
+`compose test` needs Linux and KVM. macOS keeps supporting `compose validate`
+and `compose plan`; it reports a direct missing-runner error for execution.
 
 ## Checks
 

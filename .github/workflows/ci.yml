@@ -29,6 +29,7 @@ jobs:
           cargo check --manifest-path engine/Cargo.toml
           cargo check --manifest-path orchestrator/Cargo.toml
           cargo check --manifest-path cli/Cargo.toml --locked
+          cargo check --manifest-path topology-runner/Cargo.toml --locked
 
       - name: Theseus crate tests
         run: |
@@ -58,4 +59,5 @@ jobs:
           sh -n docs/tutorials/02-control-the-random/run.sh
           sh -n docs/tutorials/03-the-control-channel/build.sh
           sh -n docs/tutorials/04-read-serial/run.sh
+          sh -n docs/tutorials/05-compose-topology/run.sh
           ! rg -n '/dev/hwrng|(^|[[:space:]])/theseus/|\.\./\.\./\.\.' docs/tutorials

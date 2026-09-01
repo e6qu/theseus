@@ -1,0 +1,14 @@
+name: ping
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+  worker:
+    x-theseus:
+      manifest: worker/theseus.toml
+    networks: [backplane]
+
+networks:
+  backplane: {}

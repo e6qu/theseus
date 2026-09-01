@@ -16,6 +16,8 @@ kernel module is shipped.
    `theseus-sdk` package for markers and events.
 4. [Read a serial device](04-read-serial/) — feed a UART/TTY value into a
    guest, as you would on a Raspberry Pi.
+5. [Run two connected services](05-compose-topology/) — connect two guests
+   through a deterministic Compose backplane.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

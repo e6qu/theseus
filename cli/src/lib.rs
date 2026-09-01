@@ -6,8 +6,10 @@
 //! P6.1 deliberately stops at validation and planning. The returned run plan
 //! is what the executor and replay bundle will consume in P6.2.
 
+mod compose;
 mod manifest;
 mod runner;
 
+pub use compose::{load_compose_plan, test_compose, ComposeError, ComposePlan};
 pub use manifest::{load_plan, CheckKind, LoadError, RunPlan};
 pub use runner::{replay, test, ReplayResult, RunError, TestResult};
