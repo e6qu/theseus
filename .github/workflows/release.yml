@@ -53,10 +53,12 @@ jobs:
           container=$(docker create "${IMAGE}:${TAG}-${{ matrix.arch }}")
           mkdir "theseus-${TAG}-linux-${{ matrix.arch }}"
           docker cp "$container:/usr/local/bin/firecracker" "theseus-${TAG}-linux-${{ matrix.arch }}/firecracker"
+          docker cp "$container:/usr/local/bin/theseus" "theseus-${TAG}-linux-${{ matrix.arch }}/theseus"
           docker cp "$container:/opt/theseus/vmlinux" "theseus-${TAG}-linux-${{ matrix.arch }}/vmlinux"
           docker cp "$container:/opt/theseus/." "theseus-${TAG}-linux-${{ matrix.arch }}/"
           docker rm "$container"
           chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/firecracker"
+          chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/theseus"
           sha256sum "theseus-${TAG}-linux-${{ matrix.arch }}"/* > "theseus-${TAG}-linux-${{ matrix.arch }}/SHA256SUMS"
           tar -czf "theseus-${TAG}-linux-${{ matrix.arch }}.tar.gz" "theseus-${TAG}-linux-${{ matrix.arch }}"
 
@@ -65,8 +67,36 @@ jobs:
           name: runtime-${{ matrix.arch }}
           path: theseus-*.tar.gz
 
+  cli-macos-arm64:
+    name: CLI (macos arm64)
+    runs-on: macos-14
+    outputs:
+      tag: ${{ steps.tag.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: tag
+        run: echo "value=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Build and package the CLI
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          cargo build --manifest-path cli/Cargo.toml --release --locked
+          mkdir "theseus-${TAG}-darwin-arm64"
+          cp cli/target/release/theseus "theseus-${TAG}-darwin-arm64/theseus"
+          shasum -a 256 "theseus-${TAG}-darwin-arm64/theseus" > "theseus-${TAG}-darwin-arm64/SHA256SUMS"
+          tar -czf "theseus-${TAG}-darwin-arm64.tar.gz" "theseus-${TAG}-darwin-arm64"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-macos-arm64
+          path: theseus-*-darwin-arm64.tar.gz
+
   manifest-and-release:
-    needs: runtime
+    needs: [runtime, cli-macos-arm64]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

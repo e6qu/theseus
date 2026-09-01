@@ -110,6 +110,7 @@ the host-side random sources are seeded automatically from the run seed)
 | [`sdk/`](sdk/) | `theseus-sdk` — protocol contract, bus primitives, guest transports ([README](sdk/README.md)) |
 | [`engine/`](engine/) | `theseus-engine` — detrng, virtual clock, sim net, control door ([README](engine/README.md)) |
 | [`orchestrator/`](orchestrator/) | `theseus-orchestrator` — branching, coverage, explorer ([README](orchestrator/README.md)) |
+| [`cli/`](cli/) | `theseus` — self-contained test-manifest validation and canonical dry-run plans ([README](cli/README.md)) |
 | [`e2e/`](e2e/) | Live-KVM end-to-end proofs ([README](e2e/README.md)) |
 | [`docs/`](docs/) | Design documentation |
 
@@ -119,6 +120,7 @@ the host-side random sources are seeded automatically from the run seed)
 - [The determinism model](docs/determinism.md) — what's closed, what's leaked, replay fingerprints
 - [The control channel](docs/control-channel.md) — registers, serial transport, protocol rounds
 - [Exploration](docs/exploration.md) — branch points, timeline tree, parallel explorer, coverage
+- [CLI manifest](cli/README.md) — the self-contained test-directory contract
 - [Tutorials](docs/tutorials/) — hands-on walkthroughs from replay to serial input
 - [Testing](docs/testing.md) — dev loop, e2e proofs, CI
 
@@ -131,6 +133,7 @@ container works — see [docs/testing.md](docs/testing.md)):
 cd firecracker && cargo test -p vmm --lib -- --test-threads=1   # 761 tests
 cargo test --manifest-path engine/Cargo.toml
 cargo test --manifest-path orchestrator/Cargo.toml
+cargo test --manifest-path cli/Cargo.toml
 sh e2e/run.sh                                                    # live proofs
 ```
 
