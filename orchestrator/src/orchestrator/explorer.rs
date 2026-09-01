@@ -18,7 +18,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::branch::{BranchError, BranchPoint};
-use crate::orchestrator::spawn::{SpawnError, spawn_child};
+use crate::orchestrator::spawn::{spawn_child, SpawnError};
 use crate::orchestrator::tree::{NodeId, TimelineTree};
 use vmm::persist::VmInfo;
 use vmm::resources::VmResources;
@@ -157,9 +157,13 @@ impl Explorer {
     where
         F: Fn() -> VmResources,
     {
-        let root_vmm = build_root(instance_info, root_evmgr, seccomp_filters)?;
-        let root_node =
-            Self::run_and_capture(root_vmm, &config.events, config, root_seed, true)?;
+        let root_rng = vmm::detrng::Stream::seeded(root_seed);
+        let root_vmm = vmm::detrng::with_stream(&root_rng, || {
+            build_root(instance_info, root_evmgr, seccomp_filters)
+        })?;
+        let root_node = vmm::detrng::with_stream(&root_rng, || {
+            Self::run_and_capture(root_vmm, &config.events, config, root_seed, true)
+        })?;
 
         let mut explorer = Explorer {
             tree: TimelineTree::new(root_seed, root_node),
@@ -353,8 +357,10 @@ impl Explorer {
                 .into_iter()
                 .map(|(child, events)| {
                     scope.spawn(move || {
-                        Self::run_and_capture(child.vmm, &events, config, child.seed, false)
-                            .map(|node| (child.seed, node))
+                        vmm::detrng::with_stream(&child.host_rng, || {
+                            Self::run_and_capture(child.vmm, &events, config, child.seed, false)
+                        })
+                        .map(|node| (child.seed, node))
                     })
                 })
                 .collect();
@@ -384,18 +390,22 @@ impl Explorer {
                     .iter()
                     .filter(|marker| !seen_markers.contains(marker))
                     .count(),
-                NoveltyStrategy::DirtyPages => dirty_pages
-                    .is_some_and(|pages| !seen_dirty_pages.contains(&pages)) as usize,
+                NoveltyStrategy::DirtyPages => {
+                    dirty_pages.is_some_and(|pages| !seen_dirty_pages.contains(&pages)) as usize
+                }
             };
-            (
-                std::cmp::Reverse(novelty),
-                self.tree.node(*id).seed,
-            )
+            (std::cmp::Reverse(novelty), self.tree.node(*id).seed)
         });
 
         for (child_id, _, _) in children {
             self.search_order.push(child_id);
-            self.expand(child_id, config, instance_info, seccomp_filters, child_resources)?;
+            self.expand(
+                child_id,
+                config,
+                instance_info,
+                seccomp_filters,
+                child_resources,
+            )?;
         }
         Ok(())
     }
@@ -403,8 +413,8 @@ impl Explorer {
 
 #[cfg(test)]
 mod tests {
-    use rand_chacha::ChaCha8Rng;
     use rand_chacha::rand_core::{RngCore, SeedableRng};
+    use rand_chacha::ChaCha8Rng;
 
     use super::*;
     use vmm::builder::build_microvm_for_boot;
@@ -413,9 +423,7 @@ mod tests {
     use vmm::vmm_config::entropy::EntropyDeviceConfig;
 
     fn root_resources() -> VmResources {
-        let boot_source_cfg = MockBootSourceConfig::new()
-            .with_default_boot_args()
-            .into();
+        let boot_source_cfg = MockBootSourceConfig::new().with_default_boot_args().into();
         let mut resources: VmResources = MockVmResources::new()
             .with_boot_source(boot_source_cfg)
             .with_vm_config(
@@ -480,7 +488,10 @@ mod tests {
         // Same shape: root + 2 children, same exploration order.
         assert_eq!(exp_a.tree.len(), 3);
         assert_eq!(exp_b.tree.len(), 3);
-        assert_eq!(exp_a.tree.exploration_order(), exp_b.tree.exploration_order());
+        assert_eq!(
+            exp_a.tree.exploration_order(),
+            exp_b.tree.exploration_order()
+        );
 
         for id in 0..exp_a.tree.len() as NodeId {
             let node_a = exp_a.tree.node(id);
@@ -604,7 +615,10 @@ mod tests {
 
         // Full-run determinism: shape, order, seeds, probes, markers.
         assert_eq!(exp_a.tree.len(), exp_b.tree.len());
-        assert_eq!(exp_a.tree.exploration_order(), exp_b.tree.exploration_order());
+        assert_eq!(
+            exp_a.tree.exploration_order(),
+            exp_b.tree.exploration_order()
+        );
         for id in 0..exp_a.tree.len() as NodeId {
             let (a, b) = (exp_a.tree.node(id), exp_b.tree.node(id));
             assert_eq!(a.seed, b.seed);

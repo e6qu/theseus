@@ -52,14 +52,13 @@ virtio-rng) and documents the limitation.
 ### 2.1b Host-side entropy leaks — `detrng.rs` (found during Phase 5 sweep)
 Upstream draws guest-visible randomness from host entropy in more places than
 virtio-rng: aarch64 FDT `rng-seed`, vmgenid generation IDs, MMDS token keys,
-dumbo TCP ISNs. All now route through `detrng` — one seeded ChaCha stream per
-process, initialized from the run seed at VM build (boot and snapshot-restore
-paths). Also de-randomized the test harness: descriptor-gap injection and
+dumbo TCP ISNs. All now route through `detrng` — a VM-owned seeded ChaCha
+stream, entered at root construction, child restore, and timeline execution.
+Also de-randomized the test harness: descriptor-gap injection and
 frame/payload generators in `test_utils`/`tap`/`block` tests and the APIC
 interrupt test used unseeded `vmm_sys_util::rand` — now deterministic patterns.
-Known scope note: `detrng` is per-process; deterministic under one-timeline-
-per-process (our target layout). Per-VM scoping would be needed for parallel
-in-process timelines.
+Parallel in-process timelines therefore cannot interleave guest-visible host
+randomness.
 
 ### 2.2 Control channel (our `VMCALL` equivalent)
 - **Custom MMIO device** (`devices/pseudo/theseus.rs`): magic ("THES"),
@@ -301,9 +300,10 @@ below must have a runnable example and narrow acceptance tests.
 | P6.6 | **`faults: add deterministic storage faults`** | **DONE (PR #19).** The simulated block backend exposes errors, latency, torn writes, and corrupt reads through the same manifest/replay format. | Real host-disk fault injection. |
 | P6.7 | **`explorer: make search guidance product-facing`** | **DONE (PR #20).** Branch budgets, coverage/marker novelty controls, failure preservation, and deterministic test reports through the CLI. | RL training infrastructure or a graphical multiverse debugger. |
 | P6.8 | **`reports: add local timeline inspection`** | **DONE (PR #21).** A local static report with timeline tree, faults, logs, checks, coverage summaries, and copy-paste replay commands. | A hosted multi-user UI or causality analysis equivalent. |
-| P6.9 | **`replay: make every result bundle self-contained`** | Locked Compose and exploration bundles replay through the CLI without their source Compose file or manifest. | Cross-version replay guarantees or search minimization. |
+| P6.9 | **`replay: make every result bundle self-contained`** | **DONE (PR #22).** Locked Compose and exploration bundles replay through the CLI without their source Compose file or manifest. | Cross-version replay guarantees or search minimization. |
+| P7.0 | **`entropy: isolate host randomness per timeline`** | VM-owned host-side ChaCha streams across parallel exploration timelines. | A distributed coordinator or randomness outside Theseus VM execution. |
 
-**Current PR: P6.9 only.** The manifest is an execution contract, not a second
+**Current PR: P7.0 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what
