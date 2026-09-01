@@ -10,7 +10,7 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-use crate::{load_plan, ArtifactPlan, LoadError, ReplayFingerprint, RunPlan};
+use crate::{load_plan, ArtifactPlan, LoadError, ReplayFingerprint, ReplayTreeNode, RunPlan};
 
 #[derive(Debug)]
 pub enum ExploreError {
@@ -64,7 +64,7 @@ pub fn replay_exploration(
     bundle: impl AsRef<Path>,
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ExploreError> {
-    let plan = locked_replay_plan(bundle)?;
+    let plan = verified_whole_tree_replay_plan(bundle)?;
     execute_plan(&plan, output, ExplorerAction::Explore)
 }
 
@@ -120,6 +120,16 @@ fn verified_targeted_replay_plan(
     Ok(plan)
 }
 
+fn verified_whole_tree_replay_plan(bundle: impl AsRef<Path>) -> Result<RunPlan, ExploreError> {
+    let expected_tree = recorded_tree(bundle.as_ref())?;
+    let mut plan = locked_replay_plan(bundle)?;
+    plan.explore
+        .as_mut()
+        .expect("locked exploration plan was validated")
+        .replay_expected_tree = Some(expected_tree);
+    Ok(plan)
+}
+
 #[derive(Deserialize)]
 struct RecordedResult {
     format: String,
@@ -135,10 +145,45 @@ struct RecordedNode {
     dirty_pages: Option<u64>,
 }
 
+fn recorded_tree(bundle: &Path) -> Result<Vec<ReplayTreeNode>, ExploreError> {
+    let result = recorded_result(bundle)?;
+    Ok(result
+        .nodes
+        .into_iter()
+        .map(|node| ReplayTreeNode {
+            seed_path: node.seed_path,
+            fingerprint: ReplayFingerprint {
+                entropy_probe_hex: node.entropy_probe_hex,
+                markers_hex: node.markers_hex,
+                dirty_pages: node.dirty_pages,
+            },
+        })
+        .collect())
+}
+
 fn recorded_fingerprint(
     bundle: &Path,
     seed_path: &[u64],
 ) -> Result<ReplayFingerprint, ExploreError> {
+    let result = recorded_result(bundle)?;
+    let node = result
+        .nodes
+        .into_iter()
+        .find(|node| node.seed_path == seed_path)
+        .ok_or_else(|| {
+            ExploreError::Invalid(format!(
+                "seed path is not recorded in {}",
+                bundle.join("result.json").display()
+            ))
+        })?;
+    Ok(ReplayFingerprint {
+        entropy_probe_hex: node.entropy_probe_hex,
+        markers_hex: node.markers_hex,
+        dirty_pages: node.dirty_pages,
+    })
+}
+
+fn recorded_result(bundle: &Path) -> Result<RecordedResult, ExploreError> {
     let bundle = fs::canonicalize(bundle).map_err(|source| ExploreError::Read {
         path: bundle.to_path_buf(),
         source,
@@ -159,21 +204,7 @@ fn recorded_fingerprint(
             result_path.display()
         )));
     }
-    let node = result
-        .nodes
-        .into_iter()
-        .find(|node| node.seed_path == seed_path)
-        .ok_or_else(|| {
-            ExploreError::Invalid(format!(
-                "seed path is not recorded in {}",
-                result_path.display()
-            ))
-        })?;
-    Ok(ReplayFingerprint {
-        entropy_probe_hex: node.entropy_probe_hex,
-        markers_hex: node.markers_hex,
-        dirty_pages: node.dirty_pages,
-    })
+    Ok(result)
 }
 
 fn targeted_replay_plan(
@@ -376,5 +407,20 @@ mod tests {
     fn rejects_an_empty_targeted_replay_path() {
         let error = replay_exploration_path("missing-bundle", Vec::new(), "unused").unwrap_err();
         assert!(error.to_string().contains("root seed"));
+    }
+
+    #[test]
+    fn reads_every_recorded_node_for_whole_tree_verification() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("result.json"),
+            r#"{"format":"theseus-exploration-result-v1","nodes":[{"seed_path":[1],"entropy_probe_hex":"aa","markers_hex":"ff","dirty_pages":2},{"seed_path":[1,2],"entropy_probe_hex":"bb","markers_hex":"90ff","dirty_pages":3}]}"#,
+        )
+        .unwrap();
+
+        let tree = recorded_tree(directory.path()).unwrap();
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree[1].seed_path, vec![1, 2]);
+        assert_eq!(tree[1].fingerprint.entropy_probe_hex, "bb");
     }
 }

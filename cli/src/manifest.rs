@@ -298,6 +298,10 @@ pub struct ExplorePlan {
     /// result; user manifests cannot set it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay_expected: Option<ReplayFingerprint>,
+    /// Fingerprints for every recorded timeline. Injected only for a whole
+    /// exploration replay from its locked result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_expected_tree: Option<Vec<ReplayTreeNode>>,
 }
 
 /// Guest-visible fingerprints that a targeted replay must reproduce.
@@ -306,6 +310,13 @@ pub struct ReplayFingerprint {
     pub entropy_probe_hex: String,
     pub markers_hex: String,
     pub dirty_pages: Option<u64>,
+}
+
+/// The expected fingerprint of one seed path during a whole-tree replay.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ReplayTreeNode {
+    pub seed_path: Vec<u64>,
+    pub fingerprint: ReplayFingerprint,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -497,6 +508,7 @@ fn explore_plan(explore: Option<Explore>) -> Result<Option<ExplorePlan>, LoadErr
         events_hex,
         replay_seed_path: None,
         replay_expected: None,
+        replay_expected_tree: None,
     }))
 }
 
