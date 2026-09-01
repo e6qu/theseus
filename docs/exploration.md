@@ -84,6 +84,21 @@ checks. The result is deterministic and **1-minimal**: no remaining individual
 event can be removed. It does not claim a globally smallest sequence. The
 minimized bundle contains its locked plan and records both event sequences.
 
+## Export a paused timeline
+
+Export the captured state for one seed path when you need to inspect it with
+Firecracker snapshot tooling:
+
+```sh
+theseus explore --snapshot exploration-dir --seed-path 42,123,456 \
+  --output paused-timeline
+```
+
+The output is self-contained. `snapshot.state` and `snapshot.memory` use the
+Firecracker snapshot-file layout; `snapshot.json` records their names, the seed
+path, and the node fingerprints. It also retains the locked Theseus artifacts and
+plan. This command exports the snapshot only; it does not load, mutate, or debug it.
+
 ## Fingerprints per node
 
 Every captured node records three fingerprints (see

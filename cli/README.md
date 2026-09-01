@@ -13,6 +13,9 @@ theseus test [--output replay-dir] [theseus.toml]
 theseus replay replay-dir
 theseus explore [--output exploration-dir] [theseus.toml]
 theseus explore --replay exploration-dir [--output exploration-dir]
+theseus explore --replay exploration-dir --seed-path seed,... [--output exploration-dir]
+theseus explore --minimize exploration-dir --seed-path seed,... [--output exploration-dir]
+theseus explore --snapshot exploration-dir --seed-path seed,... [--output snapshot-dir]
 theseus report [--output report-dir] result-dir
 theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
@@ -239,3 +242,7 @@ Use `theseus explore --replay exploration-dir --seed-path seed,...` to replay
 one recorded root-to-node path without creating its siblings.
 Use `theseus explore --minimize exploration-dir --seed-path seed,...` to reduce
 a property-failing path to a deterministic 1-minimal event sequence.
+Use `theseus explore --snapshot exploration-dir --seed-path seed,...` to export
+the selected paused timeline as `snapshot.state` and `snapshot.memory` alongside
+its locked artifacts and `snapshot.json` metadata. It exports a snapshot; loading
+or modifying snapshots is outside the CLI's scope.

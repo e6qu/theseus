@@ -304,9 +304,10 @@ below must have a runnable example and narrow acceptance tests.
 | P7.0 | **`entropy: isolate host randomness per timeline`** | **DONE (PR #23).** VM-owned host-side ChaCha streams across parallel exploration timelines. | A distributed coordinator or randomness outside Theseus VM execution. |
 | P7.1 | **`explorer: evaluate marker properties per timeline`** | **DONE (PR #24).** Marker pass/fail properties for every captured timeline, retained in locked exploration results and reports. | Serial-log properties in the headless explorer, automatic minimization, or a fast code-coverage instrumentor. |
 | P7.2 | **`replay: reproduce one exploration timeline`** | **DONE (PR #25).** Replay one recorded root-to-node seed path without rebuilding its sibling subtrees. | Automatic minimization, snapshot export, or a fast code-coverage instrumentor. |
-| P7.3 | **`minimize: reduce a failing exploration path`** | A locked, deterministic 1-minimal `explore.events` sequence preserving the same named failed properties. | Global minimization, seed/fault minimization, or a fast code-coverage instrumentor. |
+| P7.3 | **`minimize: reduce a failing exploration path`** | **DONE (PR #26).** A locked, deterministic 1-minimal `explore.events` sequence preserving the same named failed properties. | Global minimization, seed/fault minimization, or a fast code-coverage instrumentor. |
+| P7.4 | **`snapshot: export one exploration timeline`** | Export one recorded seed path as a self-contained Firecracker state-and-memory snapshot with locked-artifact provenance and node fingerprints. | Snapshot loading or mutation, a debugger UI, serial-log collection, or a fast code-coverage instrumentor. |
 
-**Current PR: P7.3 only.** The manifest is an execution contract, not a second
+**Current PR: P7.4 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what

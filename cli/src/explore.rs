@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::{ArtifactPlan, LoadError, RunPlan, load_plan};
+use crate::{load_plan, ArtifactPlan, LoadError, RunPlan};
 
 #[derive(Debug)]
 pub enum ExploreError {
@@ -30,8 +30,12 @@ impl fmt::Display for ExploreError {
         match self {
             Self::Manifest(error) => error.fmt(formatter),
             Self::Invalid(reason) => formatter.write_str(reason),
-            Self::Read { path, source } => write!(formatter, "cannot read {}: {source}", path.display()),
-            Self::Write { path, source } => write!(formatter, "cannot write {}: {source}", path.display()),
+            Self::Read { path, source } => {
+                write!(formatter, "cannot read {}: {source}", path.display())
+            }
+            Self::Write { path, source } => {
+                write!(formatter, "cannot write {}: {source}", path.display())
+            }
             Self::Execute(reason) => write!(formatter, "exploration failed: {reason}"),
         }
     }
@@ -39,11 +43,18 @@ impl fmt::Display for ExploreError {
 
 impl std::error::Error for ExploreError {}
 
+#[derive(Clone, Copy)]
+enum ExplorerAction {
+    Explore,
+    Minimize,
+    Snapshot,
+}
+
 /// Start a single-manifest exploration through the executor released beside the CLI.
 pub fn explore(path: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<PathBuf, ExploreError> {
     let plan = load_plan(path).map_err(ExploreError::Manifest)?;
     validate(&plan)?;
-    execute_plan(&plan, output, false)
+    execute_plan(&plan, output, ExplorerAction::Explore)
 }
 
 /// Re-run a recorded exploration using only its locked artifacts.
@@ -52,7 +63,7 @@ pub fn replay_exploration(
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ExploreError> {
     let plan = locked_replay_plan(bundle)?;
-    execute_plan(&plan, output, false)
+    execute_plan(&plan, output, ExplorerAction::Explore)
 }
 
 /// Re-run one recorded root-to-node path using only locked artifacts. The
@@ -64,7 +75,7 @@ pub fn replay_exploration_path(
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ExploreError> {
     let plan = targeted_replay_plan(bundle, seed_path)?;
-    execute_plan(&plan, output, false)
+    execute_plan(&plan, output, ExplorerAction::Explore)
 }
 
 /// Reduce `explore.events` for a property-failing recorded path. The output
@@ -75,7 +86,18 @@ pub fn minimize_exploration_path(
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ExploreError> {
     let plan = targeted_replay_plan(bundle, seed_path)?;
-    execute_plan(&plan, output, true)
+    execute_plan(&plan, output, ExplorerAction::Minimize)
+}
+
+/// Export one recorded root-to-node timeline as Firecracker-compatible state
+/// and memory files, using only its locked artifacts.
+pub fn snapshot_exploration_path(
+    bundle: impl AsRef<Path>,
+    seed_path: Vec<u64>,
+    output: impl AsRef<Path>,
+) -> Result<PathBuf, ExploreError> {
+    let plan = targeted_replay_plan(bundle, seed_path)?;
+    execute_plan(&plan, output, ExplorerAction::Snapshot)
 }
 
 fn targeted_replay_plan(
@@ -107,13 +129,14 @@ fn locked_replay_plan(bundle: impl AsRef<Path>) -> Result<RunPlan, ExploreError>
         source,
     })?;
     let plan_path = bundle.join("explore-plan.json");
-    let mut plan: RunPlan = serde_json::from_slice(
-        &fs::read(&plan_path).map_err(|source| ExploreError::Read {
+    let mut plan: RunPlan =
+        serde_json::from_slice(&fs::read(&plan_path).map_err(|source| ExploreError::Read {
             path: plan_path.clone(),
             source,
-        })?,
-    )
-    .map_err(|error| ExploreError::Invalid(format!("cannot parse {}: {error}", plan_path.display())))?;
+        })?)
+        .map_err(|error| {
+            ExploreError::Invalid(format!("cannot parse {}: {error}", plan_path.display()))
+        })?;
     plan.runtime.firecracker = locked_artifact(&bundle, "firecracker", &plan.runtime.firecracker)?;
     plan.guest.kernel = locked_artifact(&bundle, "kernel", &plan.guest.kernel)?;
     plan.guest.initramfs = locked_artifact(&bundle, "initramfs", &plan.guest.initramfs)?;
@@ -124,7 +147,7 @@ fn locked_replay_plan(bundle: impl AsRef<Path>) -> Result<RunPlan, ExploreError>
 fn execute_plan(
     plan: &RunPlan,
     output: impl AsRef<Path>,
-    minimize: bool,
+    action: ExplorerAction,
 ) -> Result<PathBuf, ExploreError> {
     let output = output.as_ref().to_path_buf();
     if output.exists() {
@@ -137,7 +160,9 @@ fn execute_plan(
         .map_err(|error| ExploreError::Invalid(format!("cannot locate theseus binary: {error}")))?
         .parent()
         .map(|directory| directory.join("theseus-explorer"))
-        .ok_or_else(|| ExploreError::Invalid("theseus binary has no parent directory".to_owned()))?;
+        .ok_or_else(|| {
+            ExploreError::Invalid("theseus binary has no parent directory".to_owned())
+        })?;
     if !runner.is_file() {
         return Err(ExploreError::Invalid(format!(
             "missing Linux exploration runner beside theseus: {}; use a published Linux runtime bundle",
@@ -147,8 +172,9 @@ fn execute_plan(
     let plan_file = output.with_extension("explore-plan.json");
     fs::write(
         &plan_file,
-        serde_json::to_vec_pretty(&plan)
-            .map_err(|error| ExploreError::Invalid(format!("cannot encode exploration plan: {error}")))?,
+        serde_json::to_vec_pretty(&plan).map_err(|error| {
+            ExploreError::Invalid(format!("cannot encode exploration plan: {error}"))
+        })?,
     )
     .map_err(|source| ExploreError::Write {
         path: plan_file.clone(),
@@ -159,9 +185,15 @@ fn execute_plan(
         .arg(&plan_file)
         .arg("--output")
         .arg(&output)
-        .args(minimize.then_some("--minimize"))
+        .args(match action {
+            ExplorerAction::Explore => None,
+            ExplorerAction::Minimize => Some("--minimize"),
+            ExplorerAction::Snapshot => Some("--snapshot"),
+        })
         .status()
-        .map_err(|error| ExploreError::Execute(format!("cannot start {}: {error}", runner.display())))?;
+        .map_err(|error| {
+            ExploreError::Execute(format!("cannot start {}: {error}", runner.display()))
+        })?;
     let _ = fs::remove_file(&plan_file);
     if status.success() {
         Ok(output)
@@ -173,7 +205,11 @@ fn execute_plan(
     }
 }
 
-fn locked_artifact(bundle: &Path, name: &str, expected: &ArtifactPlan) -> Result<ArtifactPlan, ExploreError> {
+fn locked_artifact(
+    bundle: &Path,
+    name: &str,
+    expected: &ArtifactPlan,
+) -> Result<ArtifactPlan, ExploreError> {
     let path = fs::canonicalize(bundle.join("artifacts").join(name)).map_err(|source| {
         ExploreError::Read {
             path: bundle.join("artifacts").join(name),
@@ -204,7 +240,11 @@ fn validate(plan: &RunPlan) -> Result<(), ExploreError> {
                 .to_owned(),
         ));
     }
-    if !plan.storage.is_empty() || plan.network.loopback || plan.network.drop_ppm != 0 || plan.network.partitioned {
+    if !plan.storage.is_empty()
+        || plan.network.loopback
+        || plan.network.drop_ppm != 0
+        || plan.network.partitioned
+    {
         return Err(ExploreError::Invalid(
             "exploration currently accepts only the headless control-channel VM; storage and network settings are unavailable"
                 .to_owned(),
@@ -230,7 +270,10 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert!(validate(&plan).unwrap_err().to_string().contains("no [explore]"));
+        assert!(validate(&plan)
+            .unwrap_err()
+            .to_string()
+            .contains("no [explore]"));
     }
 
     #[test]

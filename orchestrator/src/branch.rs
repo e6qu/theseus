@@ -20,15 +20,17 @@
 
 use std::fs::File;
 use std::io::{self, Write};
+use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
+use std::path::Path;
 
 use memfd::MemfdOptions;
 
-use vmm::Vmm;
+use vm_memory::{GuestMemoryBackend, GuestMemoryRegion};
 use vmm::persist::{MicrovmState, VmInfo};
 use vmm::snapshot::Snapshot;
 use vmm::vstate::memory::{GuestMemoryExtension, GuestMemoryMmap};
-use vm_memory::{GuestMemoryBackend, GuestMemoryRegion};
+use vmm::Vmm;
 
 /// Errors from branch-point capture.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -132,6 +134,39 @@ impl BranchPoint {
     pub fn branch_count(&self) -> u64 {
         self.branch_count
     }
+
+    /// Write this captured state in Firecracker's snapshot-file layout.
+    ///
+    /// `state_path` receives the serialized [`MicrovmState`] and
+    /// `memory_path` receives the contiguous guest-memory image. Both files
+    /// are independent of the in-memory branch point after this returns.
+    pub fn export_snapshot(
+        &self,
+        state_path: &Path,
+        memory_path: &Path,
+    ) -> Result<(), BranchError> {
+        std::fs::write(state_path, &self.state_bytes)?;
+        let mut destination = File::create(memory_path)?;
+        destination.set_len(self.mem_size)?;
+
+        let mut offset = 0;
+        let mut buffer = [0u8; 64 * 1024];
+        while offset < self.mem_size {
+            let remaining = (self.mem_size - offset) as usize;
+            let chunk_len = remaining.min(buffer.len());
+            let count = self.memory.read_at(&mut buffer[..chunk_len], offset)?;
+            if count == 0 {
+                return Err(BranchError::MemoryIo(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "branch memory ended before its recorded size",
+                )));
+            }
+            destination.write_all(&buffer[..count])?;
+            offset += count as u64;
+        }
+        destination.flush()?;
+        Ok(())
+    }
 }
 
 /// Serialize a [`MicrovmState`] to bytes (snapshot format with CRC).
@@ -171,9 +206,9 @@ pub fn dump_memory_to_memfd(mem: &GuestMemoryMmap) -> Result<(File, u64), Branch
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vm_memory::Bytes;
     use vmm::test_utils::single_region_mem;
     use vmm::vstate::memory::GuestAddress;
-    use vm_memory::Bytes;
 
     #[test]
     fn test_state_serialization_roundtrip() {
@@ -201,9 +236,37 @@ mod tests {
         file.read_exact_at(&mut dump, 0).unwrap();
 
         let mut guest_bytes = vec![0u8; 0x1000];
-        mem.read_slice(&mut guest_bytes, GuestAddress(0x2000)).unwrap();
+        mem.read_slice(&mut guest_bytes, GuestAddress(0x2000))
+            .unwrap();
         assert_eq!(&dump[0x2000..0x3000], &guest_bytes[..]);
         assert_eq!(&guest_bytes[..], &pattern[..]);
+    }
+
+    #[test]
+    fn snapshot_export_is_an_independent_file_pair() {
+        let state_file = vmm_sys_util::tempfile::TempFile::new().unwrap();
+        let memory_file = vmm_sys_util::tempfile::TempFile::new().unwrap();
+        let state = vec![1, 2, 3, 4];
+        let mut memory = MemfdOptions::default()
+            .create("theseus-export-test")
+            .unwrap()
+            .into_file();
+        memory.set_len(5).unwrap();
+        memory.write_all(b"hello").unwrap();
+        let branch = BranchPoint {
+            state_bytes: state.clone(),
+            memory,
+            mem_size: 5,
+            base_seed: 1,
+            branch_count: 0,
+        };
+
+        branch
+            .export_snapshot(state_file.as_path(), memory_file.as_path())
+            .unwrap();
+
+        assert_eq!(std::fs::read(state_file.as_path()).unwrap(), state);
+        assert_eq!(std::fs::read(memory_file.as_path()).unwrap(), b"hello");
     }
 
     #[test]

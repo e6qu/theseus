@@ -121,6 +121,7 @@ struct ReportModel {
     command: String,
     path_command: Option<String>,
     minimize_path_command: Option<String>,
+    snapshot_path_command: Option<String>,
     checks: Vec<Check>,
     faults: Vec<Fault>,
     logs: Vec<Log>,
@@ -202,6 +203,7 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
         command: format!("theseus replay {}", shell_quote(root)),
         path_command: None,
         minimize_path_command: None,
+        snapshot_path_command: None,
         checks: result.checks,
         faults: Vec::new(),
         logs: maybe_log(root, Path::new("serial.log"), "Serial log")?
@@ -255,6 +257,10 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
         )),
         minimize_path_command: Some(format!(
             "theseus explore --minimize {} --seed-path ",
+            shell_quote(root)
+        )),
+        snapshot_path_command: Some(format!(
+            "theseus explore --snapshot {} --seed-path ",
             shell_quote(root)
         )),
         checks: result.checks,
@@ -329,6 +335,7 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
         ),
         path_command: None,
         minimize_path_command: None,
+        snapshot_path_command: None,
         checks,
         faults,
         logs,
@@ -450,7 +457,7 @@ app.append(el('h1',m.title)); app.append(el('p',m.kind));
 const status=el('p','Status: '+m.status);status.className='status '+m.status;app.append(status);
 if(m.error){{const e=section('Error');e.append(el('pre',m.error));}}
 const replay=section(m.command_label);replay.append(el('pre',m.command));
-if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
+if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
 if(m.checks.length){{const s=section('Checks');s.append(table(m.checks.map(c=>[c.name,c.kind,c.status,c.detail]),['Name','Kind','Status','Detail']));}}
@@ -529,6 +536,7 @@ mod tests {
         assert!(html.contains("exploration-rerun"));
         assert!(html.contains("--seed-path"));
         assert!(html.contains("--minimize"));
+        assert!(html.contains("--snapshot"));
         assert!(html.contains("Event minimization"));
     }
 }

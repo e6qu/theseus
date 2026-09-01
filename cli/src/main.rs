@@ -5,7 +5,11 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use theseus_cli::{explore, load_compose_plan, load_plan, minimize_exploration_path, replay, replay_compose, replay_exploration, replay_exploration_path, report, test, test_compose};
+use theseus_cli::{
+    explore, load_compose_plan, load_plan, minimize_exploration_path, replay, replay_compose,
+    replay_exploration, replay_exploration_path, report, snapshot_exploration_path, test,
+    test_compose,
+};
 
 const USAGE: &str = "Usage:
   theseus validate [theseus.toml]
@@ -15,6 +19,7 @@ const USAGE: &str = "Usage:
   theseus explore [--output exploration-dir] [theseus.toml]
   theseus explore --replay exploration-dir [--seed-path seed,...] [--output exploration-dir]
   theseus explore --minimize exploration-dir --seed-path seed,... [--output exploration-dir]
+  theseus explore --snapshot exploration-dir --seed-path seed,... [--output snapshot-dir]
   theseus report [--output report-dir] result-dir
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
@@ -113,15 +118,32 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("minimized failing path: {}", result.display());
             Ok(())
         }
+        [command, snapshot, bundle, path_flag, path, output_flag, output]
+            if command == "explore"
+                && snapshot == "--snapshot"
+                && path_flag == "--seed-path"
+                && output_flag == "--output" =>
+        {
+            let result = snapshot_exploration_path(bundle, seed_path(path)?, output)
+                .map_err(|error| error.to_string())?;
+            println!("exported snapshot: {}", result.display());
+            Ok(())
+        }
+        [command, snapshot, bundle, path_flag, path]
+            if command == "explore" && snapshot == "--snapshot" && path_flag == "--seed-path" =>
+        {
+            let result =
+                snapshot_exploration_path(bundle, seed_path(path)?, format!("{bundle}-snapshot"))
+                    .map_err(|error| error.to_string())?;
+            println!("exported snapshot: {}", result.display());
+            Ok(())
+        }
         [command, minimize, bundle, path_flag, path]
             if command == "explore" && minimize == "--minimize" && path_flag == "--seed-path" =>
         {
-            let result = minimize_exploration_path(
-                bundle,
-                seed_path(path)?,
-                format!("{bundle}-minimized"),
-            )
-            .map_err(|error| error.to_string())?;
+            let result =
+                minimize_exploration_path(bundle, seed_path(path)?, format!("{bundle}-minimized"))
+                    .map_err(|error| error.to_string())?;
             println!("minimized failing path: {}", result.display());
             Ok(())
         }
@@ -139,12 +161,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
         [command, replay, bundle, path_flag, path]
             if command == "explore" && replay == "--replay" && path_flag == "--seed-path" =>
         {
-            let result = replay_exploration_path(
-                bundle,
-                seed_path(path)?,
-                format!("{bundle}-path-replay"),
-            )
-            .map_err(|error| error.to_string())?;
+            let result =
+                replay_exploration_path(bundle, seed_path(path)?, format!("{bundle}-path-replay"))
+                    .map_err(|error| error.to_string())?;
             println!("exploration path replay passed: {}", result.display());
             Ok(())
         }

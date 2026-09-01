@@ -83,5 +83,6 @@ fn help_lists_bundle_local_replay_commands() {
     assert!(help.contains("explore --replay exploration-dir"));
     assert!(help.contains("--seed-path seed,..."));
     assert!(help.contains("explore --minimize exploration-dir"));
+    assert!(help.contains("explore --snapshot exploration-dir"));
     assert!(help.contains("compose replay replay-dir"));
 }
