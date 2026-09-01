@@ -10,7 +10,7 @@ use std::convert::From;
 use vm_memory::GuestMemoryError;
 
 use super::{SECTOR_SHIFT, SECTOR_SIZE, VirtioBlockError, io as block_io};
-use crate::devices::virtio::block::virtio::device::DiskProperties;
+use crate::devices::virtio::block::virtio::device::{DiskProperties, SimulatedBlock};
 use crate::devices::virtio::block::virtio::metrics::BlockDeviceMetrics;
 pub use crate::devices::virtio::generated::virtio_blk::{
     VIRTIO_BLK_ID_BYTES, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK, VIRTIO_BLK_S_UNSUPP,
@@ -26,6 +26,7 @@ pub enum IoErr {
     GetId(GuestMemoryError),
     PartialTransfer { completed: u32, expected: u32 },
     FileEngine(block_io::BlockIoError),
+    SimulatedFault,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -410,6 +411,81 @@ impl Request {
                 }
             }
         }
+    }
+
+    pub(crate) fn process_simulated(
+        self,
+        disk: &mut SimulatedBlock,
+        image_id: &[u8; VIRTIO_BLK_ID_BYTES as usize],
+        desc_idx: u16,
+        mem: &GuestMemoryMmap,
+        block_metrics: &BlockDeviceMetrics,
+    ) -> ProcessingResult {
+        let pending = self.to_pending_request(desc_idx);
+        if disk.has_latency()
+            && matches!(self.r#type, RequestType::In | RequestType::Out | RequestType::Flush)
+        {
+            disk.defer(self, pending);
+            return ProcessingResult::Submitted;
+        }
+        ProcessingResult::Executed(self.finish_simulated(disk, image_id, pending, mem, block_metrics))
+    }
+
+    pub(crate) fn finish_simulated(
+        self,
+        disk: &mut SimulatedBlock,
+        image_id: &[u8; VIRTIO_BLK_ID_BYTES as usize],
+        pending: PendingRequest,
+        mem: &GuestMemoryMmap,
+        block_metrics: &BlockDeviceMetrics,
+    ) -> FinishedRequest {
+        let result = match self.r#type {
+            RequestType::In => {
+                if disk.should_fail() {
+                    Err(IoErr::SimulatedFault)
+                } else {
+                    let offset = usize::try_from(self.offset()).expect("validated block offset");
+                    let mut data = disk.read(offset, self.data_len as usize).to_vec();
+                    if let Some(xor) = disk.corrupt_read_xor() {
+                        for byte in &mut data {
+                            *byte ^= xor;
+                        }
+                    }
+                    mem.write_slice(&data, self.data_addr)
+                        .map(|_| self.data_len)
+                        .map_err(IoErr::GetId)
+                }
+            }
+            RequestType::Out => {
+                if disk.should_fail() {
+                    Err(IoErr::SimulatedFault)
+                } else {
+                    let mut data = vec![0; self.data_len as usize];
+                    match mem.read_slice(&mut data, self.data_addr) {
+                        Ok(()) => {
+                            let offset = usize::try_from(self.offset())
+                                .expect("validated block offset");
+                            disk.write(offset, &data);
+                            Ok(self.data_len)
+                        }
+                        Err(error) => Err(IoErr::GetId(error)),
+                    }
+                }
+            }
+            RequestType::Flush => {
+                if disk.should_fail() {
+                    Err(IoErr::SimulatedFault)
+                } else {
+                    Ok(0)
+                }
+            }
+            RequestType::GetDeviceID => mem
+                .write_slice(image_id, self.data_addr)
+                .map(|_| VIRTIO_BLK_ID_BYTES)
+                .map_err(IoErr::GetId),
+            RequestType::Unsupported(_) => Ok(0),
+        };
+        pending.finish(mem, result, block_metrics)
     }
 }
 

@@ -28,6 +28,7 @@ pub enum LoadError {
     },
     InvalidNetworkDropRate(u32),
     InvalidRunConfig(String),
+    InvalidStorage(String),
     InvalidCheck(String),
     InvalidPath {
         field: &'static str,
@@ -65,6 +66,7 @@ impl fmt::Display for LoadError {
                 )
             }
             Self::InvalidRunConfig(reason) => write!(formatter, "run: {reason}"),
+            Self::InvalidStorage(reason) => write!(formatter, "storage: {reason}"),
             Self::InvalidCheck(reason) => write!(formatter, "checks: {reason}"),
             Self::InvalidPath { field, reason } => write!(formatter, "{field}: {reason}"),
             Self::FileMetadata { path, source } => {
@@ -87,6 +89,8 @@ struct Manifest {
     events: Vec<Event>,
     #[serde(default)]
     network: Network,
+    #[serde(default)]
+    storage: Vec<Storage>,
     #[serde(default)]
     checks: Vec<Check>,
 }
@@ -149,6 +153,21 @@ struct Network {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Storage {
+    id: String,
+    size_mib: u32,
+    #[serde(default)]
+    error_ppm: u32,
+    #[serde(default)]
+    latency_rounds: u32,
+    #[serde(default)]
+    torn_write_bytes: Option<u32>,
+    #[serde(default)]
+    corrupt_read_xor: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Check {
     name: String,
     kind: CheckKind,
@@ -172,6 +191,8 @@ pub struct RunPlan {
     pub run: RunPlanConfig,
     pub events: Vec<EventPlan>,
     pub network: NetworkPlan,
+    #[serde(default)]
+    pub storage: Vec<StoragePlan>,
     #[serde(default)]
     pub checks: Vec<CheckPlan>,
 }
@@ -213,6 +234,17 @@ pub struct NetworkPlan {
     pub loopback: bool,
     pub drop_ppm: u32,
     pub partitioned: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StoragePlan {
+    pub id: String,
+    pub size_mib: u32,
+    pub seed: u64,
+    pub error_ppm: u32,
+    pub latency_rounds: u32,
+    pub torn_write_bytes: Option<u32>,
+    pub corrupt_read_xor: Option<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -317,6 +349,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             })
         })
         .collect::<Result<_, LoadError>>()?;
+    let storage = storage_plan(manifest.storage, manifest.run.seed)?;
 
     Ok(RunPlan {
         format: "theseus-run-plan-v1".to_owned(),
@@ -336,6 +369,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             drop_ppm: manifest.network.drop_ppm,
             partitioned: manifest.network.partitioned,
         },
+        storage,
         checks: manifest
             .checks
             .into_iter()
@@ -346,6 +380,74 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             })
             .collect(),
     })
+}
+
+fn storage_plan(storage: Vec<Storage>, run_seed: u64) -> Result<Vec<StoragePlan>, LoadError> {
+    const MAX_STORAGE_MIB: u32 = 1024;
+
+    let mut ids = HashSet::new();
+    storage
+        .into_iter()
+        .enumerate()
+        .map(|(index, storage)| {
+            if storage.id.is_empty()
+                || !storage
+                    .id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            {
+                return Err(LoadError::InvalidStorage(format!(
+                    "id {:?} must contain only letters, digits, '-' or '_'",
+                    storage.id
+                )));
+            }
+            if !ids.insert(storage.id.clone()) {
+                return Err(LoadError::InvalidStorage(format!(
+                    "id {:?} appears more than once",
+                    storage.id
+                )));
+            }
+            if storage.size_mib == 0 || storage.size_mib > MAX_STORAGE_MIB {
+                return Err(LoadError::InvalidStorage(format!(
+                    "size_mib for {:?} must be between 1 and {MAX_STORAGE_MIB}",
+                    storage.id
+                )));
+            }
+            if storage.error_ppm > 1_000_000 {
+                return Err(LoadError::InvalidStorage(format!(
+                    "error_ppm for {:?} must be at most 1000000",
+                    storage.id
+                )));
+            }
+            if storage.torn_write_bytes == Some(0) {
+                return Err(LoadError::InvalidStorage(format!(
+                    "torn_write_bytes for {:?} must be greater than zero",
+                    storage.id
+                )));
+            }
+            if storage.corrupt_read_xor == Some(0) {
+                return Err(LoadError::InvalidStorage(format!(
+                    "corrupt_read_xor for {:?} must not be zero",
+                    storage.id
+                )));
+            }
+
+            let mut digest = Sha256::new();
+            digest.update(run_seed.to_le_bytes());
+            digest.update((index as u64).to_le_bytes());
+            digest.update(storage.id.as_bytes());
+            let seed = u64::from_le_bytes(digest.finalize()[..8].try_into().unwrap());
+            Ok(StoragePlan {
+                id: storage.id,
+                size_mib: storage.size_mib,
+                seed,
+                error_ppm: storage.error_ppm,
+                latency_rounds: storage.latency_rounds,
+                torn_write_bytes: storage.torn_write_bytes,
+                corrupt_read_xor: storage.corrupt_read_xor,
+            })
+        })
+        .collect()
 }
 
 fn default_timeout_secs() -> u64 {
@@ -487,6 +589,14 @@ data = "Aa00"
 loopback = true
 drop_ppm = 100
 partitioned = false
+
+[[storage]]
+id = "data_1"
+size_mib = 4
+error_ppm = 250
+latency_rounds = 2
+torn_write_bytes = 16
+corrupt_read_xor = 1
 "#,
         );
 
@@ -495,6 +605,9 @@ partitioned = false
         assert_eq!(plan.run.seed, 42);
         assert_eq!(plan.events[0].data_hex, "aa00");
         assert_eq!(plan.network.drop_ppm, 100);
+        assert_eq!(plan.storage.len(), 1);
+        assert_eq!(plan.storage[0].id, "data_1");
+        assert_eq!(plan.storage[0].torn_write_bytes, Some(16));
         assert_eq!(
             plan.runtime.firecracker.sha256,
             "c2d872a13438b3768c94bc023684e6dc78a5fe5fe4c629a9eee8396aa6cba742"
@@ -584,5 +697,27 @@ value = "done"
         );
         let error = load_plan(directory.path().join("test/theseus.toml")).unwrap_err();
         assert!(error.to_string().contains("reserved"));
+    }
+
+    #[test]
+    fn rejects_invalid_simulated_storage() {
+        let directory = fixture(
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+[guest]
+kernel = "guest/vmlinux"
+initramfs = "guest/initramfs.cpio"
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+[[storage]]
+id = "data"
+size_mib = 0
+"#,
+        );
+        let error = load_plan(directory.path().join("test/theseus.toml")).unwrap_err();
+        assert!(error.to_string().contains("size_mib"));
     }
 }

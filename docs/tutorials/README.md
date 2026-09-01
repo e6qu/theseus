@@ -20,6 +20,8 @@ kernel module is shipped.
    through a deterministic Compose backplane.
 6. [Schedule a service fault](06-lifecycle-clock/) — pause, restart, and jump
    one service's virtual clock at deterministic topology rounds.
+7. [Inject storage faults](07-storage-faults/) — exercise a deterministic,
+   memory-only virtio disk.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

@@ -1,0 +1,6 @@
+name: storage-faults
+
+services:
+  service:
+    x-theseus:
+      manifest: service/theseus.toml

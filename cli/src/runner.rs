@@ -78,6 +78,7 @@ pub enum RunError {
         status: String,
     },
     UnsupportedNetworkFaults,
+    UnsupportedStorageFaults,
     ChecksFailed {
         names: Vec<String>,
     },
@@ -153,6 +154,10 @@ impl fmt::Display for RunError {
                 formatter,
                 "network drop and partition schedules need a topology; they arrive in P6.4"
             ),
+            Self::UnsupportedStorageFaults => write!(
+                formatter,
+                "simulated storage faults require `theseus compose test` on a published Linux runtime"
+            ),
             Self::ChecksFailed { names } => {
                 write!(formatter, "checks failed: {}", names.join(", "))
             }
@@ -211,6 +216,9 @@ struct ResultRecord {
 pub fn test(manifest: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<TestResult, RunError> {
     let manifest = manifest.as_ref();
     let plan = load_plan(manifest).map_err(RunError::Manifest)?;
+    if !plan.storage.is_empty() {
+        return Err(RunError::UnsupportedStorageFaults);
+    }
     let output = absolute_output(output.as_ref())?;
     let bundle = Bundle::create(&output, manifest, &plan)?;
     let execution = match execute(&bundle.replay_plan, &bundle.root, &bundle.root) {

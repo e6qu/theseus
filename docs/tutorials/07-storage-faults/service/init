@@ -1,0 +1,16 @@
+#!/bin/busybox sh
+mkdir /dev /proc /tmp
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+
+dd if=/dev/zero of=/tmp/written bs=512 count=1
+printf 'Theseus deterministic storage\n' | dd of=/tmp/written conv=notrunc
+dd if=/tmp/written of=/dev/vda bs=512 count=1
+dd if=/dev/vda of=/tmp/readback bs=512 count=1
+
+if cmp -s /tmp/written /tmp/readback; then
+    echo 'storage fault was not observed'
+else
+    echo 'storage fault observed'
+fi
+poweroff -f
