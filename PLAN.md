@@ -308,9 +308,10 @@ below must have a runnable example and narrow acceptance tests.
 | P7.4 | **`snapshot: export one exploration timeline`** | **DONE (PR #27).** Export one recorded seed path as a self-contained Firecracker state-and-memory snapshot with locked-artifact provenance and node fingerprints. | Snapshot loading or mutation, a debugger UI, serial-log collection, or a fast code-coverage instrumentor. |
 | P7.5 | **`replay: verify one exploration timeline`** | **DONE (PR #28).** Compare a targeted replay's recorded entropy, marker, and dirty-page fingerprints before accepting it as reproduced. | Whole-tree comparison, cross-version replay guarantees, serial-log collection, or a fast code-coverage instrumentor. |
 | P7.6 | **`explorer: capture serial logs per timeline`** | **DONE (PR #29).** Per-seed serial logs in exploration bundles and serial properties evaluated across every captured timeline. | Serial input events, whole-tree replay verification, or a fast code-coverage instrumentor. |
-| P7.7 | **`replay: verify the complete exploration tree`** | Rebuild a locked exploration and compare every recorded seed path and fingerprint, rejecting any shape or behavior change. | Cross-version replay guarantees, serial-input replay, or a fast code-coverage instrumentor. |
+| P7.7 | **`replay: verify the complete exploration tree`** | **DONE (PR #30).** Rebuild a locked exploration and compare every recorded seed path and fingerprint, rejecting any shape or behavior change. | Cross-version replay guarantees, serial-input replay, or a fast code-coverage instrumentor. |
+| P7.8 | **`replay: fingerprint exploration serial logs`** | Include per-timeline serial-log digests in targeted and whole-tree replay verification when the bundle has serial logs. | Serial-input replay, cross-version replay guarantees, or a fast code-coverage instrumentor. |
 
-**Current PR: P7.7 only.** The manifest is an execution contract, not a second
+**Current PR: P7.8 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what
