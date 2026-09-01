@@ -23,7 +23,7 @@ use vmm::vmm_config::entropy::EntropyDeviceConfig;
 use vmm::vmm_config::instance_info::InstanceInfo;
 use vmm::vmm_config::machine_config::{MachineConfigUpdate, VirtualTimeConfig};
 
-const USAGE: &str = "Usage: theseus-explorer --plan explore-plan.json --output exploration-dir";
+const USAGE: &str = "Usage: theseus-explorer --plan explore-plan.json --output exploration-dir [--minimize]";
 
 #[derive(Serialize)]
 struct ResultRecord {
@@ -32,6 +32,13 @@ struct ResultRecord {
     error: Option<String>,
     checks: Vec<CheckResult>,
     nodes: Vec<NodeRecord>,
+    minimization: Option<Minimization>,
+}
+
+#[derive(Serialize)]
+struct Minimization {
+    original_events_hex: Vec<String>,
+    minimized_events_hex: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -71,12 +78,19 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
-    let [flag_plan, plan_path, flag_output, output] = args.as_slice() else {
-        return Err(USAGE.to_owned());
+    let (plan_path, output, minimize) = match args.as_slice() {
+        [flag_plan, plan_path, flag_output, output]
+            if flag_plan == "--plan" && flag_output == "--output" =>
+        {
+            (plan_path, output, false)
+        }
+        [flag_plan, plan_path, flag_output, output, flag_minimize]
+            if flag_plan == "--plan" && flag_output == "--output" && flag_minimize == "--minimize" =>
+        {
+            (plan_path, output, true)
+        }
+        _ => return Err(USAGE.to_owned()),
     };
-    if flag_plan != "--plan" || flag_output != "--output" {
-        return Err(USAGE.to_owned());
-    }
     let plan: RunPlan = serde_json::from_slice(
         &fs::read(plan_path).map_err(|error| format!("cannot read {plan_path}: {error}"))?,
     )
@@ -86,14 +100,20 @@ fn run(args: Vec<String>) -> Result<(), String> {
         return Err(format!("exploration output already exists: {}", output.display()));
     }
     fs::create_dir_all(output.join("artifacts")).map_err(|error| error.to_string())?;
-    let plan = lock_plan(plan, &output)?;
-    fs::write(
-        output.join("explore-plan.json"),
-        serde_json::to_vec_pretty(&plan).unwrap(),
-    )
-    .map_err(|error| error.to_string())?;
+    let mut plan = lock_plan(plan, &output)?;
+    write_plan(&output, &plan)?;
 
-    let result = execute(&plan);
+    let original_events_hex = plan
+        .explore
+        .as_ref()
+        .map(|explore| explore.events_hex.clone())
+        .unwrap_or_default();
+    let result = if minimize {
+        minimize_events(&mut plan)
+    } else {
+        execute(&plan)
+    };
+    write_plan(&output, &plan)?;
     match result {
         Ok(execution) => {
             let failed = execution
@@ -112,8 +132,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 None,
                 execution.checks,
                 execution.nodes,
+                minimize.then(|| Minimization {
+                    original_events_hex,
+                    minimized_events_hex: plan
+                        .explore
+                        .as_ref()
+                        .expect("exploration plan was executed")
+                        .events_hex
+                        .clone(),
+                }),
             )?;
-            if failed.is_empty() {
+            if minimize || failed.is_empty() {
                 Ok(())
             } else {
                 Err(format!("checks failed: {}", failed.join(", ")))
@@ -126,8 +155,68 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 Some(error.clone()),
                 Vec::new(),
                 Vec::new(),
+                None,
             )?;
             Err(error)
+        }
+    }
+}
+
+/// Greedily remove events until removing any remaining event changes the set
+/// of failed named properties. This is deterministic and yields a 1-minimal
+/// event sequence, not a globally minimal one.
+fn minimize_events(plan: &mut RunPlan) -> Result<Execution, String> {
+    let baseline = execute(plan)?;
+    let expected = failed_names(&baseline);
+    if expected.is_empty() {
+        return Err("minimization requires a property-failing seed path".to_owned());
+    }
+    let original = plan
+        .explore
+        .as_ref()
+        .expect("exploration plan was executed")
+        .events_hex
+        .clone();
+    let minimized = reduce_events(original, |candidate| {
+        plan.explore
+            .as_mut()
+            .expect("exploration plan was executed")
+            .events_hex = candidate.to_vec();
+        execute(plan).is_ok_and(|execution| failed_names(&execution) == expected)
+    });
+    plan.explore
+        .as_mut()
+        .expect("exploration plan was executed")
+        .events_hex = minimized;
+    execute(plan)
+}
+
+fn failed_names(execution: &Execution) -> Vec<String> {
+    execution
+        .checks
+        .iter()
+        .filter(|check| check.status == "failed")
+        .map(|check| check.name.clone())
+        .collect()
+}
+
+fn reduce_events(
+    mut events: Vec<String>,
+    mut preserves_failure: impl FnMut(&[String]) -> bool,
+) -> Vec<String> {
+    loop {
+        let mut removed = false;
+        for index in 0..events.len() {
+            let mut candidate = events.clone();
+            candidate.remove(index);
+            if preserves_failure(&candidate) {
+                events = candidate;
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            return events;
         }
     }
 }
@@ -367,6 +456,14 @@ fn lock_plan(mut plan: RunPlan, output: &Path) -> Result<RunPlan, String> {
     Ok(plan)
 }
 
+fn write_plan(output: &Path, plan: &RunPlan) -> Result<(), String> {
+    fs::write(
+        output.join("explore-plan.json"),
+        serde_json::to_vec_pretty(plan).unwrap(),
+    )
+    .map_err(|error| error.to_string())
+}
+
 fn lock_artifact(output: &Path, name: &str, artifact: &ArtifactPlan) -> Result<ArtifactPlan, String> {
     let bytes = fs::read(&artifact.path)
         .map_err(|error| format!("cannot read {}: {error}", artifact.path))?;
@@ -387,6 +484,7 @@ fn write_result(
     error: Option<String>,
     checks: Vec<CheckResult>,
     nodes: Vec<NodeRecord>,
+    minimization: Option<Minimization>,
 ) -> Result<(), String> {
     fs::write(
         output.join("result.json"),
@@ -396,6 +494,7 @@ fn write_result(
             error,
             checks,
             nodes,
+            minimization,
         })
         .unwrap(),
     )
@@ -472,5 +571,20 @@ mod tests {
         assert!(validate_checks(&checks)
             .unwrap_err()
             .contains("serial-log kind unavailable"));
+    }
+
+    #[test]
+    fn event_reduction_is_deterministic_and_one_minimal() {
+        let minimized = reduce_events(
+            ["01", "02", "03", "04"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            |events| {
+                events.iter().any(|event| event == "02")
+                    && events.iter().any(|event| event == "03")
+            },
+        );
+        assert_eq!(minimized, vec!["02".to_owned(), "03".to_owned()]);
     }
 }

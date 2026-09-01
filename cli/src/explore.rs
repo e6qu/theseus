@@ -43,7 +43,7 @@ impl std::error::Error for ExploreError {}
 pub fn explore(path: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<PathBuf, ExploreError> {
     let plan = load_plan(path).map_err(ExploreError::Manifest)?;
     validate(&plan)?;
-    execute_plan(&plan, output)
+    execute_plan(&plan, output, false)
 }
 
 /// Re-run a recorded exploration using only its locked artifacts.
@@ -52,7 +52,7 @@ pub fn replay_exploration(
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ExploreError> {
     let plan = locked_replay_plan(bundle)?;
-    execute_plan(&plan, output)
+    execute_plan(&plan, output, false)
 }
 
 /// Re-run one recorded root-to-node path using only locked artifacts. The
@@ -63,6 +63,25 @@ pub fn replay_exploration_path(
     seed_path: Vec<u64>,
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ExploreError> {
+    let plan = targeted_replay_plan(bundle, seed_path)?;
+    execute_plan(&plan, output, false)
+}
+
+/// Reduce `explore.events` for a property-failing recorded path. The output
+/// remains a locked bundle and preserves exactly the same failed check names.
+pub fn minimize_exploration_path(
+    bundle: impl AsRef<Path>,
+    seed_path: Vec<u64>,
+    output: impl AsRef<Path>,
+) -> Result<PathBuf, ExploreError> {
+    let plan = targeted_replay_plan(bundle, seed_path)?;
+    execute_plan(&plan, output, true)
+}
+
+fn targeted_replay_plan(
+    bundle: impl AsRef<Path>,
+    seed_path: Vec<u64>,
+) -> Result<RunPlan, ExploreError> {
     if seed_path.is_empty() {
         return Err(ExploreError::Invalid(
             "seed path must include the root seed".to_owned(),
@@ -79,7 +98,7 @@ pub fn replay_exploration_path(
         .as_mut()
         .expect("locked exploration plan was validated")
         .replay_seed_path = Some(seed_path);
-    execute_plan(&plan, output)
+    Ok(plan)
 }
 
 fn locked_replay_plan(bundle: impl AsRef<Path>) -> Result<RunPlan, ExploreError> {
@@ -102,7 +121,11 @@ fn locked_replay_plan(bundle: impl AsRef<Path>) -> Result<RunPlan, ExploreError>
     Ok(plan)
 }
 
-fn execute_plan(plan: &RunPlan, output: impl AsRef<Path>) -> Result<PathBuf, ExploreError> {
+fn execute_plan(
+    plan: &RunPlan,
+    output: impl AsRef<Path>,
+    minimize: bool,
+) -> Result<PathBuf, ExploreError> {
     let output = output.as_ref().to_path_buf();
     if output.exists() {
         return Err(ExploreError::Invalid(format!(
@@ -136,6 +159,7 @@ fn execute_plan(plan: &RunPlan, output: impl AsRef<Path>) -> Result<PathBuf, Exp
         .arg(&plan_file)
         .arg("--output")
         .arg(&output)
+        .args(minimize.then_some("--minimize"))
         .status()
         .map_err(|error| ExploreError::Execute(format!("cannot start {}: {error}", runner.display())))?;
     let _ = fs::remove_file(&plan_file);
