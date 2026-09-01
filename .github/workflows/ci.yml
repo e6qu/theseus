@@ -28,11 +28,13 @@ jobs:
           cargo check --manifest-path sdk/Cargo.toml
           cargo check --manifest-path engine/Cargo.toml
           cargo check --manifest-path orchestrator/Cargo.toml
+          cargo check --manifest-path cli/Cargo.toml --locked
 
       - name: Theseus crate tests
         run: |
           cargo test --manifest-path engine/Cargo.toml
           cargo test --manifest-path orchestrator/Cargo.toml -- branch::tests orchestrator::tree
+          cargo test --manifest-path cli/Cargo.toml --locked
 
       - name: Deterministic unit suites
         working-directory: firecracker
