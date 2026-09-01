@@ -51,6 +51,38 @@ pub fn replay_exploration(
     bundle: impl AsRef<Path>,
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ExploreError> {
+    let plan = locked_replay_plan(bundle)?;
+    execute_plan(&plan, output)
+}
+
+/// Re-run one recorded root-to-node path using only locked artifacts. The
+/// path includes the root seed and is the compact reproducer printed in an
+/// exploration result and report.
+pub fn replay_exploration_path(
+    bundle: impl AsRef<Path>,
+    seed_path: Vec<u64>,
+    output: impl AsRef<Path>,
+) -> Result<PathBuf, ExploreError> {
+    if seed_path.is_empty() {
+        return Err(ExploreError::Invalid(
+            "seed path must include the root seed".to_owned(),
+        ));
+    }
+    let mut plan = locked_replay_plan(bundle)?;
+    if seed_path[0] != plan.run.seed {
+        return Err(ExploreError::Invalid(format!(
+            "seed path starts at {}, but this exploration starts at {}",
+            seed_path[0], plan.run.seed
+        )));
+    }
+    plan.explore
+        .as_mut()
+        .expect("locked exploration plan was validated")
+        .replay_seed_path = Some(seed_path);
+    execute_plan(&plan, output)
+}
+
+fn locked_replay_plan(bundle: impl AsRef<Path>) -> Result<RunPlan, ExploreError> {
     let bundle = fs::canonicalize(bundle.as_ref()).map_err(|source| ExploreError::Read {
         path: bundle.as_ref().to_path_buf(),
         source,
@@ -67,7 +99,7 @@ pub fn replay_exploration(
     plan.guest.kernel = locked_artifact(&bundle, "kernel", &plan.guest.kernel)?;
     plan.guest.initramfs = locked_artifact(&bundle, "initramfs", &plan.guest.initramfs)?;
     validate(&plan)?;
-    execute_plan(&plan, output)
+    Ok(plan)
 }
 
 fn execute_plan(plan: &RunPlan, output: impl AsRef<Path>) -> Result<PathBuf, ExploreError> {
@@ -195,5 +227,11 @@ mod tests {
         .unwrap();
         assert!(Path::new(&locked.path).starts_with(root));
         assert_eq!(locked.sha256, "digest");
+    }
+
+    #[test]
+    fn rejects_an_empty_targeted_replay_path() {
+        let error = replay_exploration_path("missing-bundle", Vec::new(), "unused").unwrap_err();
+        assert!(error.to_string().contains("root seed"));
     }
 }

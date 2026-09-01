@@ -155,18 +155,40 @@ fn execute(plan: &RunPlan) -> Result<Execution, String> {
     let config = explorer_config(explore)?;
     let mut event_manager = EventManager::new().map_err(|error| error.to_string())?;
     let filters = get_empty_filters();
-    let explorer = Explorer::explore(
-        plan.run.seed,
-        &config,
-        &InstanceInfo::default(),
-        &filters,
-        &mut event_manager,
-        |info, manager, filters| {
-            build_microvm_for_boot(info, &resources, manager, filters)
-                .map_err(theseus_orchestrator::orchestrator::explorer::ExplorerError::from)
-        },
-        &VmResources::default,
-    )
+    let explorer = if let Some(seed_path) = &explore.replay_seed_path {
+        if seed_path.first() != Some(&plan.run.seed) {
+            return Err(format!(
+                "replay seed path starts at {:?}, expected {}",
+                seed_path.first(),
+                plan.run.seed
+            ));
+        }
+        Explorer::explore_path(
+            seed_path,
+            &config,
+            &InstanceInfo::default(),
+            &filters,
+            &mut event_manager,
+            |info, manager, filters| {
+                build_microvm_for_boot(info, &resources, manager, filters)
+                    .map_err(theseus_orchestrator::orchestrator::explorer::ExplorerError::from)
+            },
+            &VmResources::default,
+        )
+    } else {
+        Explorer::explore(
+            plan.run.seed,
+            &config,
+            &InstanceInfo::default(),
+            &filters,
+            &mut event_manager,
+            |info, manager, filters| {
+                build_microvm_for_boot(info, &resources, manager, filters)
+                    .map_err(theseus_orchestrator::orchestrator::explorer::ExplorerError::from)
+            },
+            &VmResources::default,
+        )
+    }
     .map_err(|error| error.to_string())?;
 
     let nodes = explorer
