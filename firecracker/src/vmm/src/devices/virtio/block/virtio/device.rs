@@ -122,8 +122,8 @@ impl DiskProperties {
             .map_err(|error| VirtioBlockError::BackingFile(error, id.to_owned()))?;
         let mut image_id = [0; VIRTIO_BLK_ID_BYTES as usize];
         let bytes = id.as_bytes();
-        image_id[..bytes.len().min(image_id.len())]
-            .copy_from_slice(&bytes[..bytes.len().min(image_id.len())]);
+        let len = bytes.len().min(image_id.len());
+        image_id[..len].copy_from_slice(&bytes[..len]);
         Ok(Self {
             file_path: format!("memory://theseus/{id}"),
             file_engine: FileEngine::from_file(memfd.into_file(), FileEngineType::Sync)
@@ -378,7 +378,7 @@ pub struct VirtioBlock {
     pub rate_limiter: RateLimiter,
     pub is_io_engine_throttled: bool,
     pub metrics: Arc<BlockDeviceMetrics>,
-    simulated: Option<SimulatedBlock>,
+    pub(crate) simulated: Option<SimulatedBlock>,
 }
 
 macro_rules! unwrap_async_file_engine_or_return {
