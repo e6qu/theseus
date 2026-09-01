@@ -1,0 +1,88 @@
+diff --git a/drivers/char/random.c b/drivers/char/random.c
+index 55f2645..301f1fa 100644
+--- a/drivers/char/random.c
++++ b/drivers/char/random.c
+@@ -190,6 +190,9 @@ static struct {
+ 	.lock = __SPIN_LOCK_UNLOCKED(base_crng.lock)
+ };
+ 
++/* Set only by the Theseus replay module. */
++static bool theseus_deterministic;
++
+ struct crng {
+ 	u8 key[CHACHA_KEY_SIZE];
+ 	unsigned long generation;
+@@ -207,6 +210,9 @@ static void extract_entropy(void *buf, size_t len);
+ /* This extracts a new crng key from the input pool. */
+ static void crng_reseed(void)
+ {
++	if (unlikely(READ_ONCE(theseus_deterministic)))
++		return;
++
+ 	unsigned long flags;
+ 	unsigned long next_gen;
+ 	u8 key[CHACHA_KEY_SIZE];
+@@ -232,6 +238,32 @@ static void crng_reseed(void)
+ 	memzero_explicit(key, sizeof(key));
+ }
+ 
++int theseus_install_crng_key(const u8 *key, size_t len)
++{
++	unsigned long flags;
++	unsigned long next_gen;
++
++	if (len != CHACHA_KEY_SIZE)
++		return -EINVAL;
++
++	spin_lock_irqsave(&base_crng.lock, flags);
++	memcpy(base_crng.key, key, sizeof(base_crng.key));
++	next_gen = base_crng.generation + 1;
++	if (next_gen == ULONG_MAX)
++		++next_gen;
++	WRITE_ONCE(base_crng.generation, next_gen);
++	WRITE_ONCE(base_crng.birth, jiffies);
++	crng_init = CRNG_READY;
++	WRITE_ONCE(theseus_deterministic, true);
++	spin_unlock_irqrestore(&base_crng.lock, flags);
++
++	if (!static_branch_likely(&crng_is_ready))
++		crng_set_ready(NULL);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(theseus_install_crng_key);
++
+ /*
+  * This generates a ChaCha block using the provided key, and then
+  * immediately overwrites that key with half the block. It returns
+@@ -328,7 +360,8 @@ static void crng_make_state(u32 chacha_state[CHACHA_STATE_WORDS],
+ 	 * If the base_crng is old enough, we reseed, which in turn bumps the
+ 	 * generation counter that we check below.
+ 	 */
+-	if (unlikely(time_is_before_jiffies(READ_ONCE(base_crng.birth) + crng_reseed_interval())))
++	if (!READ_ONCE(theseus_deterministic) &&
++	    unlikely(time_is_before_jiffies(READ_ONCE(base_crng.birth) + crng_reseed_interval())))
+ 		crng_reseed();
+ 
+ 	local_lock_irqsave(&crngs.lock, flags);
+@@ -969,7 +1002,7 @@ static BLOCKING_NOTIFIER_HEAD(vmfork_chain);
+ void __cold add_vmfork_randomness(const void *unique_vm_id, size_t len)
+ {
+ 	add_device_randomness(unique_vm_id, len);
+-	if (crng_ready()) {
++	if (crng_ready() && !READ_ONCE(theseus_deterministic)) {
+ 		crng_reseed();
+ 		pr_notice("crng reseeded due to virtual machine fork\n");
+ 	}
+diff --git a/include/linux/random.h b/include/linux/random.h
+index fc5f73f..bfc9d68 100644
+--- a/include/linux/random.h
++++ b/include/linux/random.h
+@@ -19,6 +19,7 @@ struct notifier_block;
+ 
+ void add_device_randomness(const void *buf, size_t len);
+ void __init add_bootloader_randomness(const void *buf, size_t len);
++int theseus_install_crng_key(const u8 *key, size_t len);
+ void add_input_randomness(unsigned int type, unsigned int code,
+ 			  unsigned int value) __latent_entropy;
+ void add_interrupt_randomness(int irq) __latent_entropy;

@@ -281,6 +281,7 @@ fn create_chosen_node(
     let mut rng_seed = [0u8; 64];
     crate::detrng::fill_bytes(&mut rng_seed);
     fdt.property("rng-seed", &rng_seed)?;
+    fdt.property("theseus,rng-seed", &rng_seed)?;
 
     fdt.end_node(chosen)?;
 
