@@ -1,6 +1,7 @@
 // Copyright 2026 Adrian Mârza (https://www.linkedin.com/in/adrian-m%C3%A2rza-52606512a/) and contributors to Theseus
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::collections::HashSet;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,7 @@ pub enum LoadError {
     },
     InvalidNetworkDropRate(u32),
     InvalidRunConfig(String),
+    InvalidCheck(String),
     InvalidPath {
         field: &'static str,
         reason: String,
@@ -63,6 +65,7 @@ impl fmt::Display for LoadError {
                 )
             }
             Self::InvalidRunConfig(reason) => write!(formatter, "run: {reason}"),
+            Self::InvalidCheck(reason) => write!(formatter, "checks: {reason}"),
             Self::InvalidPath { field, reason } => write!(formatter, "{field}: {reason}"),
             Self::FileMetadata { path, source } => {
                 write!(formatter, "cannot inspect {}: {source}", path.display())
@@ -84,6 +87,8 @@ struct Manifest {
     events: Vec<Event>,
     #[serde(default)]
     network: Network,
+    #[serde(default)]
+    checks: Vec<Check>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +147,22 @@ struct Network {
     partitioned: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Check {
+    name: String,
+    kind: CheckKind,
+    value: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckKind {
+    SerialContains,
+    SerialNotContains,
+    MarkerSeen,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RunPlan {
     pub format: String,
@@ -151,6 +172,8 @@ pub struct RunPlan {
     pub run: RunPlanConfig,
     pub events: Vec<EventPlan>,
     pub network: NetworkPlan,
+    #[serde(default)]
+    pub checks: Vec<CheckPlan>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -190,6 +213,13 @@ pub struct NetworkPlan {
     pub loopback: bool,
     pub drop_ppm: u32,
     pub partitioned: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CheckPlan {
+    pub name: String,
+    pub kind: CheckKind,
+    pub value: String,
 }
 
 pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
@@ -240,6 +270,31 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
         }
     }
 
+    let mut check_names = HashSet::new();
+    for check in &manifest.checks {
+        if check.name.trim().is_empty() {
+            return Err(LoadError::InvalidCheck("name must not be empty".to_owned()));
+        }
+        if check.name == "guest_exit" || check.name == "completion" {
+            return Err(LoadError::InvalidCheck(format!(
+                "name {:?} is reserved for a built-in check",
+                check.name
+            )));
+        }
+        if !check_names.insert(&check.name) {
+            return Err(LoadError::InvalidCheck(format!(
+                "name {:?} appears more than once",
+                check.name
+            )));
+        }
+        if check.value.is_empty() {
+            return Err(LoadError::InvalidCheck(format!(
+                "value for {:?} must not be empty",
+                check.name
+            )));
+        }
+    }
+
     let firecracker = artifact(
         manifest_dir,
         "runtime.firecracker",
@@ -281,6 +336,15 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             drop_ppm: manifest.network.drop_ppm,
             partitioned: manifest.network.partitioned,
         },
+        checks: manifest
+            .checks
+            .into_iter()
+            .map(|check| CheckPlan {
+                name: check.name,
+                kind: check.kind,
+                value: check.value,
+            })
+            .collect(),
     })
 }
 
@@ -497,5 +561,28 @@ mem_size_mib = 128
             error.to_string(),
             "run: vcpu_count must be greater than zero"
         );
+    }
+
+    #[test]
+    fn rejects_duplicate_and_reserved_check_names() {
+        let directory = fixture(
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+[guest]
+kernel = "guest/vmlinux"
+initramfs = "guest/initramfs.cpio"
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+[[checks]]
+name = "guest_exit"
+kind = "serial_contains"
+value = "done"
+"#,
+        );
+        let error = load_plan(directory.path().join("test/theseus.toml")).unwrap_err();
+        assert!(error.to_string().contains("reserved"));
     }
 }
