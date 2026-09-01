@@ -68,7 +68,9 @@ theseus explore --replay exploration-dir --seed-path 42,123,456 \
 ```
 
 The path starts with the root seed. Theseus rejects a path that does not match
-the locked branch contract.
+the locked branch contract. It also compares the selected timeline's entropy
+probe, markers, and dirty-page count with the recorded result. A mismatch makes
+the replay fail and is shown in its static report.
 
 ## Minimize a failing path
 

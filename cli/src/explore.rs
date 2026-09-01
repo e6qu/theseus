@@ -8,7 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::{load_plan, ArtifactPlan, LoadError, RunPlan};
+use serde::Deserialize;
+
+use crate::{load_plan, ArtifactPlan, LoadError, ReplayFingerprint, RunPlan};
 
 #[derive(Debug)]
 pub enum ExploreError {
@@ -74,7 +76,7 @@ pub fn replay_exploration_path(
     seed_path: Vec<u64>,
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ExploreError> {
-    let plan = targeted_replay_plan(bundle, seed_path)?;
+    let plan = verified_targeted_replay_plan(bundle, seed_path)?;
     execute_plan(&plan, output, ExplorerAction::Explore)
 }
 
@@ -96,8 +98,82 @@ pub fn snapshot_exploration_path(
     seed_path: Vec<u64>,
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ExploreError> {
-    let plan = targeted_replay_plan(bundle, seed_path)?;
+    let plan = verified_targeted_replay_plan(bundle, seed_path)?;
     execute_plan(&plan, output, ExplorerAction::Snapshot)
+}
+
+fn verified_targeted_replay_plan(
+    bundle: impl AsRef<Path>,
+    seed_path: Vec<u64>,
+) -> Result<RunPlan, ExploreError> {
+    if seed_path.is_empty() {
+        return Err(ExploreError::Invalid(
+            "seed path must include the root seed".to_owned(),
+        ));
+    }
+    let expected = recorded_fingerprint(bundle.as_ref(), &seed_path)?;
+    let mut plan = targeted_replay_plan(bundle, seed_path)?;
+    plan.explore
+        .as_mut()
+        .expect("locked exploration plan was validated")
+        .replay_expected = Some(expected);
+    Ok(plan)
+}
+
+#[derive(Deserialize)]
+struct RecordedResult {
+    format: String,
+    #[serde(default)]
+    nodes: Vec<RecordedNode>,
+}
+
+#[derive(Deserialize)]
+struct RecordedNode {
+    seed_path: Vec<u64>,
+    entropy_probe_hex: String,
+    markers_hex: String,
+    dirty_pages: Option<u64>,
+}
+
+fn recorded_fingerprint(
+    bundle: &Path,
+    seed_path: &[u64],
+) -> Result<ReplayFingerprint, ExploreError> {
+    let bundle = fs::canonicalize(bundle).map_err(|source| ExploreError::Read {
+        path: bundle.to_path_buf(),
+        source,
+    })?;
+    let result_path = bundle.join("result.json");
+    let result: RecordedResult = serde_json::from_slice(&fs::read(&result_path).map_err(
+        |source| ExploreError::Read {
+            path: result_path.clone(),
+            source,
+        },
+    )?)
+    .map_err(|error| {
+        ExploreError::Invalid(format!("cannot parse {}: {error}", result_path.display()))
+    })?;
+    if result.format != "theseus-exploration-result-v1" {
+        return Err(ExploreError::Invalid(format!(
+            "result is not an exploration result: {}",
+            result_path.display()
+        )));
+    }
+    let node = result
+        .nodes
+        .into_iter()
+        .find(|node| node.seed_path == seed_path)
+        .ok_or_else(|| {
+            ExploreError::Invalid(format!(
+                "seed path is not recorded in {}",
+                result_path.display()
+            ))
+        })?;
+    Ok(ReplayFingerprint {
+        entropy_probe_hex: node.entropy_probe_hex,
+        markers_hex: node.markers_hex,
+        dirty_pages: node.dirty_pages,
+    })
 }
 
 fn targeted_replay_plan(
