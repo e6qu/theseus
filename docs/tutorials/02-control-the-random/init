@@ -1,0 +1,8 @@
+#!/bin/busybox sh
+/bin/busybox mount -t devtmpfs devtmpfs /dev
+/bin/busybox insmod /theseus_rng.ko
+
+printf 'chosen random input: '
+/bin/busybox od -An -tu4 -N4 /dev/urandom | /bin/busybox tr -d ' \n'
+printf '\n'
+/bin/busybox poweroff -f

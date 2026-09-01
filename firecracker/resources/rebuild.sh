@@ -11,7 +11,10 @@ cd $(dirname $0)
 ARCH=$(uname -m)
 OUTPUT_DIR=$PWD/$ARCH
 
-GIT_ROOT_DIR=$(git rev-parse --show-toplevel)
+# The release image deliberately excludes .git.  resources always lives one
+# directory below the Firecracker root, so retain the normal Git lookup while
+# also supporting an exported source tree.
+GIT_ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || (cd .. && pwd))
 source "$GIT_ROOT_DIR/tools/functions"
 
 # Make sure we have all the needed tools
@@ -336,7 +339,9 @@ function main {
 
     set -x
 
-    install_dependencies
+    if [[ "${THESEUS_SKIP_DEPENDENCIES:-0}" != "1" ]]; then
+        install_dependencies
+    fi
 
     # Create the directory in which we will store the kernels and rootfs
     mkdir -pv $OUTPUT_DIR

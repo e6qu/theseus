@@ -63,7 +63,7 @@ image (pull it, then save it), flattens the layers into a bootable
 initramfs, injects a static pivot init that wires up the control channel,
 and boots it — no guest driver, no image modification, no Dockerfile
 changes. The image's entrypoint runs unchanged. See
-[docs/tutorials/07-container-images/](docs/tutorials/07-container-images/).
+[docs/guides/container-images/](docs/guides/container-images/).
 
 ## Requirements for the system under test
 
@@ -119,7 +119,7 @@ the host-side random sources are seeded automatically from the run seed)
 - [The determinism model](docs/determinism.md) — what's closed, what's leaked, replay fingerprints
 - [The control channel](docs/control-channel.md) — registers, serial transport, protocol rounds
 - [Exploration](docs/exploration.md) — branch points, timeline tree, parallel explorer, coverage
-- [Tutorials](docs/tutorials/) — hands-on walkthroughs from replay to fault hunting
+- [Tutorials](docs/tutorials/) — hands-on walkthroughs from replay to serial input
 - [Testing](docs/testing.md) — dev loop, e2e proofs, CI
 
 ## Quickstart

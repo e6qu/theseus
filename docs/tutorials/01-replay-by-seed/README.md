@@ -1,57 +1,25 @@
-# Tutorial 1: Run and replay a VM
+# Tutorial 1: Replay `/dev/urandom`
 
-Boot a plain C guest through the Theseus service. Run it twice with the same
-entropy seed and once with a different seed. The first two runs match; the
-third does not.
-
-## 1. Start a Linux+KVM environment
-
-From the repository root on Apple Silicon:
+Run every command from this directory. You need Linux, KVM, Docker, and a
+published Theseus runtime image. Choose a published short commit SHA and set
+it once:
 
 ```sh
-docker run --rm -it --platform linux/arm64 --privileged \
-  -v "$PWD":/theseus -w /theseus rust:1.97.0-bookworm bash
+export THESEUS_TAG=<12-character-sha>
+export THESEUS_IMAGE=ghcr.io/e6qu/theseus:$THESEUS_TAG
 ```
 
-Inside the container:
+Run the tutorial:
 
 ```sh
-apt-get update -qq && apt-get install -y -qq libclang-dev libseccomp-dev gcc cpio curl
-cd /theseus/firecracker && cargo build -p firecracker
+docker run --rm --privileged --platform linux/arm64 \
+  -v "$PWD":/tutorial -w /tutorial "$THESEUS_IMAGE" sh ./run.sh
 ```
 
-Keep this container open for tutorials 2–4.
+The guest is only [`init`](init). It loads the matching seed loader, then
+dumps 16 bytes from `/dev/urandom` and `/dev/random` with `od`.
 
-## 2. Run the example
+The runner boots the guest with seeds `42`, `42`, and `1337`. Equal seeds
+produce equal output; the third run differs.
 
-```sh
-sh /theseus/docs/tutorials/01-replay-by-seed/run.sh
-```
-
-The script builds [init.c](init.c), a C program that reads `/dev/hwrng` and
-prints the result. It boots that guest with seeds `42`, `42`, and `1337`.
-
-```text
-seed 42:   hwrng (64 bytes): 28065689f706c281...
-seed 42:   hwrng (64 bytes): 28065689f706c281...
-seed 1337: hwrng (64 bytes): 70788b9d6210d187...
-PASS: identical across same-seed boots, different across seeds
-```
-
-## 3. See the host API
-
-The script starts the service with `firecracker --api-sock` and configures it
-through four requests:
-
-```text
-PUT /boot-source     kernel and initramfs
-PUT /machine-config  vCPUs and memory
-PUT /entropy         seed 42
-PUT /actions         InstanceStart
-```
-
-Keep the seed with a failed run. It is the replay recipe. Next, replace the
-seeded stream with values you choose.
-
-See [the full API](../../../firecracker/docs/api_requests/) or
-[the determinism boundary](../../determinism.md).
+Keep the seed with a failure. It is the replay input.

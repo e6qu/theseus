@@ -49,3 +49,11 @@ jobs:
           vmm_config::entropy
           detrng
           rate_limiter::tests
+
+      - name: Check self-contained tutorials
+        run: |
+          sh -n docs/tutorials/01-replay-by-seed/run.sh
+          sh -n docs/tutorials/02-control-the-random/run.sh
+          sh -n docs/tutorials/03-the-control-channel/build.sh
+          sh -n docs/tutorials/04-read-serial/run.sh
+          ! rg -n '/dev/hwrng|(^|[[:space:]])/theseus/|\.\./\.\./\.\.' docs/tutorials
