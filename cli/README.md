@@ -74,11 +74,40 @@ data = "0100ff"
 loopback = true
 drop_ppm = 0
 partitioned = false
+
+[[checks]]
+name = "finished"
+kind = "serial_contains"
+value = "finished work"
+
+[[checks]]
+name = "no panic"
+kind = "serial_not_contains"
+value = "panic"
+
+[[checks]]
+name = "round completed"
+kind = "marker_seen"
+value = "ff"
 ```
 
 `events.data` is an even-length hexadecimal byte string. Version 1 has one
 delivery point: `ready`, after the guest announces that it can receive input.
-The future executor will preserve the resulting plan verbatim in its replay
-bundle. P6.2 delivers serial bytes only after the `THES:M:42` ready marker.
+The replay bundle preserves the resulting plan verbatim. The runner delivers
+serial bytes only after the `THES:M:42` ready marker.
 Network drop and partition settings are recorded but intentionally rejected by
 this single-VM runner; P6.4 will add a deterministic topology to apply them.
+
+## Checks
+
+Every result has two built-in checks: `guest_exit` requires exit status zero,
+and `completion` requires exit before `timeout_secs`. Add named checks in the
+manifest for the behavior that matters to your system:
+
+- `serial_contains` — a UTF-8 string must appear in `serial.log`.
+- `serial_not_contains` — a UTF-8 string must not appear in `serial.log`.
+- `marker_seen` — a Theseus marker such as `THES:M:ff` must appear. Give the
+  byte(s) after `THES:M:` as `value`.
+
+`result.json` records every check, its pass/fail status, and a concise detail.
+Names must be unique; `guest_exit` and `completion` are reserved.

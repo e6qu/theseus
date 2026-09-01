@@ -8,6 +8,7 @@
 //! to the bundle, logs, and the final result. Replaying never reads the test
 //! directory that created the bundle.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -21,7 +22,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{load_plan, LoadError, RunPlan};
+use crate::{load_plan, CheckKind, LoadError, RunPlan};
 
 const READY_MARKER: &[u8] = b"THES:M:42";
 const API_READY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -77,6 +78,9 @@ pub enum RunError {
         status: String,
     },
     UnsupportedNetworkFaults,
+    ChecksFailed {
+        names: Vec<String>,
+    },
 }
 
 impl fmt::Display for RunError {
@@ -149,6 +153,9 @@ impl fmt::Display for RunError {
                 formatter,
                 "network drop and partition schedules need a topology; they arrive in P6.4"
             ),
+            Self::ChecksFailed { names } => {
+                write!(formatter, "checks failed: {}", names.join(", "))
+            }
         }
     }
 }
@@ -165,11 +172,39 @@ pub struct ReplayResult {
     pub logs: PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct CheckResult {
+    name: String,
+    kind: String,
+    status: &'static str,
+    detail: String,
+}
+
+#[derive(Debug)]
+struct Execution {
+    checks: Vec<CheckResult>,
+}
+
+impl Execution {
+    fn passed(&self) -> bool {
+        self.checks.iter().all(|check| check.status == "passed")
+    }
+
+    fn failed_names(&self) -> Vec<String> {
+        self.checks
+            .iter()
+            .filter(|check| check.status == "failed")
+            .map(|check| check.name.clone())
+            .collect()
+    }
+}
+
 #[derive(Debug, Serialize)]
-struct ResultRecord<'a> {
+struct ResultRecord {
     format: &'static str,
-    status: &'a str,
+    status: &'static str,
     error: Option<String>,
+    checks: Vec<CheckResult>,
 }
 
 /// Execute a manifest once and retain all inputs and outputs in `output`.
@@ -178,9 +213,19 @@ pub fn test(manifest: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<Test
     let plan = load_plan(manifest).map_err(RunError::Manifest)?;
     let output = absolute_output(output.as_ref())?;
     let bundle = Bundle::create(&output, manifest, &plan)?;
-    let result = execute(&bundle.replay_plan, &bundle.root, &bundle.root);
-    bundle.record_result(&result)?;
-    result?;
+    let execution = match execute(&bundle.replay_plan, &bundle.root, &bundle.root) {
+        Ok(execution) => execution,
+        Err(error) => {
+            bundle.record_error(&error)?;
+            return Err(error);
+        }
+    };
+    bundle.record_execution(&execution)?;
+    if !execution.passed() {
+        return Err(RunError::ChecksFailed {
+            names: execution.failed_names(),
+        });
+    }
     Ok(TestResult { bundle: output })
 }
 
@@ -194,7 +239,12 @@ pub fn replay(bundle: impl AsRef<Path>) -> Result<ReplayResult, RunError> {
     let plan = read_plan(&plan_path)?;
     validate_replay_plan(&plan_path, &plan)?;
     let logs = temporary_replay_directory()?;
-    execute(&plan, &bundle, &logs)?;
+    let execution = execute(&plan, &bundle, &logs)?;
+    if !execution.passed() {
+        return Err(RunError::ChecksFailed {
+            names: execution.failed_names(),
+        });
+    }
     Ok(ReplayResult { logs })
 }
 
@@ -245,24 +295,36 @@ impl Bundle {
         })
     }
 
-    fn record_result(&self, result: &Result<(), RunError>) -> Result<(), RunError> {
-        let record = match result {
-            Ok(()) => ResultRecord {
-                format: "theseus-result-v1",
-                status: "passed",
-                error: None,
+    fn record_execution(&self, execution: &Execution) -> Result<(), RunError> {
+        let record = ResultRecord {
+            format: "theseus-result-v1",
+            status: if execution.passed() {
+                "passed"
+            } else {
+                "failed"
             },
-            Err(error) => ResultRecord {
-                format: "theseus-result-v1",
-                status: "failed",
-                error: Some(error.to_string()),
-            },
+            error: None,
+            checks: execution.checks.clone(),
+        };
+        write_json(&self.root.join("result.json"), &record)
+    }
+
+    fn record_error(&self, error: &RunError) -> Result<(), RunError> {
+        let record = ResultRecord {
+            format: "theseus-result-v1",
+            status: "failed",
+            error: Some(error.to_string()),
+            checks: Vec::new(),
         };
         write_json(&self.root.join("result.json"), &record)
     }
 }
 
-fn execute(plan: &RunPlan, artifact_base: &Path, run_directory: &Path) -> Result<(), RunError> {
+fn execute(
+    plan: &RunPlan,
+    artifact_base: &Path,
+    run_directory: &Path,
+) -> Result<Execution, RunError> {
     if plan.network.drop_ppm != 0 || plan.network.partitioned {
         return Err(RunError::UnsupportedNetworkFaults);
     }
@@ -322,7 +384,7 @@ fn configure_and_wait(
     artifact_base: &Path,
     socket: &Path,
     serial_log: &Path,
-) -> Result<(), RunError> {
+) -> Result<Execution, RunError> {
     wait_for_socket(socket, child)?;
     let kernel = path_text(&resolved_path(artifact_base, &plan.guest.kernel.path))?;
     let initramfs = path_text(&resolved_path(artifact_base, &plan.guest.initramfs.path))?;
@@ -375,7 +437,8 @@ fn configure_and_wait(
             source,
         })?;
     }
-    wait_for_exit(child, plan.run.timeout_secs)
+    let terminal = wait_for_exit(child, plan.run.timeout_secs)?;
+    evaluate_checks(plan, serial_log, terminal)
 }
 
 fn wait_for_socket(socket: &Path, child: &mut Child) -> Result<(), RunError> {
@@ -430,31 +493,137 @@ fn wait_for_ready(
     Err(RunError::GuestNeverReady)
 }
 
-fn wait_for_exit(child: &mut Child, timeout_secs: u64) -> Result<(), RunError> {
+enum Terminal {
+    Exited(std::process::ExitStatus),
+    TimedOut,
+}
+
+fn wait_for_exit(child: &mut Child, timeout_secs: u64) -> Result<Terminal, RunError> {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait().map_err(|source| RunError::Read {
             path: PathBuf::from("Firecracker process"),
             source,
         })? {
-            return if status.success() {
-                Ok(())
-            } else {
-                Err(RunError::GuestExited {
-                    status: status.to_string(),
-                })
-            };
+            return Ok(Terminal::Exited(status));
         }
         thread::sleep(POLL_INTERVAL);
     }
-    child.kill().map_err(|source| RunError::Write {
-        path: PathBuf::from("Firecracker process"),
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(Terminal::TimedOut)
+}
+
+fn evaluate_checks(
+    plan: &RunPlan,
+    serial_log: &Path,
+    terminal: Terminal,
+) -> Result<Execution, RunError> {
+    let mut checks = Vec::new();
+    match terminal {
+        Terminal::Exited(status) if status.success() => {
+            checks.push(passed(
+                "guest_exit",
+                "guest_exit",
+                "guest exited with status 0",
+            ));
+            checks.push(passed(
+                "completion",
+                "completion",
+                "guest exited before the configured timeout",
+            ));
+        }
+        Terminal::Exited(status) => {
+            checks.push(failed(
+                "guest_exit",
+                "guest_exit",
+                format!("guest exited with {status}"),
+            ));
+            checks.push(passed(
+                "completion",
+                "completion",
+                "guest exited before the configured timeout",
+            ));
+        }
+        Terminal::TimedOut => {
+            checks.push(failed(
+                "guest_exit",
+                "guest_exit",
+                "guest was killed after the configured timeout",
+            ));
+            checks.push(failed(
+                "completion",
+                "completion",
+                format!(
+                    "guest did not exit within {} seconds",
+                    plan.run.timeout_secs
+                ),
+            ));
+        }
+    }
+
+    let serial = fs::read(serial_log).map_err(|source| RunError::Read {
+        path: serial_log.to_path_buf(),
         source,
     })?;
-    let _ = child.wait();
-    Err(RunError::TimedOut {
-        seconds: timeout_secs,
-    })
+    for check in &plan.checks {
+        let (kind, expected, found) = match &check.kind {
+            CheckKind::SerialContains => (
+                "serial_contains",
+                check.value.as_bytes().to_vec(),
+                contains(&serial, check.value.as_bytes()),
+            ),
+            CheckKind::SerialNotContains => (
+                "serial_not_contains",
+                check.value.as_bytes().to_vec(),
+                !contains(&serial, check.value.as_bytes()),
+            ),
+            CheckKind::MarkerSeen => {
+                let marker = format!("THES:M:{}", check.value);
+                let found = contains(&serial, marker.as_bytes());
+                ("marker_seen", marker.into_bytes(), found)
+            }
+        };
+        let display = String::from_utf8_lossy(&expected);
+        if found {
+            checks.push(passed(
+                &check.name,
+                kind,
+                format!("serial log satisfied {kind} for {display:?}"),
+            ));
+        } else {
+            checks.push(failed(
+                &check.name,
+                kind,
+                format!("serial log did not satisfy {kind} for {display:?}"),
+            ));
+        }
+    }
+    Ok(Execution { checks })
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+fn passed(name: &str, kind: &str, detail: impl Into<String>) -> CheckResult {
+    CheckResult {
+        name: name.to_owned(),
+        kind: kind.to_owned(),
+        status: "passed",
+        detail: detail.into(),
+    }
+}
+
+fn failed(name: &str, kind: &str, detail: impl Into<String>) -> CheckResult {
+    CheckResult {
+        name: name.to_owned(),
+        kind: kind.to_owned(),
+        status: "failed",
+        detail: detail.into(),
+    }
 }
 
 fn api_put(socket: &Path, endpoint: &'static str, body: Value) -> Result<(), RunError> {
@@ -606,6 +775,20 @@ fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
             });
         }
     }
+    let mut check_names = HashSet::new();
+    for check in &plan.checks {
+        if check.name.trim().is_empty()
+            || check.name == "guest_exit"
+            || check.name == "completion"
+            || !check_names.insert(&check.name)
+            || check.value.is_empty()
+        {
+            return Err(RunError::InvalidBundle {
+                path: path.to_path_buf(),
+                reason: "checks must use unique non-reserved names and non-empty values".to_owned(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -693,6 +876,7 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
 mod tests {
     use super::*;
     use crate::load_plan;
+    use crate::manifest::CheckPlan;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
 
@@ -788,5 +972,39 @@ mem_size_mib = 128
 
         api_put(&socket, "/entropy", json!({ "seed": 42 })).unwrap();
         server.join().unwrap();
+    }
+
+    #[test]
+    fn properties_evaluate_serial_text_and_markers_with_builtin_outcomes() {
+        let directory = fixture();
+        let mut plan = load_plan(directory.path().join("theseus.toml")).unwrap();
+        plan.checks = vec![
+            CheckPlan {
+                name: "finished".to_owned(),
+                kind: CheckKind::SerialContains,
+                value: "finished work".to_owned(),
+            },
+            CheckPlan {
+                name: "no panic".to_owned(),
+                kind: CheckKind::SerialNotContains,
+                value: "panic".to_owned(),
+            },
+            CheckPlan {
+                name: "ready".to_owned(),
+                kind: CheckKind::MarkerSeen,
+                value: "42".to_owned(),
+            },
+        ];
+        let serial_log = directory.path().join("serial.log");
+        fs::write(&serial_log, b"THES:M:42\nfinished work\n").unwrap();
+
+        let execution = evaluate_checks(&plan, &serial_log, Terminal::TimedOut).unwrap();
+        assert!(!execution.passed());
+        assert_eq!(execution.checks[0].name, "guest_exit");
+        assert_eq!(execution.checks[0].status, "failed");
+        assert_eq!(execution.checks[1].name, "completion");
+        assert!(execution.checks[2..]
+            .iter()
+            .all(|check| check.status == "passed"));
     }
 }

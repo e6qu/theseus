@@ -9,5 +9,5 @@
 mod manifest;
 mod runner;
 
-pub use manifest::{load_plan, LoadError, RunPlan};
+pub use manifest::{load_plan, CheckKind, LoadError, RunPlan};
 pub use runner::{replay, test, ReplayResult, RunError, TestResult};
