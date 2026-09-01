@@ -5,7 +5,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use theseus_cli::{explore, load_compose_plan, load_plan, replay, report, test, test_compose};
+use theseus_cli::{explore, load_compose_plan, load_plan, replay, replay_compose, replay_exploration, report, test, test_compose};
 
 const USAGE: &str = "Usage:
   theseus validate [theseus.toml]
@@ -13,10 +13,12 @@ const USAGE: &str = "Usage:
   theseus test [--output replay-dir] [theseus.toml]
   theseus replay replay-dir
   theseus explore [--output exploration-dir] [theseus.toml]
+  theseus explore --replay exploration-dir [--output exploration-dir]
   theseus report [--output report-dir] result-dir
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
+  theseus compose replay replay-dir [--output replay-dir]
 
 The manifest path defaults to ./theseus.toml. Relative artifact paths are
 resolved from the directory containing that manifest.";
@@ -88,6 +90,19 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("report: {}", index.display());
             Ok(())
         }
+        [command, flag, bundle, output_flag, output]
+            if command == "explore" && flag == "--replay" && output_flag == "--output" =>
+        {
+            let result = replay_exploration(bundle, output).map_err(|error| error.to_string())?;
+            println!("exploration replay passed: {}", result.display());
+            Ok(())
+        }
+        [command, flag, bundle] if command == "explore" && flag == "--replay" => {
+            let result = replay_exploration(bundle, format!("{bundle}-replay"))
+                .map_err(|error| error.to_string())?;
+            println!("exploration replay passed: {}", result.display());
+            Ok(())
+        }
         [command, flag, output, rest @ ..] if command == "explore" && flag == "--output" => {
             let manifest = manifest_path(rest)?;
             let result = explore(&manifest, output).map_err(|error| error.to_string())?;
@@ -136,6 +151,19 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 .join("theseus-compose-replay");
             let result = test_compose(&compose, output).map_err(|error| error.to_string())?;
             println!("passed: {}", result.display());
+            Ok(())
+        }
+        [command, subcommand, bundle, output_flag, output]
+            if command == "compose" && subcommand == "replay" && output_flag == "--output" =>
+        {
+            let result = replay_compose(bundle, output).map_err(|error| error.to_string())?;
+            println!("topology replay passed: {}", result.display());
+            Ok(())
+        }
+        [command, subcommand, bundle] if command == "compose" && subcommand == "replay" => {
+            let result = replay_compose(bundle, format!("{bundle}-replay"))
+                .map_err(|error| error.to_string())?;
+            println!("topology replay passed: {}", result.display());
             Ok(())
         }
         _ => Err(USAGE.to_owned()),

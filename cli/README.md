@@ -12,10 +12,12 @@ theseus test --dry-run [theseus.toml]
 theseus test [--output replay-dir] [theseus.toml]
 theseus replay replay-dir
 theseus explore [--output exploration-dir] [theseus.toml]
+theseus explore --replay exploration-dir [--output exploration-dir]
 theseus report [--output report-dir] result-dir
 theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
+theseus compose replay replay-dir [--output replay-dir]
 ```
 
 `validate` checks the manifest and artifacts. `test --dry-run` prints the
@@ -52,10 +54,8 @@ open theseus-replay/theseus-report/index.html
 
 The report shows checks and serial logs for one timeline, service checks and
 applied faults for a topology, and the search tree plus dirty-page coverage
-proxy for an exploration. It also prints the appropriate copy-paste command:
-locked single-timeline bundles use `theseus replay`; topology and exploration
-reports preserve the source command because those runners do not yet have a
-bundle-local replay mode.
+proxy for an exploration. Every report includes a copy-paste command that
+replays only the locked artifacts in that result directory.
 
 ```toml
 [explore]

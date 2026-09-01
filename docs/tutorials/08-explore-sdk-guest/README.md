@@ -21,3 +21,9 @@ docker run --rm --privileged -v "$PWD":/tutorial -w /tutorial \
 The guest signals setup, receives `90`, and signals completion. Theseus forks
 up to seven timelines, ranks children by new marker bytes, and records every
 seed path in `theseus-exploration/result.json`.
+
+Replay those locked artifacts without the original manifest:
+
+```sh
+theseus explore --replay theseus-exploration --output exploration-replay
+```
