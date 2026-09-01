@@ -1,0 +1,17 @@
+[package]
+name = "theseus-topology-runner"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Linux-only deterministic Theseus Compose topology executor"
+
+[[bin]]
+name = "theseus-topology"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.10.9"
+theseus-engine = { path = "../engine" }
+vmm = { path = "../firecracker/src/vmm" }

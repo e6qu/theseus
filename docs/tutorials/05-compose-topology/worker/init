@@ -1,0 +1,7 @@
+#!/bin/busybox sh
+mount -t proc proc /proc
+ip link set eth0 up
+ip addr add 10.0.0.2/24 dev eth0
+echo 'worker ready'
+sleep 5
+poweroff -f

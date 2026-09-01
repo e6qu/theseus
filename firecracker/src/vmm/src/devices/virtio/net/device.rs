@@ -29,7 +29,7 @@ use crate::devices::virtio::iovec::{
     IoVecBuffer, IoVecBufferMut, IoVecError, ParsedDescriptorChain,
 };
 use crate::devices::virtio::net::metrics::{NetDeviceMetrics, NetMetricsPerDevice};
-use crate::devices::virtio::net::sim::{SimNet, SimNetConfig};
+use crate::devices::virtio::net::sim::{SharedSimSwitch, SimNet, SimNetConfig};
 use crate::devices::virtio::net::tap::Tap;
 use crate::devices::virtio::net::{
     MAX_BUFFER_SIZE, NET_QUEUE_SIZES, NetError, NetQueue, RX_INDEX, TX_INDEX, generated,
@@ -342,6 +342,30 @@ impl Net {
         )
     }
 
+    /// Create a simulated NIC attached to a topology-owned in-process
+    /// switch. This is intentionally separate from the JSON API's local
+    /// loopback configuration: only the Theseus topology runner owns the
+    /// shared switch lifetime and its deterministic service ordering.
+    pub fn new_with_sim_switch(
+        id: String,
+        sim_config: SimNetConfig,
+        switch: SharedSimSwitch,
+        endpoint: String,
+        guest_mac: Option<MacAddr>,
+        rx_rate_limiter: RateLimiter,
+        tx_rate_limiter: RateLimiter,
+        mtu: Option<u16>,
+    ) -> Result<Self, NetError> {
+        Self::new_with_backend(
+            id,
+            NetBackend::Sim(SimNet::new_with_switch(sim_config, switch, endpoint)?),
+            guest_mac,
+            rx_rate_limiter,
+            tx_rate_limiter,
+            mtu,
+        )
+    }
+
     /// Create a new virtio network device with the given backend.
     fn new_with_backend(
         id: String,
@@ -441,6 +465,11 @@ impl Net {
             NetBackend::Sim(sim) => Some(sim.config()),
             NetBackend::Tap(_) => None,
         }
+    }
+
+    /// True when this NIC uses Theseus' host-independent simulated backend.
+    pub fn is_simulated(&self) -> bool {
+        matches!(self.backend, NetBackend::Sim(_))
     }
 
     /// The tap backend, if this device uses one.

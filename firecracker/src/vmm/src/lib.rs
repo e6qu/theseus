@@ -407,6 +407,13 @@ impl Vmm {
         }
     }
 
+    /// Theseus: advance receive delivery for host-independent simulated NICs.
+    /// A shared topology runner invokes this in its stable service order;
+    /// host tap devices are intentionally untouched.
+    pub fn pump_simulated_network(&mut self) {
+        self.device_manager.pump_simulated_network();
+    }
+
     /// Provides the Vmm shutdown exit code if there is one.
     pub fn shutdown_exit_code(&self) -> Option<FcExitCode> {
         self.shutdown_exit_code

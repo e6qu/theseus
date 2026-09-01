@@ -453,6 +453,21 @@ impl DeviceManager {
         }
     }
 
+    /// Theseus: deterministically pump RX for every simulated NIC.
+    ///
+    /// Topology runners call this once per service in stable service-name
+    /// order. Tap-backed devices remain entirely event-manager driven.
+    pub fn pump_simulated_network(&self) {
+        self.for_each_virtio_device_mut(|device_type, device| {
+            if device_type == VirtioDeviceType::Net
+                && let Some(net) = device.as_mut_any().downcast_mut::<Net>()
+                && net.is_simulated()
+            {
+                net.process_tap_rx_event();
+            }
+        });
+    }
+
     fn for_each_virtio_device_mut(
         &self,
         mut f: impl FnMut(VirtioDeviceType, &mut dyn VirtioDevice),
