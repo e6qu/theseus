@@ -14,4 +14,5 @@ docker run --rm --privileged -v "$PWD":/tutorial -w /tutorial \
 Change the `[[storage]]` values in `service/theseus.toml`, then run the same
 command again. `latency_rounds` advances when the topology runner pumps the
 guest; it never sleeps on host time. The locked replay plan records the disk
-settings and its derived seed.
+settings and its derived seed. A replay also compares the final bytes of every
+simulated drive with the original bundle.

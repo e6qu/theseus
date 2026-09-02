@@ -58,6 +58,15 @@ impl Block {
         }
     }
 
+    /// Return the final bytes of a Theseus simulated disk, when this block
+    /// device is memory-backed.
+    pub fn simulated_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Virtio(block) => block.simulated_bytes(),
+            Self::VhostUser(_) => None,
+        }
+    }
+
     pub fn config(&self) -> BlockDeviceConfig {
         match self {
             Self::Virtio(b) => b.config().into(),

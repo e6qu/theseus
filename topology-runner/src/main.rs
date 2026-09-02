@@ -166,6 +166,7 @@ struct ServiceResult {
     serial_logs: Vec<String>,
     serial_sha256: Vec<String>,
     faults_sha256: String,
+    storage_sha256: BTreeMap<String, String>,
     error: Option<String>,
     checks: Vec<CheckResult>,
     faults: Vec<AppliedFault>,
@@ -183,6 +184,8 @@ struct RecordedServiceResult {
     faults_sha256: Option<String>,
     #[serde(default)]
     faults: Vec<AppliedFault>,
+    #[serde(default)]
+    storage_sha256: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -200,6 +203,7 @@ struct AppliedFault {
 struct ServiceVm {
     vmm: Arc<Mutex<Vmm>>,
     event_manager: EventManager,
+    storage: Vec<Arc<Mutex<Block>>>,
 }
 
 impl ServiceVm {
@@ -254,6 +258,28 @@ impl ServiceVm {
             .jump_virtual_time(nanoseconds)
             .map_err(|error| error.to_string())
     }
+
+    fn storage_fingerprints(
+        &self,
+        storage: &[StoragePlan],
+    ) -> Result<BTreeMap<String, String>, String> {
+        if self.storage.len() != storage.len() {
+            return Err("simulated storage device count changed".to_owned());
+        }
+        storage
+            .iter()
+            .zip(&self.storage)
+            .map(|(plan, block)| {
+                let block = block
+                    .lock()
+                    .map_err(|_| "simulated storage lock poisoned".to_owned())?;
+                let bytes = block
+                    .simulated_bytes()
+                    .ok_or_else(|| format!("storage is not simulated: {}", plan.id))?;
+                Ok((plan.id.clone(), format!("{:x}", Sha256::digest(bytes))))
+            })
+            .collect()
+    }
 }
 
 struct ServiceRuntime {
@@ -291,6 +317,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let expected_serial = recorded_serial_fingerprints(Path::new(plan), &service_names)?;
     let expected_faults = recorded_fault_fingerprints(Path::new(plan), &service_names)?;
     let expected_network = recorded_network_fingerprint(Path::new(plan))?;
+    let expected_storage = recorded_storage_fingerprints(Path::new(plan), &service_names)?;
     let output = PathBuf::from(output);
     if output.exists() {
         return Err(format!(
@@ -305,6 +332,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         expected_serial,
         expected_faults,
         expected_network,
+        expected_storage,
     )
 }
 
@@ -314,6 +342,7 @@ fn execute(
     expected_serial: Option<BTreeMap<String, Vec<String>>>,
     expected_faults: Option<BTreeMap<String, String>>,
     expected_network: Option<String>,
+    expected_storage: Option<BTreeMap<String, BTreeMap<String, String>>>,
 ) -> Result<(), String> {
     if let Some(runner) = &mut topology.topology_runner {
         fs::create_dir_all(output.join("artifacts")).map_err(|error| error.to_string())?;
@@ -452,6 +481,9 @@ fn execute(
         let mut checks = evaluate_checks(&topology.services[name].run.checks, &service.serial_logs);
         let serial_sha256 = serial_fingerprints(&service.serial_logs)?;
         let faults_sha256 = fault_fingerprint(&service.faults)?;
+        let storage_sha256 = service
+            .vm
+            .storage_fingerprints(&topology.services[name].run.storage)?;
         checks.insert(
             0,
             CheckResult {
@@ -513,6 +545,24 @@ fn execute(
                 error = Some("network replay fingerprint changed".to_owned());
             }
         }
+        if let Some(expected) = &expected_storage {
+            let expected = expected
+                .get(name)
+                .expect("recorded storage fingerprint missing service");
+            let matches = expected == &storage_sha256;
+            checks.push(CheckResult {
+                name: "replay_storage".to_owned(),
+                status: if matches { "passed" } else { "failed" },
+                detail: if matches {
+                    "simulated storage matches the original replay bundle".to_owned()
+                } else {
+                    "simulated storage differs from the original replay bundle".to_owned()
+                },
+            });
+            if !matches && error.is_none() {
+                error = Some("storage replay fingerprint changed".to_owned());
+            }
+        }
         let status = if checks.iter().all(|check| check.status == "passed") {
             "passed"
         } else {
@@ -531,6 +581,7 @@ fn execute(
                 .collect(),
             serial_sha256,
             faults_sha256,
+            storage_sha256,
             error,
             checks,
             faults: service.faults.clone(),
@@ -567,6 +618,31 @@ fn recorded_network_fingerprint(plan: &Path) -> Result<Option<String>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("cannot read {}: {error}", result_path.display())),
     }
+}
+
+fn recorded_storage_fingerprints(
+    plan: &Path,
+    services: &[String],
+) -> Result<Option<BTreeMap<String, BTreeMap<String, String>>>, String> {
+    if plan.file_name().and_then(|name| name.to_str()) != Some("replay-plan.json") {
+        return Ok(None);
+    }
+    let bundle = plan
+        .parent()
+        .ok_or_else(|| format!("replay plan has no parent directory: {}", plan.display()))?;
+    let mut expected = BTreeMap::new();
+    for name in services {
+        let result_path = bundle.join("services").join(name).join("result.json");
+        let result = fs::read(&result_path)
+            .map_err(|error| format!("cannot read {}: {error}", result_path.display()))?;
+        let recorded: RecordedServiceResult = serde_json::from_slice(&result)
+            .map_err(|error| format!("cannot parse {}: {error}", result_path.display()))?;
+        let Some(storage) = recorded.storage_sha256 else {
+            return Ok(None);
+        };
+        expected.insert(name.clone(), storage);
+    }
+    Ok(Some(expected))
 }
 
 fn network_fingerprint(switches: &BTreeMap<String, SharedSimSwitch>) -> Result<String, String> {
@@ -890,25 +966,27 @@ fn build_service(
         })
         .map_err(|error| error.to_string())?;
     resources.serial_out_path = Some(serial.to_path_buf());
+    let mut simulated_storage = Vec::new();
     for storage in &service.run.storage {
-        let block = Block::new_simulated(SimulatedBlockConfig {
-            drive_id: storage.id.clone(),
-            size_mib: storage.size_mib,
-            seed: storage.seed,
-            error_ppm: storage.error_ppm,
-            latency_rounds: storage.latency_rounds,
-            torn_write_bytes: storage.torn_write_bytes,
-            corrupt_read_xor: storage.corrupt_read_xor,
-        })
-        .map_err(|error| {
-            format!(
-                "service {name}: cannot create storage {:?}: {error}",
-                storage.id
-            )
-        })?;
-        resources
-            .block
-            .add_virtio_device(Arc::new(Mutex::new(block)));
+        let block = Arc::new(Mutex::new(
+            Block::new_simulated(SimulatedBlockConfig {
+                drive_id: storage.id.clone(),
+                size_mib: storage.size_mib,
+                seed: storage.seed,
+                error_ppm: storage.error_ppm,
+                latency_rounds: storage.latency_rounds,
+                torn_write_bytes: storage.torn_write_bytes,
+                corrupt_read_xor: storage.corrupt_read_xor,
+            })
+            .map_err(|error| {
+                format!(
+                    "service {name}: cannot create storage {:?}: {error}",
+                    storage.id
+                )
+            })?,
+        ));
+        resources.block.add_virtio_device(block.clone());
+        simulated_storage.push(block);
     }
     for network in &service.networks {
         let switch = switches
@@ -941,7 +1019,11 @@ fn build_service(
         &get_empty_filters(),
     )
     .map_err(|error| error.to_string())?;
-    Ok(ServiceVm { vmm, event_manager })
+    Ok(ServiceVm {
+        vmm,
+        event_manager,
+        storage: simulated_storage,
+    })
 }
 
 fn lock_artifact(service_dir: &Path, name: &str, artifact: &Artifact) -> Result<PathBuf, String> {
@@ -1031,6 +1113,30 @@ mod tests {
             recorded_network_fingerprint(&bundle.join("replay-plan.json")).unwrap(),
             Some("recorded-network-digest".to_owned())
         );
+        fs::remove_dir_all(bundle).unwrap();
+    }
+
+    #[test]
+    fn recorded_storage_fingerprints_use_recorded_drive_digests() {
+        let bundle = std::env::temp_dir().join(format!(
+            "theseus-topology-storage-fingerprint-{}",
+            std::process::id()
+        ));
+        let service = bundle.join("services/api");
+        fs::create_dir_all(&service).unwrap();
+        fs::write(bundle.join("replay-plan.json"), "{}").unwrap();
+        fs::write(
+            service.join("result.json"),
+            r#"{"storage_sha256":{"data":"recorded-storage-digest"}}"#,
+        )
+        .unwrap();
+
+        let fingerprints =
+            recorded_storage_fingerprints(&bundle.join("replay-plan.json"), &["api".to_owned()])
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(fingerprints["api"]["data"], "recorded-storage-digest");
         fs::remove_dir_all(bundle).unwrap();
     }
 }
