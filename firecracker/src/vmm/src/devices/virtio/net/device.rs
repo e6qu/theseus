@@ -475,6 +475,13 @@ impl Net {
         }
     }
 
+    /// Advance a standalone simulated NIC by one deterministic runner round.
+    pub fn advance_simulated_round(&mut self) {
+        if let NetBackend::Sim(sim) = &mut self.backend {
+            sim.advance_round();
+        }
+    }
+
     /// True when this NIC uses Theseus' host-independent simulated backend.
     pub fn is_simulated(&self) -> bool {
         matches!(self.backend, NetBackend::Sim(_))
