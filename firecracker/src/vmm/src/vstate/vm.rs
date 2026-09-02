@@ -341,6 +341,39 @@ impl KvmVm {
         Ok(())
     }
 
+    /// Read every vCPU's deterministic virtual clock at an event boundary.
+    pub fn virtual_time_ns(&self) -> Result<Option<Vec<u64>>, crate::VmmError> {
+        let mut handles = self.vcpus_handles();
+        handles
+            .iter_mut()
+            .try_for_each(|handle| handle.send_event(crate::VcpuEvent::GetVirtualTime))
+            .map_err(|_| crate::VmmError::VcpuMessage)?;
+        let clocks = handles
+            .iter()
+            .map(|handle| {
+                handle
+                    .response_receiver()
+                    .recv_timeout(crate::RECV_TIMEOUT_SEC)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| crate::VmmError::VcpuMessage)?;
+        let clocks = clocks
+            .into_iter()
+            .map(|response| match response {
+                crate::VcpuResponse::VirtualTime(clock) => Ok(clock),
+                _ => Err(crate::VmmError::VcpuMessage),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if clocks.iter().all(Option::is_none) {
+            return Ok(None);
+        }
+        clocks
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .map(Some)
+            .ok_or(crate::VmmError::VcpuMessage)
+    }
+
     /// Saves vCPU states by requesting each vCPU thread to serialize its state.
     pub fn save_vcpu_states(
         &self,

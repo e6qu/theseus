@@ -170,6 +170,7 @@ struct ServiceResult {
     faults_sha256: String,
     storage_sha256: BTreeMap<String, String>,
     network_traffic: BTreeMap<String, NetworkTraffic>,
+    virtual_time_ns: Option<Vec<u64>>,
     error: Option<String>,
     checks: Vec<CheckResult>,
     faults: Vec<AppliedFault>,
@@ -191,6 +192,8 @@ struct RecordedServiceResult {
     storage_sha256: Option<BTreeMap<String, String>>,
     #[serde(default)]
     network_traffic: Option<BTreeMap<String, NetworkTraffic>>,
+    #[serde(default)]
+    virtual_time_ns: Option<Option<Vec<u64>>>,
 }
 
 /// Deterministic simulated-NIC counters for one service network.
@@ -278,6 +281,14 @@ impl ServiceVm {
             .lock()
             .expect("VMM lock poisoned")
             .jump_virtual_time(nanoseconds)
+            .map_err(|error| error.to_string())
+    }
+
+    fn virtual_time_ns(&self) -> Result<Option<Vec<u64>>, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .virtual_time_ns()
             .map_err(|error| error.to_string())
     }
 
@@ -373,6 +384,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let expected_network = recorded_network_fingerprint(Path::new(plan))?;
     let expected_storage = recorded_storage_fingerprints(Path::new(plan), &service_names)?;
     let expected_traffic = recorded_network_traffic(Path::new(plan), &service_names)?;
+    let expected_virtual_time = recorded_virtual_times(Path::new(plan), &service_names)?;
     let output = PathBuf::from(output);
     if output.exists() {
         return Err(format!(
@@ -389,6 +401,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         expected_network,
         expected_storage,
         expected_traffic,
+        expected_virtual_time,
     )
 }
 
@@ -400,6 +413,7 @@ fn execute(
     expected_network: Option<String>,
     expected_storage: Option<BTreeMap<String, BTreeMap<String, String>>>,
     expected_traffic: Option<BTreeMap<String, BTreeMap<String, NetworkTraffic>>>,
+    expected_virtual_time: Option<BTreeMap<String, Option<Vec<u64>>>>,
 ) -> Result<(), String> {
     if let Some(runner) = &mut topology.topology_runner {
         fs::create_dir_all(output.join("artifacts")).map_err(|error| error.to_string())?;
@@ -544,6 +558,7 @@ fn execute(
         let storage_sha256 = service
             .vm
             .storage_fingerprints(&topology.services[name].run.storage)?;
+        let virtual_time_ns = service.vm.virtual_time_ns()?;
         checks.insert(
             0,
             CheckResult {
@@ -641,6 +656,24 @@ fn execute(
                 error = Some("network traffic replay fingerprint changed".to_owned());
             }
         }
+        if let Some(expected) = &expected_virtual_time {
+            let expected = expected
+                .get(name)
+                .expect("recorded virtual time missing service");
+            let matches = expected == &virtual_time_ns;
+            checks.push(CheckResult {
+                name: "replay_virtual_time".to_owned(),
+                status: if matches { "passed" } else { "failed" },
+                detail: if matches {
+                    "virtual clock state matches the original replay bundle".to_owned()
+                } else {
+                    "virtual clock state differs from the original replay bundle".to_owned()
+                },
+            });
+            if !matches && error.is_none() {
+                error = Some("virtual time replay fingerprint changed".to_owned());
+            }
+        }
         let status = if checks.iter().all(|check| check.status == "passed") {
             "passed"
         } else {
@@ -661,6 +694,7 @@ fn execute(
             faults_sha256,
             storage_sha256,
             network_traffic: service.network_traffic.clone(),
+            virtual_time_ns,
             error,
             checks,
             faults: service.faults.clone(),
@@ -745,6 +779,31 @@ fn recorded_network_traffic(
             return Ok(None);
         };
         expected.insert(name.clone(), traffic);
+    }
+    Ok(Some(expected))
+}
+
+fn recorded_virtual_times(
+    plan: &Path,
+    services: &[String],
+) -> Result<Option<BTreeMap<String, Option<Vec<u64>>>>, String> {
+    if plan.file_name().and_then(|name| name.to_str()) != Some("replay-plan.json") {
+        return Ok(None);
+    }
+    let bundle = plan
+        .parent()
+        .ok_or_else(|| format!("replay plan has no parent directory: {}", plan.display()))?;
+    let mut expected = BTreeMap::new();
+    for name in services {
+        let result_path = bundle.join("services").join(name).join("result.json");
+        let result = fs::read(&result_path)
+            .map_err(|error| format!("cannot read {}: {error}", result_path.display()))?;
+        let recorded: RecordedServiceResult = serde_json::from_slice(&result)
+            .map_err(|error| format!("cannot parse {}: {error}", result_path.display()))?;
+        let Some(clock) = recorded.virtual_time_ns else {
+            return Ok(None);
+        };
+        expected.insert(name.clone(), clock);
     }
     Ok(Some(expected))
 }
@@ -1289,6 +1348,25 @@ mod tests {
                 dropped: 1,
             }
         );
+        fs::remove_dir_all(bundle).unwrap();
+    }
+
+    #[test]
+    fn recorded_virtual_times_use_recorded_vcpu_clocks() {
+        let bundle = std::env::temp_dir().join(format!(
+            "theseus-topology-virtual-time-{}",
+            std::process::id()
+        ));
+        let service = bundle.join("services/api");
+        fs::create_dir_all(&service).unwrap();
+        fs::write(bundle.join("replay-plan.json"), "{}").unwrap();
+        fs::write(service.join("result.json"), r#"{"virtual_time_ns":[1000]}"#).unwrap();
+
+        let clocks = recorded_virtual_times(&bundle.join("replay-plan.json"), &["api".to_owned()])
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(clocks["api"], Some(vec![1000]));
         fs::remove_dir_all(bundle).unwrap();
     }
 }

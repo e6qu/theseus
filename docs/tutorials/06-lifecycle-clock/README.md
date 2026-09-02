@@ -17,4 +17,4 @@ artifacts. A `clock_jump` needs `[run.virtual_time]` in that service manifest.
 
 Inspect `theseus-compose-replay/services/service/result.json` for the applied
 schedule and the serial log from each boot. A replay compares the full applied
-fault sequence with the original bundle.
+fault sequence and the final virtual-clock state with the original bundle.
