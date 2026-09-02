@@ -311,9 +311,10 @@ below must have a runnable example and narrow acceptance tests.
 | P7.7 | **`replay: verify the complete exploration tree`** | **DONE (PR #30).** Rebuild a locked exploration and compare every recorded seed path and fingerprint, rejecting any shape or behavior change. | Cross-version replay guarantees, serial-input replay, or a fast code-coverage instrumentor. |
 | P7.8 | **`replay: fingerprint exploration serial logs`** | **DONE (PR #31).** Per-timeline serial-log digests are part of targeted and whole-tree replay verification when a bundle has serial logs. | Serial-input replay, cross-version replay guarantees, or a fast code-coverage instrumentor. |
 | P7.9 | **`explorer: replay deterministic serial input`** | **DONE (PR #32).** Manifest `[[events]]` are injected directly into each timeline's emulated UART after its SDK rendezvous, so root and child timelines receive the same deterministic serial input without sharing host stdin. | Arbitrary serial schedules, input before SDK rendezvous, or exploration of a guest without the SDK control-channel protocol. |
-| P8.0 | **`replay: pin the exploration executor`** | Lock the published `theseus-explorer` binary, including its digest, into every new exploration bundle; replay, minimization, and snapshot export use that locked executor instead of silently using a newer installed one. | Compose-runner pinning, arbitrary backwards compatibility, or execution of legacy bundles without their original runtime. |
+| P8.0 | **`replay: pin the exploration executor`** | **DONE (PR #33).** Lock the published `theseus-explorer` binary, including its digest, into every new exploration bundle; replay, minimization, and snapshot export use that locked executor instead of silently using a newer installed one. | Compose-runner pinning, arbitrary backwards compatibility, or execution of legacy bundles without their original runtime. |
+| P8.1 | **`replay: pin the topology executor`** | Lock the published `theseus-topology` binary into every new Compose bundle and use its verified bundle-local copy for replay. | Cross-version guarantees for other executors or legacy bundles without their original runtime. |
 
-**Current PR: P8.0 only.** The manifest is an execution contract, not a second
+**Current PR: P8.1 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what
