@@ -5,6 +5,8 @@
 
 use std::fmt;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -55,8 +57,9 @@ enum ExplorerAction {
 
 /// Start a single-manifest exploration through the executor released beside the CLI.
 pub fn explore(path: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<PathBuf, ExploreError> {
-    let plan = load_plan(path).map_err(ExploreError::Manifest)?;
+    let mut plan = load_plan(path).map_err(ExploreError::Manifest)?;
     validate(&plan)?;
+    plan.runtime.explorer_runner = Some(installed_runner_artifact()?);
     execute_plan(&plan, output, ExplorerAction::Explore)
 }
 
@@ -289,6 +292,9 @@ fn locked_replay_plan(bundle: impl AsRef<Path>) -> Result<RunPlan, ExploreError>
     plan.runtime.firecracker = locked_artifact(&bundle, "firecracker", &plan.runtime.firecracker)?;
     plan.guest.kernel = locked_artifact(&bundle, "kernel", &plan.guest.kernel)?;
     plan.guest.initramfs = locked_artifact(&bundle, "initramfs", &plan.guest.initramfs)?;
+    if let Some(runner) = &plan.runtime.explorer_runner {
+        plan.runtime.explorer_runner = Some(locked_artifact(&bundle, "theseus-explorer", runner)?);
+    }
     validate(&plan)?;
     Ok(plan)
 }
@@ -305,19 +311,18 @@ fn execute_plan(
             output.display()
         )));
     }
-    let runner = std::env::current_exe()
-        .map_err(|error| ExploreError::Invalid(format!("cannot locate theseus binary: {error}")))?
-        .parent()
-        .map(|directory| directory.join("theseus-explorer"))
+    let runner = plan
+        .runtime
+        .explorer_runner
+        .as_ref()
+        .map(verified_runner)
+        .transpose()?
         .ok_or_else(|| {
-            ExploreError::Invalid("theseus binary has no parent directory".to_owned())
+            ExploreError::Invalid(
+                "exploration bundle has no locked executor; replay it with the published runtime that created it"
+                    .to_owned(),
+            )
         })?;
-    if !runner.is_file() {
-        return Err(ExploreError::Invalid(format!(
-            "missing Linux exploration runner beside theseus: {}; use a published Linux runtime bundle",
-            runner.display()
-        )));
-    }
     let plan_file = output.with_extension("explore-plan.json");
     fs::write(
         &plan_file,
@@ -352,6 +357,71 @@ fn execute_plan(
             output.display()
         )))
     }
+}
+
+fn installed_runner() -> Result<PathBuf, ExploreError> {
+    let runner = std::env::current_exe()
+        .map_err(|error| ExploreError::Invalid(format!("cannot locate theseus binary: {error}")))?
+        .parent()
+        .map(|directory| directory.join("theseus-explorer"))
+        .ok_or_else(|| {
+            ExploreError::Invalid("theseus binary has no parent directory".to_owned())
+        })?;
+    if !runner.is_file() {
+        return Err(ExploreError::Invalid(format!(
+            "missing Linux exploration runner beside theseus: {}; use a published Linux runtime bundle",
+            runner.display()
+        )));
+    }
+    Ok(runner)
+}
+
+fn installed_runner_artifact() -> Result<ArtifactPlan, ExploreError> {
+    let runner = installed_runner()?;
+    artifact_for_runner(&runner)
+}
+
+fn verified_runner(artifact: &ArtifactPlan) -> Result<PathBuf, ExploreError> {
+    let runner = PathBuf::from(&artifact.path);
+    let actual = artifact_for_runner(&runner)?;
+    if actual.sha256 != artifact.sha256 {
+        return Err(ExploreError::Invalid(format!(
+            "exploration runner digest changed: {}",
+            runner.display()
+        )));
+    }
+    Ok(runner)
+}
+
+fn artifact_for_runner(path: &Path) -> Result<ArtifactPlan, ExploreError> {
+    let path = fs::canonicalize(path).map_err(|source| ExploreError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    #[cfg(unix)]
+    if fs::metadata(&path)
+        .map_err(|source| ExploreError::Read {
+            path: path.clone(),
+            source,
+        })?
+        .permissions()
+        .mode()
+        & 0o111
+        == 0
+    {
+        return Err(ExploreError::Invalid(format!(
+            "exploration runner is not executable: {}",
+            path.display()
+        )));
+    }
+    let bytes = fs::read(&path).map_err(|source| ExploreError::Read {
+        path: path.clone(),
+        source,
+    })?;
+    Ok(ArtifactPlan {
+        path: path.display().to_string(),
+        sha256: hex(Sha256::digest(bytes)),
+    })
 }
 
 fn locked_artifact(
@@ -438,6 +508,30 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_legacy_bundle_without_a_locked_exploration_runner() {
+        let plan: RunPlan = serde_json::from_str(
+            r#"{
+                "format":"theseus-run-plan-v1", "manifest":"/tmp/theseus.toml",
+                "runtime":{"firecracker":{"path":"/tmp/firecracker","sha256":"x"}},
+                "guest":{"kernel":{"path":"/tmp/kernel","sha256":"x"},"initramfs":{"path":"/tmp/initramfs","sha256":"x"}},
+                "run":{"seed":1,"vcpu_count":1,"mem_size_mib":128,"timeout_secs":1,"virtual_time":null},
+                "events":[], "network":{"loopback":false,"drop_ppm":0,"partitioned":false}, "storage":[],
+                "explore":{"max_nodes":1,"branches_per_node":1,"max_depth":0,"run_ms":1,"rendezvous":true,"branch_event_suffix":false,"novelty":"markers","events_hex":[],"replay_seed_path":null,"replay_expected":null,"replay_expected_tree":null},
+                "checks":[]
+            }"#,
+        )
+        .unwrap();
+        let output = tempfile::tempdir().unwrap();
+
+        assert!(
+            execute_plan(&plan, output.path().join("replay"), ExplorerAction::Explore)
+                .unwrap_err()
+                .to_string()
+                .contains("no locked executor")
+        );
+    }
+
+    #[test]
     fn replay_uses_the_bundle_copy_not_the_recorded_source_path() {
         let directory = tempfile::tempdir().unwrap();
         let artifacts = directory.path().join("artifacts");
@@ -455,6 +549,22 @@ mod tests {
         .unwrap();
         assert!(Path::new(&locked.path).starts_with(root));
         assert_eq!(locked.sha256, "digest");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_an_exploration_runner_whose_digest_changed() {
+        let directory = tempfile::tempdir().unwrap();
+        let runner = directory.path().join("theseus-explorer");
+        fs::write(&runner, b"first runner").unwrap();
+        fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).unwrap();
+        let artifact = artifact_for_runner(&runner).unwrap();
+        fs::write(&runner, b"different runner").unwrap();
+
+        assert!(verified_runner(&artifact)
+            .unwrap_err()
+            .to_string()
+            .contains("digest changed"));
     }
 
     #[test]

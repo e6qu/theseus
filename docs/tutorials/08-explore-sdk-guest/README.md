@@ -23,6 +23,7 @@ SDK control channel, and signals completion. Theseus injects the UART byte
 into each timeline directly; it never uses shared host stdin. It forks up to
 seven timelines and checks that each one read the byte and completed. It
 records every seed path and check outcome in `theseus-exploration/result.json`.
+The bundle also contains the exact `theseus-explorer` binary used for replay.
 
 Replay those locked artifacts without the original manifest:
 

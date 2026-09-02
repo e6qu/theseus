@@ -44,7 +44,9 @@ validation and planning only: a Firecracker timeline needs Linux and KVM.
 channel. It needs the published Linux runtime bundle, KVM, and a guest that
 uses `theseus-sdk` to send `SETUP_COMPLETE` and a done marker. It leaves an
 output directory even if exploration fails, so the locked plan and
-`result.json` are available for inspection.
+`result.json` are available for inspection. It also locks the companion
+`theseus-explorer` binary into `artifacts/`; replay uses that digest-checked
+copy instead of a newer runner installed beside `theseus`.
 
 Use `[[events]]` for deterministic UART input. Theseus injects each event
 directly into every timeline after `SETUP_COMPLETE`; do not use host stdin.
