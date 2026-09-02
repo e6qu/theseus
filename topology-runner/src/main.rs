@@ -81,7 +81,7 @@ struct RunPlan {
     #[serde(default)]
     storage: Vec<StoragePlan>,
     #[serde(default)]
-    events: Vec<serde_json::Value>,
+    events: Vec<EventPlan>,
     #[serde(default)]
     checks: Vec<CheckPlan>,
 }
@@ -129,6 +129,11 @@ struct StoragePlan {
     latency_rounds: u32,
     torn_write_bytes: Option<u32>,
     corrupt_read_xor: Option<u8>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct EventPlan {
+    data_hex: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -213,6 +218,14 @@ impl ServiceVm {
             .map_err(|error| error.to_string())
     }
 
+    fn push_serial_input(&self, bytes: &[u8]) -> Result<(), String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .push_serial_input(bytes)
+            .map_err(|error| error.to_string())
+    }
+
     fn jump_virtual_time(&self, nanoseconds: u64) -> Result<(), String> {
         self.vmm
             .lock()
@@ -282,11 +295,6 @@ fn execute(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
     let names = topology.services.keys().cloned().collect::<Vec<_>>();
     for name in &names {
         let service = &topology.services[name];
-        if !service.run.events.is_empty() {
-            return Err(format!(
-                "service {name:?} has serial events; topology serial injection is not available yet"
-            ));
-        }
         let service_dir = output.join("services").join(name);
         fs::create_dir_all(service_dir.join("artifacts")).map_err(|error| error.to_string())?;
         let kernel = lock_artifact(&service_dir, "kernel", &service.run.guest.kernel)?;
@@ -342,7 +350,9 @@ fn execute(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
             },
         );
     }
-    for service in services.values() {
+    for name in &names {
+        let service = &services[name];
+        inject_serial_events(&service.vm, &topology.services[name].run.events)?;
         service.vm.resume()?;
     }
     let timeout = topology
@@ -494,6 +504,7 @@ fn apply_scheduled_faults(
                     &serial,
                     switches,
                 )?;
+                inject_serial_events(&replacement, &plan.run.events)?;
                 replacement.resume()?;
                 service.vm = replacement;
                 service.serial_logs.push(serial);
@@ -515,6 +526,25 @@ fn apply_scheduled_faults(
         }
     }
     Ok(())
+}
+
+fn inject_serial_events(vm: &ServiceVm, events: &[EventPlan]) -> Result<(), String> {
+    for event in events {
+        vm.push_serial_input(&decode_hex(&event.data_hex)?)?;
+    }
+    Ok(())
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() % 2 != 0 {
+        return Err("serial event has incomplete hex bytes".to_owned());
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&value[index..index + 2], 16).map_err(|error| error.to_string())
+        })
+        .collect()
 }
 
 fn fault_kind_name(kind: &FaultKind) -> &'static str {
