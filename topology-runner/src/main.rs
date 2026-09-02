@@ -38,6 +38,8 @@ struct TopologyPlan {
     compose: String,
     services: BTreeMap<String, ServicePlan>,
     networks: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    topology_runner: Option<Artifact>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -263,6 +265,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 fn execute(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
+    if let Some(runner) = &mut topology.topology_runner {
+        fs::create_dir_all(output.join("artifacts")).map_err(|error| error.to_string())?;
+        let locked = lock_artifact(output, "theseus-topology", runner)?;
+        runner.path = fs::canonicalize(locked)
+            .map_err(|error| error.to_string())?
+            .display()
+            .to_string();
+    }
     let mut switches: BTreeMap<String, SharedSimSwitch> = topology
         .networks
         .keys()
@@ -286,7 +296,10 @@ fn execute(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
             "firecracker",
             &service.run.runtime.firecracker,
         )?;
-        let locked = topology.services.get_mut(name).expect("topology service missing");
+        let locked = topology
+            .services
+            .get_mut(name)
+            .expect("topology service missing");
         locked.run.runtime.firecracker.path = fs::canonicalize(runtime)
             .map_err(|error| error.to_string())?
             .display()
@@ -597,8 +610,15 @@ fn build_service(
             torn_write_bytes: storage.torn_write_bytes,
             corrupt_read_xor: storage.corrupt_read_xor,
         })
-        .map_err(|error| format!("service {name}: cannot create storage {:?}: {error}", storage.id))?;
-        resources.block.add_virtio_device(Arc::new(Mutex::new(block)));
+        .map_err(|error| {
+            format!(
+                "service {name}: cannot create storage {:?}: {error}",
+                storage.id
+            )
+        })?;
+        resources
+            .block
+            .add_virtio_device(Arc::new(Mutex::new(block)));
     }
     for network in &service.networks {
         let switch = switches

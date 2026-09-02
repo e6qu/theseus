@@ -14,8 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::{LoadError, RunPlan, load_plan};
+use crate::{load_plan, ArtifactPlan, LoadError, RunPlan};
 
 #[derive(Debug)]
 pub enum ComposeError {
@@ -122,6 +123,8 @@ pub struct ComposePlan {
     /// Network name to sorted service names. Every member can exchange frames
     /// once the deterministic multi-guest switch is available.
     pub networks: BTreeMap<String, Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topology_runner: Option<ArtifactPlan>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -235,6 +238,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         name: compose.name,
         services,
         networks,
+        topology_runner: None,
     })
 }
 
@@ -343,7 +347,8 @@ pub fn test_compose(
     path: impl AsRef<Path>,
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ComposeError> {
-    let plan = load_compose_plan(path)?;
+    let mut plan = load_compose_plan(path)?;
+    plan.topology_runner = Some(installed_runner_artifact()?);
     let output = output.as_ref().to_path_buf();
     if output.exists() {
         return Err(ComposeError::Invalid(format!(
@@ -401,19 +406,19 @@ pub fn replay_compose(
 }
 
 fn execute_topology(plan: &Path, output: &Path) -> Result<(), ComposeError> {
-    let runner = std::env::current_exe()
-        .map_err(|error| ComposeError::Invalid(format!("cannot locate theseus binary: {error}")))?
-        .parent()
-        .map(|directory| directory.join("theseus-topology"))
-        .ok_or_else(|| {
-            ComposeError::Invalid("theseus binary has no parent directory".to_owned())
-        })?;
-    if !runner.is_file() {
-        return Err(ComposeError::Invalid(format!(
-            "missing Linux topology runner beside theseus: {}; use a published Linux runtime bundle",
-            runner.display()
-        )));
-    }
+    let runner: TopologyRunnerPlan = serde_json::from_slice(&fs::read(plan).map_err(|source| {
+        ComposeError::Read {
+            path: plan.to_path_buf(),
+            source,
+        }
+    })?)
+    .map_err(|error| ComposeError::Invalid(format!("cannot parse {}: {error}", plan.display())))?;
+    let runner = runner
+        .topology_runner
+        .as_ref()
+        .map(verified_runner)
+        .transpose()?
+        .ok_or_else(|| ComposeError::Invalid("topology replay has no locked executor; replay it with the published runtime that created it".to_owned()))?;
     let status = Command::new(&runner)
         .arg("--plan")
         .arg(plan)
@@ -430,6 +435,59 @@ fn execute_topology(plan: &Path, output: &Path) -> Result<(), ComposeError> {
         )));
     }
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct TopologyRunnerPlan {
+    #[serde(default)]
+    topology_runner: Option<ArtifactPlan>,
+}
+
+fn installed_runner() -> Result<PathBuf, ComposeError> {
+    let runner = std::env::current_exe()
+        .map_err(|error| ComposeError::Invalid(format!("cannot locate theseus binary: {error}")))?
+        .parent()
+        .map(|directory| directory.join("theseus-topology"))
+        .ok_or_else(|| {
+            ComposeError::Invalid("theseus binary has no parent directory".to_owned())
+        })?;
+    if !runner.is_file() {
+        return Err(ComposeError::Invalid(format!(
+            "missing Linux topology runner beside theseus: {}; use a published Linux runtime bundle",
+            runner.display()
+        )));
+    }
+    Ok(runner)
+}
+
+fn installed_runner_artifact() -> Result<ArtifactPlan, ComposeError> {
+    artifact_for_runner(&installed_runner()?)
+}
+
+fn verified_runner(artifact: &ArtifactPlan) -> Result<PathBuf, ComposeError> {
+    let path = PathBuf::from(&artifact.path);
+    if artifact_for_runner(&path)?.sha256 != artifact.sha256 {
+        return Err(ComposeError::Invalid(format!(
+            "topology runner digest changed: {}",
+            path.display()
+        )));
+    }
+    Ok(path)
+}
+
+fn artifact_for_runner(path: &Path) -> Result<ArtifactPlan, ComposeError> {
+    let path = fs::canonicalize(path).map_err(|source| ComposeError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let bytes = fs::read(&path).map_err(|source| ComposeError::Read {
+        path: path.clone(),
+        source,
+    })?;
+    Ok(ArtifactPlan {
+        path: path.display().to_string(),
+        sha256: format!("{:x}", Sha256::digest(bytes)),
+    })
 }
 
 #[cfg(test)]
@@ -518,10 +576,8 @@ mod tests {
         )
         .unwrap();
         let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("clock_jump requires virtual_time")
-        );
+        assert!(error
+            .to_string()
+            .contains("clock_jump requires virtual_time"));
     }
 }
