@@ -55,6 +55,7 @@ fn run_timeline(events: Vec<u8>) -> Vec<u8> {
         42,
         &ExplorerConfig {
             events,
+            serial_events: Vec::new(),
             branch_event_suffix: false,
             rendezvous: true,
             faults: None,

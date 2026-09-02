@@ -22,10 +22,19 @@ branch_event_suffix = true
 novelty = "markers"
 events = ["90"]
 
+[[events]]
+when = "ready"
+data = "41"
+
 [[checks]]
 name = "every timeline completed"
 kind = "marker_seen"
 value = "ff"
+
+[[checks]]
+name = "every timeline read the UART byte"
+kind = "marker_seen"
+value = "a1"
 
 [[checks]]
 name = "no timeline emitted an error"

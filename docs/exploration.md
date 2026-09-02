@@ -33,8 +33,10 @@ replay recipe for any timeline.
 `Explorer::explore` is the live loop:
 
 1. Boot the root timeline (seeded entropy, workload of your choice).
-2. Rendezvous: wait for `SETUP_COMPLETE`, push events + terminator, wait
-   for the done marker, pause, fingerprint, capture.
+2. Rendezvous: wait for `SETUP_COMPLETE`, push manifest `[[events]]` into the
+   emulated UART, then push control-channel events + a terminator, wait for
+   the done marker, pause, fingerprint, capture. Every child receives the same
+   UART bytes directly from its own VM, never from shared host stdin.
 3. Spawn `branches_per_node` children from each branch point — each on its
    own scoped thread (one timeline per thread, results joined in spawn
    order so the tree is deterministic).

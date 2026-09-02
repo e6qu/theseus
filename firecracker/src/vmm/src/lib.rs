@@ -399,6 +399,38 @@ impl Vmm {
         Ok(())
     }
 
+    /// Theseus: inject bytes into the emulated UART without using the host
+    /// process stdin. Exploration uses this so sibling timelines never share
+    /// an input source.
+    pub fn push_serial_input(&mut self, bytes: &[u8]) -> Result<(), VmmError> {
+        use devices::legacy::serial::RawIOHandler;
+
+        #[cfg(target_arch = "x86_64")]
+        let serial = self
+            .device_manager
+            .legacy_devices
+            .as_ref()
+            .ok_or(VmmError::NotSupported)?
+            .stdio_serial
+            .clone();
+        #[cfg(target_arch = "aarch64")]
+        let serial = self
+            .device_manager
+            .mmio_platform_devices
+            .serial
+            .as_ref()
+            .ok_or(VmmError::NotSupported)?
+            .inner
+            .clone();
+
+        serial
+            .lock()
+            .expect("Poisoned lock")
+            .serial
+            .raw_input(bytes)
+            .map_err(|error| VmmError::ControlChannel(error.to_string()))
+    }
+
     /// Theseus: drain guest→host control-channel events (commands/markers).
     pub fn drain_control_events(&mut self) -> Vec<ControlEvent> {
         match &self.device_manager.mmio_platform_devices.theseus {

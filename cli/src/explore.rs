@@ -383,12 +383,6 @@ fn validate(plan: &RunPlan) -> Result<(), ExploreError> {
             "manifest has no [explore] section".to_owned(),
         ));
     }
-    if !plan.events.is_empty() {
-        return Err(ExploreError::Invalid(
-            "serial [[events]] are not available during exploration; use explore.events with an SDK control-channel guest"
-                .to_owned(),
-        ));
-    }
     if !plan.storage.is_empty()
         || plan.network.loopback
         || plan.network.drop_ppm != 0
@@ -423,6 +417,24 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("no [explore]"));
+    }
+
+    #[test]
+    fn accepts_serial_events_for_a_rendezvous_exploration() {
+        let plan: RunPlan = serde_json::from_str(
+            r#"{
+                "format":"theseus-run-plan-v1", "manifest":"/tmp/theseus.toml",
+                "runtime":{"firecracker":{"path":"/tmp/firecracker","sha256":"x"}},
+                "guest":{"kernel":{"path":"/tmp/kernel","sha256":"x"},"initramfs":{"path":"/tmp/initramfs","sha256":"x"}},
+                "run":{"seed":1,"vcpu_count":1,"mem_size_mib":128,"timeout_secs":1,"virtual_time":null},
+                "events":[{"when":"ready","data_hex":"41"}],
+                "network":{"loopback":false,"drop_ppm":0,"partitioned":false}, "storage":[],
+                "explore":{"max_nodes":1,"branches_per_node":1,"max_depth":0,"run_ms":1,"rendezvous":true,"branch_event_suffix":false,"novelty":"markers","events_hex":[],"replay_seed_path":null,"replay_expected":null,"replay_expected_tree":null},
+                "checks":[]
+            }"#,
+        )
+        .unwrap();
+        validate(&plan).unwrap();
     }
 
     #[test]
