@@ -46,6 +46,10 @@ uses `theseus-sdk` to send `SETUP_COMPLETE` and a done marker. It leaves an
 output directory even if exploration fails, so the locked plan and
 `result.json` are available for inspection.
 
+Use `[[events]]` for deterministic UART input. Theseus injects each event
+directly into every timeline after `SETUP_COMPLETE`; do not use host stdin.
+Use `[explore].events` only for SDK control-channel bytes.
+
 `report` turns an existing replay, Compose topology replay, or exploration
 directory into one offline `index.html`. It embeds no external assets and reads
 only files within the selected result directory. Open it directly in a browser:

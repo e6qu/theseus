@@ -80,6 +80,10 @@ pub struct ExplorerConfig {
     /// Event bytes pushed into each timeline's control-channel FIFO (same
     /// base for every node — variance comes from seeds).
     pub events: Vec<u8>,
+    /// UART byte sequences injected into each timeline after the SDK
+    /// rendezvous. These are VM-local inputs: sibling timelines never share
+    /// the host process's stdin.
+    pub serial_events: Vec<Vec<u8>>,
     /// Append the branch index + 1 as a final event byte for children (gives
     /// siblings distinguishable input schedules, deterministically; 0x00 is
     /// the protocol's terminator).
@@ -339,6 +343,9 @@ impl Explorer {
             }
             {
                 let mut vmm = vmm.lock().expect("Poisoned lock");
+                for event in &config.serial_events {
+                    vmm.push_serial_input(event)?;
+                }
                 for &byte in events {
                     vmm.push_control_event(byte)?;
                 }
@@ -592,6 +599,7 @@ mod tests {
     fn test_explore_is_deterministic() {
         let config = ExplorerConfig {
             events: vec![0x01, 0x02, 0x03],
+            serial_events: Vec::new(),
             branch_event_suffix: false,
             faults: None,
             rendezvous: false,
@@ -704,6 +712,7 @@ mod tests {
 
         let config = ExplorerConfig {
             events: vec![0xA0, 0xA1],
+            serial_events: Vec::new(),
             branch_event_suffix: true,
             rendezvous: true,
             faults: None,
@@ -809,6 +818,7 @@ mod tests {
         let config = ExplorerConfig {
             // Base event takes the high path; child suffixes (1, 2) the low.
             events: vec![0x90],
+            serial_events: Vec::new(),
             branch_event_suffix: true,
             rendezvous: true,
             faults: None,

@@ -309,9 +309,10 @@ below must have a runnable example and narrow acceptance tests.
 | P7.5 | **`replay: verify one exploration timeline`** | **DONE (PR #28).** Compare a targeted replay's recorded entropy, marker, and dirty-page fingerprints before accepting it as reproduced. | Whole-tree comparison, cross-version replay guarantees, serial-log collection, or a fast code-coverage instrumentor. |
 | P7.6 | **`explorer: capture serial logs per timeline`** | **DONE (PR #29).** Per-seed serial logs in exploration bundles and serial properties evaluated across every captured timeline. | Serial input events, whole-tree replay verification, or a fast code-coverage instrumentor. |
 | P7.7 | **`replay: verify the complete exploration tree`** | **DONE (PR #30).** Rebuild a locked exploration and compare every recorded seed path and fingerprint, rejecting any shape or behavior change. | Cross-version replay guarantees, serial-input replay, or a fast code-coverage instrumentor. |
-| P7.8 | **`replay: fingerprint exploration serial logs`** | Include per-timeline serial-log digests in targeted and whole-tree replay verification when the bundle has serial logs. | Serial-input replay, cross-version replay guarantees, or a fast code-coverage instrumentor. |
+| P7.8 | **`replay: fingerprint exploration serial logs`** | **DONE (PR #31).** Per-timeline serial-log digests are part of targeted and whole-tree replay verification when a bundle has serial logs. | Serial-input replay, cross-version replay guarantees, or a fast code-coverage instrumentor. |
+| P7.9 | **`explorer: replay deterministic serial input`** | Inject manifest `[[events]]` directly into each timeline's emulated UART after its SDK rendezvous, so root and child timelines receive the same deterministic serial input without sharing host stdin. | Arbitrary serial schedules, input before SDK rendezvous, or exploration of a guest without the SDK control-channel protocol. |
 
-**Current PR: P7.8 only.** The manifest is an execution contract, not a second
+**Current PR: P7.9 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what

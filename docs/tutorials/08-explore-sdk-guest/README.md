@@ -18,10 +18,11 @@ docker run --rm --privileged -v "$PWD":/tutorial -w /tutorial \
   "$THESEUS_IMAGE" sh ./run.sh
 ```
 
-The guest signals setup, receives `90`, and signals completion. Theseus forks
-up to seven timelines, ranks children by new marker bytes, and checks that
-every captured timeline emitted `ff` without emitting `ee`. It records every
-seed path and check outcome in `theseus-exploration/result.json`.
+The guest signals setup, reads `A` from its UART, receives `90` through the
+SDK control channel, and signals completion. Theseus injects the UART byte
+into each timeline directly; it never uses shared host stdin. It forks up to
+seven timelines and checks that each one read the byte and completed. It
+records every seed path and check outcome in `theseus-exploration/result.json`.
 
 Replay those locked artifacts without the original manifest:
 

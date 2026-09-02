@@ -299,19 +299,18 @@ fn execute(
     if snapshot_output.is_some() && explore.replay_seed_path.is_none() {
         return Err("snapshot export requires a targeted replay seed path".to_owned());
     }
-    if !plan.events.is_empty()
-        || !plan.storage.is_empty()
+    if !plan.storage.is_empty()
         || plan.network.loopback
         || plan.network.drop_ppm != 0
         || plan.network.partitioned
     {
         return Err(
-            "exploration currently accepts only the headless SDK control-channel VM".to_owned(),
+            "exploration currently accepts only the headless SDK control-channel VM; storage and network settings are unavailable".to_owned(),
         );
     }
     validate_checks(&plan.checks)?;
     let resources = resources_from_plan(plan, Some(serial_log_path(serial_logs, plan.run.seed)))?;
-    let config = explorer_config(explore, Some(serial_logs.to_path_buf()))?;
+    let config = explorer_config(plan, explore, Some(serial_logs.to_path_buf()))?;
     let mut event_manager = EventManager::new().map_err(|error| error.to_string())?;
     let filters = get_empty_filters();
     let explorer = if let Some(seed_path) = &explore.replay_seed_path {
@@ -659,6 +658,7 @@ fn resources_from_plan(plan: &RunPlan, serial_log: Option<PathBuf>) -> Result<Vm
 }
 
 fn explorer_config(
+    run_plan: &RunPlan,
     plan: &ExplorePlan,
     serial_log_dir: Option<PathBuf>,
 ) -> Result<ExplorerConfig, String> {
@@ -667,8 +667,14 @@ fn explorer_config(
         .iter()
         .map(|event| u8::from_str_radix(event, 16).map_err(|error| error.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
+    let serial_events = run_plan
+        .events
+        .iter()
+        .map(|event| decode_hex(&event.data_hex))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(ExplorerConfig {
         events,
+        serial_events,
         branch_event_suffix: plan.branch_event_suffix,
         rendezvous: plan.rendezvous,
         faults: None,
@@ -682,6 +688,19 @@ fn explorer_config(
         },
         serial_log_dir,
     })
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() % 2 != 0 {
+        return Err("hex data must contain complete bytes".to_owned());
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&value[index..index + 2], 16)
+                .map_err(|error| format!("invalid hex data: {error}"))
+        })
+        .collect()
 }
 
 fn serial_log_path(directory: &Path, seed: u64) -> PathBuf {
@@ -848,6 +867,13 @@ mod tests {
             },
         );
         assert_eq!(minimized, vec!["02".to_owned(), "03".to_owned()]);
+    }
+
+    #[test]
+    fn decodes_manifest_uart_events() {
+        assert_eq!(decode_hex("41ff").unwrap(), b"A\xff");
+        assert!(decode_hex("4").is_err());
+        assert!(decode_hex("zz").is_err());
     }
 
     #[test]
