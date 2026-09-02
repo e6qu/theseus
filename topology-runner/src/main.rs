@@ -165,6 +165,7 @@ struct ServiceResult {
     serial_log: String,
     serial_logs: Vec<String>,
     serial_sha256: Vec<String>,
+    faults_sha256: String,
     error: Option<String>,
     checks: Vec<CheckResult>,
     faults: Vec<AppliedFault>,
@@ -178,12 +179,16 @@ struct RecordedServiceResult {
     serial_logs: Vec<String>,
     #[serde(default)]
     serial_sha256: Vec<String>,
+    #[serde(default)]
+    faults_sha256: Option<String>,
+    #[serde(default)]
+    faults: Vec<AppliedFault>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct AppliedFault {
     round: u64,
-    kind: &'static str,
+    kind: String,
     detail: String,
 }
 
@@ -279,6 +284,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
     let service_names = topology.services.keys().cloned().collect::<Vec<_>>();
     let expected_serial = recorded_serial_fingerprints(Path::new(plan), &service_names)?;
+    let expected_faults = recorded_fault_fingerprints(Path::new(plan), &service_names)?;
     let output = PathBuf::from(output);
     if output.exists() {
         return Err(format!(
@@ -287,13 +293,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ));
     }
     fs::create_dir_all(&output).map_err(|error| error.to_string())?;
-    execute(topology, &output, expected_serial)
+    execute(topology, &output, expected_serial, expected_faults)
 }
 
 fn execute(
     mut topology: TopologyPlan,
     output: &Path,
     expected_serial: Option<BTreeMap<String, Vec<String>>>,
+    expected_faults: Option<BTreeMap<String, String>>,
 ) -> Result<(), String> {
     if let Some(runner) = &mut topology.topology_runner {
         fs::create_dir_all(output.join("artifacts")).map_err(|error| error.to_string())?;
@@ -422,6 +429,7 @@ fn execute(
         };
         let mut checks = evaluate_checks(&topology.services[name].run.checks, &service.serial_logs);
         let serial_sha256 = serial_fingerprints(&service.serial_logs)?;
+        let faults_sha256 = fault_fingerprint(&service.faults)?;
         checks.insert(
             0,
             CheckResult {
@@ -450,6 +458,24 @@ fn execute(
                 error = Some("serial replay fingerprint changed".to_owned());
             }
         }
+        if let Some(expected) = &expected_faults {
+            let expected = expected
+                .get(name)
+                .expect("recorded fault fingerprint missing service");
+            let matches = expected == &faults_sha256;
+            checks.push(CheckResult {
+                name: "replay_faults".to_owned(),
+                status: if matches { "passed" } else { "failed" },
+                detail: if matches {
+                    "applied faults match the original replay bundle".to_owned()
+                } else {
+                    "applied faults differ from the original replay bundle".to_owned()
+                },
+            });
+            if !matches && error.is_none() {
+                error = Some("fault replay fingerprint changed".to_owned());
+            }
+        }
         let status = if checks.iter().all(|check| check.status == "passed") {
             "passed"
         } else {
@@ -467,6 +493,7 @@ fn execute(
                 .map(|path| path.display().to_string())
                 .collect(),
             serial_sha256,
+            faults_sha256,
             error,
             checks,
             faults: service.faults.clone(),
@@ -486,6 +513,32 @@ fn execute(
     } else {
         Ok(())
     }
+}
+
+fn recorded_fault_fingerprints(
+    plan: &Path,
+    services: &[String],
+) -> Result<Option<BTreeMap<String, String>>, String> {
+    if plan.file_name().and_then(|name| name.to_str()) != Some("replay-plan.json") {
+        return Ok(None);
+    }
+    let bundle = plan
+        .parent()
+        .ok_or_else(|| format!("replay plan has no parent directory: {}", plan.display()))?;
+    let mut expected = BTreeMap::new();
+    for name in services {
+        let result_path = bundle.join("services").join(name).join("result.json");
+        let result = fs::read(&result_path)
+            .map_err(|error| format!("cannot read {}: {error}", result_path.display()))?;
+        let recorded: RecordedServiceResult = serde_json::from_slice(&result)
+            .map_err(|error| format!("cannot parse {}: {error}", result_path.display()))?;
+        let fingerprint = recorded
+            .faults_sha256
+            .map(Ok)
+            .unwrap_or_else(|| fault_fingerprint(&recorded.faults))?;
+        expected.insert(name.clone(), fingerprint);
+    }
+    Ok(Some(expected))
 }
 
 fn recorded_serial_fingerprints(
@@ -545,6 +598,12 @@ fn serial_fingerprints(serial_logs: &[PathBuf]) -> Result<Vec<String>, String> {
         .collect()
 }
 
+fn fault_fingerprint(faults: &[AppliedFault]) -> Result<String, String> {
+    let bytes = serde_json::to_vec(faults)
+        .map_err(|error| format!("cannot encode applied faults: {error}"))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
 fn apply_scheduled_faults(
     round: u64,
     name: &str,
@@ -558,7 +617,7 @@ fn apply_scheduled_faults(
             service.vm.resume()?;
             service.faults.push(AppliedFault {
                 round,
-                kind: "resume",
+                kind: "resume".to_owned(),
                 detail: "pause duration elapsed".to_owned(),
             });
         }
@@ -575,7 +634,7 @@ fn apply_scheduled_faults(
         if service.vm.exited().is_some() {
             service.faults.push(AppliedFault {
                 round,
-                kind: fault_kind_name(&fault.kind),
+                kind: fault_kind_name(&fault.kind).to_owned(),
                 detail: "skipped because the service had already exited".to_owned(),
             });
             continue;
@@ -587,7 +646,7 @@ fn apply_scheduled_faults(
                 service.paused_until = Some(round + duration);
                 service.faults.push(AppliedFault {
                     round,
-                    kind: "pause",
+                    kind: "pause".to_owned(),
                     detail: format!("paused for {duration} scheduler rounds"),
                 });
             }
@@ -611,7 +670,7 @@ fn apply_scheduled_faults(
                 service.serial_logs.push(serial);
                 service.faults.push(AppliedFault {
                     round,
-                    kind: "restart",
+                    kind: "restart".to_owned(),
                     detail: "cold-restarted from locked service artifacts".to_owned(),
                 });
             }
@@ -620,7 +679,7 @@ fn apply_scheduled_faults(
                 service.vm.jump_virtual_time(nanoseconds)?;
                 service.faults.push(AppliedFault {
                     round,
-                    kind: "clock_jump",
+                    kind: "clock_jump".to_owned(),
                     detail: format!("advanced virtual clock by {nanoseconds} ns"),
                 });
             }
@@ -855,6 +914,30 @@ mod tests {
             fingerprints["api"],
             vec![format!("{:x}", Sha256::digest(b"ready\n"))]
         );
+        fs::remove_dir_all(bundle).unwrap();
+    }
+
+    #[test]
+    fn recorded_fault_fingerprints_use_recorded_digest() {
+        let bundle = std::env::temp_dir().join(format!(
+            "theseus-topology-fault-fingerprint-{}",
+            std::process::id()
+        ));
+        let service = bundle.join("services/api");
+        fs::create_dir_all(&service).unwrap();
+        fs::write(bundle.join("replay-plan.json"), "{}").unwrap();
+        fs::write(
+            service.join("result.json"),
+            r#"{"faults_sha256":"recorded-fault-digest"}"#,
+        )
+        .unwrap();
+
+        let fingerprints =
+            recorded_fault_fingerprints(&bundle.join("replay-plan.json"), &["api".to_owned()])
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(fingerprints["api"], "recorded-fault-digest");
         fs::remove_dir_all(bundle).unwrap();
     }
 }

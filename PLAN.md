@@ -315,9 +315,10 @@ below must have a runnable example and narrow acceptance tests.
 | P8.1 | **`replay: pin the topology executor`** | **DONE (PR #34).** Lock the published `theseus-topology` binary into every new Compose bundle and use its verified bundle-local copy for replay. | Cross-version guarantees for other executors or legacy bundles without their original runtime. |
 | P8.2 | **`topology: inject deterministic serial input`** | **DONE (PR #35).** Deliver each Compose service's manifest `[[events]]` directly to its VM-local UART, including deterministic restarts. | Cross-service input schedules or input after a guest-controlled ready handshake. |
 | P8.3 | **`topology: wait for serial readiness`** | **DONE (PR #36).** Deliver Compose serial events only after each service emits the standard `THES:M:42` ready marker; include a runnable UART-input topology tutorial. | Arbitrary later input schedules or a new guest protocol. |
-| P8.4 | **`replay: verify Compose serial logs`** | Record SHA-256 digests for every service serial log and reject a Compose replay when any rerun log differs from the original bundle. | Cross-version replay guarantees, non-serial service-state fingerprints, or partial-log comparison. |
+| P8.4 | **`replay: verify Compose serial logs`** | **DONE (PR #37).** Record SHA-256 digests for every service serial log and reject a Compose replay when any rerun log differs from the original bundle. | Cross-version replay guarantees, non-serial service-state fingerprints, or partial-log comparison. |
+| P8.5 | **`replay: verify Compose fault application`** | Record a per-service SHA-256 fingerprint of applied lifecycle and clock faults, then reject a replay if the applied sequence changes. | Cross-version replay guarantees, network or storage state fingerprints, or partial fault comparison. |
 
-**Current PR: P8.4 only.** The manifest is an execution contract, not a second
+**Current PR: P8.5 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what

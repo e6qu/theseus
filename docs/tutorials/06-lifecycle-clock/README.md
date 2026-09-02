@@ -16,4 +16,5 @@ docker run --rm --privileged -v "$PWD":/tutorial -w /tutorial \
 artifacts. A `clock_jump` needs `[run.virtual_time]` in that service manifest.
 
 Inspect `theseus-compose-replay/services/service/result.json` for the applied
-schedule and the serial log from each boot.
+schedule and the serial log from each boot. A replay compares the full applied
+fault sequence with the original bundle.
