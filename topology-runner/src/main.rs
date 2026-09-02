@@ -167,6 +167,7 @@ struct ServiceResult {
     serial_sha256: Vec<String>,
     faults_sha256: String,
     storage_sha256: BTreeMap<String, String>,
+    network_traffic: BTreeMap<String, NetworkTraffic>,
     error: Option<String>,
     checks: Vec<CheckResult>,
     faults: Vec<AppliedFault>,
@@ -186,6 +187,24 @@ struct RecordedServiceResult {
     faults: Vec<AppliedFault>,
     #[serde(default)]
     storage_sha256: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    network_traffic: Option<BTreeMap<String, NetworkTraffic>>,
+}
+
+/// Deterministic simulated-NIC counters for one service network.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+struct NetworkTraffic {
+    tx_frames: u64,
+    rx_frames: u64,
+    dropped: u64,
+}
+
+impl NetworkTraffic {
+    fn add(&mut self, other: &Self) {
+        self.tx_frames = self.tx_frames.saturating_add(other.tx_frames);
+        self.rx_frames = self.rx_frames.saturating_add(other.rx_frames);
+        self.dropped = self.dropped.saturating_add(other.dropped);
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -204,6 +223,7 @@ struct ServiceVm {
     vmm: Arc<Mutex<Vmm>>,
     event_manager: EventManager,
     storage: Vec<Arc<Mutex<Block>>>,
+    networks: Vec<(String, Arc<Mutex<Net>>)>,
 }
 
 impl ServiceVm {
@@ -280,6 +300,28 @@ impl ServiceVm {
             })
             .collect()
     }
+
+    fn network_traffic(&self) -> Result<BTreeMap<String, NetworkTraffic>, String> {
+        self.networks
+            .iter()
+            .map(|(name, net)| {
+                let net = net
+                    .lock()
+                    .map_err(|_| "simulated network lock poisoned".to_owned())?;
+                let stats = net
+                    .simulated_stats()
+                    .ok_or_else(|| format!("network is not simulated: {name}"))?;
+                Ok((
+                    name.clone(),
+                    NetworkTraffic {
+                        tx_frames: stats.tx_frames,
+                        rx_frames: stats.rx_frames,
+                        dropped: stats.dropped,
+                    },
+                ))
+            })
+            .collect()
+    }
 }
 
 struct ServiceRuntime {
@@ -288,6 +330,16 @@ struct ServiceRuntime {
     next_fault: usize,
     paused_until: Option<u64>,
     faults: Vec<AppliedFault>,
+    network_traffic: BTreeMap<String, NetworkTraffic>,
+}
+
+impl ServiceRuntime {
+    fn record_network_traffic(&mut self) -> Result<(), String> {
+        for (name, traffic) in self.vm.network_traffic()? {
+            self.network_traffic.entry(name).or_default().add(&traffic);
+        }
+        Ok(())
+    }
 }
 
 fn main() -> std::process::ExitCode {
@@ -318,6 +370,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let expected_faults = recorded_fault_fingerprints(Path::new(plan), &service_names)?;
     let expected_network = recorded_network_fingerprint(Path::new(plan))?;
     let expected_storage = recorded_storage_fingerprints(Path::new(plan), &service_names)?;
+    let expected_traffic = recorded_network_traffic(Path::new(plan), &service_names)?;
     let output = PathBuf::from(output);
     if output.exists() {
         return Err(format!(
@@ -333,6 +386,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         expected_faults,
         expected_network,
         expected_storage,
+        expected_traffic,
     )
 }
 
@@ -343,6 +397,7 @@ fn execute(
     expected_faults: Option<BTreeMap<String, String>>,
     expected_network: Option<String>,
     expected_storage: Option<BTreeMap<String, BTreeMap<String, String>>>,
+    expected_traffic: Option<BTreeMap<String, BTreeMap<String, NetworkTraffic>>>,
 ) -> Result<(), String> {
     if let Some(runner) = &mut topology.topology_runner {
         fs::create_dir_all(output.join("artifacts")).map_err(|error| error.to_string())?;
@@ -413,6 +468,7 @@ fn execute(
                 next_fault: 0,
                 paused_until: None,
                 faults: Vec::new(),
+                network_traffic: BTreeMap::new(),
             },
         );
     }
@@ -468,7 +524,8 @@ fn execute(
     )
     .map_err(|error| error.to_string())?;
     let mut failed = false;
-    for (name, service) in &services {
+    for (name, service) in &mut services {
+        service.record_network_traffic()?;
         let exit = service.vm.exited();
         let (exit_status, mut error) = match exit {
             Some(FcExitCode::Ok) => ("passed", None),
@@ -563,6 +620,24 @@ fn execute(
                 error = Some("storage replay fingerprint changed".to_owned());
             }
         }
+        if let Some(expected) = &expected_traffic {
+            let expected = expected
+                .get(name)
+                .expect("recorded network traffic missing service");
+            let matches = expected == &service.network_traffic;
+            checks.push(CheckResult {
+                name: "replay_network_traffic".to_owned(),
+                status: if matches { "passed" } else { "failed" },
+                detail: if matches {
+                    "simulated network traffic matches the original replay bundle".to_owned()
+                } else {
+                    "simulated network traffic differs from the original replay bundle".to_owned()
+                },
+            });
+            if !matches && error.is_none() {
+                error = Some("network traffic replay fingerprint changed".to_owned());
+            }
+        }
         let status = if checks.iter().all(|check| check.status == "passed") {
             "passed"
         } else {
@@ -582,6 +657,7 @@ fn execute(
             serial_sha256,
             faults_sha256,
             storage_sha256,
+            network_traffic: service.network_traffic.clone(),
             error,
             checks,
             faults: service.faults.clone(),
@@ -641,6 +717,31 @@ fn recorded_storage_fingerprints(
             return Ok(None);
         };
         expected.insert(name.clone(), storage);
+    }
+    Ok(Some(expected))
+}
+
+fn recorded_network_traffic(
+    plan: &Path,
+    services: &[String],
+) -> Result<Option<BTreeMap<String, BTreeMap<String, NetworkTraffic>>>, String> {
+    if plan.file_name().and_then(|name| name.to_str()) != Some("replay-plan.json") {
+        return Ok(None);
+    }
+    let bundle = plan
+        .parent()
+        .ok_or_else(|| format!("replay plan has no parent directory: {}", plan.display()))?;
+    let mut expected = BTreeMap::new();
+    for name in services {
+        let result_path = bundle.join("services").join(name).join("result.json");
+        let result = fs::read(&result_path)
+            .map_err(|error| format!("cannot read {}: {error}", result_path.display()))?;
+        let recorded: RecordedServiceResult = serde_json::from_slice(&result)
+            .map_err(|error| format!("cannot parse {}: {error}", result_path.display()))?;
+        let Some(traffic) = recorded.network_traffic else {
+            return Ok(None);
+        };
+        expected.insert(name.clone(), traffic);
     }
     Ok(Some(expected))
 }
@@ -799,6 +900,7 @@ fn apply_scheduled_faults(
                 });
             }
             FaultKind::Restart => {
+                service.record_network_traffic()?;
                 service.vm.stop();
                 let serial = service_dir.join(format!("serial-{}.log", service.serial_logs.len()));
                 let kernel = service_dir.join("artifacts/kernel");
@@ -967,6 +1069,7 @@ fn build_service(
         .map_err(|error| error.to_string())?;
     resources.serial_out_path = Some(serial.to_path_buf());
     let mut simulated_storage = Vec::new();
+    let mut simulated_networks = Vec::new();
     for storage in &service.run.storage {
         let block = Arc::new(Mutex::new(
             Block::new_simulated(SimulatedBlockConfig {
@@ -993,23 +1096,26 @@ fn build_service(
             .get(network)
             .ok_or_else(|| format!("service {name}: unknown network {network}"))?
             .clone();
-        let net = Net::new_with_sim_switch(
-            format!("net-{network}"),
-            SimNetConfig {
-                seed: service.run.run.seed,
-                loopback: service.run.network.loopback,
-                drop_ppm: service.run.network.drop_ppm,
-                partitioned: service.run.network.partitioned,
-            },
-            switch,
-            format!("{network}/{name}-{instance}"),
-            None,
-            RateLimiter::default(),
-            RateLimiter::default(),
-            None,
-        )
-        .map_err(|error| error.to_string())?;
-        resources.net_builder.add_device(Arc::new(Mutex::new(net)));
+        let net = Arc::new(Mutex::new(
+            Net::new_with_sim_switch(
+                format!("net-{network}"),
+                SimNetConfig {
+                    seed: service.run.run.seed,
+                    loopback: service.run.network.loopback,
+                    drop_ppm: service.run.network.drop_ppm,
+                    partitioned: service.run.network.partitioned,
+                },
+                switch,
+                format!("{network}/{name}-{instance}"),
+                None,
+                RateLimiter::default(),
+                RateLimiter::default(),
+                None,
+            )
+            .map_err(|error| error.to_string())?,
+        ));
+        resources.net_builder.add_device(net.clone());
+        simulated_networks.push((network.clone(), net));
     }
     let mut event_manager = EventManager::new().map_err(|error| error.to_string())?;
     let vmm = build_microvm_for_boot(
@@ -1023,6 +1129,7 @@ fn build_service(
         vmm,
         event_manager,
         storage: simulated_storage,
+        networks: simulated_networks,
     })
 }
 
@@ -1137,6 +1244,37 @@ mod tests {
                 .unwrap();
 
         assert_eq!(fingerprints["api"]["data"], "recorded-storage-digest");
+        fs::remove_dir_all(bundle).unwrap();
+    }
+
+    #[test]
+    fn recorded_network_traffic_uses_recorded_frame_counters() {
+        let bundle = std::env::temp_dir().join(format!(
+            "theseus-topology-network-traffic-{}",
+            std::process::id()
+        ));
+        let service = bundle.join("services/api");
+        fs::create_dir_all(&service).unwrap();
+        fs::write(bundle.join("replay-plan.json"), "{}").unwrap();
+        fs::write(
+            service.join("result.json"),
+            r#"{"network_traffic":{"backplane":{"tx_frames":3,"rx_frames":2,"dropped":1}}}"#,
+        )
+        .unwrap();
+
+        let traffic =
+            recorded_network_traffic(&bundle.join("replay-plan.json"), &["api".to_owned()])
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(
+            traffic["api"]["backplane"],
+            NetworkTraffic {
+                tx_frames: 3,
+                rx_frames: 2,
+                dropped: 1,
+            }
+        );
         fs::remove_dir_all(bundle).unwrap();
     }
 }
