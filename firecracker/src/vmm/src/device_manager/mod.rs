@@ -464,6 +464,7 @@ impl DeviceManager {
                 && net.is_simulated()
             {
                 net.process_tap_rx_event();
+                net.advance_simulated_round();
             }
             if device_type == VirtioDeviceType::Block
                 && let Some(block) = device.as_mut_any().downcast_mut::<Block>()

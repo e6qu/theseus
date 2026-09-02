@@ -118,6 +118,8 @@ struct NetworkConfig {
     loopback: bool,
     drop_ppm: u32,
     partitioned: bool,
+    #[serde(default)]
+    latency_rounds: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -513,6 +515,7 @@ fn execute(
             }
             services.insert(name.clone(), service);
         }
+        advance_network_round(&switches)?;
     }
     let network_sha256 = network_fingerprint(&switches)?;
     fs::write(
@@ -762,6 +765,16 @@ fn network_fingerprint(switches: &BTreeMap<String, SharedSimSwitch>) -> Result<S
     let bytes = serde_json::to_vec(&ports)
         .map_err(|error| format!("cannot encode network topology: {error}"))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn advance_network_round(switches: &BTreeMap<String, SharedSimSwitch>) -> Result<(), String> {
+    for switch in switches.values() {
+        switch
+            .lock()
+            .map_err(|_| "simulated switch lock poisoned".to_owned())?
+            .advance_round();
+    }
+    Ok(())
 }
 
 fn recorded_fault_fingerprints(
@@ -1104,6 +1117,7 @@ fn build_service(
                     loopback: service.run.network.loopback,
                     drop_ppm: service.run.network.drop_ppm,
                     partitioned: service.run.network.partitioned,
+                    latency_rounds: service.run.network.latency_rounds,
                 },
                 switch,
                 format!("{network}/{name}-{instance}"),

@@ -13,8 +13,7 @@
 //! - **deterministic random drops**: per-frame drops driven by a seeded ChaCha
 //!   stream, so a given seed + frame sequence always produces the same drops
 //!
-//! Frame *delay* is deliberately omitted for v1: it needs virtual time
-//! (Phase 3) rather than host timers.
+//! Frame delay advances in deterministic runner rounds, never host time.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -40,6 +39,9 @@ pub struct SimNetConfig {
     /// Simulate a total network partition: drop everything.
     #[serde(default)]
     pub partitioned: bool,
+    /// Scheduler rounds a delivered frame waits before the guest can receive it.
+    #[serde(default)]
+    pub latency_rounds: u32,
 }
 
 impl Default for SimNetConfig {
@@ -49,6 +51,7 @@ impl Default for SimNetConfig {
             loopback: true,
             drop_ppm: 0,
             partitioned: false,
+            latency_rounds: 0,
         }
     }
 }
@@ -64,13 +67,20 @@ pub struct SimNetStats {
     pub dropped: u64,
 }
 
+#[derive(Debug)]
+struct PendingFrame {
+    ready_round: u64,
+    bytes: Vec<u8>,
+}
+
 /// The simulated backend. Pure safe Rust; the only entropy source is the
 /// seeded RNG.
 #[derive(Debug)]
 pub struct SimNet {
     config: SimNetConfig,
     /// Frames awaiting RX delivery to the guest.
-    rx_queue: VecDeque<Vec<u8>>,
+    rx_queue: VecDeque<PendingFrame>,
+    round: u64,
     rng: ChaCha8Rng,
     /// Frames accepted from the guest TX path.
     pub tx_frames: u64,
@@ -92,7 +102,8 @@ pub struct SimNet {
 /// networking.
 #[derive(Debug, Default)]
 pub struct SimSwitch {
-    ports: BTreeMap<String, VecDeque<Vec<u8>>>,
+    ports: BTreeMap<String, VecDeque<PendingFrame>>,
+    round: u64,
 }
 
 /// Shared ownership used by all simulated NICs in one topology runner.
@@ -141,16 +152,33 @@ impl SimSwitch {
         self.ports.remove(port);
     }
 
-    fn deliver(&mut self, source: &str, include_source: bool, frame: &[u8]) {
+    fn deliver(&mut self, source: &str, include_source: bool, delay_rounds: u32, frame: &[u8]) {
+        let ready_round = self.round.saturating_add(u64::from(delay_rounds));
         for (port, queue) in &mut self.ports {
             if include_source || port != source {
-                queue.push_back(frame.to_vec());
+                queue.push_back(PendingFrame {
+                    ready_round,
+                    bytes: frame.to_vec(),
+                });
             }
         }
     }
 
     fn receive(&mut self, port: &str) -> Option<Vec<u8>> {
-        self.ports.get_mut(port)?.pop_front()
+        let queue = self.ports.get_mut(port)?;
+        (queue.front()?.ready_round <= self.round).then(|| queue.pop_front().unwrap().bytes)
+    }
+
+    fn has_pending_rx(&self, port: &str) -> bool {
+        self.ports
+            .get(port)
+            .and_then(VecDeque::front)
+            .is_some_and(|frame| frame.ready_round <= self.round)
+    }
+
+    /// Advance the deterministic topology scheduler by one round.
+    pub fn advance_round(&mut self) {
+        self.round = self.round.saturating_add(1);
     }
 
     /// Return sorted port names for a replayable topology fingerprint.
@@ -164,6 +192,7 @@ impl SimNet {
         SimNet {
             config,
             rx_queue: VecDeque::new(),
+            round: 0,
             rng: ChaCha8Rng::seed_from_u64(config.seed),
             tx_frames: 0,
             rx_frames: 0,
@@ -191,6 +220,7 @@ impl SimNet {
         Ok(SimNet {
             config,
             rx_queue: VecDeque::new(),
+            round: 0,
             rng: ChaCha8Rng::seed_from_u64(config.seed),
             tx_frames: 0,
             rx_frames: 0,
@@ -210,6 +240,16 @@ impl SimNet {
             tx_frames: self.tx_frames,
             rx_frames: self.rx_frames,
             dropped: self.dropped,
+        }
+    }
+
+    /// Advance a standalone simulated NIC by one deterministic runner round.
+    ///
+    /// Topology-owned NICs share a switch, so their runner advances that switch
+    /// exactly once after every service has been pumped.
+    pub fn advance_round(&mut self) {
+        if self.switch.is_none() {
+            self.round = self.round.saturating_add(1);
         }
     }
 
@@ -235,9 +275,19 @@ impl SimNet {
             switch
                 .lock()
                 .expect("simulated switch lock poisoned")
-                .deliver(endpoint, self.config.loopback, frame);
+                .deliver(
+                    endpoint,
+                    self.config.loopback,
+                    self.config.latency_rounds,
+                    frame,
+                );
         } else if self.config.loopback {
-            self.rx_queue.push_back(frame.to_vec());
+            self.rx_queue.push_back(PendingFrame {
+                ready_round: self
+                    .round
+                    .saturating_add(u64::from(self.config.latency_rounds)),
+                bytes: frame.to_vec(),
+            });
         }
     }
 
@@ -247,11 +297,11 @@ impl SimNet {
             return switch
                 .lock()
                 .expect("simulated switch lock poisoned")
-                .ports
-                .get(endpoint)
-                .is_some_and(|queue| !queue.is_empty());
+                .has_pending_rx(endpoint);
         }
-        !self.rx_queue.is_empty()
+        self.rx_queue
+            .front()
+            .is_some_and(|frame| frame.ready_round <= self.round)
     }
 
     /// Pop the next frame for the guest RX path. Returns frame length.
@@ -262,7 +312,10 @@ impl SimNet {
                 .expect("simulated switch lock poisoned")
                 .receive(endpoint)?
         } else {
-            self.rx_queue.pop_front()?
+            if self.rx_queue.front()?.ready_round > self.round {
+                return None;
+            }
+            self.rx_queue.pop_front()?.bytes
         };
         if frame.len() > buf.len() {
             // Truncating would silently corrupt; drop instead, deterministically.
@@ -327,12 +380,30 @@ mod tests {
     }
 
     #[test]
+    fn test_delay_waits_for_deterministic_rounds() {
+        let mut sim = SimNet::new(SimNetConfig {
+            latency_rounds: 2,
+            ..Default::default()
+        });
+        sim.write_frame(b"delayed");
+        assert!(!sim.has_pending_rx());
+        sim.advance_round();
+        assert!(!sim.has_pending_rx());
+        sim.advance_round();
+        assert!(sim.has_pending_rx());
+        let mut buffer = [0; 16];
+        let length = sim.read_frame(&mut buffer).unwrap();
+        assert_eq!(&buffer[..length], b"delayed");
+    }
+
+    #[test]
     fn test_drops_are_deterministic() {
         let cfg = SimNetConfig {
             seed: 1234,
             loopback: true,
             drop_ppm: 500_000, // drop ~half
             partitioned: false,
+            latency_rounds: 0,
         };
         let run = || {
             let mut sim = SimNet::new(cfg);
@@ -410,5 +481,34 @@ mod tests {
             SimNet::new_with_switch(Default::default(), switch, "api").unwrap_err(),
             SimSwitchError::DuplicatePort("api".to_owned())
         );
+    }
+
+    #[test]
+    fn test_shared_switch_delay_advances_once_for_all_ports() {
+        let switch = Arc::new(Mutex::new(SimSwitch::new()));
+        let mut api = SimNet::new_with_switch(
+            SimNetConfig {
+                loopback: false,
+                latency_rounds: 1,
+                ..Default::default()
+            },
+            switch.clone(),
+            "backplane/api",
+        )
+        .unwrap();
+        let worker = SimNet::new_with_switch(
+            SimNetConfig {
+                loopback: false,
+                ..Default::default()
+            },
+            switch.clone(),
+            "backplane/worker",
+        )
+        .unwrap();
+
+        api.write_frame(b"delayed");
+        assert!(!worker.has_pending_rx());
+        switch.lock().unwrap().advance_round();
+        assert!(worker.has_pending_rx());
     }
 }
