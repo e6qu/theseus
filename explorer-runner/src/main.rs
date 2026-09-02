@@ -709,6 +709,9 @@ fn serial_log_path(directory: &Path, seed: u64) -> PathBuf {
 
 fn lock_plan(mut plan: RunPlan, output: &Path) -> Result<RunPlan, String> {
     plan.runtime.firecracker = lock_artifact(output, "firecracker", &plan.runtime.firecracker)?;
+    if let Some(runner) = &plan.runtime.explorer_runner {
+        plan.runtime.explorer_runner = Some(lock_artifact(output, "theseus-explorer", runner)?);
+    }
     plan.guest.kernel = lock_artifact(output, "kernel", &plan.guest.kernel)?;
     plan.guest.initramfs = lock_artifact(output, "initramfs", &plan.guest.initramfs)?;
     Ok(plan)
@@ -733,7 +736,7 @@ fn lock_artifact(
         return Err(format!("artifact digest changed: {}", artifact.path));
     }
     let target = output.join("artifacts").join(name);
-    fs::write(&target, bytes).map_err(|error| error.to_string())?;
+    fs::copy(&artifact.path, &target).map_err(|error| error.to_string())?;
     Ok(ArtifactPlan {
         path: target.display().to_string(),
         sha256: artifact.sha256.clone(),
@@ -776,6 +779,8 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     fn node(search_index: usize, seed_path: Vec<u64>, markers_hex: &str) -> NodeRecord {
         let seed = *seed_path.last().unwrap();
@@ -874,6 +879,44 @@ mod tests {
         assert_eq!(decode_hex("41ff").unwrap(), b"A\xff");
         assert!(decode_hex("4").is_err());
         assert!(decode_hex("zz").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn locks_the_exploration_runner_as_an_executable() {
+        let directory = std::env::temp_dir().join(format!(
+            "theseus-explorer-runner-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let source = directory.join("theseus-explorer");
+        fs::write(&source, b"published explorer").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+        let output = directory.join("bundle");
+        fs::create_dir_all(output.join("artifacts")).unwrap();
+
+        let locked = lock_artifact(
+            &output,
+            "theseus-explorer",
+            &ArtifactPlan {
+                path: source.display().to_string(),
+                sha256: hex(Sha256::digest(b"published explorer")),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            locked.path,
+            output
+                .join("artifacts/theseus-explorer")
+                .display()
+                .to_string()
+        );
+        assert_ne!(
+            fs::metadata(&locked.path).unwrap().permissions().mode() & 0o111,
+            0
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

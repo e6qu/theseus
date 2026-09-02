@@ -239,6 +239,11 @@ pub struct ArtifactPlan {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RuntimePlan {
     pub firecracker: ArtifactPlan,
+    /// The Linux exploration executor published beside the CLI. It is added
+    /// by `theseus explore`, not by a user manifest, then locked into an
+    /// exploration bundle so replay does not silently change executors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explorer_runner: Option<ArtifactPlan>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -431,7 +436,10 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
     Ok(RunPlan {
         format: "theseus-run-plan-v1".to_owned(),
         manifest: manifest_path.display().to_string(),
-        runtime: RuntimePlan { firecracker },
+        runtime: RuntimePlan {
+            firecracker,
+            explorer_runner: None,
+        },
         guest: GuestPlan { kernel, initramfs },
         run: RunPlanConfig {
             seed: manifest.run.seed,

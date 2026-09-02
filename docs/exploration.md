@@ -69,8 +69,10 @@ theseus explore --replay exploration-dir --seed-path 42,123,456 \
   --output timeline-replay
 ```
 
-The path starts with the root seed. Theseus rejects a path that does not match
-the locked branch contract. It also compares the selected timeline's entropy
+The path starts with the root seed. New bundles also carry the exact published
+`theseus-explorer` binary used to create them; replay verifies its digest and
+uses that bundle-local copy. Theseus rejects a path that does not match the
+locked branch contract. It also compares the selected timeline's entropy
 probe, markers, and dirty-page count with the recorded result. A mismatch makes
 the replay fail and is shown in its static report. When the bundle contains a
 serial log, Theseus also verifies its SHA-256 digest.

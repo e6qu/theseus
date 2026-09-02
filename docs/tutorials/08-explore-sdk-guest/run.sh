@@ -13,6 +13,7 @@ cp /usr/local/bin/firecracker runtime/firecracker
 theseus explore
 grep -a '"status": "passed"' theseus-exploration/result.json
 grep -a '"seed_path"' theseus-exploration/result.json
+test -x theseus-exploration/artifacts/theseus-explorer
 theseus explore --replay theseus-exploration --output exploration-replay
 grep -a '"status": "passed"' exploration-replay/result.json
 echo 'PASS: Theseus explored the recorded SDK guest timelines'
