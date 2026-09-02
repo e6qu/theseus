@@ -19,4 +19,6 @@ chmod +x service/guest/root/init
 
 theseus compose test
 grep -a '^storage fault observed$' theseus-compose-replay/services/service/serial.log
+theseus compose replay theseus-compose-replay --output topology-replay
+grep -a 'simulated storage matches the original replay bundle' topology-replay/services/service/result.json
 echo 'PASS: Theseus injected the recorded storage fault'

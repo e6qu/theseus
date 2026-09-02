@@ -279,6 +279,10 @@ impl SimulatedBlock {
         &self.bytes[offset..offset + len]
     }
 
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     pub(crate) fn write(&mut self, offset: usize, data: &[u8]) {
         let len = self
             .torn_write_bytes
@@ -428,6 +432,12 @@ impl VirtioBlock {
             disk_properties,
             Some(simulated),
         )
+    }
+
+    /// Return the final bytes of a Theseus simulated disk, when this device
+    /// has one. Normal file-backed disks intentionally remain opaque.
+    pub fn simulated_bytes(&self) -> Option<&[u8]> {
+        self.simulated.as_ref().map(SimulatedBlock::bytes)
     }
 
     fn from_disk(
@@ -2049,5 +2059,8 @@ mod tests {
         assert_eq!(first.read(0, 4), &[1, 2, 0, 0]);
         assert!(first.has_latency());
         assert_eq!(first.corrupt_read_xor(), Some(1));
+
+        let block = VirtioBlock::new_simulated(config).unwrap();
+        assert_eq!(block.simulated_bytes().unwrap().len(), 1024 * 1024);
     }
 }
