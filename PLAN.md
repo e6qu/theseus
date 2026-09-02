@@ -318,9 +318,10 @@ below must have a runnable example and narrow acceptance tests.
 | P8.4 | **`replay: verify Compose serial logs`** | **DONE (PR #37).** Record SHA-256 digests for every service serial log and reject a Compose replay when any rerun log differs from the original bundle. | Cross-version replay guarantees, non-serial service-state fingerprints, or partial-log comparison. |
 | P8.5 | **`replay: verify Compose fault application`** | **DONE (PR #38).** Record a per-service SHA-256 fingerprint of applied lifecycle and clock faults, then reject a replay if the applied sequence changes. | Cross-version replay guarantees, network or storage state fingerprints, or partial fault comparison. |
 | P8.6 | **`replay: verify Compose network topology`** | **DONE (PR #39).** Record the sorted simulated-switch port membership and reject a replay when the instantiated deterministic network topology changes. | Packet-level traffic fingerprints, storage state fingerprints, or cross-version replay guarantees. |
-| P8.7 | **`replay: verify Compose storage state`** | Record every simulated drive's final SHA-256 digest and reject a replay when its guest-written storage bytes differ. | Packet-level traffic fingerprints, cross-version replay guarantees, or host-file-backed storage. |
+| P8.7 | **`replay: verify Compose storage state`** | **DONE (PR #40).** Record every simulated drive's final SHA-256 digest and reject a replay when its guest-written storage bytes differ. | Packet-level traffic fingerprints, cross-version replay guarantees, or host-file-backed storage. |
+| P8.8 | **`replay: verify Compose network traffic`** | Record deterministic per-service simulated-NIC TX/RX/drop counters, including planned restarts, and reject a replay when the traffic changes. | Packet payload capture, packet-by-packet traces, or cross-version replay guarantees. |
 
-**Current PR: P8.7 only.** The manifest is an execution contract, not a second
+**Current PR: P8.8 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what

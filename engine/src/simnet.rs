@@ -53,6 +53,17 @@ impl Default for SimNetConfig {
     }
 }
 
+/// Deterministic frame counters collected by a simulated NIC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimNetStats {
+    /// Frames accepted from the guest TX path.
+    pub tx_frames: u64,
+    /// Frames delivered to the guest RX path.
+    pub rx_frames: u64,
+    /// Frames dropped by the simulated backend.
+    pub dropped: u64,
+}
+
 /// The simulated backend. Pure safe Rust; the only entropy source is the
 /// seeded RNG.
 #[derive(Debug)]
@@ -193,6 +204,15 @@ impl SimNet {
         self.config
     }
 
+    /// Return deterministic frame counters for this NIC.
+    pub fn stats(&self) -> SimNetStats {
+        SimNetStats {
+            tx_frames: self.tx_frames,
+            rx_frames: self.rx_frames,
+            dropped: self.dropped,
+        }
+    }
+
     /// Deterministic per-frame drop decision.
     fn should_drop(&mut self) -> bool {
         if self.config.partitioned {
@@ -285,6 +305,14 @@ mod tests {
         assert_eq!(sim.tx_frames, 1);
         assert_eq!(sim.rx_frames, 1);
         assert_eq!(sim.dropped, 0);
+        assert_eq!(
+            sim.stats(),
+            SimNetStats {
+                tx_frames: 1,
+                rx_frames: 1,
+                dropped: 0,
+            }
+        );
     }
 
     #[test]

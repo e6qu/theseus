@@ -25,4 +25,5 @@ grep -a '^serial command accepted$' theseus-compose-replay/services/api/serial.l
 theseus compose replay theseus-compose-replay --output topology-replay
 grep -a 'serial logs match the original replay bundle' topology-replay/services/api/result.json
 grep -a 'network topology matches the original replay bundle' topology-replay/services/api/result.json
+grep -a 'simulated network traffic matches the original replay bundle' topology-replay/services/api/result.json
 echo 'PASS: api read deterministic UART input and reached worker'

@@ -17,5 +17,5 @@ injects its manifest event directly into that VM's UART. `theseus compose test`
 locks the artifacts, runs the two guests in one deterministic topology, and
 leaves their serial logs and results in `theseus-compose-replay/services/`.
 `theseus compose replay` runs the locked bundle again and compares every
-service serial log and the instantiated simulated-network topology with the
-original.
+service serial log, simulated-network topology, and deterministic network
+traffic counters with the original.
