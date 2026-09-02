@@ -13,6 +13,10 @@ vcpu_count = 1
 mem_size_mib = 128
 timeout_secs = 10
 
+[[events]]
+when = "ready"
+data = "70696e670a"
+
 [network]
 loopback = false
 
@@ -20,3 +24,8 @@ loopback = false
 name = "api reached worker"
 kind = "serial_contains"
 value = "ping passed"
+
+[[checks]]
+name = "api accepted UART command"
+kind = "serial_contains"
+value = "serial command accepted"

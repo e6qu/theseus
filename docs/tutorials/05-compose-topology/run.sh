@@ -21,4 +21,5 @@ done
 
 theseus compose test
 grep -a '^ping passed$' theseus-compose-replay/services/api/serial.log
-echo 'PASS: api reached worker through the deterministic backplane'
+grep -a '^serial command accepted$' theseus-compose-replay/services/api/serial.log
+echo 'PASS: api read deterministic UART input and reached worker'
