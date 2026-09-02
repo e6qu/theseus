@@ -185,6 +185,11 @@ struct RecordedServiceResult {
     faults: Vec<AppliedFault>,
 }
 
+#[derive(Deserialize, Serialize)]
+struct TopologyResult {
+    network_sha256: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct AppliedFault {
     round: u64,
@@ -285,6 +290,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let service_names = topology.services.keys().cloned().collect::<Vec<_>>();
     let expected_serial = recorded_serial_fingerprints(Path::new(plan), &service_names)?;
     let expected_faults = recorded_fault_fingerprints(Path::new(plan), &service_names)?;
+    let expected_network = recorded_network_fingerprint(Path::new(plan))?;
     let output = PathBuf::from(output);
     if output.exists() {
         return Err(format!(
@@ -293,7 +299,13 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ));
     }
     fs::create_dir_all(&output).map_err(|error| error.to_string())?;
-    execute(topology, &output, expected_serial, expected_faults)
+    execute(
+        topology,
+        &output,
+        expected_serial,
+        expected_faults,
+        expected_network,
+    )
 }
 
 fn execute(
@@ -301,6 +313,7 @@ fn execute(
     output: &Path,
     expected_serial: Option<BTreeMap<String, Vec<String>>>,
     expected_faults: Option<BTreeMap<String, String>>,
+    expected_network: Option<String>,
 ) -> Result<(), String> {
     if let Some(runner) = &mut topology.topology_runner {
         fs::create_dir_all(output.join("artifacts")).map_err(|error| error.to_string())?;
@@ -416,6 +429,15 @@ fn execute(
             services.insert(name.clone(), service);
         }
     }
+    let network_sha256 = network_fingerprint(&switches)?;
+    fs::write(
+        output.join("topology-result.json"),
+        serde_json::to_vec_pretty(&TopologyResult {
+            network_sha256: network_sha256.clone(),
+        })
+        .unwrap(),
+    )
+    .map_err(|error| error.to_string())?;
     let mut failed = false;
     for (name, service) in &services {
         let exit = service.vm.exited();
@@ -476,6 +498,21 @@ fn execute(
                 error = Some("fault replay fingerprint changed".to_owned());
             }
         }
+        if let Some(expected) = &expected_network {
+            let matches = expected == &network_sha256;
+            checks.push(CheckResult {
+                name: "replay_network".to_owned(),
+                status: if matches { "passed" } else { "failed" },
+                detail: if matches {
+                    "network topology matches the original replay bundle".to_owned()
+                } else {
+                    "network topology differs from the original replay bundle".to_owned()
+                },
+            });
+            if !matches && error.is_none() {
+                error = Some("network replay fingerprint changed".to_owned());
+            }
+        }
         let status = if checks.iter().all(|check| check.status == "passed") {
             "passed"
         } else {
@@ -513,6 +550,41 @@ fn execute(
     } else {
         Ok(())
     }
+}
+
+fn recorded_network_fingerprint(plan: &Path) -> Result<Option<String>, String> {
+    if plan.file_name().and_then(|name| name.to_str()) != Some("replay-plan.json") {
+        return Ok(None);
+    }
+    let result_path = plan
+        .parent()
+        .ok_or_else(|| format!("replay plan has no parent directory: {}", plan.display()))?
+        .join("topology-result.json");
+    match fs::read(&result_path) {
+        Ok(result) => serde_json::from_slice::<TopologyResult>(&result)
+            .map(|result| Some(result.network_sha256))
+            .map_err(|error| format!("cannot parse {}: {error}", result_path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("cannot read {}: {error}", result_path.display())),
+    }
+}
+
+fn network_fingerprint(switches: &BTreeMap<String, SharedSimSwitch>) -> Result<String, String> {
+    let ports = switches
+        .iter()
+        .map(|(name, switch)| {
+            Ok((
+                name,
+                switch
+                    .lock()
+                    .map_err(|_| "simulated switch lock poisoned".to_owned())?
+                    .ports(),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    let bytes = serde_json::to_vec(&ports)
+        .map_err(|error| format!("cannot encode network topology: {error}"))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 fn recorded_fault_fingerprints(
@@ -938,6 +1010,27 @@ mod tests {
                 .unwrap();
 
         assert_eq!(fingerprints["api"], "recorded-fault-digest");
+        fs::remove_dir_all(bundle).unwrap();
+    }
+
+    #[test]
+    fn recorded_network_fingerprint_uses_topology_result() {
+        let bundle = std::env::temp_dir().join(format!(
+            "theseus-topology-network-fingerprint-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(bundle.join("replay-plan.json"), "{}").unwrap();
+        fs::write(
+            bundle.join("topology-result.json"),
+            r#"{"network_sha256":"recorded-network-digest"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            recorded_network_fingerprint(&bundle.join("replay-plan.json")).unwrap(),
+            Some("recorded-network-digest".to_owned())
+        );
         fs::remove_dir_all(bundle).unwrap();
     }
 }
