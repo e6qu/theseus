@@ -164,9 +164,20 @@ struct ServiceResult {
     status: &'static str,
     serial_log: String,
     serial_logs: Vec<String>,
+    serial_sha256: Vec<String>,
     error: Option<String>,
     checks: Vec<CheckResult>,
     faults: Vec<AppliedFault>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecordedServiceResult {
+    #[serde(default)]
+    serial_log: Option<String>,
+    #[serde(default)]
+    serial_logs: Vec<String>,
+    #[serde(default)]
+    serial_sha256: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -266,6 +277,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
     if topology.format != "theseus-compose-plan-v1" || topology.services.is_empty() {
         return Err("unsupported or empty topology plan".to_owned());
     }
+    let service_names = topology.services.keys().cloned().collect::<Vec<_>>();
+    let expected_serial = recorded_serial_fingerprints(Path::new(plan), &service_names)?;
     let output = PathBuf::from(output);
     if output.exists() {
         return Err(format!(
@@ -274,10 +287,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ));
     }
     fs::create_dir_all(&output).map_err(|error| error.to_string())?;
-    execute(topology, &output)
+    execute(topology, &output, expected_serial)
 }
 
-fn execute(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
+fn execute(
+    mut topology: TopologyPlan,
+    output: &Path,
+    expected_serial: Option<BTreeMap<String, Vec<String>>>,
+) -> Result<(), String> {
     if let Some(runner) = &mut topology.topology_runner {
         fs::create_dir_all(output.join("artifacts")).map_err(|error| error.to_string())?;
         let locked = lock_artifact(output, "theseus-topology", runner)?;
@@ -395,7 +412,7 @@ fn execute(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
     let mut failed = false;
     for (name, service) in &services {
         let exit = service.vm.exited();
-        let (exit_status, error) = match exit {
+        let (exit_status, mut error) = match exit {
             Some(FcExitCode::Ok) => ("passed", None),
             Some(code) => ("failed", Some(format!("guest exited with {code:?}"))),
             None => (
@@ -404,6 +421,7 @@ fn execute(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
             ),
         };
         let mut checks = evaluate_checks(&topology.services[name].run.checks, &service.serial_logs);
+        let serial_sha256 = serial_fingerprints(&service.serial_logs)?;
         checks.insert(
             0,
             CheckResult {
@@ -414,6 +432,24 @@ fn execute(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
                     .unwrap_or_else(|| "guest exited with status 0".to_owned()),
             },
         );
+        if let Some(expected) = &expected_serial {
+            let expected = expected
+                .get(name)
+                .expect("recorded serial fingerprints missing service");
+            let matches = expected == &serial_sha256;
+            checks.push(CheckResult {
+                name: "replay_serial".to_owned(),
+                status: if matches { "passed" } else { "failed" },
+                detail: if matches {
+                    "serial logs match the original replay bundle".to_owned()
+                } else {
+                    "serial logs differ from the original replay bundle".to_owned()
+                },
+            });
+            if !matches && error.is_none() {
+                error = Some("serial replay fingerprint changed".to_owned());
+            }
+        }
         let status = if checks.iter().all(|check| check.status == "passed") {
             "passed"
         } else {
@@ -430,6 +466,7 @@ fn execute(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect(),
+            serial_sha256,
             error,
             checks,
             faults: service.faults.clone(),
@@ -449,6 +486,63 @@ fn execute(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+fn recorded_serial_fingerprints(
+    plan: &Path,
+    services: &[String],
+) -> Result<Option<BTreeMap<String, Vec<String>>>, String> {
+    if plan.file_name().and_then(|name| name.to_str()) != Some("replay-plan.json") {
+        return Ok(None);
+    }
+    let bundle = plan
+        .parent()
+        .ok_or_else(|| format!("replay plan has no parent directory: {}", plan.display()))?;
+    let mut expected = BTreeMap::new();
+    for name in services {
+        let result_path = bundle.join("services").join(name).join("result.json");
+        let result = fs::read(&result_path)
+            .map_err(|error| format!("cannot read {}: {error}", result_path.display()))?;
+        let recorded: RecordedServiceResult = serde_json::from_slice(&result)
+            .map_err(|error| format!("cannot parse {}: {error}", result_path.display()))?;
+        if !recorded.serial_sha256.is_empty() {
+            expected.insert(name.clone(), recorded.serial_sha256);
+            continue;
+        }
+        let logs = if recorded.serial_logs.is_empty() {
+            recorded.serial_log.into_iter().collect()
+        } else {
+            recorded.serial_logs
+        };
+        if logs.is_empty() {
+            return Err(format!(
+                "recorded service has no serial logs: {}",
+                result_path.display()
+            ));
+        }
+        let paths = logs
+            .iter()
+            .map(|log| {
+                let serial_name = Path::new(log)
+                    .file_name()
+                    .ok_or_else(|| format!("recorded serial log has no file name: {log}"))?;
+                Ok(bundle.join("services").join(name).join(serial_name))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        expected.insert(name.clone(), serial_fingerprints(&paths)?);
+    }
+    Ok(Some(expected))
+}
+
+fn serial_fingerprints(serial_logs: &[PathBuf]) -> Result<Vec<String>, String> {
+    serial_logs
+        .iter()
+        .map(|path| {
+            let serial = fs::read(path)
+                .map_err(|error| format!("cannot read serial log {}: {error}", path.display()))?;
+            Ok(format!("{:x}", Sha256::digest(&serial)))
+        })
+        .collect()
 }
 
 fn apply_scheduled_faults(
@@ -730,4 +824,37 @@ fn lock_artifact(service_dir: &Path, name: &str, artifact: &Artifact) -> Result<
     let target = service_dir.join("artifacts").join(name);
     fs::copy(source, &target).map_err(|error| error.to_string())?;
     Ok(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recorded_serial_fingerprints_use_bundle_local_logs() {
+        let bundle = std::env::temp_dir().join(format!(
+            "theseus-topology-serial-fingerprint-{}",
+            std::process::id()
+        ));
+        let service = bundle.join("services/api");
+        fs::create_dir_all(&service).unwrap();
+        fs::write(bundle.join("replay-plan.json"), "{}").unwrap();
+        fs::write(service.join("serial.log"), b"ready\n").unwrap();
+        fs::write(
+            service.join("result.json"),
+            r#"{"serial_logs":["/previous/location/serial.log"]}"#,
+        )
+        .unwrap();
+
+        let fingerprints =
+            recorded_serial_fingerprints(&bundle.join("replay-plan.json"), &["api".to_owned()])
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(
+            fingerprints["api"],
+            vec![format!("{:x}", Sha256::digest(b"ready\n"))]
+        );
+        fs::remove_dir_all(bundle).unwrap();
+    }
 }
