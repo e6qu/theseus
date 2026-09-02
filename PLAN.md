@@ -314,8 +314,9 @@ below must have a runnable example and narrow acceptance tests.
 | P8.0 | **`replay: pin the exploration executor`** | **DONE (PR #33).** Lock the published `theseus-explorer` binary, including its digest, into every new exploration bundle; replay, minimization, and snapshot export use that locked executor instead of silently using a newer installed one. | Compose-runner pinning, arbitrary backwards compatibility, or execution of legacy bundles without their original runtime. |
 | P8.1 | **`replay: pin the topology executor`** | **DONE (PR #34).** Lock the published `theseus-topology` binary into every new Compose bundle and use its verified bundle-local copy for replay. | Cross-version guarantees for other executors or legacy bundles without their original runtime. |
 | P8.2 | **`topology: inject deterministic serial input`** | Deliver each Compose service's manifest `[[events]]` directly to its VM-local UART before initial boot and deterministic restart. | Cross-service input schedules or input after a guest-controlled ready handshake. |
+| P8.3 | **`topology: wait for serial readiness`** | Deliver Compose serial events only after each service emits the standard `THES:M:42` ready marker; include a runnable UART-input topology tutorial. | Arbitrary later input schedules or a new guest protocol. |
 
-**Current PR: P8.2 only.** The manifest is an execution contract, not a second
+**Current PR: P8.3 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what

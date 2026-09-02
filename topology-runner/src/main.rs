@@ -352,8 +352,15 @@ fn execute(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
     }
     for name in &names {
         let service = &services[name];
-        inject_serial_events(&service.vm, &topology.services[name].run.events)?;
         service.vm.resume()?;
+    }
+    for name in &names {
+        let service = &services[name];
+        inject_serial_events(
+            &service.vm,
+            &topology.services[name].run.events,
+            &service.serial_logs[0],
+        )?;
     }
     let timeout = topology
         .services
@@ -504,8 +511,8 @@ fn apply_scheduled_faults(
                     &serial,
                     switches,
                 )?;
-                inject_serial_events(&replacement, &plan.run.events)?;
                 replacement.resume()?;
+                inject_serial_events(&replacement, &plan.run.events, &serial)?;
                 service.vm = replacement;
                 service.serial_logs.push(serial);
                 service.faults.push(AppliedFault {
@@ -528,7 +535,35 @@ fn apply_scheduled_faults(
     Ok(())
 }
 
-fn inject_serial_events(vm: &ServiceVm, events: &[EventPlan]) -> Result<(), String> {
+fn inject_serial_events(
+    vm: &ServiceVm,
+    events: &[EventPlan],
+    serial_log: &Path,
+) -> Result<(), String> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if fs::read(serial_log).is_ok_and(|serial| {
+            serial
+                .windows(b"THES:M:42".len())
+                .any(|window| window == b"THES:M:42")
+        }) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !fs::read(serial_log).is_ok_and(|serial| {
+        serial
+            .windows(b"THES:M:42".len())
+            .any(|window| window == b"THES:M:42")
+    }) {
+        return Err(format!(
+            "service did not announce serial readiness: {}",
+            serial_log.display()
+        ));
+    }
     for event in events {
         vm.push_serial_input(&decode_hex(&event.data_hex)?)?;
     }
