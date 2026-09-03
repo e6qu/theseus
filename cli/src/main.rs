@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use theseus_cli::{
-    explore, load_compose_plan, load_plan, minimize_exploration_path, replay, replay_compose,
-    replay_exploration, replay_exploration_path, report, snapshot_exploration_path, test,
-    test_compose,
+    explore, explore_compose, load_compose_plan, load_plan, minimize_compose_campaign,
+    minimize_exploration_path, replay, replay_compose, replay_exploration, replay_exploration_path,
+    report, snapshot_exploration_path, test, test_compose,
 };
 
 const USAGE: &str = "Usage:
@@ -24,6 +24,8 @@ const USAGE: &str = "Usage:
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
+  theseus compose explore [--output campaign-dir] [compose.yaml]
+  theseus compose explore --minimize campaign-dir [--output replay-dir]
   theseus compose replay replay-dir [--output replay-dir]
 
 The manifest path defaults to ./theseus.toml. Relative artifact paths are
@@ -228,6 +230,43 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 .join("theseus-compose-replay");
             let result = test_compose(&compose, output).map_err(|error| error.to_string())?;
             println!("passed: {}", result.display());
+            Ok(())
+        }
+        [command, subcommand, minimize, bundle, output_flag, output]
+            if command == "compose"
+                && subcommand == "explore"
+                && minimize == "--minimize"
+                && output_flag == "--output" =>
+        {
+            let result =
+                minimize_compose_campaign(bundle, output).map_err(|error| error.to_string())?;
+            println!("minimized campaign counterexample: {}", result.display());
+            Ok(())
+        }
+        [command, subcommand, minimize, bundle]
+            if command == "compose" && subcommand == "explore" && minimize == "--minimize" =>
+        {
+            let result = minimize_compose_campaign(bundle, format!("{bundle}-minimized"))
+                .map_err(|error| error.to_string())?;
+            println!("minimized campaign counterexample: {}", result.display());
+            Ok(())
+        }
+        [command, subcommand, flag, output, rest @ ..]
+            if command == "compose" && subcommand == "explore" && flag == "--output" =>
+        {
+            let compose = compose_path(rest)?;
+            let result = explore_compose(&compose, output).map_err(|error| error.to_string())?;
+            println!("campaign passed: {}", result.display());
+            Ok(())
+        }
+        [command, subcommand, rest @ ..] if command == "compose" && subcommand == "explore" => {
+            let compose = compose_path(rest)?;
+            let output = compose
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("theseus-compose-campaign");
+            let result = explore_compose(&compose, output).map_err(|error| error.to_string())?;
+            println!("campaign passed: {}", result.display());
             Ok(())
         }
         [command, subcommand, bundle, output_flag, output]

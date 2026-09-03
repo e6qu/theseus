@@ -283,12 +283,13 @@ instrumentor. Remaining: the fast instrumentor (coverage.rs is its
   parallel fan-out is implemented as scoped threads. Remaining: turn this
   library machinery into a stable user-facing test runner.
 
-### 3.1 Productization roadmap — one focused PR per capability
+### 3.1 Productization roadmap
 
 The core primitives above are deliberately separate from the product layer.
-The next work turns them into a local tool without folding Compose support,
-properties, reporting, and new faults into one unreviewable change. Every PR
-below must have a runnable example and narrow acceptance tests.
+Early PRs established those seams. Product work now lands as complete vertical
+slices: a user-facing workflow, locked artifacts, replay, reduction, report,
+and a runnable self-contained tutorial together. Every PR below must have a
+runnable example and acceptance tests.
 
 | Order | One PR | Delivers | Explicitly does not deliver |
 |---|---|---|---|
@@ -331,9 +332,10 @@ below must have a runnable example and narrow acceptance tests.
 | P8.17 | **`network: add deterministic MTU drops`** | **DONE (PR #50).** Drop simulated frames larger than an explicit per-NIC MTU before they enter the link. | Fragmentation, PMTU discovery, or host traffic. |
 | P8.18 | **`network: bound deterministic transmit queues`** | **DONE (PR #51).** Drop simulated frames when an explicit per-NIC outbound queue limit is full. | TCP congestion control, packet fragmentation, or host traffic. |
 | P8.19 | **`network: trace deterministic drops`** | **DONE (PR #52).** Export bounded simulated-NIC drop frames with the reason they were discarded. | PCAP compatibility, unbounded capture, or host traffic. |
-| P8.20 | **`network: bound deterministic receive queues`** | Drop frames when an explicit per-NIC receive queue limit is full. | TCP congestion control, packet fragmentation, or host traffic. |
+| P8.20 | **`network: bound deterministic receive queues`** | **DONE (PR #53).** Drop simulated frames when an explicit per-NIC receive queue limit is full. | TCP congestion control, packet fragmentation, or host traffic. |
+| P9.0 | **`product: autonomous Compose campaigns`** | **CURRENT PR.** `theseus compose explore` drives a designated service through UART operation barriers, combines bounded operation histories with lifecycle/clock fault candidates, evaluates `always`/`sometimes`/`reachable`/`unreachable` serial properties across retained topology timelines, reports marker novelty, and reduces an individual violation to one self-contained Compose replay bundle. Includes a three-service no-SDK tutorial. | Copy-on-write whole-topology VM snapshots, dynamic named-network partition/heal actions, storage fault candidates, instruction-exact time, or large-scale RL guidance. |
 
-**Current PR: P8.20 only.** The manifest is an execution contract, not a second
+The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what

@@ -62,6 +62,73 @@ struct ComposeFile {
     services: BTreeMap<String, ComposeService>,
     #[serde(default)]
     networks: BTreeMap<String, ComposeNetwork>,
+    #[serde(rename = "x-theseus", default)]
+    theseus: Option<ComposeTheseus>,
+}
+
+/// Topology-wide Theseus configuration.  Keeping campaign input here makes a
+/// Compose file the complete description of the system *and* its test
+/// campaign; no host-side driver program is required.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeTheseus {
+    #[serde(default)]
+    campaign: Option<ComposeCampaign>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeCampaign {
+    driver: String,
+    operations: Vec<ComposeOperation>,
+    #[serde(default)]
+    faults: Vec<ComposeCampaignFault>,
+    #[serde(default)]
+    properties: Vec<ComposeProperty>,
+    #[serde(default = "default_campaign_runs")]
+    max_runs: u16,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeOperation {
+    name: String,
+    input: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeCampaignFault {
+    service: String,
+    at_round: u64,
+    kind: FaultKind,
+    #[serde(default)]
+    duration_rounds: Option<u64>,
+    #[serde(default)]
+    nanoseconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeProperty {
+    name: String,
+    kind: PropertyKind,
+    contains: String,
+    #[serde(default)]
+    service: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PropertyKind {
+    /// Every generated timeline must report the property.
+    Always,
+    /// At least one generated timeline must report the property.
+    Sometimes,
+    /// The campaign must reach a timeline that reports the property.
+    Reachable,
+    /// No generated timeline may report the property.
+    Unreachable,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,6 +191,8 @@ pub struct ComposePlan {
     /// once the deterministic multi-guest switch is available.
     pub networks: BTreeMap<String, Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<CampaignPlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub topology_runner: Option<ArtifactPlan>,
 }
 
@@ -133,6 +202,40 @@ pub struct ComposeServicePlan {
     pub run: RunPlan,
     pub networks: Vec<String>,
     pub faults: Vec<FaultPlan>,
+}
+
+/// A deterministic, serial-driven topology campaign.  Operations are UTF-8
+/// UART input for the designated workload service.  The same line protocol is
+/// usable from a shell or C program; an SDK is optional.
+#[derive(Debug, Clone, Serialize)]
+pub struct CampaignPlan {
+    pub driver: String,
+    pub operations: Vec<OperationPlan>,
+    pub faults: Vec<CampaignFaultPlan>,
+    pub properties: Vec<PropertyPlan>,
+    pub max_runs: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OperationPlan {
+    pub name: String,
+    pub input_hex: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CampaignFaultPlan {
+    pub service: String,
+    #[serde(flatten)]
+    pub fault: FaultPlan,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PropertyPlan {
+    pub name: String,
+    pub kind: PropertyKind,
+    pub contains: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
 }
 
 /// Load a Compose topology and lock every referenced service artifact into a
@@ -228,6 +331,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         );
     }
 
+    let campaign = campaign_plan(compose.theseus, &services)?;
     let networks = memberships
         .into_iter()
         .map(|(name, services)| (name, services.into_iter().collect()))
@@ -238,8 +342,134 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         name: compose.name,
         services,
         networks,
+        campaign,
         topology_runner: None,
     })
+}
+
+fn default_campaign_runs() -> u16 {
+    32
+}
+
+fn campaign_plan(
+    campaign: Option<ComposeTheseus>,
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<Option<CampaignPlan>, ComposeError> {
+    let Some(campaign) = campaign.and_then(|theseus| theseus.campaign) else {
+        return Ok(None);
+    };
+    if !services.contains_key(&campaign.driver) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign driver {:?} is not a service",
+            campaign.driver
+        )));
+    }
+    if campaign.operations.is_empty() {
+        return Err(ComposeError::Invalid(
+            "campaign operations must not be empty".to_owned(),
+        ));
+    }
+    if campaign.max_runs == 0 || campaign.max_runs > 256 {
+        return Err(ComposeError::Invalid(
+            "campaign max_runs must be between 1 and 256".to_owned(),
+        ));
+    }
+    let mut names = BTreeSet::new();
+    let mut operations = Vec::with_capacity(campaign.operations.len());
+    for operation in campaign.operations {
+        validate_name("campaign operation", &operation.name)?;
+        if !names.insert(operation.name.clone()) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {:?} is declared more than once",
+                operation.name
+            )));
+        }
+        if operation.input.is_empty() {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {:?} has empty input",
+                operation.name
+            )));
+        }
+        operations.push(OperationPlan {
+            name: operation.name,
+            input_hex: hex(operation.input.as_bytes()),
+        });
+    }
+    let mut faults = Vec::with_capacity(campaign.faults.len());
+    for candidate in campaign.faults {
+        let service = services.get(&candidate.service).ok_or_else(|| {
+            ComposeError::Invalid(format!(
+                "campaign fault references unknown service {:?}",
+                candidate.service
+            ))
+        })?;
+        if service
+            .faults
+            .iter()
+            .any(|fault| fault.at_round == candidate.at_round)
+        {
+            return Err(ComposeError::Invalid(format!(
+                "campaign fault for service {:?} duplicates its fixed fault at round {}",
+                candidate.service, candidate.at_round
+            )));
+        }
+        let mut validated = validate_faults(
+            &candidate.service,
+            vec![ComposeFault {
+                at_round: candidate.at_round,
+                kind: candidate.kind,
+                duration_rounds: candidate.duration_rounds,
+                nanoseconds: candidate.nanoseconds,
+            }],
+            service.run.run.virtual_time.is_some(),
+        )?;
+        faults.push(CampaignFaultPlan {
+            service: candidate.service,
+            fault: validated.pop().expect("one validated campaign fault"),
+        });
+    }
+    let mut property_names = BTreeSet::new();
+    let mut properties = Vec::with_capacity(campaign.properties.len());
+    for property in campaign.properties {
+        validate_name("campaign property", &property.name)?;
+        if !property_names.insert(property.name.clone()) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign property {:?} is declared more than once",
+                property.name
+            )));
+        }
+        if property.contains.is_empty() {
+            return Err(ComposeError::Invalid(format!(
+                "campaign property {:?} has an empty contains value",
+                property.name
+            )));
+        }
+        if let Some(service) = &property.service {
+            if !services.contains_key(service) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign property {:?} references unknown service {service:?}",
+                    property.name
+                )));
+            }
+        }
+        properties.push(PropertyPlan {
+            name: property.name,
+            kind: property.kind,
+            contains: property.contains,
+            service: property.service,
+        });
+    }
+    Ok(Some(CampaignPlan {
+        driver: campaign.driver,
+        operations,
+        faults,
+        properties,
+        max_runs: campaign.max_runs,
+    }))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn validate_faults(
@@ -378,6 +608,22 @@ pub fn test_compose(
     Ok(output)
 }
 
+/// Execute the topology's declared autonomous campaign.  The command uses the
+/// same locked-artifact executor as `compose test`; the runner selects
+/// campaign mode from the normalized plan instead of accepting host commands.
+pub fn explore_compose(
+    path: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+) -> Result<PathBuf, ComposeError> {
+    let plan = load_compose_plan(&path)?;
+    if plan.campaign.is_none() {
+        return Err(ComposeError::Invalid(
+            "Compose file has no x-theseus.campaign section".to_owned(),
+        ));
+    }
+    test_compose(path, output)
+}
+
 /// Re-run a recorded topology using its locked service artifacts.
 pub fn replay_compose(
     bundle: impl AsRef<Path>,
@@ -405,7 +651,44 @@ pub fn replay_compose(
     Ok(output)
 }
 
+/// Reduce one recorded campaign counterexample into a single locked topology
+/// replay.  The Linux runner performs the re-executions because only it owns
+/// the deterministic VMM and simulated-switch state.
+pub fn minimize_compose_campaign(
+    bundle: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+) -> Result<PathBuf, ComposeError> {
+    let bundle = fs::canonicalize(bundle.as_ref()).map_err(|source| ComposeError::Read {
+        path: bundle.as_ref().to_path_buf(),
+        source,
+    })?;
+    let plan = bundle.join("replay-plan.json");
+    if !bundle.join("campaign-result.json").is_file() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign bundle has no campaign-result.json: {}",
+            bundle.display()
+        )));
+    }
+    let output = output.as_ref().to_path_buf();
+    if output.exists() {
+        return Err(ComposeError::Invalid(format!(
+            "minimized output already exists: {}",
+            output.display()
+        )));
+    }
+    execute_topology_mode(&plan, &output, Some("--minimize"))?;
+    Ok(output)
+}
+
 fn execute_topology(plan: &Path, output: &Path) -> Result<(), ComposeError> {
+    execute_topology_mode(plan, output, None)
+}
+
+fn execute_topology_mode(
+    plan: &Path,
+    output: &Path,
+    mode: Option<&str>,
+) -> Result<(), ComposeError> {
     let runner: TopologyRunnerPlan = serde_json::from_slice(&fs::read(plan).map_err(|source| {
         ComposeError::Read {
             path: plan.to_path_buf(),
@@ -424,6 +707,7 @@ fn execute_topology(plan: &Path, output: &Path) -> Result<(), ComposeError> {
         .arg(plan)
         .arg("--output")
         .arg(output)
+        .args(mode)
         .status()
         .map_err(|error| {
             ComposeError::Invalid(format!("cannot start {}: {error}", runner.display()))
@@ -579,5 +863,27 @@ mod tests {
         assert!(error
             .to_string()
             .contains("clock_jump requires virtual_time"));
+    }
+
+    #[test]
+    fn normalizes_a_serial_driven_topology_campaign() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 8\n    operations:\n      - name: put\n        input: \"put alpha\\n\"\n      - name: get\n        input: \"get alpha\\n\"\n    faults:\n      - service: worker\n        at_round: 2\n        kind: restart\n    properties:\n      - name: no_data_loss\n        kind: always\n        service: api\n        contains: 'THES:ASSERT:no_data_loss:pass'\n      - name: stale_read_is_reachable\n        kind: reachable\n        contains: 'THES:ASSERT:stale_read:fail'\n",
+        );
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let campaign = plan.campaign.expect("campaign is normalized");
+        assert_eq!(campaign.driver, "api");
+        assert_eq!(campaign.operations[0].input_hex, "70757420616c7068610a");
+        assert_eq!(campaign.faults[0].service, "worker");
+        assert_eq!(campaign.properties.len(), 2);
+    }
+
+    #[test]
+    fn rejects_a_campaign_with_an_unknown_driver() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: missing\n    operations:\n      - name: request\n        input: 'request\\n'\n",
+        );
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error.to_string().contains("campaign driver"));
     }
 }

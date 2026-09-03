@@ -1,0 +1,43 @@
+name: campaign
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+  replica:
+    x-theseus:
+      manifest: replica/theseus.toml
+    networks: [backplane]
+  auditor:
+    x-theseus:
+      manifest: auditor/theseus.toml
+    networks: [backplane]
+
+networks:
+  backplane: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    max_runs: 12
+    operations:
+      - name: write
+        input: "write\n"
+      - name: read_stale
+        input: "read_stale\n"
+      - name: retry
+        input: "retry\n"
+    faults:
+      - service: replica
+        at_round: 2
+        kind: restart
+    properties:
+      - name: consistent_read
+        kind: always
+        service: api
+        contains: "THES:ASSERT:consistent_read:pass"
+      - name: stale_read_is_reachable
+        kind: reachable
+        service: api
+        contains: "THES:ASSERT:consistent_read:fail"

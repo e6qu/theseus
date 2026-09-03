@@ -140,6 +140,13 @@ pub mod linux {
     pub const MARKER_PREFIX: &str = "THES:M:";
     /// Event line prefix (host→guest).
     pub const EVENT_PREFIX: &str = "THES:E:";
+    /// A named assertion result emitted by a workload (`pass` or `fail`).
+    /// Campaign properties can match this line directly; a shell or C guest
+    /// can emit the identical protocol with `printf`.
+    pub const ASSERTION_PREFIX: &str = "THES:ASSERT:";
+    /// An operation barrier emitted by a workload after it has made a request
+    /// durable enough for the host to begin the next deterministic step.
+    pub const CHECKPOINT_PREFIX: &str = "THES:CHECKPOINT:";
 
     /// The serial-console control channel.
     pub struct TtyChannel {
@@ -163,13 +170,31 @@ pub mod linux {
             writeln!(self.out, "{MARKER_PREFIX}{byte:02x}")
         }
 
+        /// Report a named runtime assertion.  `name` must be stable across
+        /// runs; the campaign report uses the line as an auditable property
+        /// witness rather than inferring state from host timing.
+        pub fn assertion(&mut self, name: &str, passed: bool) -> io::Result<()> {
+            let outcome = if passed { "pass" } else { "fail" };
+            writeln!(self.out, "{ASSERTION_PREFIX}{name}:{outcome}")
+        }
+
+        /// Mark the end of one workload operation.  This is optional for the
+        /// first campaign implementation, but gives applications a stable
+        /// serial checkpoint protocol without requiring the SDK.
+        pub fn checkpoint(&mut self, name: &str) -> io::Result<()> {
+            writeln!(self.out, "{CHECKPOINT_PREFIX}{name}")
+        }
+
         /// Read the next event byte (blocking; skips non-channel lines such
         /// as kernel logs).
         pub fn next_event(&mut self) -> io::Result<u8> {
             loop {
                 let mut line = String::new();
                 if self.input.read_line(&mut line)? == 0 {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "console closed"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "console closed",
+                    ));
                 }
                 if let Some(rest) = line.trim().strip_prefix(EVENT_PREFIX) {
                     if let Ok(byte) = u8::from_str_radix(rest, 16) {

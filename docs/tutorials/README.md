@@ -26,6 +26,9 @@ kernel module is shipped.
    guest within a fixed timeline budget.
 9. [Inspect a recorded exploration](09-inspect-report/) — write one local,
    standalone timeline report without needing KVM.
+10. [Find a bad topology timeline](10-autonomous-compose-campaign/) — drive a
+    three-service Compose campaign through UART operations and report an
+    intentional runtime-property failure.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

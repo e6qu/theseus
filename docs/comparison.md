@@ -13,8 +13,8 @@ simulation, and chaos tooling. Terms are defined in
 | Method | Generate inputs, check properties | Deterministic hypervisor + guided state-space exploration + fault injection | Same idea, on a Firecracker/KVM fork |
 | Replay | Seeded input shrinking | Perfect, instruction-level | Seeded timelines; instruction-exact except mid-quantum clock reads (Track B′ leak, documented) |
 | Determinism mechanism | In-process seeded PRNG | Custom deterministic hypervisor (bhyve fork) on bare metal | KVM + seeded devices + tick-stepped virtual clock |
-| Fault injection | None | Guided (network, disk, crash, clock) | Sim net drops/partitions + per-branch fault schedules |
-| Coverage guidance | Shrinking / targeted generators | RL-guided exploration | Marker novelty + dirty pages; single-step ground truth |
+| Fault injection | None | Guided (network, disk, crash, clock) | Sim net drops/partitions + Compose lifecycle/clock candidates |
+| Coverage guidance | Shrinking / targeted generators | RL-guided exploration | Marker novelty + dirty pages; deterministic campaign corpus |
 | Model | You write properties | You state invariants; product finds bugs | Same |
 | License | Open source (MPL) | Commercial (some OSS tools) | AGPL-3.0-or-later (engine); Apache-2.0 (fork) |
 
@@ -53,9 +53,17 @@ Key architectural differences with Theseus:
   commodity path — far less mechanism, no kernel patches, at the price of
   that leak.
 - **Exploration guidance**: Antithesis uses coverage-guided RL at scale.
-  Theseus currently uses deterministic DFS with marker-novelty ordering and
-  per-branch fault schedules; ground-truth single-step coverage exists as
-  the reference for a future fast instrumentor.
+  Theseus currently retains Compose campaign timelines with new application
+  markers, while its single-VM explorer uses deterministic DFS and marker
+  novelty ordering. Ground-truth single-step coverage exists as the reference
+  for a future fast instrumentor.
+- **Campaign interface**: Antithesis can drive unmodified workloads through
+  its test templates and property APIs. Theseus now accepts a designated
+  Compose driver, text UART operations, lifecycle/clock fault candidates, and
+  `always`/`sometimes`/`reachable`/`unreachable` serial properties. It
+  reduces an individual violation by re-running locked full topologies, but
+  it does not yet have Antithesis's copy-on-write whole-topology snapshots or
+  its large-scale RL scheduler.
 
 If you can pay for the product and want instruction-exact replay plus
 vendor support, use Antithesis. Theseus exists as an open,

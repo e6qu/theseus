@@ -1,0 +1,21 @@
+#!/bin/busybox sh
+mount -t proc proc /proc
+printf 'THES:M:42\n'
+
+while IFS= read -r -t 1 command </dev/ttyS0; do
+    case "$command" in
+        write)
+            printf 'THES:CHECKPOINT:write\n'
+            printf 'THES:ASSERT:consistent_read:pass\n'
+            ;;
+        read_stale)
+            printf 'THES:CHECKPOINT:read_stale\n'
+            printf 'THES:ASSERT:consistent_read:fail\n'
+            ;;
+        retry)
+            printf 'THES:CHECKPOINT:retry\n'
+            printf 'THES:ASSERT:consistent_read:pass\n'
+            ;;
+    esac
+done
+poweroff -f
