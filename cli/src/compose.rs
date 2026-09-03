@@ -105,6 +105,10 @@ struct ComposeCampaignFault {
     #[serde(default)]
     network: Option<String>,
     #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
     drive: Option<String>,
     #[serde(default)]
     after: Option<String>,
@@ -134,6 +138,8 @@ pub enum CampaignFaultKind {
     ClockJump,
     Partition,
     Heal,
+    LinkPartition,
+    LinkHeal,
     StorageFault,
 }
 
@@ -258,6 +264,10 @@ pub struct CampaignFaultPlan {
     pub service: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drive: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -459,6 +469,8 @@ fn campaign_plan(
                     ComposeError::Invalid("campaign lifecycle fault requires at_round".to_owned())
                 })?;
                 if candidate.network.is_some()
+                    || candidate.from.is_some()
+                    || candidate.to.is_some()
                     || candidate.drive.is_some()
                     || candidate.after.is_some()
                     || candidate.error_ppm.is_some()
@@ -506,6 +518,8 @@ fn campaign_plan(
                     kind: candidate.kind,
                     service: Some(service_name.to_owned()),
                     network: None,
+                    from: None,
+                    to: None,
                     drive: None,
                     after: None,
                     at_round: Some(fault.at_round),
@@ -542,6 +556,8 @@ fn campaign_plan(
                     )));
                 }
                 if candidate.service.is_some()
+                    || candidate.from.is_some()
+                    || candidate.to.is_some()
                     || candidate.drive.is_some()
                     || candidate.at_round.is_some()
                     || candidate.duration_rounds.is_some()
@@ -559,6 +575,84 @@ fn campaign_plan(
                     kind: candidate.kind,
                     service: None,
                     network: Some(network.to_owned()),
+                    from: None,
+                    to: None,
+                    drive: None,
+                    after: Some(after.to_owned()),
+                    at_round: None,
+                    duration_rounds: None,
+                    nanoseconds: None,
+                    error_ppm: None,
+                    latency_rounds: None,
+                    torn_write_bytes: None,
+                    corrupt_read_xor: None,
+                });
+            }
+            CampaignFaultKind::LinkPartition | CampaignFaultKind::LinkHeal => {
+                let network = candidate.network.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign link_partition/link_heal action requires network".to_owned(),
+                    )
+                })?;
+                let from = candidate.from.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign link_partition/link_heal action requires from".to_owned(),
+                    )
+                })?;
+                let to = candidate.to.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign link_partition/link_heal action requires to".to_owned(),
+                    )
+                })?;
+                let after = candidate.after.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign link_partition/link_heal action requires after".to_owned(),
+                    )
+                })?;
+                if from == to {
+                    return Err(ComposeError::Invalid(
+                        "campaign directed link action requires distinct from and to services"
+                            .to_owned(),
+                    ));
+                }
+                if !after_is_operation(after) {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign action after references unknown operation {after:?}",
+                    )));
+                }
+                for service_name in [from, to] {
+                    let service = services.get(service_name).ok_or_else(|| {
+                        ComposeError::Invalid(format!(
+                            "campaign directed link action references unknown service {service_name:?}",
+                        ))
+                    })?;
+                    if !service.networks.iter().any(|name| name == network) {
+                        return Err(ComposeError::Invalid(format!(
+                            "campaign directed link action service {service_name:?} is not on network {network:?}",
+                        )));
+                    }
+                }
+                if candidate.service.is_some()
+                    || candidate.drive.is_some()
+                    || candidate.at_round.is_some()
+                    || candidate.duration_rounds.is_some()
+                    || candidate.nanoseconds.is_some()
+                    || candidate.error_ppm.is_some()
+                    || candidate.latency_rounds.is_some()
+                    || candidate.torn_write_bytes.is_some()
+                    || candidate.corrupt_read_xor.is_some()
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign link_partition/link_heal actions accept only network, from, to, and after"
+                            .to_owned(),
+                    ));
+                }
+                faults.push(CampaignFaultPlan {
+                    kind: candidate.kind,
+                    service: None,
+                    network: Some(network.to_owned()),
+                    from: Some(from.to_owned()),
+                    to: Some(to.to_owned()),
                     drive: None,
                     after: Some(after.to_owned()),
                     at_round: None,
@@ -619,6 +713,8 @@ fn campaign_plan(
                     ));
                 }
                 if candidate.network.is_some()
+                    || candidate.from.is_some()
+                    || candidate.to.is_some()
                     || candidate.at_round.is_some()
                     || candidate.duration_rounds.is_some()
                     || candidate.nanoseconds.is_some()
@@ -632,6 +728,8 @@ fn campaign_plan(
                     kind: candidate.kind,
                     service: Some(service_name.to_owned()),
                     network: None,
+                    from: None,
+                    to: None,
                     drive: Some(drive.to_owned()),
                     after: Some(after.to_owned()),
                     at_round: None,
@@ -1098,7 +1196,7 @@ mod tests {
     #[test]
     fn normalizes_operation_barrier_topology_actions() {
         let directory = fixture(
-            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: read\n        input: 'read\\n'\n    faults:\n      - kind: partition\n        network: backplane\n        after: write\n      - kind: heal\n        network: backplane\n        after: read\n      - kind: storage_fault\n        service: worker\n        drive: data\n        after: write\n        error_ppm: 1000000\n        torn_write_bytes: 1\n",
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: read\n        input: 'read\\n'\n    faults:\n      - kind: partition\n        network: backplane\n        after: write\n      - kind: link_partition\n        network: backplane\n        from: api\n        to: worker\n        after: write\n      - kind: link_heal\n        network: backplane\n        from: api\n        to: worker\n        after: read\n      - kind: storage_fault\n        service: worker\n        drive: data\n        after: write\n        error_ppm: 1000000\n        torn_write_bytes: 1\n",
         );
         let worker = directory.path().join("worker/theseus.toml");
         let input = fs::read_to_string(&worker).unwrap();
@@ -1116,9 +1214,14 @@ mod tests {
             CampaignFaultKind::Partition
         ));
         assert_eq!(campaign.faults[0].after.as_deref(), Some("write"));
-        assert_eq!(campaign.faults[1].network.as_deref(), Some("backplane"));
-        assert_eq!(campaign.faults[2].drive.as_deref(), Some("data"));
-        assert_eq!(campaign.faults[2].error_ppm, Some(1_000_000));
+        assert_eq!(campaign.faults[1].from.as_deref(), Some("api"));
+        assert_eq!(campaign.faults[1].to.as_deref(), Some("worker"));
+        assert!(matches!(
+            campaign.faults[2].kind,
+            CampaignFaultKind::LinkHeal
+        ));
+        assert_eq!(campaign.faults[3].drive.as_deref(), Some("data"));
+        assert_eq!(campaign.faults[3].error_ppm, Some(1_000_000));
     }
 
     #[test]

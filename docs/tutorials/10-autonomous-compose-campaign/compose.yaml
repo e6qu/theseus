@@ -38,6 +38,18 @@ x-theseus:
       - kind: heal
         network: backplane
         after: retry
+      # A directed link fault leaves api -> auditor and replica -> api live.
+      # Only new api -> replica frames are dropped until link_heal runs.
+      - kind: link_partition
+        network: backplane
+        from: api
+        to: replica
+        after: read_stale
+      - kind: link_heal
+        network: backplane
+        from: api
+        to: replica
+        after: retry
       # This changes only the simulated drive. The disk bytes and seeded RNG
       # remain in place; later I/O now fails deterministically.
       - kind: storage_fault

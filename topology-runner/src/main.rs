@@ -70,6 +70,10 @@ struct CampaignFault {
     #[serde(default)]
     network: Option<String>,
     #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
     drive: Option<String>,
     #[serde(default)]
     after: Option<String>,
@@ -97,6 +101,8 @@ enum CampaignFaultKind {
     ClockJump,
     Partition,
     Heal,
+    LinkPartition,
+    LinkHeal,
     StorageFault,
 }
 
@@ -294,6 +300,10 @@ struct CampaignAction {
     service: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     drive: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -586,6 +596,42 @@ impl ServiceVm {
         Ok(changed)
     }
 
+    fn network_endpoint(&self, network: &str) -> Result<Option<String>, String> {
+        self.networks
+            .iter()
+            .find(|(name, _)| name == network)
+            .map(|(_, net)| {
+                net.lock()
+                    .map_err(|_| "simulated network lock poisoned".to_owned())?
+                    .simulated_endpoint()
+                    .ok_or_else(|| format!("network is not simulated: {network}"))
+            })
+            .transpose()
+    }
+
+    fn set_network_link(
+        &self,
+        network: &str,
+        destination: &str,
+        blocked: bool,
+    ) -> Result<(), String> {
+        let (_, net) = self
+            .networks
+            .iter()
+            .find(|(name, _)| name == network)
+            .ok_or_else(|| format!("service is not on network: {network}"))?;
+        if !net
+            .lock()
+            .map_err(|_| "simulated network lock poisoned".to_owned())?
+            .set_simulated_link_blocked(destination, blocked)
+        {
+            return Err(format!(
+                "network does not have a topology switch: {network}"
+            ));
+        }
+        Ok(())
+    }
+
     fn set_storage_fault(
         &self,
         storage: &[StoragePlan],
@@ -670,6 +716,7 @@ impl ServiceVm {
                                 match reason {
                                     SimNetDropReason::Mtu => "mtu",
                                     SimNetDropReason::Partition => "partition",
+                                    SimNetDropReason::LinkPartition => "link_partition",
                                     SimNetDropReason::RandomLoss => "random_loss",
                                     SimNetDropReason::TransmitQueue => "tx_queue",
                                     SimNetDropReason::ReceiveQueue => "rx_queue",
@@ -1147,6 +1194,8 @@ fn campaign_fault_applies(
         }
         CampaignFaultKind::Partition
         | CampaignFaultKind::Heal
+        | CampaignFaultKind::LinkPartition
+        | CampaignFaultKind::LinkHeal
         | CampaignFaultKind::StorageFault => {
             let Some(after) = &fault.after else {
                 return false;
@@ -1230,6 +1279,8 @@ fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
         kind: fault.kind,
         service: fault.service.clone(),
         network: fault.network.clone(),
+        from: fault.from.clone(),
+        to: fault.to.clone(),
         drive: fault.drive.clone(),
         error_ppm: fault.error_ppm,
         latency_rounds: fault.latency_rounds,
@@ -1262,6 +1313,18 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
             match fault.kind {
                 CampaignFaultKind::Partition => "partition",
                 CampaignFaultKind::Heal => "heal",
+                _ => unreachable!(),
+            },
+            fault.after.as_deref().expect("validated action operation")
+        ),
+        CampaignFaultKind::LinkPartition | CampaignFaultKind::LinkHeal => format!(
+            "{}:{}->{}:{}@{}",
+            fault.network.as_deref().expect("validated action network"),
+            fault.from.as_deref().expect("validated action source"),
+            fault.to.as_deref().expect("validated action destination"),
+            match fault.kind {
+                CampaignFaultKind::LinkPartition => "link_partition",
+                CampaignFaultKind::LinkHeal => "link_heal",
                 _ => unreachable!(),
             },
             fault.after.as_deref().expect("validated action operation")
@@ -2147,6 +2210,56 @@ fn apply_campaign_action(
                     "{} simulated NIC endpoint(s) {} after the operation barrier",
                     endpoints,
                     if partitioned { "partitioned" } else { "healed" }
+                ),
+            })
+        }
+        CampaignFaultKind::LinkPartition | CampaignFaultKind::LinkHeal => {
+            let network = action
+                .network
+                .as_deref()
+                .ok_or_else(|| "campaign directed link action has no network".to_owned())?;
+            let from = action
+                .from
+                .as_deref()
+                .ok_or_else(|| "campaign directed link action has no source".to_owned())?;
+            let to = action
+                .to
+                .as_deref()
+                .ok_or_else(|| "campaign directed link action has no destination".to_owned())?;
+            let blocked = matches!(action.kind, CampaignFaultKind::LinkPartition);
+            let destination = if to == driver_name {
+                driver.vm.network_endpoint(network)?
+            } else {
+                services
+                    .get(to)
+                    .ok_or_else(|| format!("campaign link destination did not start: {to}"))?
+                    .vm
+                    .network_endpoint(network)?
+            }
+            .ok_or_else(|| {
+                format!("campaign link destination is not on network: {to}/{network}")
+            })?;
+            if from == driver_name {
+                driver.vm.set_network_link(network, &destination, blocked)?;
+            } else {
+                services
+                    .get(from)
+                    .ok_or_else(|| format!("campaign link source did not start: {from}"))?
+                    .vm
+                    .set_network_link(network, &destination, blocked)?;
+            }
+            Ok(AppliedCampaignAction {
+                operation: action.operation.clone(),
+                kind: if blocked {
+                    "link_partition"
+                } else {
+                    "link_heal"
+                }
+                .to_owned(),
+                target: format!("network:{network}/{from}->{to}"),
+                detail: format!(
+                    "directed link {} after the operation barrier",
+                    if blocked { "partitioned" } else { "healed" }
                 ),
             })
         }

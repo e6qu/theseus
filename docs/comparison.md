@@ -60,7 +60,8 @@ Key architectural differences with Theseus:
 - **Campaign interface**: Antithesis can drive unmodified workloads through
   its test templates and property APIs. Theseus accepts a designated Compose
   driver, text UART operations, lifecycle/clock candidates, barrier-triggered
-  named-network `partition`/`heal`, simulated-drive `storage_fault`, and
+  named-network `partition`/`heal`, directed service-to-service
+  `link_partition`/`link_heal`, simulated-drive `storage_fault`, and
   `always`/`sometimes`/`reachable`/`unreachable` serial properties. It reduces
   an individual violation by re-running locked full topologies and fingerprints
   the applied actions on replay, but it does not yet have Antithesis's

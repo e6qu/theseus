@@ -24,7 +24,7 @@
 //! Frame delay, jitter, and bandwidth all advance in deterministic runner
 //! rounds, never host time.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use rand_chacha::rand_core::{RngCore, SeedableRng};
@@ -134,6 +134,7 @@ pub enum SimNetFrameDirection {
 pub enum SimNetDropReason {
     Mtu,
     Partition,
+    LinkPartition,
     RandomLoss,
     TransmitQueue,
     ReceiveQueue,
@@ -212,6 +213,10 @@ struct SimSwitchPort {
 #[derive(Debug, Default)]
 pub struct SimSwitch {
     ports: BTreeMap<String, SimSwitchPort>,
+    /// Directed source-to-destination blackholes. A network partition can
+    /// isolate every port; this set models the more common asymmetric outage
+    /// where only one service-to-service path is unavailable.
+    blocked_links: BTreeSet<(String, String)>,
     round: u64,
     next_frame: u64,
 }
@@ -273,6 +278,32 @@ impl SimSwitch {
 
     fn detach(&mut self, port: &str) {
         self.ports.remove(port);
+        self.blocked_links
+            .retain(|(source, destination)| source != port && destination != port);
+    }
+
+    /// Block or restore a single directed path between two attached ports.
+    /// Existing queued frames are left intact so the action only affects new
+    /// traffic in the deterministic timeline.
+    pub fn set_link_blocked(
+        &mut self,
+        source: &str,
+        destination: &str,
+        blocked: bool,
+    ) -> Result<(), SimSwitchError> {
+        if !self.ports.contains_key(source) {
+            return Err(SimSwitchError::InvalidPort(source.to_owned()));
+        }
+        if !self.ports.contains_key(destination) {
+            return Err(SimSwitchError::InvalidPort(destination.to_owned()));
+        }
+        let link = (source.to_owned(), destination.to_owned());
+        if blocked {
+            self.blocked_links.insert(link);
+        } else {
+            self.blocked_links.remove(&link);
+        }
+        Ok(())
     }
 
     fn deliver(&mut self, source: &str, include_source: bool, delay_rounds: u32, frame: &[u8]) {
@@ -281,6 +312,19 @@ impl SimSwitch {
         self.next_frame = self.next_frame.saturating_add(1);
         for (port, destination) in &mut self.ports {
             if include_source || port != source {
+                if self
+                    .blocked_links
+                    .contains(&(source.to_owned(), port.clone()))
+                {
+                    destination.dropped += 1;
+                    trace_drop(
+                        &destination.trace,
+                        self.round,
+                        SimNetDropReason::LinkPartition,
+                        frame,
+                    );
+                    continue;
+                }
                 if destination.rx_queue_frames != 0
                     && destination.rx_queue.len() >= destination.rx_queue_frames as usize
                 {
@@ -461,6 +505,24 @@ impl SimNet {
     /// without rewinding its seeded RNG or switch state.
     pub fn set_partitioned(&mut self, partitioned: bool) {
         self.config.partitioned = partitioned;
+    }
+
+    /// Block or restore this NIC's directed path to one peer on its shared
+    /// deterministic switch. Returns false for standalone loopback NICs.
+    pub fn set_link_blocked(&mut self, destination: &str, blocked: bool) -> bool {
+        let (Some(switch), Some(source)) = (&self.switch, &self.endpoint) else {
+            return false;
+        };
+        switch
+            .lock()
+            .expect("simulated switch lock poisoned")
+            .set_link_blocked(source, destination, blocked)
+            .is_ok()
+    }
+
+    /// Return the stable switch port name for a topology NIC.
+    pub fn endpoint(&self) -> Option<&str> {
+        self.endpoint.as_deref()
     }
 
     /// Return deterministic frame counters for this NIC.
@@ -1049,6 +1111,30 @@ mod tests {
         assert_eq!(switch.receive("worker"), None);
         switch.advance_round();
         assert_eq!(switch.receive("worker"), Some(b"first".to_vec()));
+    }
+
+    #[test]
+    fn test_shared_switch_blocks_only_the_selected_directed_link() {
+        let api_trace = Arc::new(Mutex::new(Vec::new()));
+        let replica_trace = Arc::new(Mutex::new(Vec::new()));
+        let auditor_trace = Arc::new(Mutex::new(Vec::new()));
+        let mut switch = SimSwitch::new();
+        switch.attach("api", 0, api_trace).unwrap();
+        switch.attach("replica", 0, replica_trace.clone()).unwrap();
+        switch.attach("auditor", 0, auditor_trace).unwrap();
+
+        switch.set_link_blocked("api", "replica", true).unwrap();
+        switch.deliver("api", false, 0, b"request");
+        assert_eq!(switch.receive("replica"), None);
+        assert_eq!(switch.receive("auditor"), Some(b"request".to_vec()));
+        assert_eq!(switch.dropped("replica"), 1);
+        assert!(replica_trace.lock().unwrap().iter().any(|frame| {
+            frame.drop_reason == Some(SimNetDropReason::LinkPartition)
+        }));
+
+        switch.set_link_blocked("api", "replica", false).unwrap();
+        switch.deliver("api", false, 0, b"retry");
+        assert_eq!(switch.receive("replica"), Some(b"retry".to_vec()));
     }
 
     #[test]
