@@ -29,7 +29,9 @@ use crate::devices::virtio::iovec::{
     IoVecBuffer, IoVecBufferMut, IoVecError, ParsedDescriptorChain,
 };
 use crate::devices::virtio::net::metrics::{NetDeviceMetrics, NetMetricsPerDevice};
-use crate::devices::virtio::net::sim::{SharedSimSwitch, SimNet, SimNetConfig, SimNetStats};
+use crate::devices::virtio::net::sim::{
+    SharedSimSwitch, SimNet, SimNetConfig, SimNetFrame, SimNetStats,
+};
 use crate::devices::virtio::net::tap::Tap;
 use crate::devices::virtio::net::{
     MAX_BUFFER_SIZE, NET_QUEUE_SIZES, NetError, NetQueue, RX_INDEX, TX_INDEX, generated,
@@ -471,6 +473,14 @@ impl Net {
     pub fn simulated_stats(&self) -> Option<SimNetStats> {
         match &self.backend {
             NetBackend::Sim(sim) => Some(sim.stats()),
+            NetBackend::Tap(_) => None,
+        }
+    }
+
+    /// Bounded deterministic frame trace, if this device uses the simulated backend.
+    pub fn simulated_trace(&self) -> Option<Vec<SimNetFrame>> {
+        match &self.backend {
+            NetBackend::Sim(sim) => Some(sim.trace().to_vec()),
             NetBackend::Tap(_) => None,
         }
     }
