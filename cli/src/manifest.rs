@@ -157,6 +157,8 @@ struct Network {
     latency_rounds: u32,
     #[serde(default)]
     jitter_rounds: u32,
+    #[serde(default)]
+    tx_bytes_per_round: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -280,6 +282,8 @@ pub struct NetworkPlan {
     pub latency_rounds: u32,
     #[serde(default)]
     pub jitter_rounds: u32,
+    #[serde(default)]
+    pub tx_bytes_per_round: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -463,6 +467,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             partitioned: manifest.network.partitioned,
             latency_rounds: manifest.network.latency_rounds,
             jitter_rounds: manifest.network.jitter_rounds,
+            tx_bytes_per_round: manifest.network.tx_bytes_per_round,
         },
         storage,
         explore,
@@ -747,6 +752,7 @@ drop_ppm = 100
 partitioned = false
 latency_rounds = 2
 jitter_rounds = 1
+tx_bytes_per_round = 512
 
 [[storage]]
 id = "data_1"
@@ -765,6 +771,7 @@ corrupt_read_xor = 1
         assert_eq!(plan.network.drop_ppm, 100);
         assert_eq!(plan.network.latency_rounds, 2);
         assert_eq!(plan.network.jitter_rounds, 1);
+        assert_eq!(plan.network.tx_bytes_per_round, 512);
         assert_eq!(plan.storage.len(), 1);
         assert_eq!(plan.storage[0].id, "data_1");
         assert_eq!(plan.storage[0].torn_write_bytes, Some(16));

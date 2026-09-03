@@ -17,6 +17,7 @@ timeout_secs = 10
 loopback = false
 latency_rounds = 1
 jitter_rounds = 1
+tx_bytes_per_round = 4096
 
 [[checks]]
 name = "worker booted"

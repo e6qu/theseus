@@ -21,6 +21,7 @@ data = "70696e670a"
 loopback = false
 latency_rounds = 1
 jitter_rounds = 1
+tx_bytes_per_round = 4096
 
 [[checks]]
 name = "api reached worker"

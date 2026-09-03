@@ -131,6 +131,7 @@ drop_ppm = 0
 partitioned = false
 latency_rounds = 1
 jitter_rounds = 1
+tx_bytes_per_round = 4096
 
 [[storage]]
 id = "data"
@@ -163,12 +164,14 @@ serial bytes only after the `THES:M:42` ready marker.
 Network settings are recorded but intentionally rejected by this single-VM
 runner. The Linux Compose executor supports deterministic drops, partitions,
 base `latency_rounds`, and seeded per-frame `jitter_rounds`; jitter can reorder
-frames without consulting host time. Simulated storage is also recorded in the
-plan but runs only through that executor. Each entry creates a memory-only
-virtio disk: `error_ppm` injects deterministic I/O errors, `latency_rounds`
-delays requests by topology pumps, `torn_write_bytes` preserves only a write
-prefix while reporting success, and `corrupt_read_xor` changes returned bytes.
-Use the Compose planner below to run either topology feature.
+frames without consulting host time. `tx_bytes_per_round` limits outbound
+traffic at deterministic topology rounds; zero leaves it unlimited. Simulated
+storage is also recorded in the plan but runs only through that executor. Each
+entry creates a memory-only virtio disk: `error_ppm` injects deterministic I/O
+errors, `latency_rounds` delays requests by topology pumps,
+`torn_write_bytes` preserves only a write prefix while reporting success, and
+`corrupt_read_xor` changes returned bytes. Use the Compose planner below to run
+either topology feature.
 
 ## Compose topology planning
 

@@ -415,6 +415,7 @@ mod tests {
                     partitioned: idx == 2,
                     latency_rounds: 0,
                     jitter_rounds: 0,
+                    tx_bytes_per_round: 0,
                 };
                 let child = spawn_child(
                     &mut branch,

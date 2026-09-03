@@ -22,3 +22,7 @@ leaves their serial logs and results in `theseus-compose-replay/services/`.
 `theseus compose replay` runs the locked bundle again and compares every
 service serial log, simulated-network topology, and deterministic network
 traffic counters with the original.
+
+`tx_bytes_per_round` limits each service's outbound link. It refills at every
+topology round; `0` leaves it unlimited. A frame larger than the budget uses a
+full round, so it still makes progress.
