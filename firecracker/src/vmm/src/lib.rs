@@ -615,6 +615,14 @@ impl Vmm {
         result
     }
 
+    /// Read the final deterministic virtual-clock time for every vCPU.
+    pub fn virtual_time_ns(&self) -> Result<Option<Vec<u64>>, VmmError> {
+        self.vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?
+            .virtual_time_ns()
+    }
+
     /// Injects CTRL+ALT+DEL keystroke combo in the i8042 device.
     #[cfg(target_arch = "x86_64")]
     pub fn send_ctrl_alt_del(&mut self) -> Result<(), VmmError> {

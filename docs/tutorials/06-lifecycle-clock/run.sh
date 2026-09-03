@@ -22,4 +22,5 @@ grep -a '"kind": "clock_jump"' theseus-compose-replay/services/service/result.js
 grep -a '^finished$' theseus-compose-replay/services/service/serial-1.log
 theseus compose replay theseus-compose-replay --output topology-replay
 grep -a 'applied faults match the original replay bundle' topology-replay/services/service/result.json
+grep -a 'virtual clock state matches the original replay bundle' topology-replay/services/service/result.json
 echo 'PASS: Theseus applied the recorded lifecycle and clock schedule'

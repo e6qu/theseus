@@ -219,6 +219,10 @@ impl Vcpu {
         Ok(())
     }
 
+    fn virtual_time_ns(&self) -> Option<u64> {
+        self.vclock.as_ref().map(|clock| clock.now_ns())
+    }
+
     /// Advance the quantum counter; at each boundary, step the guest's clock.
     ///
     /// Called from the vCPU run loop between `KVM_RUN` invocations — the only
@@ -403,6 +407,11 @@ impl Vcpu {
                     )))
                     .expect("vcpu channel unexpectedly closed");
             }
+            Ok(VcpuEvent::GetVirtualTime) => {
+                self.response_sender
+                    .send(VcpuResponse::VirtualTime(self.virtual_time_ns()))
+                    .expect("vcpu channel unexpectedly closed");
+            }
             Ok(VcpuEvent::Finish) => return VcpuRunState::Finished,
             // Unhandled exit of the other end.
             Err(TryRecvError::Disconnected) => {
@@ -495,6 +504,12 @@ impl Vcpu {
                     });
                 VcpuRunState::Paused
             }
+            Ok(VcpuEvent::GetVirtualTime) => {
+                self.response_sender
+                    .send(VcpuResponse::VirtualTime(self.virtual_time_ns()))
+                    .expect("vcpu channel unexpectedly closed");
+                VcpuRunState::Paused
+            }
             Ok(VcpuEvent::Finish) => VcpuRunState::Finished,
             // Unhandled exit of the other end.
             Err(_) => {
@@ -512,14 +527,18 @@ impl Vcpu {
             METRICS.vcpu.failures.inc();
             error!("Failed signaling vcpu exit event: {}", err);
         }
-        // From this state we only accept going to finished.
+        self.response_sender
+            .send(VcpuResponse::Exited(exit_code))
+            .expect("vcpu channel unexpectedly closed");
+        // From this state we accept a final virtual-clock read or finish.
         loop {
-            self.response_sender
-                .send(VcpuResponse::Exited(exit_code))
-                .expect("vcpu channel unexpectedly closed");
-            // Wait for and only accept 'VcpuEvent::Finish'.
-            if let Ok(VcpuEvent::Finish) = self.event_receiver.recv() {
-                break;
+            match self.event_receiver.recv() {
+                Ok(VcpuEvent::Finish) => break,
+                Ok(VcpuEvent::GetVirtualTime) => self
+                    .response_sender
+                    .send(VcpuResponse::VirtualTime(self.virtual_time_ns()))
+                    .expect("vcpu channel unexpectedly closed"),
+                _ => {}
             }
         }
         VcpuRunState::Finished
@@ -679,6 +698,8 @@ pub enum VcpuEvent {
     DumpCpuConfig,
     /// Advance a paused vCPU's deterministic virtual clock.
     JumpVirtualTime(u64),
+    /// Read a vCPU's deterministic virtual clock at its next event boundary.
+    GetVirtualTime,
 }
 
 /// List of responses that the Vcpu reports.
@@ -699,6 +720,8 @@ pub enum VcpuResponse {
     DumpedCpuConfig(Box<CpuConfiguration>),
     /// A virtual-clock jump was applied while paused.
     VirtualTimeJumped,
+    /// Current deterministic virtual-clock time in nanoseconds, when enabled.
+    VirtualTime(Option<u64>),
 }
 
 impl fmt::Debug for VcpuResponse {
@@ -713,6 +736,7 @@ impl fmt::Debug for VcpuResponse {
             NotAllowed(reason) => write!(f, "VcpuResponse::NotAllowed({})", reason),
             DumpedCpuConfig(_) => write!(f, "VcpuResponse::DumpedCpuConfig"),
             VirtualTimeJumped => write!(f, "VcpuResponse::VirtualTimeJumped"),
+            VirtualTime(value) => write!(f, "VcpuResponse::VirtualTime({value:?})"),
         }
     }
 }
@@ -983,7 +1007,7 @@ pub(crate) mod tests {
             match self {
                 Paused | Resumed | Exited(_) => (),
                 Error(_) | NotAllowed(_) | SavedState(_) | DumpedCpuConfig(_)
-                | VirtualTimeJumped => (),
+                | VirtualTimeJumped | VirtualTime(_) => (),
             };
             match (self, other) {
                 (Paused, Paused) | (Resumed, Resumed) => true,
@@ -992,6 +1016,7 @@ pub(crate) mod tests {
                 | (SavedState(_), SavedState(_))
                 | (DumpedCpuConfig(_), DumpedCpuConfig(_))
                 | (VirtualTimeJumped, VirtualTimeJumped) => true,
+                (VirtualTime(value), VirtualTime(other_value)) => value == other_value,
                 (Error(err), Error(other_err)) => {
                     format!("{:?}", err) == format!("{:?}", other_err)
                 }
