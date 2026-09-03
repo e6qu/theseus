@@ -1433,6 +1433,13 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
     }
 }
 
+fn campaign_fault_names(campaign: &CampaignPlan, faults: &[usize]) -> Vec<String> {
+    faults
+        .iter()
+        .map(|index| campaign_fault_name(&campaign.faults[*index]))
+        .collect()
+}
+
 fn campaign_markers(run: &Path) -> Result<Vec<String>, String> {
     let mut markers = std::collections::BTreeSet::new();
     let services = fs::read_dir(run.join("services")).map_err(|error| error.to_string())?;
