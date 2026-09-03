@@ -87,6 +87,8 @@ struct ComposeCampaign {
     properties: Vec<ComposeProperty>,
     #[serde(default = "default_campaign_runs")]
     max_runs: u16,
+    #[serde(default = "default_campaign_faults_per_run")]
+    max_faults_per_run: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -249,6 +251,7 @@ pub struct CampaignPlan {
     pub faults: Vec<CampaignFaultPlan>,
     pub properties: Vec<PropertyPlan>,
     pub max_runs: u16,
+    pub max_faults_per_run: u8,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -410,6 +413,10 @@ fn default_campaign_runs() -> u16 {
     32
 }
 
+fn default_campaign_faults_per_run() -> u8 {
+    2
+}
+
 fn campaign_plan(
     campaign: Option<ComposeTheseus>,
     services: &BTreeMap<String, ComposeServicePlan>,
@@ -431,6 +438,11 @@ fn campaign_plan(
     if campaign.max_runs == 0 || campaign.max_runs > 256 {
         return Err(ComposeError::Invalid(
             "campaign max_runs must be between 1 and 256".to_owned(),
+        ));
+    }
+    if campaign.max_faults_per_run == 0 || campaign.max_faults_per_run > 4 {
+        return Err(ComposeError::Invalid(
+            "campaign max_faults_per_run must be between 1 and 4".to_owned(),
         ));
     }
     let mut names = BTreeSet::new();
@@ -780,6 +792,7 @@ fn campaign_plan(
         faults,
         properties,
         max_runs: campaign.max_runs,
+        max_faults_per_run: campaign.max_faults_per_run,
     }))
 }
 
@@ -1190,6 +1203,7 @@ mod tests {
         assert_eq!(campaign.driver, "api");
         assert_eq!(campaign.operations[0].input_hex, "70757420616c7068610a");
         assert_eq!(campaign.faults[0].service.as_deref(), Some("worker"));
+        assert_eq!(campaign.max_faults_per_run, 2);
         assert_eq!(campaign.properties.len(), 2);
     }
 
