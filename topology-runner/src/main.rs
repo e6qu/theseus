@@ -132,6 +132,8 @@ struct NetworkConfig {
     mtu_bytes: u32,
     #[serde(default)]
     tx_queue_frames: u32,
+    #[serde(default)]
+    rx_queue_frames: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -454,6 +456,7 @@ impl ServiceVm {
                                     SimNetDropReason::Partition => "partition",
                                     SimNetDropReason::RandomLoss => "random_loss",
                                     SimNetDropReason::TransmitQueue => "tx_queue",
+                                    SimNetDropReason::ReceiveQueue => "rx_queue",
                                     SimNetDropReason::ReceiveBuffer => "rx_buffer",
                                 }
                                 .to_owned()
@@ -1335,6 +1338,7 @@ fn build_service(
                     tx_bytes_per_round: service.run.network.tx_bytes_per_round,
                     mtu_bytes: service.run.network.mtu_bytes,
                     tx_queue_frames: service.run.network.tx_queue_frames,
+                    rx_queue_frames: service.run.network.rx_queue_frames,
                 },
                 switch,
                 format!("{network}/{name}-{instance}"),

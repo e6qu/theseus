@@ -330,9 +330,10 @@ below must have a runnable example and narrow acceptance tests.
 | P8.16 | **`network: export deterministic Compose frame traces`** | **DONE (PR #49).** Record the first 64 TX/RX frames per simulated NIC, with scheduler round and payload hex, in each Compose service result. | PCAP compatibility, unbounded capture, or host traffic. |
 | P8.17 | **`network: add deterministic MTU drops`** | **DONE (PR #50).** Drop simulated frames larger than an explicit per-NIC MTU before they enter the link. | Fragmentation, PMTU discovery, or host traffic. |
 | P8.18 | **`network: bound deterministic transmit queues`** | **DONE (PR #51).** Drop simulated frames when an explicit per-NIC outbound queue limit is full. | TCP congestion control, packet fragmentation, or host traffic. |
-| P8.19 | **`network: trace deterministic drops`** | Export bounded simulated-NIC drop frames with the reason they were discarded. | PCAP compatibility, unbounded capture, or host traffic. |
+| P8.19 | **`network: trace deterministic drops`** | **DONE (PR #52).** Export bounded simulated-NIC drop frames with the reason they were discarded. | PCAP compatibility, unbounded capture, or host traffic. |
+| P8.20 | **`network: bound deterministic receive queues`** | Drop frames when an explicit per-NIC receive queue limit is full. | TCP congestion control, packet fragmentation, or host traffic. |
 
-**Current PR: P8.19 only.** The manifest is an execution contract, not a second
+**Current PR: P8.20 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what

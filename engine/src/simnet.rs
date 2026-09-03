@@ -18,6 +18,8 @@
 //!   flipped before link delivery
 //! - **bounded transmit queues**: excess frames are dropped at a configured
 //!   per-NIC queue limit
+//! - **bounded receive queues**: frames are dropped when a guest stops
+//!   consuming a configured per-NIC ingress queue
 //!
 //! Frame delay, jitter, and bandwidth all advance in deterministic runner
 //! rounds, never host time.
@@ -75,6 +77,10 @@ pub struct SimNetConfig {
     /// the transmit queue unlimited.
     #[serde(default)]
     pub tx_queue_frames: u32,
+    /// Maximum number of frames waiting for guest RX delivery. Zero leaves the
+    /// receive queue unlimited.
+    #[serde(default)]
+    pub rx_queue_frames: u32,
 }
 
 impl Default for SimNetConfig {
@@ -91,6 +97,7 @@ impl Default for SimNetConfig {
             tx_bytes_per_round: 0,
             mtu_bytes: 0,
             tx_queue_frames: 0,
+            rx_queue_frames: 0,
         }
     }
 }
@@ -129,6 +136,7 @@ pub enum SimNetDropReason {
     Partition,
     RandomLoss,
     TransmitQueue,
+    ReceiveQueue,
     ReceiveBuffer,
 }
 
@@ -180,7 +188,7 @@ pub struct SimNet {
     pub corrupted: u64,
     tx_hasher: Sha256,
     rx_hasher: Sha256,
-    trace: Vec<SimNetFrame>,
+    trace: Arc<Mutex<Vec<SimNetFrame>>>,
     /// A shared deterministic L2 switch for a multi-guest topology. `None`
     /// retains the single-guest loopback backend used by the Firecracker API.
     switch: Option<SharedSimSwitch>,
@@ -193,9 +201,17 @@ pub struct SimNet {
 /// drives VMs in a deterministic order; this switch then preserves the exact
 /// order in which those VMs submit frames, without host sockets or host
 /// networking.
+#[derive(Debug)]
+struct SimSwitchPort {
+    rx_queue: VecDeque<PendingFrame>,
+    rx_queue_frames: u32,
+    dropped: u64,
+    trace: Arc<Mutex<Vec<SimNetFrame>>>,
+}
+
 #[derive(Debug, Default)]
 pub struct SimSwitch {
-    ports: BTreeMap<String, VecDeque<PendingFrame>>,
+    ports: BTreeMap<String, SimSwitchPort>,
     round: u64,
     next_frame: u64,
 }
@@ -231,14 +247,27 @@ impl SimSwitch {
         Self::default()
     }
 
-    fn attach(&mut self, port: &str) -> Result<(), SimSwitchError> {
+    fn attach(
+        &mut self,
+        port: &str,
+        rx_queue_frames: u32,
+        trace: Arc<Mutex<Vec<SimNetFrame>>>,
+    ) -> Result<(), SimSwitchError> {
         if port.is_empty() {
             return Err(SimSwitchError::InvalidPort(port.to_owned()));
         }
         if self.ports.contains_key(port) {
             return Err(SimSwitchError::DuplicatePort(port.to_owned()));
         }
-        self.ports.insert(port.to_owned(), VecDeque::new());
+        self.ports.insert(
+            port.to_owned(),
+            SimSwitchPort {
+                rx_queue: VecDeque::new(),
+                rx_queue_frames,
+                dropped: 0,
+                trace,
+            },
+        );
         Ok(())
     }
 
@@ -250,10 +279,22 @@ impl SimSwitch {
         let ready_round = self.round.saturating_add(u64::from(delay_rounds));
         let sequence = self.next_frame;
         self.next_frame = self.next_frame.saturating_add(1);
-        for (port, queue) in &mut self.ports {
+        for (port, destination) in &mut self.ports {
             if include_source || port != source {
+                if destination.rx_queue_frames != 0
+                    && destination.rx_queue.len() >= destination.rx_queue_frames as usize
+                {
+                    destination.dropped += 1;
+                    trace_drop(
+                        &destination.trace,
+                        self.round,
+                        SimNetDropReason::ReceiveQueue,
+                        frame,
+                    );
+                    continue;
+                }
                 push_pending(
-                    queue,
+                    &mut destination.rx_queue,
                     PendingFrame {
                         ready_round,
                         sequence,
@@ -265,15 +306,21 @@ impl SimSwitch {
     }
 
     fn receive(&mut self, port: &str) -> Option<Vec<u8>> {
-        let queue = self.ports.get_mut(port)?;
+        let queue = &mut self.ports.get_mut(port)?.rx_queue;
         (queue.front()?.ready_round <= self.round).then(|| queue.pop_front().unwrap().bytes)
     }
 
     fn has_pending_rx(&self, port: &str) -> bool {
         self.ports
             .get(port)
-            .and_then(VecDeque::front)
+            .and_then(|destination| destination.rx_queue.front())
             .is_some_and(|frame| frame.ready_round <= self.round)
+    }
+
+    fn dropped(&self, port: &str) -> u64 {
+        self.ports
+            .get(port)
+            .map_or(0, |destination| destination.dropped)
     }
 
     /// Advance the deterministic topology scheduler by one round.
@@ -311,6 +358,39 @@ fn update_frame_digest(hasher: &mut Sha256, frame: &[u8]) {
     hasher.update(frame);
 }
 
+fn trace_frame(
+    trace: &Arc<Mutex<Vec<SimNetFrame>>>,
+    round: u64,
+    direction: SimNetFrameDirection,
+    drop_reason: Option<SimNetDropReason>,
+    bytes: &[u8],
+) {
+    let mut trace = trace.lock().expect("simulated trace lock poisoned");
+    if trace.len() < FRAME_TRACE_LIMIT {
+        trace.push(SimNetFrame {
+            round,
+            direction,
+            drop_reason,
+            bytes: bytes.to_vec(),
+        });
+    }
+}
+
+fn trace_drop(
+    trace: &Arc<Mutex<Vec<SimNetFrame>>>,
+    round: u64,
+    reason: SimNetDropReason,
+    bytes: &[u8],
+) {
+    trace_frame(
+        trace,
+        round,
+        SimNetFrameDirection::Drop,
+        Some(reason),
+        bytes,
+    );
+}
+
 impl SimNet {
     pub fn new(config: SimNetConfig) -> Self {
         SimNet {
@@ -328,7 +408,7 @@ impl SimNet {
             corrupted: 0,
             tx_hasher: Sha256::new(),
             rx_hasher: Sha256::new(),
-            trace: Vec::new(),
+            trace: Arc::new(Mutex::new(Vec::new())),
             switch: None,
             endpoint: None,
         }
@@ -345,10 +425,11 @@ impl SimNet {
         endpoint: impl Into<String>,
     ) -> Result<Self, SimSwitchError> {
         let endpoint = endpoint.into();
+        let trace = Arc::new(Mutex::new(Vec::new()));
         switch
             .lock()
             .expect("simulated switch lock poisoned")
-            .attach(&endpoint)?;
+            .attach(&endpoint, config.rx_queue_frames, trace.clone())?;
         Ok(SimNet {
             config,
             rx_queue: VecDeque::new(),
@@ -364,7 +445,7 @@ impl SimNet {
             corrupted: 0,
             tx_hasher: Sha256::new(),
             rx_hasher: Sha256::new(),
-            trace: Vec::new(),
+            trace,
             switch: Some(switch),
             endpoint: Some(endpoint),
         })
@@ -376,10 +457,19 @@ impl SimNet {
 
     /// Return deterministic frame counters for this NIC.
     pub fn stats(&self) -> SimNetStats {
+        let ingress_dropped = if let (Some(switch), Some(endpoint)) = (&self.switch, &self.endpoint)
+        {
+            switch
+                .lock()
+                .expect("simulated switch lock poisoned")
+                .dropped(endpoint)
+        } else {
+            0
+        };
         SimNetStats {
             tx_frames: self.tx_frames,
             rx_frames: self.rx_frames,
-            dropped: self.dropped,
+            dropped: self.dropped.saturating_add(ingress_dropped),
             duplicated: self.duplicated,
             corrupted: self.corrupted,
             tx_sha256: self.tx_hasher.clone().finalize().into(),
@@ -390,30 +480,19 @@ impl SimNet {
     /// Return the first 64 transmitted, dropped, and delivered frames in
     /// deterministic boundary order. The fixed bound prevents a guest from
     /// growing bundles without limit.
-    pub fn trace(&self) -> &[SimNetFrame] {
-        &self.trace
+    pub fn trace(&self) -> Vec<SimNetFrame> {
+        self.trace
+            .lock()
+            .expect("simulated trace lock poisoned")
+            .clone()
     }
 
     fn trace_frame(&mut self, direction: SimNetFrameDirection, bytes: &[u8]) {
-        if self.trace.len() < FRAME_TRACE_LIMIT {
-            self.trace.push(SimNetFrame {
-                round: self.round,
-                direction,
-                drop_reason: None,
-                bytes: bytes.to_vec(),
-            });
-        }
+        trace_frame(&self.trace, self.round, direction, None, bytes);
     }
 
     fn trace_drop(&mut self, reason: SimNetDropReason, bytes: &[u8]) {
-        if self.trace.len() < FRAME_TRACE_LIMIT {
-            self.trace.push(SimNetFrame {
-                round: self.round,
-                direction: SimNetFrameDirection::Drop,
-                drop_reason: Some(reason),
-                bytes: bytes.to_vec(),
-            });
-        }
+        trace_drop(&self.trace, self.round, reason, bytes);
     }
 
     /// Advance this simulated NIC by one deterministic runner round.
@@ -513,7 +592,7 @@ impl SimNet {
                 bytes: frame.bytes,
             };
             self.next_frame = self.next_frame.saturating_add(1);
-            push_pending(&mut self.rx_queue, frame);
+            self.queue_receive(frame);
         }
     }
 
@@ -541,6 +620,19 @@ impl SimNet {
         }
         self.tx_queue.push_back(frame);
         true
+    }
+
+    /// Queue a frame for guest RX delivery, dropping it deterministically if
+    /// the configured ingress queue is full.
+    fn queue_receive(&mut self, frame: PendingFrame) {
+        if self.config.rx_queue_frames != 0
+            && self.rx_queue.len() >= self.config.rx_queue_frames as usize
+        {
+            self.dropped += 1;
+            self.trace_drop(SimNetDropReason::ReceiveQueue, &frame.bytes);
+            return;
+        }
+        push_pending(&mut self.rx_queue, frame);
     }
 
     /// Accept a frame from the guest TX path.
@@ -762,6 +854,26 @@ mod tests {
     }
 
     #[test]
+    fn test_receive_queue_drops_frames_after_deterministic_overflow() {
+        let mut sim = SimNet::new(SimNetConfig {
+            rx_queue_frames: 1,
+            ..Default::default()
+        });
+        sim.write_frame(b"first");
+        sim.write_frame(b"second");
+
+        assert_eq!(sim.stats().dropped, 1);
+        assert_eq!(
+            sim.trace()[2].drop_reason,
+            Some(SimNetDropReason::ReceiveQueue)
+        );
+        let mut buffer = [0; 16];
+        assert_eq!(sim.read_frame(&mut buffer), Some(5));
+        assert_eq!(&buffer[..5], b"first");
+        assert!(!sim.has_pending_rx());
+    }
+
+    #[test]
     fn test_delay_waits_for_deterministic_rounds() {
         let mut sim = SimNet::new(SimNetConfig {
             latency_rounds: 2,
@@ -896,8 +1008,12 @@ mod tests {
     #[test]
     fn test_shared_switch_delivers_ready_frames_before_earlier_delayed_frames() {
         let mut switch = SimSwitch::new();
-        switch.attach("api").unwrap();
-        switch.attach("worker").unwrap();
+        switch
+            .attach("api", 0, Arc::new(Mutex::new(Vec::new())))
+            .unwrap();
+        switch
+            .attach("worker", 0, Arc::new(Mutex::new(Vec::new())))
+            .unwrap();
         switch.deliver("api", false, 2, b"first");
         switch.deliver("api", false, 0, b"second");
 
@@ -922,6 +1038,7 @@ mod tests {
             tx_bytes_per_round: 0,
             mtu_bytes: 0,
             tx_queue_frames: 0,
+            rx_queue_frames: 0,
         };
         let run = || {
             let mut sim = SimNet::new(cfg);
@@ -989,6 +1106,42 @@ mod tests {
             switch.lock().unwrap().ports(),
             ["backplane/api", "backplane/worker"]
         );
+    }
+
+    #[test]
+    fn test_shared_switch_receive_queue_drops_at_the_destination() {
+        let switch = Arc::new(Mutex::new(SimSwitch::new()));
+        let mut api = SimNet::new_with_switch(
+            SimNetConfig {
+                loopback: false,
+                ..Default::default()
+            },
+            switch.clone(),
+            "backplane/api",
+        )
+        .unwrap();
+        let mut worker = SimNet::new_with_switch(
+            SimNetConfig {
+                loopback: false,
+                rx_queue_frames: 1,
+                ..Default::default()
+            },
+            switch,
+            "backplane/worker",
+        )
+        .unwrap();
+
+        api.write_frame(b"first");
+        api.write_frame(b"second");
+
+        assert_eq!(worker.stats().dropped, 1);
+        assert_eq!(
+            worker.trace()[0].drop_reason,
+            Some(SimNetDropReason::ReceiveQueue)
+        );
+        let mut buffer = [0; 16];
+        assert_eq!(worker.read_frame(&mut buffer), Some(5));
+        assert_eq!(&buffer[..5], b"first");
     }
 
     #[test]
