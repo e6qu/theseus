@@ -123,6 +123,8 @@ struct NetworkConfig {
     #[serde(default)]
     jitter_rounds: u32,
     #[serde(default)]
+    duplicate_ppm: u32,
+    #[serde(default)]
     tx_bytes_per_round: u64,
 }
 
@@ -206,6 +208,8 @@ struct NetworkTraffic {
     tx_frames: u64,
     rx_frames: u64,
     dropped: u64,
+    #[serde(default)]
+    duplicated: u64,
 }
 
 impl NetworkTraffic {
@@ -213,6 +217,7 @@ impl NetworkTraffic {
         self.tx_frames = self.tx_frames.saturating_add(other.tx_frames);
         self.rx_frames = self.rx_frames.saturating_add(other.rx_frames);
         self.dropped = self.dropped.saturating_add(other.dropped);
+        self.duplicated = self.duplicated.saturating_add(other.duplicated);
     }
 }
 
@@ -343,6 +348,7 @@ impl ServiceVm {
                         tx_frames: stats.tx_frames,
                         rx_frames: stats.rx_frames,
                         dropped: stats.dropped,
+                        duplicated: stats.duplicated,
                     },
                 ))
             })
@@ -1194,6 +1200,7 @@ fn build_service(
                     seed: service.run.run.seed,
                     loopback: service.run.network.loopback,
                     drop_ppm: service.run.network.drop_ppm,
+                    duplicate_ppm: service.run.network.duplicate_ppm,
                     partitioned: service.run.network.partitioned,
                     latency_rounds: service.run.network.latency_rounds,
                     jitter_rounds: service.run.network.jitter_rounds,
@@ -1367,6 +1374,7 @@ mod tests {
                 tx_frames: 3,
                 rx_frames: 2,
                 dropped: 1,
+                duplicated: 0,
             }
         );
         fs::remove_dir_all(bundle).unwrap();
