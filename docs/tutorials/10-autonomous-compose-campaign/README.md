@@ -22,6 +22,8 @@ Start with `compose.yaml`.
    a named network. `storage_fault` changes one named simulated drive. Give
    these actions `after: <operation>`; Theseus applies them immediately after
    that operation reports its checkpoint.
+   `link_partition` and `link_heal` are narrower: give them `network`, `from`,
+   and `to` to block or restore only that directed service-to-service path.
 4. Add properties. `always` needs every timeline to contain the assertion.
    `sometimes` and `reachable` need one witness. `unreachable` needs none.
 5. Run `theseus compose explore`.

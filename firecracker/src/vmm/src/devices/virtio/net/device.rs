@@ -482,6 +482,24 @@ impl Net {
         }
     }
 
+    /// Block or restore one directed path from this simulated NIC to another
+    /// simulated NIC on the same topology switch. Returns false for a host
+    /// TAP or standalone simulated backend.
+    pub fn set_simulated_link_blocked(&mut self, destination: &str, blocked: bool) -> bool {
+        match &mut self.backend {
+            NetBackend::Sim(sim) => sim.set_link_blocked(destination, blocked),
+            NetBackend::Tap(_) => false,
+        }
+    }
+
+    /// Return this simulated NIC's stable topology-switch port name.
+    pub fn simulated_endpoint(&self) -> Option<String> {
+        match &self.backend {
+            NetBackend::Sim(sim) => sim.endpoint().map(str::to_owned),
+            NetBackend::Tap(_) => None,
+        }
+    }
+
     /// Deterministic frame counters, if this device uses the simulated backend.
     pub fn simulated_stats(&self) -> Option<SimNetStats> {
         match &self.backend {

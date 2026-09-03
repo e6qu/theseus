@@ -27,6 +27,7 @@ fi
 grep -a '"name": "consistent_read"' theseus-compose-campaign/campaign-result.json
 grep -a '"status": "failed"' theseus-compose-campaign/campaign-result.json
 grep -a '"kind": "partition"' theseus-compose-campaign/campaign-result.json
+grep -a '"kind": "link_partition"' theseus-compose-campaign/campaign-result.json
 grep -a '"kind": "storage_fault"' theseus-compose-campaign/campaign-result.json
 if theseus compose explore --minimize theseus-compose-campaign --output stale-read-replay; then
     echo 'expected the minimized stale-read counterexample' >&2
