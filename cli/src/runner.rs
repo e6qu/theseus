@@ -152,7 +152,7 @@ impl fmt::Display for RunError {
             }
             Self::UnsupportedNetworkFaults => write!(
                 formatter,
-                "network drop and partition schedules need a topology; they arrive in P6.4"
+                "simulated network settings need a topology; use `theseus compose test`"
             ),
             Self::UnsupportedStorageFaults => write!(
                 formatter,
@@ -333,7 +333,13 @@ fn execute(
     artifact_base: &Path,
     run_directory: &Path,
 ) -> Result<Execution, RunError> {
-    if plan.network.drop_ppm != 0 || plan.network.partitioned {
+    if plan.network.loopback
+        || plan.network.drop_ppm != 0
+        || plan.network.partitioned
+        || plan.network.latency_rounds != 0
+        || plan.network.jitter_rounds != 0
+        || plan.network.tx_bytes_per_round != 0
+    {
         return Err(RunError::UnsupportedNetworkFaults);
     }
     verify_artifact(artifact_base, &plan.runtime.firecracker)?;

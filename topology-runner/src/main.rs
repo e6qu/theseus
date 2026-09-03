@@ -122,6 +122,8 @@ struct NetworkConfig {
     latency_rounds: u32,
     #[serde(default)]
     jitter_rounds: u32,
+    #[serde(default)]
+    tx_bytes_per_round: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -240,6 +242,15 @@ impl ServiceVm {
             .lock()
             .expect("VMM lock poisoned")
             .pump_simulated_devices();
+    }
+
+    fn advance_simulated_networks(&self) -> Result<(), String> {
+        for (_, net) in &self.networks {
+            net.lock()
+                .map_err(|_| "simulated network lock poisoned".to_owned())?
+                .advance_simulated_round();
+        }
+        Ok(())
     }
     fn exited(&self) -> Option<FcExitCode> {
         self.vmm
@@ -531,7 +542,7 @@ fn execute(
             }
             services.insert(name.clone(), service);
         }
-        advance_network_round(&switches)?;
+        advance_network_round(&switches, &services)?;
     }
     let network_sha256 = network_fingerprint(&switches)?;
     fs::write(
@@ -828,7 +839,13 @@ fn network_fingerprint(switches: &BTreeMap<String, SharedSimSwitch>) -> Result<S
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-fn advance_network_round(switches: &BTreeMap<String, SharedSimSwitch>) -> Result<(), String> {
+fn advance_network_round(
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    services: &BTreeMap<String, ServiceRuntime>,
+) -> Result<(), String> {
+    for service in services.values() {
+        service.vm.advance_simulated_networks()?;
+    }
     for switch in switches.values() {
         switch
             .lock()
@@ -1180,6 +1197,7 @@ fn build_service(
                     partitioned: service.run.network.partitioned,
                     latency_rounds: service.run.network.latency_rounds,
                     jitter_rounds: service.run.network.jitter_rounds,
+                    tx_bytes_per_round: service.run.network.tx_bytes_per_round,
                 },
                 switch,
                 format!("{network}/{name}-{instance}"),
