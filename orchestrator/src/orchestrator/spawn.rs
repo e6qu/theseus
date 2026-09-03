@@ -412,6 +412,7 @@ mod tests {
                     seed: 0,
                     loopback: true,
                     drop_ppm: 100_000 * idx as u32,
+                    duplicate_ppm: 0,
                     partitioned: idx == 2,
                     latency_rounds: 0,
                     jitter_rounds: 0,

@@ -27,6 +27,7 @@ pub enum LoadError {
         reason: String,
     },
     InvalidNetworkDropRate(u32),
+    InvalidNetworkDuplicateRate(u32),
     InvalidRunConfig(String),
     InvalidExplore(String),
     InvalidStorage(String),
@@ -64,6 +65,12 @@ impl fmt::Display for LoadError {
                 write!(
                     formatter,
                     "network.drop_ppm must be at most 1000000, got {rate}"
+                )
+            }
+            Self::InvalidNetworkDuplicateRate(rate) => {
+                write!(
+                    formatter,
+                    "network.duplicate_ppm must be at most 1000000, got {rate}"
                 )
             }
             Self::InvalidRunConfig(reason) => write!(formatter, "run: {reason}"),
@@ -151,6 +158,8 @@ struct Network {
     loopback: bool,
     #[serde(default)]
     drop_ppm: u32,
+    #[serde(default)]
+    duplicate_ppm: u32,
     #[serde(default)]
     partitioned: bool,
     #[serde(default)]
@@ -277,6 +286,8 @@ pub struct EventPlan {
 pub struct NetworkPlan {
     pub loopback: bool,
     pub drop_ppm: u32,
+    #[serde(default)]
+    pub duplicate_ppm: u32,
     pub partitioned: bool,
     #[serde(default)]
     pub latency_rounds: u32,
@@ -371,6 +382,11 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
     if manifest.network.drop_ppm > 1_000_000 {
         return Err(LoadError::InvalidNetworkDropRate(manifest.network.drop_ppm));
     }
+    if manifest.network.duplicate_ppm > 1_000_000 {
+        return Err(LoadError::InvalidNetworkDuplicateRate(
+            manifest.network.duplicate_ppm,
+        ));
+    }
     if manifest.run.vcpu_count == 0 {
         return Err(LoadError::InvalidRunConfig(
             "vcpu_count must be greater than zero".to_owned(),
@@ -464,6 +480,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
         network: NetworkPlan {
             loopback: manifest.network.loopback,
             drop_ppm: manifest.network.drop_ppm,
+            duplicate_ppm: manifest.network.duplicate_ppm,
             partitioned: manifest.network.partitioned,
             latency_rounds: manifest.network.latency_rounds,
             jitter_rounds: manifest.network.jitter_rounds,
@@ -749,6 +766,7 @@ data = "Aa00"
 [network]
 loopback = true
 drop_ppm = 100
+duplicate_ppm = 200
 partitioned = false
 latency_rounds = 2
 jitter_rounds = 1
@@ -769,6 +787,7 @@ corrupt_read_xor = 1
         assert_eq!(plan.run.seed, 42);
         assert_eq!(plan.events[0].data_hex, "aa00");
         assert_eq!(plan.network.drop_ppm, 100);
+        assert_eq!(plan.network.duplicate_ppm, 200);
         assert_eq!(plan.network.latency_rounds, 2);
         assert_eq!(plan.network.jitter_rounds, 1);
         assert_eq!(plan.network.tx_bytes_per_round, 512);

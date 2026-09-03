@@ -323,9 +323,10 @@ below must have a runnable example and narrow acceptance tests.
 | P8.9 | **`network: add deterministic frame delay`** | **DONE (PR #42).** Delay each simulated frame by a configured number of scheduler rounds, shared consistently by all services in a topology. | Wall-clock timers, packet reordering, bandwidth limits, or jitter. |
 | P8.10 | **`replay: verify Compose virtual time`** | **DONE (PR #43).** Record each service's final per-vCPU virtual-clock values and reject a replay when they differ. | Instruction-level clock virtualization, wall-clock behavior, or cross-version replay guarantees. |
 | P8.11 | **`network: add deterministic frame jitter`** | **DONE (PR #44).** Add a seeded, per-frame scheduler-round delay that can reorder simulated-network delivery without using host time. | Wall-clock timers, bandwidth limits, or random host scheduling. |
-| P8.12 | **`network: add deterministic bandwidth`** | Limit each simulated NIC's outbound bytes per scheduler round with a deterministic transmit queue. | Host-time rate limiters, congestion control, or packet fragmentation. |
+| P8.12 | **`network: add deterministic bandwidth`** | **DONE (PR #45).** Limit each simulated NIC's outbound bytes per scheduler round with a deterministic transmit queue. | Host-time rate limiters, congestion control, or packet fragmentation. |
+| P8.13 | **`network: add deterministic frame duplication`** | Duplicate selected simulated frames from a seeded per-frame stream, using the same bandwidth and delivery queue as their originals. | Packet corruption, protocol-aware faults, or host traffic. |
 
-**Current PR: P8.12 only.** The manifest is an execution contract, not a second
+**Current PR: P8.13 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what

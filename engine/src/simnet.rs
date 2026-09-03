@@ -12,6 +12,8 @@
 //! - **partition**: all traffic is dropped in both directions
 //! - **deterministic random drops**: per-frame drops driven by a seeded ChaCha
 //!   stream, so a given seed + frame sequence always produces the same drops
+//! - **deterministic duplication**: an accepted frame can be sent twice through
+//!   the same simulated link
 //!
 //! Frame delay, jitter, and bandwidth all advance in deterministic runner
 //! rounds, never host time.
@@ -37,6 +39,11 @@ pub struct SimNetConfig {
     /// directions), driven by the seeded RNG. 0 = never drop.
     #[serde(default)]
     pub drop_ppm: u32,
+    /// Duplication probability, parts per million, applied after a frame is
+    /// accepted. A duplicate travels through the same simulated link. 0 =
+    /// never duplicate.
+    #[serde(default)]
+    pub duplicate_ppm: u32,
     /// Simulate a total network partition: drop everything.
     #[serde(default)]
     pub partitioned: bool,
@@ -59,6 +66,7 @@ impl Default for SimNetConfig {
             seed: 0,
             loopback: true,
             drop_ppm: 0,
+            duplicate_ppm: 0,
             partitioned: false,
             latency_rounds: 0,
             jitter_rounds: 0,
@@ -76,6 +84,8 @@ pub struct SimNetStats {
     pub rx_frames: u64,
     /// Frames dropped by the simulated backend.
     pub dropped: u64,
+    /// Extra frames created by deterministic duplication.
+    pub duplicated: u64,
 }
 
 #[derive(Debug)]
@@ -109,6 +119,8 @@ pub struct SimNet {
     pub rx_frames: u64,
     /// Frames dropped by partition or the drop stream.
     pub dropped: u64,
+    /// Extra frames queued by the deterministic duplication stream.
+    pub duplicated: u64,
     /// A shared deterministic L2 switch for a multi-guest topology. `None`
     /// retains the single-guest loopback backend used by the Firecracker API.
     switch: Option<SharedSimSwitch>,
@@ -241,6 +253,7 @@ impl SimNet {
             tx_frames: 0,
             rx_frames: 0,
             dropped: 0,
+            duplicated: 0,
             switch: None,
             endpoint: None,
         }
@@ -272,6 +285,7 @@ impl SimNet {
             tx_frames: 0,
             rx_frames: 0,
             dropped: 0,
+            duplicated: 0,
             switch: Some(switch),
             endpoint: Some(endpoint),
         })
@@ -287,6 +301,7 @@ impl SimNet {
             tx_frames: self.tx_frames,
             rx_frames: self.rx_frames,
             dropped: self.dropped,
+            duplicated: self.duplicated,
         }
     }
 
@@ -312,6 +327,15 @@ impl SimNet {
             return false;
         }
         self.rng.next_u32() % 1_000_000 < self.config.drop_ppm
+    }
+
+    /// Deterministic per-frame duplication decision, evaluated only after a
+    /// frame survived dropping.
+    fn should_duplicate(&mut self) -> bool {
+        if self.config.duplicate_ppm == 0 {
+            return false;
+        }
+        self.rng.next_u32() % 1_000_000 < self.config.duplicate_ppm
     }
 
     /// The base delay plus a seeded, per-frame jitter. Use a u64 modulus so
@@ -385,6 +409,13 @@ impl SimNet {
             delay_rounds,
             bytes: frame.to_vec(),
         });
+        if self.should_duplicate() {
+            self.tx_queue.push_back(PendingTransmit {
+                delay_rounds,
+                bytes: frame.to_vec(),
+            });
+            self.duplicated += 1;
+        }
         self.drain_transmit_queue();
     }
 
@@ -461,6 +492,7 @@ mod tests {
                 tx_frames: 1,
                 rx_frames: 1,
                 dropped: 0,
+                duplicated: 0,
             }
         );
     }
@@ -557,6 +589,25 @@ mod tests {
     }
 
     #[test]
+    fn test_duplication_uses_the_simulated_link() {
+        let mut sim = SimNet::new(SimNetConfig {
+            duplicate_ppm: 1_000_000,
+            tx_bytes_per_round: 3,
+            ..Default::default()
+        });
+        sim.write_frame(b"one");
+
+        let mut buffer = [0; 16];
+        let length = sim.read_frame(&mut buffer).unwrap();
+        assert_eq!(&buffer[..length], b"one");
+        assert!(!sim.has_pending_rx(), "the duplicate waits for link budget");
+        sim.advance_round();
+        let length = sim.read_frame(&mut buffer).unwrap();
+        assert_eq!(&buffer[..length], b"one");
+        assert_eq!(sim.stats().duplicated, 1);
+    }
+
+    #[test]
     fn test_shared_switch_delivers_ready_frames_before_earlier_delayed_frames() {
         let mut switch = SimSwitch::new();
         switch.attach("api").unwrap();
@@ -577,6 +628,7 @@ mod tests {
             seed: 1234,
             loopback: true,
             drop_ppm: 500_000, // drop ~half
+            duplicate_ppm: 0,
             partitioned: false,
             latency_rounds: 0,
             jitter_rounds: 0,

@@ -456,6 +456,7 @@ fn validate(plan: &RunPlan) -> Result<(), ExploreError> {
     if !plan.storage.is_empty()
         || plan.network.loopback
         || plan.network.drop_ppm != 0
+        || plan.network.duplicate_ppm != 0
         || plan.network.partitioned
         || plan.network.latency_rounds != 0
         || plan.network.jitter_rounds != 0

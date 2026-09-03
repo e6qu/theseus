@@ -19,6 +19,7 @@ data = "70696e670a"
 
 [network]
 loopback = false
+duplicate_ppm = 1000000
 latency_rounds = 1
 jitter_rounds = 1
 tx_bytes_per_round = 4096

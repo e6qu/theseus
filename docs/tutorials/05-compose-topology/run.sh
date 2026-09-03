@@ -20,6 +20,7 @@ for service in api worker; do
 done
 
 theseus compose test
+grep -a '"duplicate_ppm": 1000000' theseus-compose-replay/replay-plan.json
 grep -a '"jitter_rounds": 1' theseus-compose-replay/replay-plan.json
 grep -a '"tx_bytes_per_round": 4096' theseus-compose-replay/replay-plan.json
 grep -a '^ping passed$' theseus-compose-replay/services/api/serial.log

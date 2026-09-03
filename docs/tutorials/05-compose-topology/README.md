@@ -26,3 +26,7 @@ traffic counters with the original.
 `tx_bytes_per_round` limits each service's outbound link. It refills at every
 topology round; `0` leaves it unlimited. A frame larger than the budget uses a
 full round, so it still makes progress.
+
+`duplicate_ppm = 1000000` duplicates every accepted frame in this example.
+The copies use the same simulated link, so bandwidth, delay, and jitter still
+apply. Linux networking tolerates these duplicate ARP and ping frames.
