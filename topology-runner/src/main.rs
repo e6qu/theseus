@@ -64,9 +64,40 @@ struct CampaignOperation {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct CampaignFault {
-    service: String,
-    #[serde(flatten)]
-    fault: FaultPlan,
+    kind: CampaignFaultKind,
+    #[serde(default)]
+    service: Option<String>,
+    #[serde(default)]
+    network: Option<String>,
+    #[serde(default)]
+    drive: Option<String>,
+    #[serde(default)]
+    after: Option<String>,
+    #[serde(default)]
+    at_round: Option<u64>,
+    #[serde(default)]
+    duration_rounds: Option<u64>,
+    #[serde(default)]
+    nanoseconds: Option<u64>,
+    #[serde(default)]
+    error_ppm: Option<u32>,
+    #[serde(default)]
+    latency_rounds: Option<u32>,
+    #[serde(default)]
+    torn_write_bytes: Option<u32>,
+    #[serde(default)]
+    corrupt_read_xor: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CampaignFaultKind {
+    Pause,
+    Restart,
+    ClockJump,
+    Partition,
+    Heal,
+    StorageFault,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -102,6 +133,8 @@ struct CampaignRun {
     operations: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    actions: Vec<AppliedCampaignAction>,
     status: &'static str,
     novelty: Vec<String>,
 }
@@ -240,13 +273,37 @@ struct StoragePlan {
     corrupt_read_xor: Option<u8>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct EventPlan {
     data_hex: String,
     /// Campaign operations use an explicit serial barrier.  Ordinary manifest
     /// events leave it absent and retain the original fire-and-forget mode.
     #[serde(default)]
     checkpoint: Option<String>,
+    /// Topology mutations deliberately occur only after the event's serial
+    /// checkpoint, so the next operation observes the new state.
+    #[serde(default)]
+    actions: Vec<CampaignAction>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct CampaignAction {
+    operation: String,
+    kind: CampaignFaultKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    network: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drive: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_ppm: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latency_rounds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    torn_write_bytes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    corrupt_read_xor: Option<u8>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -391,6 +448,18 @@ fn traffic_matches(
 #[derive(Deserialize, Serialize)]
 struct TopologyResult {
     network_sha256: String,
+    #[serde(default)]
+    actions: Vec<AppliedCampaignAction>,
+}
+
+/// Durable evidence that a campaign changed the topology.  This is part of
+/// the replay fingerprint, rather than a host-side log that replay ignores.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct AppliedCampaignAction {
+    operation: String,
+    kind: String,
+    target: String,
+    detail: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -497,6 +566,56 @@ impl ServiceVm {
                 Ok((plan.id.clone(), format!("{:x}", Sha256::digest(bytes))))
             })
             .collect()
+    }
+
+    fn set_network_partition(&self, network: &str, partitioned: bool) -> Result<usize, String> {
+        let mut changed = 0;
+        for (name, net) in &self.networks {
+            if name != network {
+                continue;
+            }
+            if !net
+                .lock()
+                .map_err(|_| "simulated network lock poisoned".to_owned())?
+                .set_simulated_partitioned(partitioned)
+            {
+                return Err(format!("network is not simulated: {network}"));
+            }
+            changed += 1;
+        }
+        Ok(changed)
+    }
+
+    fn set_storage_fault(
+        &self,
+        storage: &[StoragePlan],
+        drive: &str,
+        error_ppm: u32,
+        latency_rounds: u32,
+        torn_write_bytes: Option<u32>,
+        corrupt_read_xor: Option<u8>,
+    ) -> Result<(), String> {
+        let index = storage
+            .iter()
+            .position(|item| item.id == drive)
+            .ok_or_else(|| format!("storage drive disappeared: {drive}"))?;
+        let block = self
+            .storage
+            .get(index)
+            .ok_or_else(|| format!("simulated storage disappeared: {drive}"))?;
+        if !block
+            .lock()
+            .map_err(|_| "simulated storage lock poisoned".to_owned())?
+            .set_simulated_faults(
+                error_ppm,
+                latency_rounds,
+                torn_write_bytes,
+                corrupt_read_xor,
+            )
+        {
+            return Err(format!("storage is not simulated: {drive}"));
+        }
+        Ok(())
     }
 
     fn network_traffic(&self) -> Result<BTreeMap<String, NetworkTraffic>, String> {
@@ -624,6 +743,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let expected_serial = recorded_serial_fingerprints(Path::new(plan), &service_names)?;
     let expected_faults = recorded_fault_fingerprints(Path::new(plan), &service_names)?;
     let expected_network = recorded_network_fingerprint(Path::new(plan))?;
+    let expected_actions = recorded_campaign_actions(Path::new(plan))?;
     let expected_storage = recorded_storage_fingerprints(Path::new(plan), &service_names)?;
     let expected_traffic = recorded_network_traffic(Path::new(plan), &service_names)?;
     let expected_virtual_time = recorded_virtual_times(Path::new(plan), &service_names)?;
@@ -639,6 +759,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         if expected_serial.is_some()
             || expected_faults.is_some()
             || expected_network.is_some()
+            || expected_actions.is_some()
             || expected_storage.is_some()
             || expected_traffic.is_some()
             || expected_virtual_time.is_some()
@@ -663,6 +784,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             expected_serial,
             expected_faults,
             expected_network,
+            expected_actions,
             expected_storage,
             expected_traffic,
             expected_virtual_time,
@@ -696,8 +818,9 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
             .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
         apply_campaign_schedule(&mut run, &campaign, schedule)?;
         let run_dir = output.join("runs").join(format!("{index:03}"));
-        let status = execute(run, &run_dir, None, None, None, None, None, None);
+        let status = execute(run, &run_dir, None, None, None, None, None, None, None);
         let markers = campaign_markers(&run_dir)?;
+        let actions = campaign_actions(&run_dir)?;
         let novelty = markers
             .into_iter()
             .filter(|marker| seen_markers.insert(marker.clone()))
@@ -712,6 +835,7 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
             fault: schedule
                 .fault
                 .map(|fault| campaign_fault_name(&campaign.faults[fault])),
+            actions,
             status: if status.is_ok() { "passed" } else { "failed" },
             novelty,
         });
@@ -758,6 +882,15 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
             output.display()
         ))
     }
+}
+
+fn campaign_actions(run: &Path) -> Result<Vec<AppliedCampaignAction>, String> {
+    let result_path = run.join("topology-result.json");
+    let result = fs::read(&result_path)
+        .map_err(|error| format!("cannot read {}: {error}", result_path.display()))?;
+    serde_json::from_slice::<TopologyResult>(&result)
+        .map(|result| result.actions)
+        .map_err(|error| format!("cannot parse {}: {error}", result_path.display()))
 }
 
 /// Delta-debug the first timeline that violates an individual property.  The
@@ -809,7 +942,7 @@ fn execute_campaign_minimized(
         let mut plan: TopologyPlan = serde_json::from_slice(&base)
             .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
         apply_campaign_schedule(&mut plan, &campaign, &candidate)?;
-        let _ = execute(plan, &directory, None, None, None, None, None, None);
+        let _ = execute(plan, &directory, None, None, None, None, None, None, None);
         if property_fails_in_run(&property, &directory) {
             schedule = candidate;
         } else {
@@ -820,7 +953,7 @@ fn execute_campaign_minimized(
         .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
     apply_campaign_schedule(&mut final_plan, &campaign, &schedule)?;
     add_counterexample_check(&mut final_plan, &campaign, &property)?;
-    execute(final_plan, output, None, None, None, None, None, None)?;
+    execute(final_plan, output, None, None, None, None, None, None, None)?;
     let minimized_operations = schedule
         .operations
         .iter()
@@ -991,14 +1124,38 @@ fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
             fault: None,
         });
         for fault in 0..campaign.faults.len() {
-            schedules.push(CampaignSchedule {
-                operations: history.clone(),
-                fault: Some(fault),
-            });
+            if campaign_fault_applies(&campaign.faults[fault], &history, campaign) {
+                schedules.push(CampaignSchedule {
+                    operations: history.clone(),
+                    fault: Some(fault),
+                });
+            }
         }
     }
     schedules.truncate(usize::from(campaign.max_runs));
     schedules
+}
+
+fn campaign_fault_applies(
+    fault: &CampaignFault,
+    history: &[usize],
+    campaign: &CampaignPlan,
+) -> bool {
+    match fault.kind {
+        CampaignFaultKind::Pause | CampaignFaultKind::Restart | CampaignFaultKind::ClockJump => {
+            true
+        }
+        CampaignFaultKind::Partition
+        | CampaignFaultKind::Heal
+        | CampaignFaultKind::StorageFault => {
+            let Some(after) = &fault.after else {
+                return false;
+            };
+            history
+                .iter()
+                .any(|operation| campaign.operations[*operation].name == *after)
+        }
+    }
 }
 
 fn apply_campaign_schedule(
@@ -1006,55 +1163,116 @@ fn apply_campaign_schedule(
     campaign: &CampaignPlan,
     schedule: &CampaignSchedule,
 ) -> Result<(), String> {
+    let selected = schedule.fault.map(|index| &campaign.faults[index]);
+    let events = schedule
+        .operations
+        .iter()
+        .map(|operation| {
+            let operation = &campaign.operations[*operation];
+            let actions = selected
+                .filter(|candidate| candidate.after.as_deref() == Some(&operation.name))
+                .map(campaign_action)
+                .transpose()?
+                .into_iter()
+                .collect();
+            Ok(EventPlan {
+                data_hex: operation.input_hex.clone(),
+                checkpoint: Some(format!("THES:CHECKPOINT:{}", operation.name)),
+                actions,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let driver = topology
         .services
         .get_mut(&campaign.driver)
         .ok_or_else(|| format!("campaign driver disappeared: {}", campaign.driver))?;
-    driver.run.events = schedule
-        .operations
-        .iter()
-        .map(|operation| EventPlan {
-            data_hex: campaign.operations[*operation].input_hex.clone(),
-            checkpoint: Some(format!(
-                "THES:CHECKPOINT:{}",
-                campaign.operations[*operation].name
-            )),
-        })
-        .collect();
+    driver.run.events = events;
     if let Some(fault) = schedule.fault {
         let candidate = &campaign.faults[fault];
-        topology
-            .services
-            .get_mut(&candidate.service)
-            .ok_or_else(|| format!("campaign fault service disappeared: {}", candidate.service))?
-            .faults
-            .push(FaultPlan {
-                at_round: candidate.fault.at_round,
-                kind: match candidate.fault.kind {
-                    FaultKind::Pause => FaultKind::Pause,
-                    FaultKind::Restart => FaultKind::Restart,
-                    FaultKind::ClockJump => FaultKind::ClockJump,
-                },
-                duration_rounds: candidate.fault.duration_rounds,
-                nanoseconds: candidate.fault.nanoseconds,
+        if matches!(
+            candidate.kind,
+            CampaignFaultKind::Pause | CampaignFaultKind::Restart | CampaignFaultKind::ClockJump
+        ) {
+            let service = candidate
+                .service
+                .as_ref()
+                .expect("validated lifecycle service");
+            let at_round = candidate.at_round.expect("validated lifecycle round");
+            let kind = match candidate.kind {
+                CampaignFaultKind::Pause => FaultKind::Pause,
+                CampaignFaultKind::Restart => FaultKind::Restart,
+                CampaignFaultKind::ClockJump => FaultKind::ClockJump,
+                _ => unreachable!(),
+            };
+            let target = topology
+                .services
+                .get_mut(service)
+                .ok_or_else(|| format!("campaign fault service disappeared: {service}"))?;
+            target.faults.push(FaultPlan {
+                at_round,
+                kind,
+                duration_rounds: candidate.duration_rounds,
+                nanoseconds: candidate.nanoseconds,
             });
-        topology
-            .services
-            .get_mut(&candidate.service)
-            .expect("campaign fault service was checked")
-            .faults
-            .sort_by_key(|fault| fault.at_round);
+            target.faults.sort_by_key(|fault| fault.at_round);
+        }
     }
     Ok(())
 }
 
+fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
+    let operation = fault
+        .after
+        .clone()
+        .ok_or_else(|| "campaign topology action has no operation barrier".to_owned())?;
+    Ok(CampaignAction {
+        operation,
+        kind: fault.kind,
+        service: fault.service.clone(),
+        network: fault.network.clone(),
+        drive: fault.drive.clone(),
+        error_ppm: fault.error_ppm,
+        latency_rounds: fault.latency_rounds,
+        torn_write_bytes: fault.torn_write_bytes,
+        corrupt_read_xor: fault.corrupt_read_xor,
+    })
+}
+
 fn campaign_fault_name(fault: &CampaignFault) -> String {
-    let kind = match fault.fault.kind {
-        FaultKind::Pause => "pause",
-        FaultKind::Restart => "restart",
-        FaultKind::ClockJump => "clock_jump",
-    };
-    format!("{}:{kind}@{}", fault.service, fault.fault.at_round)
+    match fault.kind {
+        CampaignFaultKind::Pause | CampaignFaultKind::Restart | CampaignFaultKind::ClockJump => {
+            let kind = match fault.kind {
+                CampaignFaultKind::Pause => "pause",
+                CampaignFaultKind::Restart => "restart",
+                CampaignFaultKind::ClockJump => "clock_jump",
+                _ => unreachable!(),
+            };
+            format!(
+                "{}:{kind}@{}",
+                fault
+                    .service
+                    .as_deref()
+                    .expect("validated lifecycle service"),
+                fault.at_round.expect("validated lifecycle round")
+            )
+        }
+        CampaignFaultKind::Partition | CampaignFaultKind::Heal => format!(
+            "{}:{}@{}",
+            fault.network.as_deref().expect("validated action network"),
+            match fault.kind {
+                CampaignFaultKind::Partition => "partition",
+                CampaignFaultKind::Heal => "heal",
+                _ => unreachable!(),
+            },
+            fault.after.as_deref().expect("validated action operation")
+        ),
+        CampaignFaultKind::StorageFault => format!(
+            "{}:{}:storage_fault@{}",
+            fault.service.as_deref().expect("validated storage service"),
+            fault.drive.as_deref().expect("validated storage drive"),
+            fault.after.as_deref().expect("validated action operation")
+        ),
+    }
 }
 
 fn campaign_markers(run: &Path) -> Result<Vec<String>, String> {
@@ -1170,6 +1388,7 @@ fn execute(
     expected_serial: Option<BTreeMap<String, Vec<String>>>,
     expected_faults: Option<BTreeMap<String, String>>,
     expected_network: Option<String>,
+    expected_actions: Option<Vec<AppliedCampaignAction>>,
     expected_storage: Option<BTreeMap<String, BTreeMap<String, String>>>,
     expected_traffic: Option<BTreeMap<String, BTreeMap<String, NetworkTraffic>>>,
     expected_virtual_time: Option<BTreeMap<String, Option<Vec<u64>>>>,
@@ -1252,13 +1471,26 @@ fn execute(
         let service = &services[name];
         service.vm.resume()?;
     }
+    let mut actions = Vec::new();
     for name in &names {
-        let service = &services[name];
-        inject_serial_events(
-            &service.vm,
-            &topology.services[name].run.events,
-            &service.serial_logs[0],
+        let events = topology.services[name].run.events.clone();
+        if events.iter().all(|event| event.actions.is_empty()) {
+            let service = &services[name];
+            inject_serial_events(&service.vm, &events, &service.serial_logs[0])?;
+            continue;
+        }
+        let mut driver = services.remove(name).expect("topology service missing");
+        let serial = driver.serial_logs[0].clone();
+        inject_campaign_events(
+            name,
+            &mut driver,
+            &events,
+            &serial,
+            &topology,
+            &mut services,
+            &mut actions,
         )?;
+        services.insert(name.clone(), driver);
     }
     let timeout = topology
         .services
@@ -1296,11 +1528,22 @@ fn execute(
         output.join("topology-result.json"),
         serde_json::to_vec_pretty(&TopologyResult {
             network_sha256: network_sha256.clone(),
+            actions: actions.clone(),
         })
         .unwrap(),
     )
     .map_err(|error| error.to_string())?;
     let mut failed = false;
+    if let Some(expected) = &expected_actions {
+        if expected != &actions {
+            failed = true;
+            fs::write(
+                output.join("replay-actions-mismatch.txt"),
+                "campaign topology actions differ from the original replay bundle\n",
+            )
+            .map_err(|error| error.to_string())?;
+        }
+    }
     for (name, service) in &mut services {
         service.record_network_traffic()?;
         service.record_network_trace()?;
@@ -1489,6 +1732,23 @@ fn recorded_network_fingerprint(plan: &Path) -> Result<Option<String>, String> {
     match fs::read(&result_path) {
         Ok(result) => serde_json::from_slice::<TopologyResult>(&result)
             .map(|result| Some(result.network_sha256))
+            .map_err(|error| format!("cannot parse {}: {error}", result_path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("cannot read {}: {error}", result_path.display())),
+    }
+}
+
+fn recorded_campaign_actions(plan: &Path) -> Result<Option<Vec<AppliedCampaignAction>>, String> {
+    if plan.file_name().and_then(|name| name.to_str()) != Some("replay-plan.json") {
+        return Ok(None);
+    }
+    let result_path = plan
+        .parent()
+        .ok_or_else(|| format!("replay plan has no parent directory: {}", plan.display()))?
+        .join("topology-result.json");
+    match fs::read(&result_path) {
+        Ok(result) => serde_json::from_slice::<TopologyResult>(&result)
+            .map(|result| Some(result.actions))
             .map_err(|error| format!("cannot parse {}: {error}", result_path.display())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("cannot read {}: {error}", result_path.display())),
@@ -1821,6 +2081,133 @@ fn inject_serial_events(
     Ok(())
 }
 
+fn inject_campaign_events(
+    driver_name: &str,
+    driver: &mut ServiceRuntime,
+    events: &[EventPlan],
+    serial_log: &Path,
+    topology: &TopologyPlan,
+    services: &mut BTreeMap<String, ServiceRuntime>,
+    recorded: &mut Vec<AppliedCampaignAction>,
+) -> Result<(), String> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    wait_for_serial(serial_log, b"THES:M:42", "serial readiness")?;
+    for event in events {
+        driver.vm.push_serial_input(&decode_hex(&event.data_hex)?)?;
+        if let Some(checkpoint) = &event.checkpoint {
+            wait_for_serial(
+                serial_log,
+                checkpoint.as_bytes(),
+                "campaign operation checkpoint",
+            )?;
+        }
+        for action in &event.actions {
+            recorded.push(apply_campaign_action(
+                action,
+                driver_name,
+                driver,
+                topology,
+                services,
+            )?);
+        }
+    }
+    Ok(())
+}
+
+fn apply_campaign_action(
+    action: &CampaignAction,
+    driver_name: &str,
+    driver: &mut ServiceRuntime,
+    topology: &TopologyPlan,
+    services: &mut BTreeMap<String, ServiceRuntime>,
+) -> Result<AppliedCampaignAction, String> {
+    match action.kind {
+        CampaignFaultKind::Partition | CampaignFaultKind::Heal => {
+            let network = action
+                .network
+                .as_deref()
+                .ok_or_else(|| "campaign action has no network".to_owned())?;
+            let partitioned = matches!(action.kind, CampaignFaultKind::Partition);
+            let mut endpoints = driver.vm.set_network_partition(network, partitioned)?;
+            for service in services.values() {
+                endpoints += service.vm.set_network_partition(network, partitioned)?;
+            }
+            if endpoints == 0 {
+                return Err(format!(
+                    "campaign action network has no endpoints: {network}"
+                ));
+            }
+            Ok(AppliedCampaignAction {
+                operation: action.operation.clone(),
+                kind: if partitioned { "partition" } else { "heal" }.to_owned(),
+                target: format!("network:{network}"),
+                detail: format!(
+                    "{} simulated NIC endpoint(s) {} after the operation barrier",
+                    endpoints,
+                    if partitioned { "partitioned" } else { "healed" }
+                ),
+            })
+        }
+        CampaignFaultKind::StorageFault => {
+            let service_name = action
+                .service
+                .as_deref()
+                .ok_or_else(|| "campaign storage action has no service".to_owned())?;
+            let drive = action
+                .drive
+                .as_deref()
+                .ok_or_else(|| "campaign storage action has no drive".to_owned())?;
+            let error_ppm = action.error_ppm.unwrap_or(0);
+            let latency_rounds = action.latency_rounds.unwrap_or(0);
+            let storage = &topology
+                .services
+                .get(service_name)
+                .ok_or_else(|| format!("campaign storage service disappeared: {service_name}"))?
+                .run
+                .storage;
+            if service_name == driver_name {
+                driver.vm.set_storage_fault(
+                    storage,
+                    drive,
+                    error_ppm,
+                    latency_rounds,
+                    action.torn_write_bytes,
+                    action.corrupt_read_xor,
+                )?;
+            } else {
+                services
+                    .get_mut(service_name)
+                    .ok_or_else(|| {
+                        format!("campaign storage service did not start: {service_name}")
+                    })?
+                    .vm
+                    .set_storage_fault(
+                        storage,
+                        drive,
+                        error_ppm,
+                        latency_rounds,
+                        action.torn_write_bytes,
+                        action.corrupt_read_xor,
+                    )?;
+            }
+            Ok(AppliedCampaignAction {
+                operation: action.operation.clone(),
+                kind: "storage_fault".to_owned(),
+                target: format!("service:{service_name}/drive:{drive}"),
+                detail: format!(
+                    "error_ppm={error_ppm}, latency_rounds={latency_rounds}, torn_write_bytes={:?}, corrupt_read_xor={:?}",
+                    action.torn_write_bytes, action.corrupt_read_xor
+                ),
+            })
+        }
+        CampaignFaultKind::Pause | CampaignFaultKind::Restart | CampaignFaultKind::ClockJump => {
+            Err("campaign lifecycle fault cannot be applied at an operation barrier".to_owned())
+        }
+    }
+}
+
 fn wait_for_serial(serial_log: &Path, needle: &[u8], purpose: &str) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -2095,6 +2482,32 @@ mod tests {
         assert_eq!(
             recorded_network_fingerprint(&bundle.join("replay-plan.json")).unwrap(),
             Some("recorded-network-digest".to_owned())
+        );
+        fs::remove_dir_all(bundle).unwrap();
+    }
+
+    #[test]
+    fn recorded_campaign_actions_use_topology_result() {
+        let bundle = std::env::temp_dir().join(format!(
+            "theseus-topology-action-fingerprint-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(bundle.join("replay-plan.json"), "{}").unwrap();
+        fs::write(
+            bundle.join("topology-result.json"),
+            r#"{"network_sha256":"network","actions":[{"operation":"write","kind":"partition","target":"network:backplane","detail":"two endpoints"}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            recorded_campaign_actions(&bundle.join("replay-plan.json")).unwrap(),
+            Some(vec![AppliedCampaignAction {
+                operation: "write".to_owned(),
+                kind: "partition".to_owned(),
+                target: "network:backplane".to_owned(),
+                detail: "two endpoints".to_owned(),
+            }])
         );
         fs::remove_dir_all(bundle).unwrap();
     }

@@ -98,9 +98,10 @@ the host-side random sources are seeded automatically from the run seed)
   observable result. That is the entire instrumentation surface: nothing
   needs to change in your system to *run* it, only to *judge* it.
 - **Choose seeds and fault schedules** for each run, or declare a Compose
-  campaign: UART operations, candidate faults, and runtime properties. Theseus
-  explores that deterministic corpus and reduces a violating operation history
-  to one replay bundle.
+  campaign: UART operations, lifecycle candidates, named-network
+  `partition`/`heal` actions, simulated-drive `storage_fault` actions, and
+  runtime properties. Theseus explores that deterministic corpus and reduces a
+  violating operation history to one replay bundle.
 - **Run on a Linux+KVM host** (on Apple Silicon, a privileged aarch64
   Docker container works).
 

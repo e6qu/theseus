@@ -455,6 +455,14 @@ impl SimNet {
         self.config
     }
 
+    /// Change whether this simulated link drops newly transmitted frames as a
+    /// partition. Queued frames are deliberately left alone: a topology
+    /// action changes the link from this point in the deterministic timeline,
+    /// without rewinding its seeded RNG or switch state.
+    pub fn set_partitioned(&mut self, partitioned: bool) {
+        self.config.partitioned = partitioned;
+    }
+
     /// Return deterministic frame counters for this NIC.
     pub fn stats(&self) -> SimNetStats {
         let ingress_dropped = if let (Some(switch), Some(endpoint)) = (&self.switch, &self.endpoint)
@@ -747,6 +755,25 @@ mod tests {
         assert_eq!(stats.corrupted, 0);
         assert_eq!(stats.tx_sha256, stats.rx_sha256);
         assert_ne!(stats.tx_sha256, [0; 32]);
+    }
+
+    #[test]
+    fn partition_state_changes_without_resetting_link_statistics() {
+        let mut sim = SimNet::new(SimNetConfig {
+            loopback: true,
+            ..Default::default()
+        });
+        sim.write_frame(&[1]);
+        assert_eq!(sim.stats().tx_frames, 1);
+        sim.set_partitioned(true);
+        sim.write_frame(&[2]);
+        assert!(sim.config().partitioned);
+        assert_eq!(sim.stats().tx_frames, 2);
+        assert_eq!(sim.stats().dropped, 1);
+        sim.set_partitioned(false);
+        sim.write_frame(&[3]);
+        assert!(!sim.config().partitioned);
+        assert_eq!(sim.stats().tx_frames, 3);
     }
 
     #[test]

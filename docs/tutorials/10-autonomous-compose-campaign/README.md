@@ -2,8 +2,8 @@
 
 Run every command from this directory. This tutorial creates three tiny Linux
 services. `api` accepts workload input. Theseus sends it named UART operations,
-restarts `replica` in selected timelines, and checks a runtime property from
-serial output.
+changes the simulated network or disk after selected operations, and checks a
+runtime property from serial output.
 
 ```sh
 export THESEUS_TAG=<12-character-sha>
@@ -18,7 +18,10 @@ Start with `compose.yaml`.
 2. List operations as ordinary text. Theseus injects them into the driver UART;
    after each input it waits for `THES:CHECKPOINT:<operation-name>` before it
    injects the next one. No SDK or host-side wrapper is required.
-3. List fault candidates. This tutorial restarts `replica` at topology round 2.
+3. List fault candidates. `partition` and `heal` change every simulated NIC on
+   a named network. `storage_fault` changes one named simulated drive. Give
+   these actions `after: <operation>`; Theseus applies them immediately after
+   that operation reports its checkpoint.
 4. Add properties. `always` needs every timeline to contain the assertion.
    `sometimes` and `reachable` need one witness. `unreachable` needs none.
 5. Run `theseus compose explore`.
@@ -26,7 +29,9 @@ Start with `compose.yaml`.
 The API deliberately reports a stale read as
 `THES:ASSERT:consistent_read:fail`. Exploration exits non-zero after writing a
 locked campaign bundle. `run.sh` treats that failure as expected, renders a
-report, and prints the failing property.
+report, and prints the failing property. The campaign result also records each
+applied topology action. Replay checks that action sequence as well as the
+normal serial, network, and storage evidence.
 
 Then minimize it:
 

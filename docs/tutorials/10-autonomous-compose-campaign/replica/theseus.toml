@@ -16,3 +16,7 @@ timeout_secs = 10
 [network]
 loopback = false
 latency_rounds = 1
+
+[[storage]]
+id = "data"
+size_mib = 4

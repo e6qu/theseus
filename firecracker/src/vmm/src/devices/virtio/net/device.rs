@@ -469,6 +469,19 @@ impl Net {
         }
     }
 
+    /// Change the partition state of a Theseus simulated NIC without
+    /// disturbing its deterministic counters, queues, or seeded RNG.
+    /// Returns false for a host TAP device.
+    pub fn set_simulated_partitioned(&mut self, partitioned: bool) -> bool {
+        match &mut self.backend {
+            NetBackend::Sim(sim) => {
+                sim.set_partitioned(partitioned);
+                true
+            }
+            NetBackend::Tap(_) => false,
+        }
+    }
+
     /// Deterministic frame counters, if this device uses the simulated backend.
     pub fn simulated_stats(&self) -> Option<SimNetStats> {
         match &self.backend {
