@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex};
 use rand_chacha::rand_core::{RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Configuration for a simulated network backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +87,10 @@ pub struct SimNetStats {
     pub dropped: u64,
     /// Extra frames created by deterministic duplication.
     pub duplicated: u64,
+    /// Digest of frames emitted to the simulated link, in submission order.
+    pub tx_sha256: [u8; 32],
+    /// Digest of frames successfully delivered to the guest RX path, in order.
+    pub rx_sha256: [u8; 32],
 }
 
 #[derive(Debug)]
@@ -121,6 +126,8 @@ pub struct SimNet {
     pub dropped: u64,
     /// Extra frames queued by the deterministic duplication stream.
     pub duplicated: u64,
+    tx_hasher: Sha256,
+    rx_hasher: Sha256,
     /// A shared deterministic L2 switch for a multi-guest topology. `None`
     /// retains the single-guest loopback backend used by the Firecracker API.
     switch: Option<SharedSimSwitch>,
@@ -240,6 +247,17 @@ fn push_pending(queue: &mut VecDeque<PendingFrame>, frame: PendingFrame) {
     queue.insert(position, frame);
 }
 
+/// Hash a length-delimited frame so different frame boundaries cannot produce
+/// the same byte stream fingerprint.
+fn update_frame_digest(hasher: &mut Sha256, frame: &[u8]) {
+    hasher.update(
+        u64::try_from(frame.len())
+            .expect("frame length fits in u64")
+            .to_le_bytes(),
+    );
+    hasher.update(frame);
+}
+
 impl SimNet {
     pub fn new(config: SimNetConfig) -> Self {
         SimNet {
@@ -254,6 +272,8 @@ impl SimNet {
             rx_frames: 0,
             dropped: 0,
             duplicated: 0,
+            tx_hasher: Sha256::new(),
+            rx_hasher: Sha256::new(),
             switch: None,
             endpoint: None,
         }
@@ -286,6 +306,8 @@ impl SimNet {
             rx_frames: 0,
             dropped: 0,
             duplicated: 0,
+            tx_hasher: Sha256::new(),
+            rx_hasher: Sha256::new(),
             switch: Some(switch),
             endpoint: Some(endpoint),
         })
@@ -302,6 +324,8 @@ impl SimNet {
             rx_frames: self.rx_frames,
             dropped: self.dropped,
             duplicated: self.duplicated,
+            tx_sha256: self.tx_hasher.clone().finalize().into(),
+            rx_sha256: self.rx_hasher.clone().finalize().into(),
         }
     }
 
@@ -364,6 +388,7 @@ impl SimNet {
     }
 
     fn deliver_transmitted_frame(&mut self, frame: PendingTransmit) {
+        update_frame_digest(&mut self.tx_hasher, &frame.bytes);
         if let (Some(switch), Some(endpoint)) = (&self.switch, &self.endpoint) {
             switch
                 .lock()
@@ -452,6 +477,7 @@ impl SimNet {
         }
         buf[..frame.len()].copy_from_slice(&frame);
         self.rx_frames += 1;
+        update_frame_digest(&mut self.rx_hasher, &frame);
         Some(frame.len())
     }
 }
@@ -486,15 +512,34 @@ mod tests {
         assert_eq!(sim.tx_frames, 1);
         assert_eq!(sim.rx_frames, 1);
         assert_eq!(sim.dropped, 0);
-        assert_eq!(
-            sim.stats(),
-            SimNetStats {
-                tx_frames: 1,
-                rx_frames: 1,
-                dropped: 0,
-                duplicated: 0,
+        let stats = sim.stats();
+        assert_eq!(stats.tx_frames, 1);
+        assert_eq!(stats.rx_frames, 1);
+        assert_eq!(stats.dropped, 0);
+        assert_eq!(stats.duplicated, 0);
+        assert_eq!(stats.tx_sha256, stats.rx_sha256);
+        assert_ne!(stats.tx_sha256, [0; 32]);
+    }
+
+    #[test]
+    fn test_frame_digests_are_deterministic_and_ordered() {
+        let run = |frames: &[&[u8]]| {
+            let mut sim = SimNet::new(SimNetConfig::default());
+            let mut buffer = [0; 16];
+            for frame in frames {
+                sim.write_frame(frame);
+                sim.read_frame(&mut buffer).unwrap();
             }
-        );
+            sim.stats()
+        };
+
+        let first = run(&[b"one", b"two"]);
+        let same = run(&[b"one", b"two"]);
+        let reversed = run(&[b"two", b"one"]);
+        assert_eq!(first.tx_sha256, same.tx_sha256);
+        assert_eq!(first.rx_sha256, same.rx_sha256);
+        assert_ne!(first.tx_sha256, reversed.tx_sha256);
+        assert_ne!(first.rx_sha256, reversed.rx_sha256);
     }
 
     #[test]

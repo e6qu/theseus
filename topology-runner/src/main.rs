@@ -210,6 +210,10 @@ struct NetworkTraffic {
     dropped: u64,
     #[serde(default)]
     duplicated: u64,
+    #[serde(default)]
+    tx_sha256: Option<String>,
+    #[serde(default)]
+    rx_sha256: Option<String>,
 }
 
 impl NetworkTraffic {
@@ -218,7 +222,51 @@ impl NetworkTraffic {
         self.rx_frames = self.rx_frames.saturating_add(other.rx_frames);
         self.dropped = self.dropped.saturating_add(other.dropped);
         self.duplicated = self.duplicated.saturating_add(other.duplicated);
+        self.tx_sha256 = combine_frame_digests(self.tx_sha256.take(), other.tx_sha256.as_deref());
+        self.rx_sha256 = combine_frame_digests(self.rx_sha256.take(), other.rx_sha256.as_deref());
     }
+
+    fn matches(&self, actual: &Self) -> bool {
+        self.tx_frames == actual.tx_frames
+            && self.rx_frames == actual.rx_frames
+            && self.dropped == actual.dropped
+            && self.duplicated == actual.duplicated
+            && self
+                .tx_sha256
+                .as_ref()
+                .is_none_or(|expected| actual.tx_sha256.as_ref() == Some(expected))
+            && self
+                .rx_sha256
+                .as_ref()
+                .is_none_or(|expected| actual.rx_sha256.as_ref() == Some(expected))
+    }
+}
+
+fn frame_digest(bytes: [u8; 32]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn combine_frame_digests(previous: Option<String>, next: Option<&str>) -> Option<String> {
+    let next = next?;
+    Some(match previous {
+        Some(previous) => format!(
+            "{:x}",
+            Sha256::digest([previous.as_bytes(), next.as_bytes()].concat())
+        ),
+        None => next.to_owned(),
+    })
+}
+
+fn traffic_matches(
+    expected: &BTreeMap<String, NetworkTraffic>,
+    actual: &BTreeMap<String, NetworkTraffic>,
+) -> bool {
+    expected.len() == actual.len()
+        && expected.iter().all(|(network, expected)| {
+            actual
+                .get(network)
+                .is_some_and(|actual| expected.matches(actual))
+        })
 }
 
 #[derive(Deserialize, Serialize)]
@@ -349,6 +397,8 @@ impl ServiceVm {
                         rx_frames: stats.rx_frames,
                         dropped: stats.dropped,
                         duplicated: stats.duplicated,
+                        tx_sha256: Some(frame_digest(stats.tx_sha256)),
+                        rx_sha256: Some(frame_digest(stats.rx_sha256)),
                     },
                 ))
             })
@@ -661,18 +711,18 @@ fn execute(
             let expected = expected
                 .get(name)
                 .expect("recorded network traffic missing service");
-            let matches = expected == &service.network_traffic;
+            let matches = traffic_matches(expected, &service.network_traffic);
             checks.push(CheckResult {
                 name: "replay_network_traffic".to_owned(),
                 status: if matches { "passed" } else { "failed" },
                 detail: if matches {
-                    "simulated network traffic matches the original replay bundle".to_owned()
+                    "simulated network traffic matches the original replay bundle, including payload fingerprints".to_owned()
                 } else {
-                    "simulated network traffic differs from the original replay bundle".to_owned()
+                    "simulated network traffic differs from the original replay bundle, including payload fingerprints".to_owned()
                 },
             });
             if !matches && error.is_none() {
-                error = Some("network traffic replay fingerprint changed".to_owned());
+                error = Some("network traffic or payload replay fingerprint changed".to_owned());
             }
         }
         if let Some(expected) = &expected_virtual_time {
@@ -1375,9 +1425,48 @@ mod tests {
                 rx_frames: 2,
                 dropped: 1,
                 duplicated: 0,
+                tx_sha256: None,
+                rx_sha256: None,
             }
         );
         fs::remove_dir_all(bundle).unwrap();
+    }
+
+    #[test]
+    fn network_traffic_payload_fingerprints_reject_changed_frames() {
+        let expected = BTreeMap::from([(
+            "backplane".to_owned(),
+            NetworkTraffic {
+                tx_frames: 1,
+                rx_frames: 1,
+                dropped: 0,
+                duplicated: 0,
+                tx_sha256: Some("original-tx".to_owned()),
+                rx_sha256: Some("original-rx".to_owned()),
+            },
+        )]);
+        let changed = BTreeMap::from([(
+            "backplane".to_owned(),
+            NetworkTraffic {
+                tx_frames: 1,
+                rx_frames: 1,
+                dropped: 0,
+                duplicated: 0,
+                tx_sha256: Some("changed-tx".to_owned()),
+                rx_sha256: Some("changed-rx".to_owned()),
+            },
+        )]);
+        assert!(!traffic_matches(&expected, &changed));
+
+        let legacy = BTreeMap::from([(
+            "backplane".to_owned(),
+            NetworkTraffic {
+                tx_sha256: None,
+                rx_sha256: None,
+                ..expected["backplane"].clone()
+            },
+        )]);
+        assert!(traffic_matches(&legacy, &changed));
     }
 
     #[test]
