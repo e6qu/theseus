@@ -463,6 +463,7 @@ fn validate(plan: &RunPlan) -> Result<(), ExploreError> {
         || plan.network.jitter_rounds != 0
         || plan.network.tx_bytes_per_round != 0
         || plan.network.mtu_bytes != 0
+        || plan.network.tx_queue_frames != 0
     {
         return Err(ExploreError::Invalid(
             "exploration currently accepts only the headless control-channel VM; storage and network settings are unavailable"
