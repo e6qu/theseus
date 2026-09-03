@@ -480,7 +480,7 @@ impl Net {
     /// Bounded deterministic frame trace, if this device uses the simulated backend.
     pub fn simulated_trace(&self) -> Option<Vec<SimNetFrame>> {
         match &self.backend {
-            NetBackend::Sim(sim) => Some(sim.trace().to_vec()),
+            NetBackend::Sim(sim) => Some(sim.trace()),
             NetBackend::Tap(_) => None,
         }
     }

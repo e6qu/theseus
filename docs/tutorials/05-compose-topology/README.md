@@ -37,3 +37,6 @@ simulated link delivers them. A duplicate carries the same corrupted bytes.
 Each service result includes the first 64 simulated NIC TX, RX, and drop frames.
 Each record has a deterministic scheduler round, a drop reason when relevant,
 and a hexadecimal payload.
+
+Set `rx_queue_frames` to bound frames waiting for a guest that is not reading
+its NIC. Extra frames are recorded as `rx_queue` drops.

@@ -136,6 +136,7 @@ jitter_rounds = 1
 tx_bytes_per_round = 4096
 mtu_bytes = 1500
 tx_queue_frames = 64
+rx_queue_frames = 64
 
 [[storage]]
 id = "data"
@@ -173,6 +174,7 @@ can reorder frames without consulting host time. `tx_bytes_per_round` limits
 outbound traffic at deterministic topology rounds; zero leaves it unlimited.
 `mtu_bytes` drops larger frames before they enter the simulated link; zero leaves it unlimited.
 `tx_queue_frames` bounds frames waiting for outbound link budget; zero leaves it unlimited.
+`rx_queue_frames` bounds frames waiting for guest delivery; zero leaves it unlimited.
 Simulated storage is also recorded in the plan but runs only through that executor. Each
 entry creates a memory-only virtio disk: `error_ppm` injects deterministic I/O
 errors, `latency_rounds` delays requests by topology pumps,
