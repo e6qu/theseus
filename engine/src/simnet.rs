@@ -66,6 +66,9 @@ pub struct SimNetConfig {
     /// Zero leaves the link unlimited.
     #[serde(default)]
     pub tx_bytes_per_round: u64,
+    /// Maximum transmitted Ethernet frame size. Zero leaves the link unlimited.
+    #[serde(default)]
+    pub mtu_bytes: u32,
 }
 
 impl Default for SimNetConfig {
@@ -80,6 +83,7 @@ impl Default for SimNetConfig {
             latency_rounds: 0,
             jitter_rounds: 0,
             tx_bytes_per_round: 0,
+            mtu_bytes: 0,
         }
     }
 }
@@ -496,6 +500,10 @@ impl SimNet {
     /// Accept a frame from the guest TX path.
     pub fn write_frame(&mut self, frame: &[u8]) {
         self.tx_frames += 1;
+        if self.config.mtu_bytes != 0 && frame.len() > self.config.mtu_bytes as usize {
+            self.dropped += 1;
+            return;
+        }
         if self.should_drop() {
             self.dropped += 1;
             return;
@@ -646,6 +654,19 @@ mod tests {
         });
         sim.write_frame(&[1; 64]);
         assert!(!sim.has_pending_rx());
+        assert_eq!(sim.dropped, 1);
+    }
+
+    #[test]
+    fn test_mtu_drops_only_oversized_frames() {
+        let mut sim = SimNet::new(SimNetConfig {
+            mtu_bytes: 3,
+            ..Default::default()
+        });
+        sim.write_frame(b"fit");
+        sim.write_frame(b"oversized");
+        let mut buffer = [0; 16];
+        assert_eq!(sim.read_frame(&mut buffer), Some(3));
         assert_eq!(sim.dropped, 1);
     }
 
@@ -808,6 +829,7 @@ mod tests {
             latency_rounds: 0,
             jitter_rounds: 0,
             tx_bytes_per_round: 0,
+            mtu_bytes: 0,
         };
         let run = || {
             let mut sim = SimNet::new(cfg);

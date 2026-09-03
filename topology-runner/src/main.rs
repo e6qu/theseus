@@ -128,6 +128,8 @@ struct NetworkConfig {
     corrupt_ppm: u32,
     #[serde(default)]
     tx_bytes_per_round: u64,
+    #[serde(default)]
+    mtu_bytes: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1316,6 +1318,7 @@ fn build_service(
                     latency_rounds: service.run.network.latency_rounds,
                     jitter_rounds: service.run.network.jitter_rounds,
                     tx_bytes_per_round: service.run.network.tx_bytes_per_round,
+                    mtu_bytes: service.run.network.mtu_bytes,
                 },
                 switch,
                 format!("{network}/{name}-{instance}"),

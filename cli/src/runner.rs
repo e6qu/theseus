@@ -341,6 +341,7 @@ fn execute(
         || plan.network.latency_rounds != 0
         || plan.network.jitter_rounds != 0
         || plan.network.tx_bytes_per_round != 0
+        || plan.network.mtu_bytes != 0
     {
         return Err(RunError::UnsupportedNetworkFaults);
     }

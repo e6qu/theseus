@@ -327,9 +327,10 @@ below must have a runnable example and narrow acceptance tests.
 | P8.13 | **`network: add deterministic frame duplication`** | **DONE (PR #46).** Duplicate selected simulated frames from a seeded per-frame stream, using the same bandwidth and delivery queue as their originals. | Packet corruption, protocol-aware faults, or host traffic. |
 | P8.14 | **`replay: fingerprint Compose network payloads`** | **DONE (PR #47).** Record length-delimited SHA-256 fingerprints of simulated NIC TX/RX frame streams and reject a replay when content changes at the same traffic volume. | Packet capture export, packet corruption, or cross-version replay guarantees. |
 | P8.15 | **`network: add deterministic frame corruption`** | **DONE (PR #48).** Select nonempty simulated frames from a seeded per-frame stream and flip one bit before link delivery, recording corruption counts in Compose replay traffic. | Packet capture export, protocol-aware faults, or host traffic. |
-| P8.16 | **`network: export deterministic Compose frame traces`** | Record the first 64 TX/RX frames per simulated NIC, with scheduler round and payload hex, in each Compose service result. | PCAP compatibility, unbounded capture, or host traffic. |
+| P8.16 | **`network: export deterministic Compose frame traces`** | **DONE (PR #49).** Record the first 64 TX/RX frames per simulated NIC, with scheduler round and payload hex, in each Compose service result. | PCAP compatibility, unbounded capture, or host traffic. |
+| P8.17 | **`network: add deterministic MTU drops`** | Drop simulated frames larger than an explicit per-NIC MTU before they enter the link. | Fragmentation, PMTU discovery, or host traffic. |
 
-**Current PR: P8.16 only.** The manifest is an execution contract, not a second
+**Current PR: P8.17 only.** The manifest is an execution contract, not a second
 Firecracker configuration language. Keep its first version intentionally
 small, reject unknown fields, resolve every relative path from the manifest
 directory, and record a normalized form so the runner can execute exactly what
