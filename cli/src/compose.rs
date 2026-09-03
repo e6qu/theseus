@@ -1246,4 +1246,13 @@ mod tests {
         let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
         assert!(error.to_string().contains("campaign driver"));
     }
+
+    #[test]
+    fn rejects_an_unbounded_campaign_fault_sequence() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_faults_per_run: 5\n    operations:\n      - name: request\n        input: 'request\\n'\n",
+        );
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error.to_string().contains("max_faults_per_run"));
+    }
 }
