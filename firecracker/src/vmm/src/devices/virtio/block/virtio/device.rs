@@ -294,6 +294,19 @@ impl SimulatedBlock {
         self.corrupt_read_xor
     }
 
+    fn set_faults(
+        &mut self,
+        error_ppm: u32,
+        latency_rounds: u32,
+        torn_write_bytes: Option<u32>,
+        corrupt_read_xor: Option<u8>,
+    ) {
+        self.error_ppm = error_ppm;
+        self.latency_rounds = latency_rounds;
+        self.torn_write_bytes = torn_write_bytes;
+        self.corrupt_read_xor = corrupt_read_xor;
+    }
+
     pub(crate) fn defer(&mut self, request: Request, pending: PendingRequest) {
         self.delayed.push_back(DelayedSimulatedRequest {
             request,
@@ -438,6 +451,28 @@ impl VirtioBlock {
     /// has one. Normal file-backed disks intentionally remain opaque.
     pub fn simulated_bytes(&self) -> Option<&[u8]> {
         self.simulated.as_ref().map(SimulatedBlock::bytes)
+    }
+
+    /// Change fault behavior of a Theseus simulated disk while preserving its
+    /// in-memory bytes, queued requests, and deterministic random stream.
+    /// Returns false for a file-backed disk.
+    pub fn set_simulated_faults(
+        &mut self,
+        error_ppm: u32,
+        latency_rounds: u32,
+        torn_write_bytes: Option<u32>,
+        corrupt_read_xor: Option<u8>,
+    ) -> bool {
+        let Some(simulated) = &mut self.simulated else {
+            return false;
+        };
+        simulated.set_faults(
+            error_ppm,
+            latency_rounds,
+            torn_write_bytes,
+            corrupt_read_xor,
+        );
+        true
     }
 
     fn from_disk(

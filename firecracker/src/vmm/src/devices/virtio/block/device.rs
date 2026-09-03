@@ -67,6 +67,26 @@ impl Block {
         }
     }
 
+    /// Change fault behavior of a Theseus memory-backed disk. Returns false
+    /// for block devices that do not use the simulated backend.
+    pub fn set_simulated_faults(
+        &mut self,
+        error_ppm: u32,
+        latency_rounds: u32,
+        torn_write_bytes: Option<u32>,
+        corrupt_read_xor: Option<u8>,
+    ) -> bool {
+        match self {
+            Self::Virtio(block) => block.set_simulated_faults(
+                error_ppm,
+                latency_rounds,
+                torn_write_bytes,
+                corrupt_read_xor,
+            ),
+            Self::VhostUser(_) => false,
+        }
+    }
+
     pub fn config(&self) -> BlockDeviceConfig {
         match self {
             Self::Virtio(b) => b.config().into(),

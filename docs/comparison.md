@@ -58,12 +58,13 @@ Key architectural differences with Theseus:
   novelty ordering. Ground-truth single-step coverage exists as the reference
   for a future fast instrumentor.
 - **Campaign interface**: Antithesis can drive unmodified workloads through
-  its test templates and property APIs. Theseus now accepts a designated
-  Compose driver, text UART operations, lifecycle/clock fault candidates, and
-  `always`/`sometimes`/`reachable`/`unreachable` serial properties. It
-  reduces an individual violation by re-running locked full topologies, but
-  it does not yet have Antithesis's copy-on-write whole-topology snapshots or
-  its large-scale RL scheduler.
+  its test templates and property APIs. Theseus accepts a designated Compose
+  driver, text UART operations, lifecycle/clock candidates, barrier-triggered
+  named-network `partition`/`heal`, simulated-drive `storage_fault`, and
+  `always`/`sometimes`/`reachable`/`unreachable` serial properties. It reduces
+  an individual violation by re-running locked full topologies and fingerprints
+  the applied actions on replay, but it does not yet have Antithesis's
+  copy-on-write whole-topology snapshots or its large-scale RL scheduler.
 
 If you can pay for the product and want instruction-exact replay plus
 vendor support, use Antithesis. Theseus exists as an open,

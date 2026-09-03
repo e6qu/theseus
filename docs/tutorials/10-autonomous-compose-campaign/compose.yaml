@@ -29,9 +29,23 @@ x-theseus:
       - name: retry
         input: "retry\n"
     faults:
-      - service: replica
-        at_round: 2
-        kind: restart
+      # These run after the named operation emits its checkpoint. Every NIC
+      # on this named network changes together, so the next operation sees a
+      # real topology change rather than a per-service flag.
+      - kind: partition
+        network: backplane
+        after: write
+      - kind: heal
+        network: backplane
+        after: retry
+      # This changes only the simulated drive. The disk bytes and seeded RNG
+      # remain in place; later I/O now fails deterministically.
+      - kind: storage_fault
+        service: replica
+        drive: data
+        after: write
+        error_ppm: 1000000
+        torn_write_bytes: 1
     properties:
       - name: consistent_read
         kind: always
