@@ -13,8 +13,10 @@ docker run --rm --privileged -v "$PWD":/tutorial -w /tutorial \
 
 `compose.yaml` is a deliberately small Compose file. Each service points to
 its own Theseus manifest. Their network settings delay each frame by one
-deterministic scheduler round. The API announces serial readiness, then Theseus
-injects its manifest event directly into that VM's UART. `theseus compose test`
+deterministic scheduler round, then add zero or one seeded jitter rounds. That
+can deliver a later frame first without using host time. The API announces
+serial readiness, then Theseus injects its manifest event directly into that
+VM's UART. `theseus compose test`
 locks the artifacts, runs the two guests in one deterministic topology, and
 leaves their serial logs and results in `theseus-compose-replay/services/`.
 `theseus compose replay` runs the locked bundle again and compares every

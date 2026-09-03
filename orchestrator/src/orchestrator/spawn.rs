@@ -414,6 +414,7 @@ mod tests {
                     drop_ppm: 100_000 * idx as u32,
                     partitioned: idx == 2,
                     latency_rounds: 0,
+                    jitter_rounds: 0,
                 };
                 let child = spawn_child(
                     &mut branch,

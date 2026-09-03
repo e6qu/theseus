@@ -16,6 +16,7 @@ timeout_secs = 10
 [network]
 loopback = false
 latency_rounds = 1
+jitter_rounds = 1
 
 [[checks]]
 name = "worker booted"
