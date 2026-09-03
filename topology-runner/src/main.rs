@@ -20,7 +20,7 @@ use theseus_engine::simnet::{SharedSimSwitch, SimSwitch};
 use vmm::builder::build_microvm_for_boot;
 use vmm::devices::virtio::block::device::Block;
 use vmm::devices::virtio::block::virtio::device::SimulatedBlockConfig;
-use vmm::devices::virtio::net::{Net, SimNetConfig};
+use vmm::devices::virtio::net::{Net, SimNetConfig, SimNetFrameDirection};
 use vmm::rate_limiter::RateLimiter;
 use vmm::resources::VmResources;
 use vmm::seccomp::get_empty_filters;
@@ -178,6 +178,7 @@ struct ServiceResult {
     faults_sha256: String,
     storage_sha256: BTreeMap<String, String>,
     network_traffic: BTreeMap<String, NetworkTraffic>,
+    network_trace: BTreeMap<String, Vec<NetworkFrame>>,
     virtual_time_ns: Option<Vec<u64>>,
     error: Option<String>,
     checks: Vec<CheckResult>,
@@ -218,6 +219,13 @@ struct NetworkTraffic {
     tx_sha256: Option<String>,
     #[serde(default)]
     rx_sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct NetworkFrame {
+    round: u64,
+    direction: String,
+    data_hex: String,
 }
 
 impl NetworkTraffic {
@@ -411,6 +419,35 @@ impl ServiceVm {
             })
             .collect()
     }
+
+    fn network_trace(&self) -> Result<BTreeMap<String, Vec<NetworkFrame>>, String> {
+        self.networks
+            .iter()
+            .map(|(name, net)| {
+                let net = net
+                    .lock()
+                    .map_err(|_| "simulated network lock poisoned".to_owned())?;
+                let trace = net
+                    .simulated_trace()
+                    .ok_or_else(|| format!("network is not simulated: {name}"))?;
+                Ok((
+                    name.clone(),
+                    trace
+                        .into_iter()
+                        .map(|frame| NetworkFrame {
+                            round: frame.round,
+                            direction: match frame.direction {
+                                SimNetFrameDirection::Tx => "tx",
+                                SimNetFrameDirection::Rx => "rx",
+                            }
+                            .to_owned(),
+                            data_hex: hex(&frame.bytes),
+                        })
+                        .collect(),
+                ))
+            })
+            .collect()
+    }
 }
 
 struct ServiceRuntime {
@@ -420,12 +457,20 @@ struct ServiceRuntime {
     paused_until: Option<u64>,
     faults: Vec<AppliedFault>,
     network_traffic: BTreeMap<String, NetworkTraffic>,
+    network_trace: BTreeMap<String, Vec<NetworkFrame>>,
 }
 
 impl ServiceRuntime {
     fn record_network_traffic(&mut self) -> Result<(), String> {
         for (name, traffic) in self.vm.network_traffic()? {
             self.network_traffic.entry(name).or_default().add(&traffic);
+        }
+        Ok(())
+    }
+
+    fn record_network_trace(&mut self) -> Result<(), String> {
+        for (name, trace) in self.vm.network_trace()? {
+            self.network_trace.entry(name).or_default().extend(trace);
         }
         Ok(())
     }
@@ -561,6 +606,7 @@ fn execute(
                 paused_until: None,
                 faults: Vec::new(),
                 network_traffic: BTreeMap::new(),
+                network_trace: BTreeMap::new(),
             },
         );
     }
@@ -619,6 +665,7 @@ fn execute(
     let mut failed = false;
     for (name, service) in &mut services {
         service.record_network_traffic()?;
+        service.record_network_trace()?;
         let exit = service.vm.exited();
         let (exit_status, mut error) = match exit {
             Some(FcExitCode::Ok) => ("passed", None),
@@ -770,6 +817,7 @@ fn execute(
             faults_sha256,
             storage_sha256,
             network_traffic: service.network_traffic.clone(),
+            network_trace: service.network_trace.clone(),
             virtual_time_ns,
             error,
             checks,
@@ -1055,6 +1103,7 @@ fn apply_scheduled_faults(
             }
             FaultKind::Restart => {
                 service.record_network_traffic()?;
+                service.record_network_trace()?;
                 service.vm.stop();
                 let serial = service_dir.join(format!("serial-{}.log", service.serial_logs.len()));
                 let kernel = service_dir.join("artifacts/kernel");
@@ -1137,6 +1186,10 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
             u8::from_str_radix(&value[index..index + 2], 16).map_err(|error| error.to_string())
         })
         .collect()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn fault_kind_name(kind: &FaultKind) -> &'static str {

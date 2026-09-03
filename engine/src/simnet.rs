@@ -103,6 +103,23 @@ pub struct SimNetStats {
     pub rx_sha256: [u8; 32],
 }
 
+/// Direction of a frame captured by the bounded simulated-link trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimNetFrameDirection {
+    Tx,
+    Rx,
+}
+
+/// One frame observed at a simulated NIC boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SimNetFrame {
+    pub round: u64,
+    pub direction: SimNetFrameDirection,
+    pub bytes: Vec<u8>,
+}
+
+const FRAME_TRACE_LIMIT: usize = 64;
+
 #[derive(Debug)]
 struct PendingFrame {
     ready_round: u64,
@@ -140,6 +157,7 @@ pub struct SimNet {
     pub corrupted: u64,
     tx_hasher: Sha256,
     rx_hasher: Sha256,
+    trace: Vec<SimNetFrame>,
     /// A shared deterministic L2 switch for a multi-guest topology. `None`
     /// retains the single-guest loopback backend used by the Firecracker API.
     switch: Option<SharedSimSwitch>,
@@ -287,6 +305,7 @@ impl SimNet {
             corrupted: 0,
             tx_hasher: Sha256::new(),
             rx_hasher: Sha256::new(),
+            trace: Vec::new(),
             switch: None,
             endpoint: None,
         }
@@ -322,6 +341,7 @@ impl SimNet {
             corrupted: 0,
             tx_hasher: Sha256::new(),
             rx_hasher: Sha256::new(),
+            trace: Vec::new(),
             switch: Some(switch),
             endpoint: Some(endpoint),
         })
@@ -341,6 +361,23 @@ impl SimNet {
             corrupted: self.corrupted,
             tx_sha256: self.tx_hasher.clone().finalize().into(),
             rx_sha256: self.rx_hasher.clone().finalize().into(),
+        }
+    }
+
+    /// Return the first 64 transmitted and delivered frames in deterministic
+    /// boundary order. The fixed bound prevents a guest from growing bundles
+    /// without limit.
+    pub fn trace(&self) -> &[SimNetFrame] {
+        &self.trace
+    }
+
+    fn trace_frame(&mut self, direction: SimNetFrameDirection, bytes: &[u8]) {
+        if self.trace.len() < FRAME_TRACE_LIMIT {
+            self.trace.push(SimNetFrame {
+                round: self.round,
+                direction,
+                bytes: bytes.to_vec(),
+            });
         }
     }
 
@@ -422,6 +459,7 @@ impl SimNet {
 
     fn deliver_transmitted_frame(&mut self, frame: PendingTransmit) {
         update_frame_digest(&mut self.tx_hasher, &frame.bytes);
+        self.trace_frame(SimNetFrameDirection::Tx, &frame.bytes);
         if let (Some(switch), Some(endpoint)) = (&self.switch, &self.endpoint) {
             switch
                 .lock()
@@ -516,6 +554,7 @@ impl SimNet {
         buf[..frame.len()].copy_from_slice(&frame);
         self.rx_frames += 1;
         update_frame_digest(&mut self.rx_hasher, &frame);
+        self.trace_frame(SimNetFrameDirection::Rx, &frame);
         Some(frame.len())
     }
 }
@@ -579,6 +618,24 @@ mod tests {
         assert_eq!(first.rx_sha256, same.rx_sha256);
         assert_ne!(first.tx_sha256, reversed.tx_sha256);
         assert_ne!(first.rx_sha256, reversed.rx_sha256);
+    }
+
+    #[test]
+    fn test_frame_trace_records_boundaries_with_a_fixed_limit() {
+        let mut sim = SimNet::new(SimNetConfig::default());
+        sim.write_frame(b"trace");
+        let mut buffer = [0; 16];
+        sim.read_frame(&mut buffer).unwrap();
+        assert_eq!(sim.trace().len(), 2);
+        assert_eq!(sim.trace()[0].direction, SimNetFrameDirection::Tx);
+        assert_eq!(sim.trace()[1].direction, SimNetFrameDirection::Rx);
+        assert_eq!(sim.trace()[0].bytes, b"trace");
+
+        for _ in 0..64 {
+            sim.write_frame(b"x");
+            sim.read_frame(&mut buffer).unwrap();
+        }
+        assert_eq!(sim.trace().len(), FRAME_TRACE_LIMIT);
     }
 
     #[test]

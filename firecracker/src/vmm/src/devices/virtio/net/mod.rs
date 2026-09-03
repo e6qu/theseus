@@ -27,7 +27,10 @@ pub mod test_utils;
 
 mod generated;
 
-pub use sim::{SharedSimSwitch, SimNet, SimNetConfig, SimNetStats, SimSwitchError};
+pub use sim::{
+    SharedSimSwitch, SimNet, SimNetConfig, SimNetFrame, SimNetFrameDirection, SimNetStats,
+    SimSwitchError,
+};
 pub use tap::{Tap, TapError};
 use vm_memory::VolatileMemoryError;
 
