@@ -129,6 +129,7 @@ data = "0100ff"
 loopback = true
 drop_ppm = 0
 duplicate_ppm = 0
+corrupt_ppm = 0
 partitioned = false
 latency_rounds = 1
 jitter_rounds = 1
@@ -164,6 +165,7 @@ The replay bundle preserves the resulting plan verbatim. The runner delivers
 serial bytes only after the `THES:M:42` ready marker.
 Network settings are recorded but intentionally rejected by this single-VM
 runner. The Linux Compose executor supports deterministic drops, duplication,
+and one-bit corruption of selected nonempty frames,
 partitions, base `latency_rounds`, and seeded per-frame `jitter_rounds`; jitter
 can reorder frames without consulting host time. `tx_bytes_per_round` limits
 outbound traffic at deterministic topology rounds; zero leaves it unlimited.

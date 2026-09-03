@@ -28,6 +28,7 @@ pub enum LoadError {
     },
     InvalidNetworkDropRate(u32),
     InvalidNetworkDuplicateRate(u32),
+    InvalidNetworkCorruptionRate(u32),
     InvalidRunConfig(String),
     InvalidExplore(String),
     InvalidStorage(String),
@@ -71,6 +72,12 @@ impl fmt::Display for LoadError {
                 write!(
                     formatter,
                     "network.duplicate_ppm must be at most 1000000, got {rate}"
+                )
+            }
+            Self::InvalidNetworkCorruptionRate(rate) => {
+                write!(
+                    formatter,
+                    "network.corrupt_ppm must be at most 1000000, got {rate}"
                 )
             }
             Self::InvalidRunConfig(reason) => write!(formatter, "run: {reason}"),
@@ -160,6 +167,8 @@ struct Network {
     drop_ppm: u32,
     #[serde(default)]
     duplicate_ppm: u32,
+    #[serde(default)]
+    corrupt_ppm: u32,
     #[serde(default)]
     partitioned: bool,
     #[serde(default)]
@@ -288,6 +297,8 @@ pub struct NetworkPlan {
     pub drop_ppm: u32,
     #[serde(default)]
     pub duplicate_ppm: u32,
+    #[serde(default)]
+    pub corrupt_ppm: u32,
     pub partitioned: bool,
     #[serde(default)]
     pub latency_rounds: u32,
@@ -387,6 +398,11 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             manifest.network.duplicate_ppm,
         ));
     }
+    if manifest.network.corrupt_ppm > 1_000_000 {
+        return Err(LoadError::InvalidNetworkCorruptionRate(
+            manifest.network.corrupt_ppm,
+        ));
+    }
     if manifest.run.vcpu_count == 0 {
         return Err(LoadError::InvalidRunConfig(
             "vcpu_count must be greater than zero".to_owned(),
@@ -481,6 +497,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             loopback: manifest.network.loopback,
             drop_ppm: manifest.network.drop_ppm,
             duplicate_ppm: manifest.network.duplicate_ppm,
+            corrupt_ppm: manifest.network.corrupt_ppm,
             partitioned: manifest.network.partitioned,
             latency_rounds: manifest.network.latency_rounds,
             jitter_rounds: manifest.network.jitter_rounds,
@@ -767,6 +784,7 @@ data = "Aa00"
 loopback = true
 drop_ppm = 100
 duplicate_ppm = 200
+corrupt_ppm = 300
 partitioned = false
 latency_rounds = 2
 jitter_rounds = 1
@@ -788,6 +806,7 @@ corrupt_read_xor = 1
         assert_eq!(plan.events[0].data_hex, "aa00");
         assert_eq!(plan.network.drop_ppm, 100);
         assert_eq!(plan.network.duplicate_ppm, 200);
+        assert_eq!(plan.network.corrupt_ppm, 300);
         assert_eq!(plan.network.latency_rounds, 2);
         assert_eq!(plan.network.jitter_rounds, 1);
         assert_eq!(plan.network.tx_bytes_per_round, 512);
@@ -797,6 +816,35 @@ corrupt_read_xor = 1
         assert_eq!(
             plan.runtime.firecracker.sha256,
             "c2d872a13438b3768c94bc023684e6dc78a5fe5fe4c629a9eee8396aa6cba742"
+        );
+    }
+
+    #[test]
+    fn rejects_an_invalid_network_corruption_rate() {
+        let directory = fixture(
+            r#"version = 1
+
+[runtime]
+firecracker = "runtime/firecracker"
+
+[guest]
+kernel = "guest/vmlinux"
+initramfs = "guest/initramfs.cpio"
+
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+
+[network]
+corrupt_ppm = 1000001
+"#,
+        );
+
+        let error = load_plan(directory.path().join("test/theseus.toml")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "network.corrupt_ppm must be at most 1000000, got 1000001"
         );
     }
 

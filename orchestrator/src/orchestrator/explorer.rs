@@ -69,6 +69,7 @@ impl FaultStrategy {
             loopback: true,
             drop_ppm: self.drop_ppm_base + self.drop_ppm_step * branch_idx as u32,
             duplicate_ppm: 0,
+            corrupt_ppm: 0,
             partitioned: self.partition_every_n != 0
                 && branch_idx as u32 % self.partition_every_n == self.partition_every_n - 1,
             latency_rounds: 0,

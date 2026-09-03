@@ -125,6 +125,8 @@ struct NetworkConfig {
     #[serde(default)]
     duplicate_ppm: u32,
     #[serde(default)]
+    corrupt_ppm: u32,
+    #[serde(default)]
     tx_bytes_per_round: u64,
 }
 
@@ -211,6 +213,8 @@ struct NetworkTraffic {
     #[serde(default)]
     duplicated: u64,
     #[serde(default)]
+    corrupted: u64,
+    #[serde(default)]
     tx_sha256: Option<String>,
     #[serde(default)]
     rx_sha256: Option<String>,
@@ -222,6 +226,7 @@ impl NetworkTraffic {
         self.rx_frames = self.rx_frames.saturating_add(other.rx_frames);
         self.dropped = self.dropped.saturating_add(other.dropped);
         self.duplicated = self.duplicated.saturating_add(other.duplicated);
+        self.corrupted = self.corrupted.saturating_add(other.corrupted);
         self.tx_sha256 = combine_frame_digests(self.tx_sha256.take(), other.tx_sha256.as_deref());
         self.rx_sha256 = combine_frame_digests(self.rx_sha256.take(), other.rx_sha256.as_deref());
     }
@@ -231,6 +236,7 @@ impl NetworkTraffic {
             && self.rx_frames == actual.rx_frames
             && self.dropped == actual.dropped
             && self.duplicated == actual.duplicated
+            && self.corrupted == actual.corrupted
             && self
                 .tx_sha256
                 .as_ref()
@@ -397,6 +403,7 @@ impl ServiceVm {
                         rx_frames: stats.rx_frames,
                         dropped: stats.dropped,
                         duplicated: stats.duplicated,
+                        corrupted: stats.corrupted,
                         tx_sha256: Some(frame_digest(stats.tx_sha256)),
                         rx_sha256: Some(frame_digest(stats.rx_sha256)),
                     },
@@ -1251,6 +1258,7 @@ fn build_service(
                     loopback: service.run.network.loopback,
                     drop_ppm: service.run.network.drop_ppm,
                     duplicate_ppm: service.run.network.duplicate_ppm,
+                    corrupt_ppm: service.run.network.corrupt_ppm,
                     partitioned: service.run.network.partitioned,
                     latency_rounds: service.run.network.latency_rounds,
                     jitter_rounds: service.run.network.jitter_rounds,
@@ -1425,6 +1433,7 @@ mod tests {
                 rx_frames: 2,
                 dropped: 1,
                 duplicated: 0,
+                corrupted: 0,
                 tx_sha256: None,
                 rx_sha256: None,
             }
@@ -1441,6 +1450,7 @@ mod tests {
                 rx_frames: 1,
                 dropped: 0,
                 duplicated: 0,
+                corrupted: 0,
                 tx_sha256: Some("original-tx".to_owned()),
                 rx_sha256: Some("original-rx".to_owned()),
             },
@@ -1452,11 +1462,19 @@ mod tests {
                 rx_frames: 1,
                 dropped: 0,
                 duplicated: 0,
+                corrupted: 0,
                 tx_sha256: Some("changed-tx".to_owned()),
                 rx_sha256: Some("changed-rx".to_owned()),
             },
         )]);
         assert!(!traffic_matches(&expected, &changed));
+
+        let mut extra_corruption = expected.clone();
+        extra_corruption
+            .get_mut("backplane")
+            .expect("fixture includes backplane")
+            .corrupted = 1;
+        assert!(!traffic_matches(&expected, &extra_corruption));
 
         let legacy = BTreeMap::from([(
             "backplane".to_owned(),
