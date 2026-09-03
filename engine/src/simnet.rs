@@ -14,6 +14,8 @@
 //!   stream, so a given seed + frame sequence always produces the same drops
 //! - **deterministic duplication**: an accepted frame can be sent twice through
 //!   the same simulated link
+//! - **deterministic corruption**: a selected nonempty frame has one seeded bit
+//!   flipped before link delivery
 //!
 //! Frame delay, jitter, and bandwidth all advance in deterministic runner
 //! rounds, never host time.
@@ -45,6 +47,11 @@ pub struct SimNetConfig {
     /// never duplicate.
     #[serde(default)]
     pub duplicate_ppm: u32,
+    /// Corruption probability, parts per million, applied to accepted nonempty
+    /// frames. A selected frame has one seeded bit flipped before link delivery.
+    /// 0 = never corrupt.
+    #[serde(default)]
+    pub corrupt_ppm: u32,
     /// Simulate a total network partition: drop everything.
     #[serde(default)]
     pub partitioned: bool,
@@ -68,6 +75,7 @@ impl Default for SimNetConfig {
             loopback: true,
             drop_ppm: 0,
             duplicate_ppm: 0,
+            corrupt_ppm: 0,
             partitioned: false,
             latency_rounds: 0,
             jitter_rounds: 0,
@@ -87,6 +95,8 @@ pub struct SimNetStats {
     pub dropped: u64,
     /// Extra frames created by deterministic duplication.
     pub duplicated: u64,
+    /// Frames changed by deterministic one-bit corruption.
+    pub corrupted: u64,
     /// Digest of frames emitted to the simulated link, in submission order.
     pub tx_sha256: [u8; 32],
     /// Digest of frames successfully delivered to the guest RX path, in order.
@@ -126,6 +136,8 @@ pub struct SimNet {
     pub dropped: u64,
     /// Extra frames queued by the deterministic duplication stream.
     pub duplicated: u64,
+    /// Frames changed by deterministic one-bit corruption.
+    pub corrupted: u64,
     tx_hasher: Sha256,
     rx_hasher: Sha256,
     /// A shared deterministic L2 switch for a multi-guest topology. `None`
@@ -272,6 +284,7 @@ impl SimNet {
             rx_frames: 0,
             dropped: 0,
             duplicated: 0,
+            corrupted: 0,
             tx_hasher: Sha256::new(),
             rx_hasher: Sha256::new(),
             switch: None,
@@ -306,6 +319,7 @@ impl SimNet {
             rx_frames: 0,
             dropped: 0,
             duplicated: 0,
+            corrupted: 0,
             tx_hasher: Sha256::new(),
             rx_hasher: Sha256::new(),
             switch: Some(switch),
@@ -324,6 +338,7 @@ impl SimNet {
             rx_frames: self.rx_frames,
             dropped: self.dropped,
             duplicated: self.duplicated,
+            corrupted: self.corrupted,
             tx_sha256: self.tx_hasher.clone().finalize().into(),
             rx_sha256: self.rx_hasher.clone().finalize().into(),
         }
@@ -360,6 +375,24 @@ impl SimNet {
             return false;
         }
         self.rng.next_u32() % 1_000_000 < self.config.duplicate_ppm
+    }
+
+    /// Deterministic per-frame corruption decision, evaluated after dropping.
+    fn should_corrupt(&mut self) -> bool {
+        if self.config.corrupt_ppm == 0 {
+            return false;
+        }
+        self.rng.next_u32() % 1_000_000 < self.config.corrupt_ppm
+    }
+
+    /// Flip one bit selected from the same seeded stream as other link faults.
+    /// The caller excludes empty frames, so the modulus is always defined.
+    fn corrupt_frame(&mut self, frame: &mut [u8]) {
+        let frame_len = u64::try_from(frame.len()).expect("frame length fits in u64");
+        let byte_index =
+            usize::try_from(self.rng.next_u64() % frame_len).expect("frame index fits in usize");
+        let bit = self.rng.next_u32() % 8;
+        frame[byte_index] ^= 1_u8 << bit;
     }
 
     /// The base delay plus a seeded, per-frame jitter. Use a u64 modulus so
@@ -430,14 +463,19 @@ impl SimNet {
             return;
         }
         let delay_rounds = self.delivery_delay_rounds();
+        let mut bytes = frame.to_vec();
+        if !bytes.is_empty() && self.should_corrupt() {
+            self.corrupt_frame(&mut bytes);
+            self.corrupted += 1;
+        }
         self.tx_queue.push_back(PendingTransmit {
             delay_rounds,
-            bytes: frame.to_vec(),
+            bytes: bytes.clone(),
         });
         if self.should_duplicate() {
             self.tx_queue.push_back(PendingTransmit {
                 delay_rounds,
-                bytes: frame.to_vec(),
+                bytes,
             });
             self.duplicated += 1;
         }
@@ -517,6 +555,7 @@ mod tests {
         assert_eq!(stats.rx_frames, 1);
         assert_eq!(stats.dropped, 0);
         assert_eq!(stats.duplicated, 0);
+        assert_eq!(stats.corrupted, 0);
         assert_eq!(stats.tx_sha256, stats.rx_sha256);
         assert_ne!(stats.tx_sha256, [0; 32]);
     }
@@ -653,6 +692,39 @@ mod tests {
     }
 
     #[test]
+    fn test_corruption_flips_one_seeded_bit_before_link_duplication() {
+        let run = || {
+            let mut sim = SimNet::new(SimNetConfig {
+                seed: 1234,
+                corrupt_ppm: 1_000_000,
+                duplicate_ppm: 1_000_000,
+                ..Default::default()
+            });
+            sim.write_frame(b"unchanged");
+            let mut buffer = [0; 16];
+            let first = sim.read_frame(&mut buffer).unwrap();
+            let first = buffer[..first].to_vec();
+            let second = sim.read_frame(&mut buffer).unwrap();
+            (first, buffer[..second].to_vec(), sim.stats())
+        };
+
+        let (first, duplicate, stats) = run();
+        assert_eq!(first, duplicate, "duplicates retain the corrupted bytes");
+        assert_eq!(
+            first
+                .iter()
+                .zip(b"unchanged")
+                .map(|(actual, original)| (actual ^ original).count_ones())
+                .sum::<u32>(),
+            1,
+            "one selected bit must change"
+        );
+        assert_eq!(stats.corrupted, 1);
+        assert_eq!(stats.duplicated, 1);
+        assert_eq!(run(), (first, duplicate, stats));
+    }
+
+    #[test]
     fn test_shared_switch_delivers_ready_frames_before_earlier_delayed_frames() {
         let mut switch = SimSwitch::new();
         switch.attach("api").unwrap();
@@ -674,6 +746,7 @@ mod tests {
             loopback: true,
             drop_ppm: 500_000, // drop ~half
             duplicate_ppm: 0,
+            corrupt_ppm: 0,
             partitioned: false,
             latency_rounds: 0,
             jitter_rounds: 0,

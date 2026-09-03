@@ -30,3 +30,6 @@ full round, so it still makes progress.
 `duplicate_ppm = 1000000` duplicates every accepted frame in this example.
 The copies use the same simulated link, so bandwidth, delay, and jitter still
 apply. Linux networking tolerates these duplicate ARP and ping frames.
+
+Set `corrupt_ppm` to select nonempty frames for one seeded bit flip before the
+simulated link delivers them. A duplicate carries the same corrupted bytes.
