@@ -1,0 +1,5 @@
+#!/bin/busybox sh
+mount -t proc proc /proc
+printf 'replica ready\n'
+sleep 2
+poweroff -f

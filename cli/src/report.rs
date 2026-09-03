@@ -114,6 +114,36 @@ struct ServiceResult {
     faults: Vec<Fault>,
 }
 
+#[derive(Deserialize)]
+struct CampaignResult {
+    format: String,
+    status: String,
+    driver: String,
+    #[serde(default)]
+    runs: Vec<CampaignRun>,
+    #[serde(default)]
+    properties: Vec<CampaignProperty>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct CampaignRun {
+    index: usize,
+    operations: Vec<String>,
+    #[serde(default)]
+    fault: Option<String>,
+    status: String,
+    #[serde(default)]
+    novelty: Vec<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct CampaignProperty {
+    name: String,
+    kind: String,
+    status: String,
+    detail: String,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 struct Fault {
     round: u64,
@@ -139,6 +169,7 @@ struct ReportModel {
     coverage: Option<Coverage>,
     minimization: Option<Minimization>,
     replay_verification: Option<ReplayVerification>,
+    campaign_runs: Vec<CampaignRun>,
 }
 
 #[derive(Serialize)]
@@ -224,6 +255,7 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
         coverage: None,
         minimization: None,
         replay_verification: None,
+        campaign_runs: Vec::new(),
     })
 }
 
@@ -298,6 +330,7 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
         coverage,
         minimization: result.minimization,
         replay_verification: result.replay_verification,
+        campaign_runs: Vec::new(),
     })
 }
 
@@ -307,6 +340,9 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
         return Err(ReportError::Invalid(
             "directory has neither a Theseus result nor a topology replay plan".to_owned(),
         ));
+    }
+    if root.join("campaign-result.json").is_file() {
+        return campaign(root);
     }
     let services = root.join("services");
     let entries = fs::read_dir(&services).map_err(|source| ReportError::Read {
@@ -372,6 +408,53 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
         coverage: None,
         minimization: None,
         replay_verification: None,
+        campaign_runs: Vec::new(),
+    })
+}
+
+fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
+    let result: CampaignResult = read_json(root, Path::new("campaign-result.json"))?;
+    if result.format != "theseus-compose-campaign-result-v1" {
+        return Err(ReportError::Invalid(format!(
+            "unsupported campaign result format {:?}",
+            result.format
+        )));
+    }
+    let checks = result
+        .properties
+        .iter()
+        .cloned()
+        .map(|property| Check {
+            name: property.name,
+            kind: property.kind,
+            status: property.status,
+            detail: property.detail,
+        })
+        .collect();
+    Ok(ReportModel {
+        title: "Autonomous Compose campaign".to_owned(),
+        kind: format!("deterministic topology search driven by {}", result.driver),
+        status: result.status,
+        error: None,
+        command_label: "Replay this locked campaign".to_owned(),
+        command: format!(
+            "theseus compose replay {} --output campaign-rerun",
+            shell_quote(root)
+        ),
+        path_command: None,
+        minimize_path_command: None,
+        snapshot_path_command: None,
+        checks,
+        faults: Vec::new(),
+        logs: Vec::new(),
+        nodes: Vec::new(),
+        coverage: Some(Coverage {
+            label: "Campaign corpus".to_owned(),
+            summary: format!("{} deterministic topology timelines", result.runs.len()),
+        }),
+        minimization: None,
+        replay_verification: None,
+        campaign_runs: result.runs,
     })
 }
 
@@ -489,6 +572,7 @@ if(m.error){{const e=section('Error');e.append(el('pre',m.error));}}
 const replay=section(m.command_label);replay.append(el('pre',m.command));
 if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));if(n.serial_log){{d.append(el('p','serial log: '+n.serial_log));}}d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
+if(m.campaign_runs.length){{const s=section('Generated timelines');s.append(table(m.campaign_runs.map(r=>[String(r.index),r.operations.join(' → ')||'none',r.fault||'none',r.status,r.novelty.join(' ')||'none']),['Run','Operations','Fault','Status','New markers']));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
 if(m.replay_verification){{const s=section('Replay verification');s.append(table([[m.replay_verification.status,m.replay_verification.detail]],['Status','Detail']));}}
 if(m.checks.length){{const s=section('Checks');s.append(table(m.checks.map(c=>[c.name,c.kind,c.status,c.detail]),['Name','Kind','Status','Detail']));}}
@@ -546,6 +630,25 @@ mod tests {
         assert!(html.contains("Topology replay"));
         assert!(html.contains("restart"));
         assert!(html.contains("api: serial.log"));
+    }
+
+    #[test]
+    fn renders_an_autonomous_compose_campaign() {
+        let directory = tempfile::tempdir().unwrap();
+        write_json(
+            &directory.path().join("replay-plan.json"),
+            r#"{"format":"theseus-compose-plan-v1"}"#,
+        );
+        write_json(
+            &directory.path().join("campaign-result.json"),
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","runs":[{"index":0,"operations":["write","read"],"fault":"worker:restart@2","status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
+        );
+        let index = report(directory.path(), directory.path().join("report")).unwrap();
+        let html = fs::read_to_string(index).unwrap();
+        assert!(html.contains("Autonomous Compose campaign"));
+        assert!(html.contains("Generated timelines"));
+        assert!(html.contains("worker:restart@2"));
+        assert!(html.contains("consistent_read"));
     }
 
     #[test]

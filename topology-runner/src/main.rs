@@ -30,7 +30,8 @@ use vmm::vmm_config::instance_info::InstanceInfo;
 use vmm::vmm_config::machine_config::{MachineConfigUpdate, VirtualTimeConfig};
 use vmm::{EventManager, FcExitCode, Vmm};
 
-const USAGE: &str = "Usage: theseus-topology --plan topology-plan.json --output replay-dir";
+const USAGE: &str =
+    "Usage: theseus-topology --plan topology-plan.json --output replay-dir [--minimize]";
 
 #[derive(Debug, Deserialize, Serialize)]
 struct TopologyPlan {
@@ -39,7 +40,99 @@ struct TopologyPlan {
     services: BTreeMap<String, ServicePlan>,
     networks: BTreeMap<String, Vec<String>>,
     #[serde(default)]
+    campaign: Option<CampaignPlan>,
+    #[serde(default)]
     topology_runner: Option<Artifact>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct CampaignPlan {
+    driver: String,
+    operations: Vec<CampaignOperation>,
+    #[serde(default)]
+    faults: Vec<CampaignFault>,
+    #[serde(default)]
+    properties: Vec<CampaignProperty>,
+    max_runs: u16,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct CampaignOperation {
+    name: String,
+    input_hex: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct CampaignFault {
+    service: String,
+    #[serde(flatten)]
+    fault: FaultPlan,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct CampaignProperty {
+    name: String,
+    kind: PropertyKind,
+    contains: String,
+    #[serde(default)]
+    service: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PropertyKind {
+    Always,
+    Sometimes,
+    Reachable,
+    Unreachable,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignResult {
+    format: &'static str,
+    status: &'static str,
+    driver: String,
+    runs: Vec<CampaignRun>,
+    properties: Vec<CampaignPropertyResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignRun {
+    index: usize,
+    operations: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fault: Option<String>,
+    status: &'static str,
+    novelty: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignPropertyResult {
+    name: String,
+    kind: &'static str,
+    status: &'static str,
+    detail: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecordedCampaignResult {
+    runs: Vec<RecordedCampaignRun>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecordedCampaignRun {
+    operations: Vec<String>,
+    #[serde(default)]
+    fault: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CampaignMinimization {
+    property: String,
+    original_operations: Vec<String>,
+    minimized_operations: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fault: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -61,7 +154,7 @@ struct FaultPlan {
     nanoseconds: Option<u64>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum FaultKind {
     Pause,
@@ -150,6 +243,10 @@ struct StoragePlan {
 #[derive(Debug, Deserialize, Serialize)]
 struct EventPlan {
     data_hex: String,
+    /// Campaign operations use an explicit serial barrier.  Ordinary manifest
+    /// events leave it absent and retain the original fire-and-forget mode.
+    #[serde(default)]
+    checkpoint: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -507,8 +604,12 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
-    let [flag_plan, plan, flag_output, output] = args.as_slice() else {
-        return Err(USAGE.to_owned());
+    let (flag_plan, plan, flag_output, output, minimize) = match args.as_slice() {
+        [flag_plan, plan, flag_output, output] => (flag_plan, plan, flag_output, output, false),
+        [flag_plan, plan, flag_output, output, flag] if flag == "--minimize" => {
+            (flag_plan, plan, flag_output, output, true)
+        }
+        _ => return Err(USAGE.to_owned()),
     };
     if flag_plan != "--plan" || flag_output != "--output" {
         return Err(USAGE.to_owned());
@@ -534,16 +635,533 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ));
     }
     fs::create_dir_all(&output).map_err(|error| error.to_string())?;
-    execute(
-        topology,
-        &output,
-        expected_serial,
-        expected_faults,
-        expected_network,
-        expected_storage,
-        expected_traffic,
-        expected_virtual_time,
+    if topology.campaign.is_some() {
+        if expected_serial.is_some()
+            || expected_faults.is_some()
+            || expected_network.is_some()
+            || expected_storage.is_some()
+            || expected_traffic.is_some()
+            || expected_virtual_time.is_some()
+        {
+            return Err(
+                "campaign bundles replay their recorded schedules, not single-run fingerprints"
+                    .to_owned(),
+            );
+        }
+        if minimize {
+            execute_campaign_minimized(topology, &output, Path::new(plan))
+        } else {
+            execute_campaign(topology, &output)
+        }
+    } else {
+        if minimize {
+            return Err("--minimize requires a campaign replay bundle".to_owned());
+        }
+        execute(
+            topology,
+            &output,
+            expected_serial,
+            expected_faults,
+            expected_network,
+            expected_storage,
+            expected_traffic,
+            expected_virtual_time,
+        )
+    }
+}
+
+/// Execute an autonomous campaign as a deterministic corpus of complete
+/// topology timelines.  A topology service is the workload driver: Theseus
+/// writes operation bytes to its UART, while every service stays inside the
+/// same simulated switch and fault scheduler.  Starting complete timelines is
+/// deliberately the initial checkpoint representation: every retained run is
+/// a locked, independently replayable topology bundle, rather than a host
+/// process whose state cannot be reproduced.
+fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
+    let campaign = topology
+        .campaign
+        .take()
+        .expect("campaign execution requires a campaign");
+    let base = serde_json::to_vec(&topology)
+        .map_err(|error| format!("cannot encode campaign base plan: {error}"))?;
+    let schedules = campaign_schedules(&campaign);
+    if schedules.is_empty() {
+        return Err("campaign produced no schedules".to_owned());
+    }
+    fs::create_dir_all(output.join("runs")).map_err(|error| error.to_string())?;
+    let mut runs = Vec::new();
+    let mut seen_markers = std::collections::BTreeSet::new();
+    for (index, schedule) in schedules.iter().enumerate() {
+        let mut run: TopologyPlan = serde_json::from_slice(&base)
+            .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
+        apply_campaign_schedule(&mut run, &campaign, schedule)?;
+        let run_dir = output.join("runs").join(format!("{index:03}"));
+        let status = execute(run, &run_dir, None, None, None, None, None, None);
+        let markers = campaign_markers(&run_dir)?;
+        let novelty = markers
+            .into_iter()
+            .filter(|marker| seen_markers.insert(marker.clone()))
+            .collect::<Vec<_>>();
+        runs.push(CampaignRun {
+            index,
+            operations: schedule
+                .operations
+                .iter()
+                .map(|operation| campaign.operations[*operation].name.clone())
+                .collect(),
+            fault: schedule
+                .fault
+                .map(|fault| campaign_fault_name(&campaign.faults[fault])),
+            status: if status.is_ok() { "passed" } else { "failed" },
+            novelty,
+        });
+    }
+    let properties = evaluate_campaign_properties(&campaign, output, &runs)?;
+    let passed = runs.iter().all(|run| run.status == "passed")
+        && properties
+            .iter()
+            .all(|property| property.status == "passed");
+    let first_plan = output.join("runs/000/replay-plan.json");
+    let mut replay: TopologyPlan = serde_json::from_slice(
+        &fs::read(&first_plan)
+            .map_err(|error| format!("cannot read {}: {error}", first_plan.display()))?,
     )
+    .map_err(|error| format!("cannot parse {}: {error}", first_plan.display()))?;
+    replay.campaign = Some(campaign);
+    fs::write(
+        output.join("replay-plan.json"),
+        serde_json::to_vec_pretty(&replay).expect("campaign replay plan serializes"),
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(
+        output.join("campaign-result.json"),
+        serde_json::to_vec_pretty(&CampaignResult {
+            format: "theseus-compose-campaign-result-v1",
+            status: if passed { "passed" } else { "failed" },
+            driver: replay
+                .campaign
+                .as_ref()
+                .expect("campaign remains in replay plan")
+                .driver
+                .clone(),
+            runs,
+            properties,
+        })
+        .expect("campaign result serializes"),
+    )
+    .map_err(|error| error.to_string())?;
+    if passed {
+        Ok(())
+    } else {
+        Err(format!(
+            "campaign found a failing timeline; inspect {}",
+            output.display()
+        ))
+    }
+}
+
+/// Delta-debug the first timeline that violates an individual property.  The
+/// reducer removes one operation at a time and re-executes the complete,
+/// locked topology.  It does not pretend that `sometimes` and `reachable`
+/// failures have a single counterexample: those properties fail because the
+/// corpus has no witness, so their full first schedule is retained.
+fn execute_campaign_minimized(
+    mut topology: TopologyPlan,
+    output: &Path,
+    source_plan: &Path,
+) -> Result<(), String> {
+    let campaign = topology
+        .campaign
+        .take()
+        .expect("campaign minimization requires a campaign");
+    let source = source_plan
+        .parent()
+        .ok_or_else(|| format!("campaign plan has no parent: {}", source_plan.display()))?;
+    let recorded: RecordedCampaignResult = serde_json::from_slice(
+        &fs::read(source.join("campaign-result.json"))
+            .map_err(|error| format!("cannot read campaign result: {error}"))?,
+    )
+    .map_err(|error| format!("cannot parse campaign result: {error}"))?;
+    let base = serde_json::to_vec(&topology)
+        .map_err(|error| format!("cannot encode campaign base plan: {error}"))?;
+    let (property, mut schedule) = campaign_counterexample(&campaign, source, &recorded)?;
+    let original_operations = schedule
+        .operations
+        .iter()
+        .map(|operation| campaign.operations[*operation].name.clone())
+        .collect::<Vec<_>>();
+    let attempts = output.join("minimization-attempts");
+    fs::create_dir_all(&attempts).map_err(|error| error.to_string())?;
+    let mut attempt = 0_usize;
+    let mut index = 0;
+    while index < schedule.operations.len() {
+        let mut candidate = CampaignSchedule {
+            operations: schedule.operations.clone(),
+            fault: schedule.fault,
+        };
+        candidate.operations.remove(index);
+        if candidate.operations.is_empty() {
+            index += 1;
+            continue;
+        }
+        let directory = attempts.join(format!("{attempt:03}"));
+        attempt += 1;
+        let mut plan: TopologyPlan = serde_json::from_slice(&base)
+            .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
+        apply_campaign_schedule(&mut plan, &campaign, &candidate)?;
+        let _ = execute(plan, &directory, None, None, None, None, None, None);
+        if property_fails_in_run(&property, &directory) {
+            schedule = candidate;
+        } else {
+            index += 1;
+        }
+    }
+    let mut final_plan: TopologyPlan = serde_json::from_slice(&base)
+        .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
+    apply_campaign_schedule(&mut final_plan, &campaign, &schedule)?;
+    add_counterexample_check(&mut final_plan, &campaign, &property)?;
+    execute(final_plan, output, None, None, None, None, None, None)?;
+    let minimized_operations = schedule
+        .operations
+        .iter()
+        .map(|operation| campaign.operations[*operation].name.clone())
+        .collect::<Vec<_>>();
+    fs::write(
+        output.join("minimization.json"),
+        serde_json::to_vec_pretty(&CampaignMinimization {
+            property: property.name.clone(),
+            original_operations,
+            minimized_operations,
+            fault: schedule
+                .fault
+                .map(|fault| campaign_fault_name(&campaign.faults[fault])),
+        })
+        .expect("campaign minimization serializes"),
+    )
+    .map_err(|error| error.to_string())?;
+    if property_fails_in_run(&property, output) {
+        Err(format!(
+            "minimized campaign counterexample reproduced; replay it with `theseus compose replay {}`",
+            output.display()
+        ))
+    } else {
+        Err("campaign counterexample did not reproduce during minimization".to_owned())
+    }
+}
+
+fn add_counterexample_check(
+    topology: &mut TopologyPlan,
+    campaign: &CampaignPlan,
+    property: &CampaignProperty,
+) -> Result<(), String> {
+    let service = property.service.as_ref().unwrap_or(&campaign.driver);
+    let check = topology
+        .services
+        .get_mut(service)
+        .ok_or_else(|| format!("property service disappeared: {service}"))?;
+    let kind = match property.kind {
+        PropertyKind::Unreachable => CheckKind::SerialContains,
+        PropertyKind::Always | PropertyKind::Sometimes | PropertyKind::Reachable => {
+            CheckKind::SerialNotContains
+        }
+    };
+    check.run.checks.push(CheckPlan {
+        name: format!("counterexample: {}", property.name),
+        kind,
+        value: property.contains.clone(),
+    });
+    Ok(())
+}
+
+fn campaign_counterexample(
+    campaign: &CampaignPlan,
+    source: &Path,
+    recorded: &RecordedCampaignResult,
+) -> Result<(CampaignProperty, CampaignSchedule), String> {
+    for property in &campaign.properties {
+        let matches = recorded
+            .runs
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                property_matches_in_run(property, &source.join("runs").join(format!("{index:03}")))
+            })
+            .collect::<Vec<_>>();
+        let property_failed = match property.kind {
+            PropertyKind::Always => matches.iter().any(|matched| !matched),
+            PropertyKind::Unreachable => matches.iter().any(|matched| *matched),
+            PropertyKind::Sometimes | PropertyKind::Reachable => {
+                matches.iter().all(|matched| !matched)
+            }
+        };
+        if !property_failed {
+            continue;
+        }
+        let index = match property.kind {
+            PropertyKind::Always => matches.iter().position(|matched| !matched),
+            PropertyKind::Unreachable => matches.iter().position(|matched| *matched),
+            PropertyKind::Sometimes | PropertyKind::Reachable => Some(0),
+        }
+        .expect("failed property has a recorded run");
+        let recorded_run = &recorded.runs[index];
+        let operations = recorded_run
+            .operations
+            .iter()
+            .map(|name| {
+                campaign
+                    .operations
+                    .iter()
+                    .position(|operation| operation.name == *name)
+                    .ok_or_else(|| format!("recorded operation is no longer declared: {name}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let fault = recorded_run
+            .fault
+            .as_ref()
+            .map(|name| {
+                campaign
+                    .faults
+                    .iter()
+                    .position(|fault| campaign_fault_name(fault) == *name)
+                    .ok_or_else(|| format!("recorded fault is no longer declared: {name}"))
+            })
+            .transpose()?;
+        return Ok((
+            CampaignProperty {
+                name: property.name.clone(),
+                kind: property.kind,
+                contains: property.contains.clone(),
+                service: property.service.clone(),
+            },
+            CampaignSchedule { operations, fault },
+        ));
+    }
+    Err("campaign bundle has no failing property to minimize".to_owned())
+}
+
+fn property_fails_in_run(property: &CampaignProperty, run: &Path) -> bool {
+    let matched = property_matches_in_run(property, run);
+    match property.kind {
+        PropertyKind::Always => !matched,
+        PropertyKind::Unreachable => matched,
+        PropertyKind::Sometimes | PropertyKind::Reachable => !matched,
+    }
+}
+
+fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
+    let services = property
+        .service
+        .as_ref()
+        .map(|service| vec![service.clone()])
+        .unwrap_or_else(|| {
+            fs::read_dir(run.join("services"))
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        });
+    services
+        .into_iter()
+        .any(|service| campaign_serial_contains(run, &service, property.contains.as_bytes()))
+}
+
+#[derive(Debug)]
+struct CampaignSchedule {
+    operations: Vec<usize>,
+    fault: Option<usize>,
+}
+
+fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
+    let mut operations = Vec::new();
+    // Deterministic breadth-first operation histories.  This gives each
+    // operation a single-step attempt before longer histories consume budget.
+    for depth in 1..=campaign.operations.len() {
+        for start in 0..campaign.operations.len() {
+            let history = (0..depth)
+                .map(|offset| (start + offset) % campaign.operations.len())
+                .collect::<Vec<_>>();
+            operations.push(history);
+        }
+    }
+    let mut schedules = Vec::new();
+    for history in operations {
+        schedules.push(CampaignSchedule {
+            operations: history.clone(),
+            fault: None,
+        });
+        for fault in 0..campaign.faults.len() {
+            schedules.push(CampaignSchedule {
+                operations: history.clone(),
+                fault: Some(fault),
+            });
+        }
+    }
+    schedules.truncate(usize::from(campaign.max_runs));
+    schedules
+}
+
+fn apply_campaign_schedule(
+    topology: &mut TopologyPlan,
+    campaign: &CampaignPlan,
+    schedule: &CampaignSchedule,
+) -> Result<(), String> {
+    let driver = topology
+        .services
+        .get_mut(&campaign.driver)
+        .ok_or_else(|| format!("campaign driver disappeared: {}", campaign.driver))?;
+    driver.run.events = schedule
+        .operations
+        .iter()
+        .map(|operation| EventPlan {
+            data_hex: campaign.operations[*operation].input_hex.clone(),
+            checkpoint: Some(format!(
+                "THES:CHECKPOINT:{}",
+                campaign.operations[*operation].name
+            )),
+        })
+        .collect();
+    if let Some(fault) = schedule.fault {
+        let candidate = &campaign.faults[fault];
+        topology
+            .services
+            .get_mut(&candidate.service)
+            .ok_or_else(|| format!("campaign fault service disappeared: {}", candidate.service))?
+            .faults
+            .push(FaultPlan {
+                at_round: candidate.fault.at_round,
+                kind: match candidate.fault.kind {
+                    FaultKind::Pause => FaultKind::Pause,
+                    FaultKind::Restart => FaultKind::Restart,
+                    FaultKind::ClockJump => FaultKind::ClockJump,
+                },
+                duration_rounds: candidate.fault.duration_rounds,
+                nanoseconds: candidate.fault.nanoseconds,
+            });
+        topology
+            .services
+            .get_mut(&candidate.service)
+            .expect("campaign fault service was checked")
+            .faults
+            .sort_by_key(|fault| fault.at_round);
+    }
+    Ok(())
+}
+
+fn campaign_fault_name(fault: &CampaignFault) -> String {
+    let kind = match fault.fault.kind {
+        FaultKind::Pause => "pause",
+        FaultKind::Restart => "restart",
+        FaultKind::ClockJump => "clock_jump",
+    };
+    format!("{}:{kind}@{}", fault.service, fault.fault.at_round)
+}
+
+fn campaign_markers(run: &Path) -> Result<Vec<String>, String> {
+    let mut markers = std::collections::BTreeSet::new();
+    let services = fs::read_dir(run.join("services")).map_err(|error| error.to_string())?;
+    for service in services {
+        let service = service.map_err(|error| error.to_string())?;
+        for log in fs::read_dir(service.path()).map_err(|error| error.to_string())? {
+            let log = log.map_err(|error| error.to_string())?;
+            let name = log.file_name();
+            let name = name.to_string_lossy();
+            if name == "serial.log" || (name.starts_with("serial-") && name.ends_with(".log")) {
+                let text = fs::read_to_string(log.path()).unwrap_or_default();
+                for line in text.lines() {
+                    if let Some(marker) = line.trim().strip_prefix("THES:M:") {
+                        markers.insert(marker.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    Ok(markers.into_iter().collect())
+}
+
+fn evaluate_campaign_properties(
+    campaign: &CampaignPlan,
+    output: &Path,
+    runs: &[CampaignRun],
+) -> Result<Vec<CampaignPropertyResult>, String> {
+    campaign
+        .properties
+        .iter()
+        .map(|property| {
+            let matches = runs
+                .iter()
+                .map(|run| {
+                    let services = property
+                        .service
+                        .as_ref()
+                        .map(|service| vec![service.clone()])
+                        .unwrap_or_else(|| campaign_services(output, run.index));
+                    services.into_iter().any(|service| {
+                        campaign_serial_contains(
+                            &output.join("runs").join(format!("{:03}", run.index)),
+                            &service,
+                            property.contains.as_bytes(),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            let found = matches.iter().filter(|matched| **matched).count();
+            let passed = match property.kind {
+                PropertyKind::Always => found == runs.len(),
+                PropertyKind::Sometimes | PropertyKind::Reachable => found > 0,
+                PropertyKind::Unreachable => found == 0,
+            };
+            let kind = match property.kind {
+                PropertyKind::Always => "always",
+                PropertyKind::Sometimes => "sometimes",
+                PropertyKind::Reachable => "reachable",
+                PropertyKind::Unreachable => "unreachable",
+            };
+            Ok(CampaignPropertyResult {
+                name: property.name.clone(),
+                kind,
+                status: if passed { "passed" } else { "failed" },
+                detail: format!(
+                    "{} of {} retained timelines contained {:?}",
+                    found,
+                    runs.len(),
+                    property.contains
+                ),
+            })
+        })
+        .collect()
+}
+
+fn campaign_services(output: &Path, run: usize) -> Vec<String> {
+    fs::read_dir(
+        output
+            .join("runs")
+            .join(format!("{run:03}"))
+            .join("services"),
+    )
+    .into_iter()
+    .flatten()
+    .filter_map(Result::ok)
+    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+    .collect()
+}
+
+fn campaign_serial_contains(run: &Path, service: &str, needle: &[u8]) -> bool {
+    fs::read_dir(run.join("services").join(service))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name == "serial.log" || (name.starts_with("serial-") && name.ends_with(".log"))
+        })
+        .any(|entry| {
+            fs::read(entry.path())
+                .unwrap_or_default()
+                .windows(needle.len())
+                .any(|value| value == needle)
+        })
 }
 
 fn execute(
@@ -1192,8 +1810,31 @@ fn inject_serial_events(
     }
     for event in events {
         vm.push_serial_input(&decode_hex(&event.data_hex)?)?;
+        if let Some(checkpoint) = &event.checkpoint {
+            wait_for_serial(
+                serial_log,
+                checkpoint.as_bytes(),
+                "campaign operation checkpoint",
+            )?;
+        }
     }
     Ok(())
+}
+
+fn wait_for_serial(serial_log: &Path, needle: &[u8], purpose: &str) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if fs::read(serial_log)
+            .is_ok_and(|serial| serial.windows(needle.len()).any(|window| window == needle))
+        {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Err(format!(
+        "service did not announce {purpose}: {}",
+        serial_log.display()
+    ))
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
