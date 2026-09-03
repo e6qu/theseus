@@ -177,6 +177,8 @@ struct Network {
     jitter_rounds: u32,
     #[serde(default)]
     tx_bytes_per_round: u64,
+    #[serde(default)]
+    mtu_bytes: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -306,6 +308,8 @@ pub struct NetworkPlan {
     pub jitter_rounds: u32,
     #[serde(default)]
     pub tx_bytes_per_round: u64,
+    #[serde(default)]
+    pub mtu_bytes: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -502,6 +506,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             latency_rounds: manifest.network.latency_rounds,
             jitter_rounds: manifest.network.jitter_rounds,
             tx_bytes_per_round: manifest.network.tx_bytes_per_round,
+            mtu_bytes: manifest.network.mtu_bytes,
         },
         storage,
         explore,
