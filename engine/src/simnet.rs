@@ -16,6 +16,8 @@
 //!   the same simulated link
 //! - **deterministic corruption**: a selected nonempty frame has one seeded bit
 //!   flipped before link delivery
+//! - **bounded transmit queues**: excess frames are dropped at a configured
+//!   per-NIC queue limit
 //!
 //! Frame delay, jitter, and bandwidth all advance in deterministic runner
 //! rounds, never host time.
@@ -69,6 +71,10 @@ pub struct SimNetConfig {
     /// Maximum transmitted Ethernet frame size. Zero leaves the link unlimited.
     #[serde(default)]
     pub mtu_bytes: u32,
+    /// Maximum number of frames waiting for outbound link budget. Zero leaves
+    /// the transmit queue unlimited.
+    #[serde(default)]
+    pub tx_queue_frames: u32,
 }
 
 impl Default for SimNetConfig {
@@ -84,6 +90,7 @@ impl Default for SimNetConfig {
             jitter_rounds: 0,
             tx_bytes_per_round: 0,
             mtu_bytes: 0,
+            tx_queue_frames: 0,
         }
     }
 }
@@ -497,6 +504,19 @@ impl SimNet {
         }
     }
 
+    /// Queue a frame for the simulated link, dropping it deterministically if
+    /// the configured outbound queue is full.
+    fn queue_transmit(&mut self, frame: PendingTransmit) -> bool {
+        if self.config.tx_queue_frames != 0
+            && self.tx_queue.len() >= self.config.tx_queue_frames as usize
+        {
+            self.dropped += 1;
+            return false;
+        }
+        self.tx_queue.push_back(frame);
+        true
+    }
+
     /// Accept a frame from the guest TX path.
     pub fn write_frame(&mut self, frame: &[u8]) {
         self.tx_frames += 1;
@@ -514,16 +534,17 @@ impl SimNet {
             self.corrupt_frame(&mut bytes);
             self.corrupted += 1;
         }
-        self.tx_queue.push_back(PendingTransmit {
+        self.queue_transmit(PendingTransmit {
             delay_rounds,
             bytes: bytes.clone(),
         });
         if self.should_duplicate() {
-            self.tx_queue.push_back(PendingTransmit {
+            if self.queue_transmit(PendingTransmit {
                 delay_rounds,
                 bytes,
-            });
-            self.duplicated += 1;
+            }) {
+                self.duplicated += 1;
+            }
         }
         self.drain_transmit_queue();
     }
@@ -668,6 +689,28 @@ mod tests {
         let mut buffer = [0; 16];
         assert_eq!(sim.read_frame(&mut buffer), Some(3));
         assert_eq!(sim.dropped, 1);
+    }
+
+    #[test]
+    fn test_transmit_queue_drops_frames_after_deterministic_overflow() {
+        let mut sim = SimNet::new(SimNetConfig {
+            tx_bytes_per_round: 3,
+            tx_queue_frames: 1,
+            ..Default::default()
+        });
+        sim.write_frame(b"one");
+        sim.write_frame(b"two");
+        sim.write_frame(b"three");
+
+        let mut buffer = [0; 16];
+        assert_eq!(sim.read_frame(&mut buffer), Some(3));
+        assert_eq!(&buffer[..3], b"one");
+        assert_eq!(sim.stats().dropped, 1);
+
+        sim.advance_round();
+        assert_eq!(sim.read_frame(&mut buffer), Some(3));
+        assert_eq!(&buffer[..3], b"two");
+        assert!(!sim.has_pending_rx());
     }
 
     #[test]
@@ -830,6 +873,7 @@ mod tests {
             jitter_rounds: 0,
             tx_bytes_per_round: 0,
             mtu_bytes: 0,
+            tx_queue_frames: 0,
         };
         let run = || {
             let mut sim = SimNet::new(cfg);

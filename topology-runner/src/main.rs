@@ -130,6 +130,8 @@ struct NetworkConfig {
     tx_bytes_per_round: u64,
     #[serde(default)]
     mtu_bytes: u32,
+    #[serde(default)]
+    tx_queue_frames: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1319,6 +1321,7 @@ fn build_service(
                     jitter_rounds: service.run.network.jitter_rounds,
                     tx_bytes_per_round: service.run.network.tx_bytes_per_round,
                     mtu_bytes: service.run.network.mtu_bytes,
+                    tx_queue_frames: service.run.network.tx_queue_frames,
                 },
                 switch,
                 format!("{network}/{name}-{instance}"),
