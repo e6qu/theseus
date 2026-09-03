@@ -71,6 +71,7 @@ impl FaultStrategy {
             partitioned: self.partition_every_n != 0
                 && branch_idx as u32 % self.partition_every_n == self.partition_every_n - 1,
             latency_rounds: 0,
+            jitter_rounds: 0,
         }
     }
 }

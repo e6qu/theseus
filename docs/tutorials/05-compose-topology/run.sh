@@ -20,6 +20,7 @@ for service in api worker; do
 done
 
 theseus compose test
+grep -a '"jitter_rounds": 1' theseus-compose-replay/replay-plan.json
 grep -a '^ping passed$' theseus-compose-replay/services/api/serial.log
 grep -a '^serial command accepted$' theseus-compose-replay/services/api/serial.log
 theseus compose replay theseus-compose-replay --output topology-replay

@@ -120,6 +120,8 @@ struct NetworkConfig {
     partitioned: bool,
     #[serde(default)]
     latency_rounds: u32,
+    #[serde(default)]
+    jitter_rounds: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1177,6 +1179,7 @@ fn build_service(
                     drop_ppm: service.run.network.drop_ppm,
                     partitioned: service.run.network.partitioned,
                     latency_rounds: service.run.network.latency_rounds,
+                    jitter_rounds: service.run.network.jitter_rounds,
                 },
                 switch,
                 format!("{network}/{name}-{instance}"),

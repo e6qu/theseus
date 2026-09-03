@@ -13,13 +13,14 @@
 //! - **deterministic random drops**: per-frame drops driven by a seeded ChaCha
 //!   stream, so a given seed + frame sequence always produces the same drops
 //!
-//! Frame delay advances in deterministic runner rounds, never host time.
+//! Frame delay and jitter advance in deterministic runner rounds, never host
+//! time.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use rand_chacha::ChaCha8Rng;
 use rand_chacha::rand_core::{RngCore, SeedableRng};
+use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 
 /// Configuration for a simulated network backend.
@@ -42,6 +43,10 @@ pub struct SimNetConfig {
     /// Scheduler rounds a delivered frame waits before the guest can receive it.
     #[serde(default)]
     pub latency_rounds: u32,
+    /// Extra scheduler rounds chosen per delivered frame from the seeded RNG.
+    /// A later frame can therefore arrive before an earlier one.
+    #[serde(default)]
+    pub jitter_rounds: u32,
 }
 
 impl Default for SimNetConfig {
@@ -52,6 +57,7 @@ impl Default for SimNetConfig {
             drop_ppm: 0,
             partitioned: false,
             latency_rounds: 0,
+            jitter_rounds: 0,
         }
     }
 }
@@ -70,6 +76,7 @@ pub struct SimNetStats {
 #[derive(Debug)]
 struct PendingFrame {
     ready_round: u64,
+    sequence: u64,
     bytes: Vec<u8>,
 }
 
@@ -81,6 +88,7 @@ pub struct SimNet {
     /// Frames awaiting RX delivery to the guest.
     rx_queue: VecDeque<PendingFrame>,
     round: u64,
+    next_frame: u64,
     rng: ChaCha8Rng,
     /// Frames accepted from the guest TX path.
     pub tx_frames: u64,
@@ -104,6 +112,7 @@ pub struct SimNet {
 pub struct SimSwitch {
     ports: BTreeMap<String, VecDeque<PendingFrame>>,
     round: u64,
+    next_frame: u64,
 }
 
 /// Shared ownership used by all simulated NICs in one topology runner.
@@ -154,12 +163,18 @@ impl SimSwitch {
 
     fn deliver(&mut self, source: &str, include_source: bool, delay_rounds: u32, frame: &[u8]) {
         let ready_round = self.round.saturating_add(u64::from(delay_rounds));
+        let sequence = self.next_frame;
+        self.next_frame = self.next_frame.saturating_add(1);
         for (port, queue) in &mut self.ports {
             if include_source || port != source {
-                queue.push_back(PendingFrame {
-                    ready_round,
-                    bytes: frame.to_vec(),
-                });
+                push_pending(
+                    queue,
+                    PendingFrame {
+                        ready_round,
+                        sequence,
+                        bytes: frame.to_vec(),
+                    },
+                );
             }
         }
     }
@@ -187,12 +202,26 @@ impl SimSwitch {
     }
 }
 
+/// Keep each RX queue ordered by deterministic delivery time, with submission
+/// order as a stable tiebreaker. This permits configured jitter to reorder
+/// frames without involving host scheduling.
+fn push_pending(queue: &mut VecDeque<PendingFrame>, frame: PendingFrame) {
+    let position = queue
+        .iter()
+        .position(|queued| {
+            (queued.ready_round, queued.sequence) > (frame.ready_round, frame.sequence)
+        })
+        .unwrap_or(queue.len());
+    queue.insert(position, frame);
+}
+
 impl SimNet {
     pub fn new(config: SimNetConfig) -> Self {
         SimNet {
             config,
             rx_queue: VecDeque::new(),
             round: 0,
+            next_frame: 0,
             rng: ChaCha8Rng::seed_from_u64(config.seed),
             tx_frames: 0,
             rx_frames: 0,
@@ -221,6 +250,7 @@ impl SimNet {
             config,
             rx_queue: VecDeque::new(),
             round: 0,
+            next_frame: 0,
             rng: ChaCha8Rng::seed_from_u64(config.seed),
             tx_frames: 0,
             rx_frames: 0,
@@ -264,6 +294,15 @@ impl SimNet {
         self.rng.next_u32() % 1_000_000 < self.config.drop_ppm
     }
 
+    /// The base delay plus a seeded, per-frame jitter. Use a u64 modulus so
+    /// the full u32 configuration range remains valid.
+    fn delivery_delay_rounds(&mut self) -> u32 {
+        let jitter =
+            u32::try_from(self.rng.next_u64() % (u64::from(self.config.jitter_rounds) + 1))
+                .expect("configured jitter is bounded by u32");
+        self.config.latency_rounds.saturating_add(jitter)
+    }
+
     /// Accept a frame from the guest TX path.
     pub fn write_frame(&mut self, frame: &[u8]) {
         self.tx_frames += 1;
@@ -271,23 +310,20 @@ impl SimNet {
             self.dropped += 1;
             return;
         }
+        let delay_rounds = self.delivery_delay_rounds();
         if let (Some(switch), Some(endpoint)) = (&self.switch, &self.endpoint) {
             switch
                 .lock()
                 .expect("simulated switch lock poisoned")
-                .deliver(
-                    endpoint,
-                    self.config.loopback,
-                    self.config.latency_rounds,
-                    frame,
-                );
+                .deliver(endpoint, self.config.loopback, delay_rounds, frame);
         } else if self.config.loopback {
-            self.rx_queue.push_back(PendingFrame {
-                ready_round: self
-                    .round
-                    .saturating_add(u64::from(self.config.latency_rounds)),
+            let frame = PendingFrame {
+                ready_round: self.round.saturating_add(u64::from(delay_rounds)),
+                sequence: self.next_frame,
                 bytes: frame.to_vec(),
-            });
+            };
+            self.next_frame = self.next_frame.saturating_add(1);
+            push_pending(&mut self.rx_queue, frame);
         }
     }
 
@@ -397,6 +433,47 @@ mod tests {
     }
 
     #[test]
+    fn test_jitter_is_seeded_and_bounded_by_scheduler_rounds() {
+        let run = || {
+            let mut sim = SimNet::new(SimNetConfig {
+                seed: 1234,
+                jitter_rounds: 2,
+                ..Default::default()
+            });
+            for frame in [b"first".as_slice(), b"second", b"third"] {
+                sim.write_frame(frame);
+            }
+            for _ in 0..2 {
+                sim.advance_round();
+            }
+            let mut delivered = Vec::new();
+            let mut buffer = [0; 16];
+            while let Some(length) = sim.read_frame(&mut buffer) {
+                delivered.push(buffer[..length].to_vec());
+            }
+            assert_eq!(delivered.len(), 3, "jitter must not exceed two rounds");
+            delivered
+        };
+
+        assert_eq!(run(), run(), "the same seed must choose the same jitter");
+    }
+
+    #[test]
+    fn test_shared_switch_delivers_ready_frames_before_earlier_delayed_frames() {
+        let mut switch = SimSwitch::new();
+        switch.attach("api").unwrap();
+        switch.attach("worker").unwrap();
+        switch.deliver("api", false, 2, b"first");
+        switch.deliver("api", false, 0, b"second");
+
+        assert_eq!(switch.receive("worker"), Some(b"second".to_vec()));
+        switch.advance_round();
+        assert_eq!(switch.receive("worker"), None);
+        switch.advance_round();
+        assert_eq!(switch.receive("worker"), Some(b"first".to_vec()));
+    }
+
+    #[test]
     fn test_drops_are_deterministic() {
         let cfg = SimNetConfig {
             seed: 1234,
@@ -404,6 +481,7 @@ mod tests {
             drop_ppm: 500_000, // drop ~half
             partitioned: false,
             latency_rounds: 0,
+            jitter_rounds: 0,
         };
         let run = || {
             let mut sim = SimNet::new(cfg);

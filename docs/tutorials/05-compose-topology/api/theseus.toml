@@ -20,6 +20,7 @@ data = "70696e670a"
 [network]
 loopback = false
 latency_rounds = 1
+jitter_rounds = 1
 
 [[checks]]
 name = "api reached worker"
