@@ -34,5 +34,6 @@ apply. Linux networking tolerates these duplicate ARP and ping frames.
 Set `corrupt_ppm` to select nonempty frames for one seeded bit flip before the
 simulated link delivers them. A duplicate carries the same corrupted bytes.
 
-Each service result also includes the first 64 simulated NIC TX/RX frames,
-with deterministic scheduler rounds and hexadecimal payloads.
+Each service result includes the first 64 simulated NIC TX, RX, and drop frames.
+Each record has a deterministic scheduler round, a drop reason when relevant,
+and a hexadecimal payload.

@@ -119,6 +119,17 @@ pub struct SimNetStats {
 pub enum SimNetFrameDirection {
     Tx,
     Rx,
+    Drop,
+}
+
+/// Why a frame was deterministically discarded by the simulated NIC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimNetDropReason {
+    Mtu,
+    Partition,
+    RandomLoss,
+    TransmitQueue,
+    ReceiveBuffer,
 }
 
 /// One frame observed at a simulated NIC boundary.
@@ -126,6 +137,7 @@ pub enum SimNetFrameDirection {
 pub struct SimNetFrame {
     pub round: u64,
     pub direction: SimNetFrameDirection,
+    pub drop_reason: Option<SimNetDropReason>,
     pub bytes: Vec<u8>,
 }
 
@@ -375,9 +387,9 @@ impl SimNet {
         }
     }
 
-    /// Return the first 64 transmitted and delivered frames in deterministic
-    /// boundary order. The fixed bound prevents a guest from growing bundles
-    /// without limit.
+    /// Return the first 64 transmitted, dropped, and delivered frames in
+    /// deterministic boundary order. The fixed bound prevents a guest from
+    /// growing bundles without limit.
     pub fn trace(&self) -> &[SimNetFrame] {
         &self.trace
     }
@@ -387,6 +399,18 @@ impl SimNet {
             self.trace.push(SimNetFrame {
                 round: self.round,
                 direction,
+                drop_reason: None,
+                bytes: bytes.to_vec(),
+            });
+        }
+    }
+
+    fn trace_drop(&mut self, reason: SimNetDropReason, bytes: &[u8]) {
+        if self.trace.len() < FRAME_TRACE_LIMIT {
+            self.trace.push(SimNetFrame {
+                round: self.round,
+                direction: SimNetFrameDirection::Drop,
+                drop_reason: Some(reason),
                 bytes: bytes.to_vec(),
             });
         }
@@ -406,14 +430,15 @@ impl SimNet {
     }
 
     /// Deterministic per-frame drop decision.
-    fn should_drop(&mut self) -> bool {
+    fn drop_reason(&mut self) -> Option<SimNetDropReason> {
         if self.config.partitioned {
-            return true;
+            return Some(SimNetDropReason::Partition);
         }
         if self.config.drop_ppm == 0 {
-            return false;
+            return None;
         }
-        self.rng.next_u32() % 1_000_000 < self.config.drop_ppm
+        (self.rng.next_u32() % 1_000_000 < self.config.drop_ppm)
+            .then_some(SimNetDropReason::RandomLoss)
     }
 
     /// Deterministic per-frame duplication decision, evaluated only after a
@@ -511,6 +536,7 @@ impl SimNet {
             && self.tx_queue.len() >= self.config.tx_queue_frames as usize
         {
             self.dropped += 1;
+            self.trace_drop(SimNetDropReason::TransmitQueue, &frame.bytes);
             return false;
         }
         self.tx_queue.push_back(frame);
@@ -522,10 +548,12 @@ impl SimNet {
         self.tx_frames += 1;
         if self.config.mtu_bytes != 0 && frame.len() > self.config.mtu_bytes as usize {
             self.dropped += 1;
+            self.trace_drop(SimNetDropReason::Mtu, frame);
             return;
         }
-        if self.should_drop() {
+        if let Some(reason) = self.drop_reason() {
             self.dropped += 1;
+            self.trace_drop(reason, frame);
             return;
         }
         let delay_rounds = self.delivery_delay_rounds();
@@ -578,6 +606,7 @@ impl SimNet {
         if frame.len() > buf.len() {
             // Truncating would silently corrupt; drop instead, deterministically.
             self.dropped += 1;
+            self.trace_drop(SimNetDropReason::ReceiveBuffer, &frame);
             return None;
         }
         buf[..frame.len()].copy_from_slice(&frame);
@@ -658,6 +687,7 @@ mod tests {
         assert_eq!(sim.trace().len(), 2);
         assert_eq!(sim.trace()[0].direction, SimNetFrameDirection::Tx);
         assert_eq!(sim.trace()[1].direction, SimNetFrameDirection::Rx);
+        assert_eq!(sim.trace()[0].drop_reason, None);
         assert_eq!(sim.trace()[0].bytes, b"trace");
 
         for _ in 0..64 {
@@ -665,6 +695,20 @@ mod tests {
             sim.read_frame(&mut buffer).unwrap();
         }
         assert_eq!(sim.trace().len(), FRAME_TRACE_LIMIT);
+    }
+
+    #[test]
+    fn test_frame_trace_records_deterministic_drop_reasons() {
+        let mut sim = SimNet::new(SimNetConfig {
+            mtu_bytes: 3,
+            ..Default::default()
+        });
+        sim.write_frame(b"oversized");
+
+        assert_eq!(sim.trace().len(), 1);
+        assert_eq!(sim.trace()[0].direction, SimNetFrameDirection::Drop);
+        assert_eq!(sim.trace()[0].drop_reason, Some(SimNetDropReason::Mtu));
+        assert_eq!(sim.trace()[0].bytes, b"oversized");
     }
 
     #[test]
@@ -706,6 +750,10 @@ mod tests {
         assert_eq!(sim.read_frame(&mut buffer), Some(3));
         assert_eq!(&buffer[..3], b"one");
         assert_eq!(sim.stats().dropped, 1);
+        assert_eq!(
+            sim.trace()[1].drop_reason,
+            Some(SimNetDropReason::TransmitQueue)
+        );
 
         sim.advance_round();
         assert_eq!(sim.read_frame(&mut buffer), Some(3));

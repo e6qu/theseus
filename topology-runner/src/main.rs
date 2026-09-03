@@ -20,7 +20,7 @@ use theseus_engine::simnet::{SharedSimSwitch, SimSwitch};
 use vmm::builder::build_microvm_for_boot;
 use vmm::devices::virtio::block::device::Block;
 use vmm::devices::virtio::block::virtio::device::SimulatedBlockConfig;
-use vmm::devices::virtio::net::{Net, SimNetConfig, SimNetFrameDirection};
+use vmm::devices::virtio::net::{Net, SimNetConfig, SimNetDropReason, SimNetFrameDirection};
 use vmm::rate_limiter::RateLimiter;
 use vmm::resources::VmResources;
 use vmm::seccomp::get_empty_filters;
@@ -229,6 +229,8 @@ struct NetworkTraffic {
 struct NetworkFrame {
     round: u64,
     direction: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drop_reason: Option<String>,
     data_hex: String,
 }
 
@@ -443,8 +445,19 @@ impl ServiceVm {
                             direction: match frame.direction {
                                 SimNetFrameDirection::Tx => "tx",
                                 SimNetFrameDirection::Rx => "rx",
+                                SimNetFrameDirection::Drop => "drop",
                             }
                             .to_owned(),
+                            drop_reason: frame.drop_reason.map(|reason| {
+                                match reason {
+                                    SimNetDropReason::Mtu => "mtu",
+                                    SimNetDropReason::Partition => "partition",
+                                    SimNetDropReason::RandomLoss => "random_loss",
+                                    SimNetDropReason::TransmitQueue => "tx_queue",
+                                    SimNetDropReason::ReceiveBuffer => "rx_buffer",
+                                }
+                                .to_owned()
+                            }),
                             data_hex: hex(&frame.bytes),
                         })
                         .collect(),

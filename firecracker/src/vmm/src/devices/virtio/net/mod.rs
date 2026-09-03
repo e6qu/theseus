@@ -28,7 +28,8 @@ pub mod test_utils;
 mod generated;
 
 pub use sim::{
-    SharedSimSwitch, SimNet, SimNetConfig, SimNetFrame, SimNetFrameDirection, SimNetStats,
+    SharedSimSwitch, SimNet, SimNetConfig, SimNetDropReason, SimNetFrame, SimNetFrameDirection,
+    SimNetStats,
     SimSwitchError,
 };
 pub use tap::{Tap, TapError};
