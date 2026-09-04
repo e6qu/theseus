@@ -136,6 +136,7 @@ pub enum SimNetDropReason {
     Partition,
     LinkPartition,
     RandomLoss,
+    PacketRule,
     TransmitQueue,
     ReceiveQueue,
     ReceiveBuffer,
@@ -170,6 +171,10 @@ struct PendingTransmit {
 #[derive(Debug)]
 pub struct SimNet {
     config: SimNetConfig,
+    /// Drop rules keyed by Ethernet EtherType. They are runtime topology
+    /// actions rather than static link configuration, so replacing ordinary
+    /// packet conditions deliberately leaves them intact.
+    packet_drop_rules: Vec<SimNetPacketDropRule>,
     /// Frames awaiting RX delivery to the guest.
     rx_queue: VecDeque<PendingFrame>,
     tx_queue: VecDeque<PendingTransmit>,
@@ -194,6 +199,13 @@ pub struct SimNet {
     /// retains the single-guest loopback backend used by the Firecracker API.
     switch: Option<SharedSimSwitch>,
     endpoint: Option<String>,
+}
+
+/// A deterministic packet-loss rule for one Ethernet EtherType.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SimNetPacketDropRule {
+    ethertype: u16,
+    drop_ppm: u32,
 }
 
 /// A topology-owned deterministic Ethernet switch.
@@ -450,6 +462,7 @@ impl SimNet {
     pub fn new(config: SimNetConfig) -> Self {
         SimNet {
             config,
+            packet_drop_rules: Vec::new(),
             rx_queue: VecDeque::new(),
             tx_queue: VecDeque::new(),
             round: 0,
@@ -487,6 +500,7 @@ impl SimNet {
             .attach(&endpoint, config.rx_queue_frames, trace.clone())?;
         Ok(SimNet {
             config,
+            packet_drop_rules: Vec::new(),
             rx_queue: VecDeque::new(),
             tx_queue: VecDeque::new(),
             round: 0,
@@ -542,6 +556,33 @@ impl SimNet {
         if self.config.tx_bytes_per_round != 0 {
             self.tx_bytes_remaining = self.config.tx_bytes_per_round;
         }
+    }
+
+    /// Set deterministic loss for frames with one Ethernet EtherType. This
+    /// changes only newly submitted matching frames; it preserves queued
+    /// frames, counters, and the seeded decision stream.
+    pub fn set_packet_drop_rule(&mut self, ethertype: u16, drop_ppm: u32) {
+        debug_assert!(drop_ppm <= 1_000_000);
+        if let Some(rule) = self
+            .packet_drop_rules
+            .iter_mut()
+            .find(|rule| rule.ethertype == ethertype)
+        {
+            rule.drop_ppm = drop_ppm;
+            return;
+        }
+        self.packet_drop_rules.push(SimNetPacketDropRule {
+            ethertype,
+            drop_ppm,
+        });
+        self.packet_drop_rules.sort_by_key(|rule| rule.ethertype);
+    }
+
+    /// Remove the deterministic loss rule for one Ethernet EtherType without
+    /// changing ordinary network conditions or any accumulated link state.
+    pub fn clear_packet_drop_rule(&mut self, ethertype: u16) {
+        self.packet_drop_rules
+            .retain(|rule| rule.ethertype != ethertype);
     }
 
     /// Block or restore this NIC's directed path to one peer on its shared
@@ -616,9 +657,21 @@ impl SimNet {
     }
 
     /// Deterministic per-frame drop decision.
-    fn drop_reason(&mut self) -> Option<SimNetDropReason> {
+    fn drop_reason(&mut self, frame: &[u8]) -> Option<SimNetDropReason> {
         if self.config.partitioned {
             return Some(SimNetDropReason::Partition);
+        }
+        let ethertype = frame
+            .get(12..14)
+            .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]));
+        if let Some(rule) = ethertype.and_then(|ethertype| {
+            self.packet_drop_rules
+                .iter()
+                .find(|rule| rule.ethertype == ethertype)
+        }) {
+            if self.rng.next_u32() % 1_000_000 < rule.drop_ppm {
+                return Some(SimNetDropReason::PacketRule);
+            }
         }
         if self.config.drop_ppm == 0 {
             return None;
@@ -750,7 +803,7 @@ impl SimNet {
             self.trace_drop(SimNetDropReason::Mtu, frame);
             return;
         }
-        if let Some(reason) = self.drop_reason() {
+        if let Some(reason) = self.drop_reason(frame) {
             self.dropped += 1;
             self.trace_drop(reason, frame);
             return;
@@ -909,6 +962,36 @@ mod tests {
         assert_eq!(config.tx_queue_frames, 8);
         assert_eq!(config.rx_queue_frames, 9);
         assert_eq!(sim.stats().tx_frames, 1);
+    }
+
+    #[test]
+    fn packet_drop_rule_matches_only_ethernet_ethertype_and_can_be_cleared() {
+        let mut sim = SimNet::new(SimNetConfig {
+            loopback: true,
+            ..Default::default()
+        });
+        let ipv4 = [0_u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x08, 0x00];
+        let arp = [0_u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x08, 0x06];
+
+        sim.set_packet_drop_rule(0x0800, 1_000_000);
+        sim.write_frame(&ipv4);
+        sim.write_frame(&arp);
+
+        assert_eq!(sim.stats().tx_frames, 2);
+        assert_eq!(sim.stats().dropped, 1);
+        assert_eq!(
+            sim.trace()[0].drop_reason,
+            Some(SimNetDropReason::PacketRule)
+        );
+        let mut buffer = [0_u8; 64];
+        assert_eq!(sim.read_frame(&mut buffer), Some(14));
+        assert_eq!(&buffer[..14], &arp);
+
+        sim.clear_packet_drop_rule(0x0800);
+        sim.write_frame(&ipv4);
+        assert_eq!(sim.read_frame(&mut buffer), Some(14));
+        assert_eq!(&buffer[..14], &ipv4);
+        assert_eq!(sim.stats().dropped, 1);
     }
 
     #[test]

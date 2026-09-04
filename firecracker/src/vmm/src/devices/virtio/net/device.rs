@@ -495,6 +495,27 @@ impl Net {
         }
     }
 
+    /// Set or remove deterministic loss for one Ethernet EtherType without
+    /// altering ordinary conditions, queued frames, or seeded link state.
+    /// Returns false for a host TAP device.
+    pub fn set_simulated_packet_drop_rule(
+        &mut self,
+        ethertype: u16,
+        drop_ppm: Option<u32>,
+    ) -> bool {
+        match &mut self.backend {
+            NetBackend::Sim(sim) => {
+                if let Some(drop_ppm) = drop_ppm {
+                    sim.set_packet_drop_rule(ethertype, drop_ppm);
+                } else {
+                    sim.clear_packet_drop_rule(ethertype);
+                }
+                true
+            }
+            NetBackend::Tap(_) => false,
+        }
+    }
+
     /// Block or restore one directed path from this simulated NIC to another
     /// simulated NIC on the same topology switch. Returns false for a host
     /// TAP or standalone simulated backend.
