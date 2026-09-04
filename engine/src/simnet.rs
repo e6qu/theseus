@@ -306,6 +306,17 @@ impl SimSwitch {
         Ok(())
     }
 
+    /// Change a destination port's bound for subsequently delivered frames.
+    /// Existing queued frames remain intact so this is a timeline action, not
+    /// a retroactive mutation of already-observed traffic.
+    pub fn set_rx_queue_frames(&mut self, port: &str, rx_queue_frames: u32) -> bool {
+        let Some(destination) = self.ports.get_mut(port) else {
+            return false;
+        };
+        destination.rx_queue_frames = rx_queue_frames;
+        true
+    }
+
     fn deliver(&mut self, source: &str, include_source: bool, delay_rounds: u32, frame: &[u8]) {
         let ready_round = self.round.saturating_add(u64::from(delay_rounds));
         let sequence = self.next_frame;
@@ -505,6 +516,32 @@ impl SimNet {
     /// without rewinding its seeded RNG or switch state.
     pub fn set_partitioned(&mut self, partitioned: bool) {
         self.config.partitioned = partitioned;
+    }
+
+    /// Replace the mutable packet-condition settings without disturbing this
+    /// NIC's seeded RNG, counters, queues, partition state, or topology-switch
+    /// attachment. A campaign can therefore change conditions at a UART
+    /// barrier and later restore its declared baseline on the same timeline.
+    pub fn set_conditions(&mut self, conditions: SimNetConfig) {
+        self.config.drop_ppm = conditions.drop_ppm;
+        self.config.duplicate_ppm = conditions.duplicate_ppm;
+        self.config.corrupt_ppm = conditions.corrupt_ppm;
+        self.config.latency_rounds = conditions.latency_rounds;
+        self.config.jitter_rounds = conditions.jitter_rounds;
+        self.config.tx_bytes_per_round = conditions.tx_bytes_per_round;
+        self.config.mtu_bytes = conditions.mtu_bytes;
+        self.config.tx_queue_frames = conditions.tx_queue_frames;
+        self.config.rx_queue_frames = conditions.rx_queue_frames;
+        if let (Some(switch), Some(endpoint)) = (&self.switch, &self.endpoint) {
+            let updated = switch
+                .lock()
+                .expect("simulated switch lock poisoned")
+                .set_rx_queue_frames(endpoint, self.config.rx_queue_frames);
+            debug_assert!(updated, "attached simulated NIC lost its switch port");
+        }
+        if self.config.tx_bytes_per_round != 0 {
+            self.tx_bytes_remaining = self.config.tx_bytes_per_round;
+        }
     }
 
     /// Block or restore this NIC's directed path to one peer on its shared
@@ -836,6 +873,42 @@ mod tests {
         sim.write_frame(&[3]);
         assert!(!sim.config().partitioned);
         assert_eq!(sim.stats().tx_frames, 3);
+    }
+
+    #[test]
+    fn conditions_change_without_resetting_partition_or_statistics() {
+        let mut sim = SimNet::new(SimNetConfig {
+            loopback: true,
+            seed: 42,
+            partitioned: true,
+            ..Default::default()
+        });
+        sim.write_frame(b"before");
+        sim.set_conditions(SimNetConfig {
+            drop_ppm: 100,
+            duplicate_ppm: 200,
+            corrupt_ppm: 300,
+            latency_rounds: 4,
+            jitter_rounds: 5,
+            tx_bytes_per_round: 6,
+            mtu_bytes: 7,
+            tx_queue_frames: 8,
+            rx_queue_frames: 9,
+            ..Default::default()
+        });
+        let config = sim.config();
+        assert_eq!(config.seed, 42);
+        assert!(config.partitioned);
+        assert_eq!(config.drop_ppm, 100);
+        assert_eq!(config.duplicate_ppm, 200);
+        assert_eq!(config.corrupt_ppm, 300);
+        assert_eq!(config.latency_rounds, 4);
+        assert_eq!(config.jitter_rounds, 5);
+        assert_eq!(config.tx_bytes_per_round, 6);
+        assert_eq!(config.mtu_bytes, 7);
+        assert_eq!(config.tx_queue_frames, 8);
+        assert_eq!(config.rx_queue_frames, 9);
+        assert_eq!(sim.stats().tx_frames, 1);
     }
 
     #[test]
@@ -1255,6 +1328,38 @@ mod tests {
         let mut buffer = [0; 16];
         assert_eq!(worker.read_frame(&mut buffer), Some(5));
         assert_eq!(&buffer[..5], b"first");
+    }
+
+    #[test]
+    fn shared_switch_conditions_update_the_live_receive_queue_limit() {
+        let switch = Arc::new(Mutex::new(SimSwitch::new()));
+        let mut api = SimNet::new_with_switch(
+            SimNetConfig {
+                loopback: false,
+                ..Default::default()
+            },
+            switch.clone(),
+            "backplane/api",
+        )
+        .unwrap();
+        let mut worker = SimNet::new_with_switch(
+            SimNetConfig {
+                loopback: false,
+                ..Default::default()
+            },
+            switch,
+            "backplane/worker",
+        )
+        .unwrap();
+
+        worker.set_conditions(SimNetConfig {
+            rx_queue_frames: 1,
+            ..Default::default()
+        });
+        api.write_frame(b"first");
+        api.write_frame(b"second");
+
+        assert_eq!(worker.stats().dropped, 1);
     }
 
     #[test]

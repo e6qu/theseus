@@ -128,6 +128,22 @@ struct ComposeCampaignFault {
     torn_write_bytes: Option<u32>,
     #[serde(default)]
     corrupt_read_xor: Option<u8>,
+    #[serde(default)]
+    drop_ppm: Option<u32>,
+    #[serde(default)]
+    duplicate_ppm: Option<u32>,
+    #[serde(default)]
+    corrupt_ppm: Option<u32>,
+    #[serde(default)]
+    jitter_rounds: Option<u32>,
+    #[serde(default)]
+    tx_bytes_per_round: Option<u64>,
+    #[serde(default)]
+    mtu_bytes: Option<u32>,
+    #[serde(default)]
+    tx_queue_frames: Option<u32>,
+    #[serde(default)]
+    rx_queue_frames: Option<u32>,
 }
 
 /// Campaign-only faults. Lifecycle faults occur on scheduler rounds; topology
@@ -143,6 +159,8 @@ pub enum CampaignFaultKind {
     LinkPartition,
     LinkHeal,
     StorageFault,
+    NetworkFault,
+    NetworkRecover,
 }
 
 #[derive(Debug, Deserialize)]
@@ -289,6 +307,22 @@ pub struct CampaignFaultPlan {
     pub torn_write_bytes: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub corrupt_read_xor: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drop_ppm: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duplicate_ppm: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corrupt_ppm: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jitter_rounds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_bytes_per_round: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtu_bytes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_queue_frames: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rx_queue_frames: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -470,6 +504,14 @@ fn campaign_plan(
     for candidate in campaign.faults {
         let after_is_operation =
             |after: &str| operations.iter().any(|operation| operation.name == after);
+        let has_network_conditions = candidate.drop_ppm.is_some()
+            || candidate.duplicate_ppm.is_some()
+            || candidate.corrupt_ppm.is_some()
+            || candidate.jitter_rounds.is_some()
+            || candidate.tx_bytes_per_round.is_some()
+            || candidate.mtu_bytes.is_some()
+            || candidate.tx_queue_frames.is_some()
+            || candidate.rx_queue_frames.is_some();
         match candidate.kind {
             CampaignFaultKind::Pause
             | CampaignFaultKind::Restart
@@ -489,6 +531,7 @@ fn campaign_plan(
                     || candidate.latency_rounds.is_some()
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
+                    || has_network_conditions
                 {
                     return Err(ComposeError::Invalid(
                         "campaign lifecycle faults accept only service, at_round, duration_rounds, and nanoseconds"
@@ -541,6 +584,14 @@ fn campaign_plan(
                     latency_rounds: None,
                     torn_write_bytes: None,
                     corrupt_read_xor: None,
+                    drop_ppm: None,
+                    duplicate_ppm: None,
+                    corrupt_ppm: None,
+                    jitter_rounds: None,
+                    tx_bytes_per_round: None,
+                    mtu_bytes: None,
+                    tx_queue_frames: None,
+                    rx_queue_frames: None,
                 });
             }
             CampaignFaultKind::Partition | CampaignFaultKind::Heal => {
@@ -578,6 +629,7 @@ fn campaign_plan(
                     || candidate.latency_rounds.is_some()
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
+                    || has_network_conditions
                 {
                     return Err(ComposeError::Invalid(
                         "campaign partition/heal actions accept only network and after".to_owned(),
@@ -598,6 +650,14 @@ fn campaign_plan(
                     latency_rounds: None,
                     torn_write_bytes: None,
                     corrupt_read_xor: None,
+                    drop_ppm: None,
+                    duplicate_ppm: None,
+                    corrupt_ppm: None,
+                    jitter_rounds: None,
+                    tx_bytes_per_round: None,
+                    mtu_bytes: None,
+                    tx_queue_frames: None,
+                    rx_queue_frames: None,
                 });
             }
             CampaignFaultKind::LinkPartition | CampaignFaultKind::LinkHeal => {
@@ -653,6 +713,7 @@ fn campaign_plan(
                     || candidate.latency_rounds.is_some()
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
+                    || has_network_conditions
                 {
                     return Err(ComposeError::Invalid(
                         "campaign link_partition/link_heal actions accept only network, from, to, and after"
@@ -674,6 +735,14 @@ fn campaign_plan(
                     latency_rounds: None,
                     torn_write_bytes: None,
                     corrupt_read_xor: None,
+                    drop_ppm: None,
+                    duplicate_ppm: None,
+                    corrupt_ppm: None,
+                    jitter_rounds: None,
+                    tx_bytes_per_round: None,
+                    mtu_bytes: None,
+                    tx_queue_frames: None,
+                    rx_queue_frames: None,
                 });
             }
             CampaignFaultKind::StorageFault => {
@@ -730,6 +799,7 @@ fn campaign_plan(
                     || candidate.at_round.is_some()
                     || candidate.duration_rounds.is_some()
                     || candidate.nanoseconds.is_some()
+                    || has_network_conditions
                 {
                     return Err(ComposeError::Invalid(
                         "campaign storage_fault accepts service, drive, after, error_ppm, latency_rounds, torn_write_bytes, and corrupt_read_xor"
@@ -751,6 +821,105 @@ fn campaign_plan(
                     latency_rounds: candidate.latency_rounds,
                     torn_write_bytes: candidate.torn_write_bytes,
                     corrupt_read_xor: candidate.corrupt_read_xor,
+                    drop_ppm: None,
+                    duplicate_ppm: None,
+                    corrupt_ppm: None,
+                    jitter_rounds: None,
+                    tx_bytes_per_round: None,
+                    mtu_bytes: None,
+                    tx_queue_frames: None,
+                    rx_queue_frames: None,
+                });
+            }
+            CampaignFaultKind::NetworkFault | CampaignFaultKind::NetworkRecover => {
+                let network = candidate.network.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign network_fault/network_recover action requires network".to_owned(),
+                    )
+                })?;
+                let after = candidate.after.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign network_fault/network_recover action requires after".to_owned(),
+                    )
+                })?;
+                if !after_is_operation(after) {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign action after references unknown operation {after:?}",
+                    )));
+                }
+                if !services
+                    .values()
+                    .any(|service| service.networks.iter().any(|name| name == network))
+                {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign action references unknown network {network:?}",
+                    )));
+                }
+                if candidate.service.is_some()
+                    || candidate.from.is_some()
+                    || candidate.to.is_some()
+                    || candidate.drive.is_some()
+                    || candidate.at_round.is_some()
+                    || candidate.duration_rounds.is_some()
+                    || candidate.nanoseconds.is_some()
+                    || candidate.error_ppm.is_some()
+                    || candidate.torn_write_bytes.is_some()
+                    || candidate.corrupt_read_xor.is_some()
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign network_fault/network_recover actions accept only network, after, and packet-condition fields"
+                            .to_owned(),
+                    ));
+                }
+                if matches!(candidate.kind, CampaignFaultKind::NetworkFault)
+                    && !has_network_conditions
+                    && candidate.latency_rounds.is_none()
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign network_fault must set one packet-condition field".to_owned(),
+                    ));
+                }
+                if matches!(candidate.kind, CampaignFaultKind::NetworkRecover)
+                    && (has_network_conditions || candidate.latency_rounds.is_some())
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign network_recover accepts only network and after".to_owned(),
+                    ));
+                }
+                for (name, value) in [
+                    ("drop_ppm", candidate.drop_ppm),
+                    ("duplicate_ppm", candidate.duplicate_ppm),
+                    ("corrupt_ppm", candidate.corrupt_ppm),
+                ] {
+                    if value.is_some_and(|value| value > 1_000_000) {
+                        return Err(ComposeError::Invalid(format!(
+                            "campaign network_fault {name} must be at most 1000000"
+                        )));
+                    }
+                }
+                faults.push(CampaignFaultPlan {
+                    kind: candidate.kind,
+                    service: None,
+                    network: Some(network.to_owned()),
+                    from: None,
+                    to: None,
+                    drive: None,
+                    after: Some(after.to_owned()),
+                    at_round: None,
+                    duration_rounds: None,
+                    nanoseconds: None,
+                    error_ppm: None,
+                    latency_rounds: candidate.latency_rounds,
+                    torn_write_bytes: None,
+                    corrupt_read_xor: None,
+                    drop_ppm: candidate.drop_ppm,
+                    duplicate_ppm: candidate.duplicate_ppm,
+                    corrupt_ppm: candidate.corrupt_ppm,
+                    jitter_rounds: candidate.jitter_rounds,
+                    tx_bytes_per_round: candidate.tx_bytes_per_round,
+                    mtu_bytes: candidate.mtu_bytes,
+                    tx_queue_frames: candidate.tx_queue_frames,
+                    rx_queue_frames: candidate.rx_queue_frames,
                 });
             }
         }
@@ -1210,7 +1379,7 @@ mod tests {
     #[test]
     fn normalizes_operation_barrier_topology_actions() {
         let directory = fixture(
-            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: read\n        input: 'read\\n'\n    faults:\n      - kind: partition\n        network: backplane\n        after: write\n      - kind: link_partition\n        network: backplane\n        from: api\n        to: worker\n        after: write\n      - kind: link_heal\n        network: backplane\n        from: api\n        to: worker\n        after: read\n      - kind: storage_fault\n        service: worker\n        drive: data\n        after: write\n        error_ppm: 1000000\n        torn_write_bytes: 1\n",
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: read\n        input: 'read\\n'\n    faults:\n      - kind: partition\n        network: backplane\n        after: write\n      - kind: link_partition\n        network: backplane\n        from: api\n        to: worker\n        after: write\n      - kind: link_heal\n        network: backplane\n        from: api\n        to: worker\n        after: read\n      - kind: storage_fault\n        service: worker\n        drive: data\n        after: write\n        error_ppm: 1000000\n        torn_write_bytes: 1\n      - kind: network_fault\n        network: backplane\n        after: write\n        drop_ppm: 1000000\n        latency_rounds: 3\n      - kind: network_recover\n        network: backplane\n        after: read\n",
         );
         let worker = directory.path().join("worker/theseus.toml");
         let input = fs::read_to_string(&worker).unwrap();
@@ -1236,6 +1405,16 @@ mod tests {
         ));
         assert_eq!(campaign.faults[3].drive.as_deref(), Some("data"));
         assert_eq!(campaign.faults[3].error_ppm, Some(1_000_000));
+        assert!(matches!(
+            campaign.faults[4].kind,
+            CampaignFaultKind::NetworkFault
+        ));
+        assert_eq!(campaign.faults[4].drop_ppm, Some(1_000_000));
+        assert_eq!(campaign.faults[4].latency_rounds, Some(3));
+        assert!(matches!(
+            campaign.faults[5].kind,
+            CampaignFaultKind::NetworkRecover
+        ));
     }
 
     #[test]
@@ -1254,5 +1433,14 @@ mod tests {
         );
         let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
         assert!(error.to_string().contains("max_faults_per_run"));
+    }
+
+    #[test]
+    fn rejects_an_invalid_campaign_network_condition() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: request\n        input: 'request\\n'\n    faults:\n      - kind: network_fault\n        network: backplane\n        after: request\n        drop_ppm: 1000001\n",
+        );
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error.to_string().contains("drop_ppm"));
     }
 }

@@ -97,6 +97,22 @@ struct CampaignFault {
     torn_write_bytes: Option<u32>,
     #[serde(default)]
     corrupt_read_xor: Option<u8>,
+    #[serde(default)]
+    drop_ppm: Option<u32>,
+    #[serde(default)]
+    duplicate_ppm: Option<u32>,
+    #[serde(default)]
+    corrupt_ppm: Option<u32>,
+    #[serde(default)]
+    jitter_rounds: Option<u32>,
+    #[serde(default)]
+    tx_bytes_per_round: Option<u64>,
+    #[serde(default)]
+    mtu_bytes: Option<u32>,
+    #[serde(default)]
+    tx_queue_frames: Option<u32>,
+    #[serde(default)]
+    rx_queue_frames: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -110,6 +126,8 @@ enum CampaignFaultKind {
     LinkPartition,
     LinkHeal,
     StorageFault,
+    NetworkFault,
+    NetworkRecover,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -326,6 +344,22 @@ struct CampaignAction {
     torn_write_bytes: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     corrupt_read_xor: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drop_ppm: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duplicate_ppm: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    corrupt_ppm: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    jitter_rounds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tx_bytes_per_round: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mtu_bytes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tx_queue_frames: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rx_queue_frames: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -601,6 +635,78 @@ impl ServiceVm {
                 .map_err(|_| "simulated network lock poisoned".to_owned())?
                 .set_simulated_partitioned(partitioned)
             {
+                return Err(format!("network is not simulated: {network}"));
+            }
+            changed += 1;
+        }
+        Ok(changed)
+    }
+
+    fn set_network_conditions(
+        &self,
+        network: &str,
+        baseline: &NetworkConfig,
+        action: Option<&CampaignAction>,
+    ) -> Result<usize, String> {
+        let mut changed = 0;
+        for (name, net) in &self.networks {
+            if name != network {
+                continue;
+            }
+            let mut net = net
+                .lock()
+                .map_err(|_| "simulated network lock poisoned".to_owned())?;
+            let current = net
+                .sim_config()
+                .ok_or_else(|| format!("network is not simulated: {network}"))?;
+            let mut conditions = if action.is_some() {
+                current
+            } else {
+                SimNetConfig {
+                    seed: current.seed,
+                    loopback: current.loopback,
+                    drop_ppm: baseline.drop_ppm,
+                    duplicate_ppm: baseline.duplicate_ppm,
+                    corrupt_ppm: baseline.corrupt_ppm,
+                    partitioned: current.partitioned,
+                    latency_rounds: baseline.latency_rounds,
+                    jitter_rounds: baseline.jitter_rounds,
+                    tx_bytes_per_round: baseline.tx_bytes_per_round,
+                    mtu_bytes: baseline.mtu_bytes,
+                    tx_queue_frames: baseline.tx_queue_frames,
+                    rx_queue_frames: baseline.rx_queue_frames,
+                }
+            };
+            if let Some(action) = action {
+                if let Some(value) = action.drop_ppm {
+                    conditions.drop_ppm = value;
+                }
+                if let Some(value) = action.duplicate_ppm {
+                    conditions.duplicate_ppm = value;
+                }
+                if let Some(value) = action.corrupt_ppm {
+                    conditions.corrupt_ppm = value;
+                }
+                if let Some(value) = action.latency_rounds {
+                    conditions.latency_rounds = value;
+                }
+                if let Some(value) = action.jitter_rounds {
+                    conditions.jitter_rounds = value;
+                }
+                if let Some(value) = action.tx_bytes_per_round {
+                    conditions.tx_bytes_per_round = value;
+                }
+                if let Some(value) = action.mtu_bytes {
+                    conditions.mtu_bytes = value;
+                }
+                if let Some(value) = action.tx_queue_frames {
+                    conditions.tx_queue_frames = value;
+                }
+                if let Some(value) = action.rx_queue_frames {
+                    conditions.rx_queue_frames = value;
+                }
+            }
+            if !net.set_simulated_conditions(conditions) {
                 return Err(format!("network is not simulated: {network}"));
             }
             changed += 1;
@@ -1289,7 +1395,9 @@ fn campaign_fault_applies(
         | CampaignFaultKind::Heal
         | CampaignFaultKind::LinkPartition
         | CampaignFaultKind::LinkHeal
-        | CampaignFaultKind::StorageFault => {
+        | CampaignFaultKind::StorageFault
+        | CampaignFaultKind::NetworkFault
+        | CampaignFaultKind::NetworkRecover => {
             let Some(after) = &fault.after else {
                 return false;
             };
@@ -1381,6 +1489,14 @@ fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
         latency_rounds: fault.latency_rounds,
         torn_write_bytes: fault.torn_write_bytes,
         corrupt_read_xor: fault.corrupt_read_xor,
+        drop_ppm: fault.drop_ppm,
+        duplicate_ppm: fault.duplicate_ppm,
+        corrupt_ppm: fault.corrupt_ppm,
+        jitter_rounds: fault.jitter_rounds,
+        tx_bytes_per_round: fault.tx_bytes_per_round,
+        mtu_bytes: fault.mtu_bytes,
+        tx_queue_frames: fault.tx_queue_frames,
+        rx_queue_frames: fault.rx_queue_frames,
     })
 }
 
@@ -1428,6 +1544,16 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
             "{}:{}:storage_fault@{}",
             fault.service.as_deref().expect("validated storage service"),
             fault.drive.as_deref().expect("validated storage drive"),
+            fault.after.as_deref().expect("validated action operation")
+        ),
+        CampaignFaultKind::NetworkFault | CampaignFaultKind::NetworkRecover => format!(
+            "{}:{}@{}",
+            fault.network.as_deref().expect("validated action network"),
+            match fault.kind {
+                CampaignFaultKind::NetworkFault => "network_fault",
+                CampaignFaultKind::NetworkRecover => "network_recover",
+                _ => unreachable!(),
+            },
             fault.after.as_deref().expect("validated action operation")
         ),
     }
@@ -2365,6 +2491,95 @@ fn apply_campaign_action(
                 ),
             })
         }
+        CampaignFaultKind::NetworkFault | CampaignFaultKind::NetworkRecover => {
+            let network = action
+                .network
+                .as_deref()
+                .ok_or_else(|| "campaign network action has no network".to_owned())?;
+            let recover = matches!(action.kind, CampaignFaultKind::NetworkRecover);
+            let driver_baseline = &topology
+                .services
+                .get(driver_name)
+                .ok_or_else(|| format!("campaign driver disappeared: {driver_name}"))?
+                .run
+                .network;
+            let mut endpoints = driver.vm.set_network_conditions(
+                network,
+                driver_baseline,
+                (!recover).then_some(action),
+            )?;
+            for (service_name, service) in services.iter_mut() {
+                let baseline = &topology
+                    .services
+                    .get(service_name)
+                    .ok_or_else(|| format!("campaign service disappeared: {service_name}"))?
+                    .run
+                    .network;
+                endpoints += service.vm.set_network_conditions(
+                    network,
+                    baseline,
+                    (!recover).then_some(action),
+                )?;
+            }
+            if endpoints == 0 {
+                return Err(format!(
+                    "campaign network action network has no endpoints: {network}"
+                ));
+            }
+            let detail = if recover {
+                "restored declared packet conditions".to_owned()
+            } else {
+                let mut conditions = Vec::new();
+                for (name, value) in [
+                    ("drop_ppm", action.drop_ppm.map(|value| value.to_string())),
+                    (
+                        "duplicate_ppm",
+                        action.duplicate_ppm.map(|value| value.to_string()),
+                    ),
+                    (
+                        "corrupt_ppm",
+                        action.corrupt_ppm.map(|value| value.to_string()),
+                    ),
+                    (
+                        "latency_rounds",
+                        action.latency_rounds.map(|value| value.to_string()),
+                    ),
+                    (
+                        "jitter_rounds",
+                        action.jitter_rounds.map(|value| value.to_string()),
+                    ),
+                    (
+                        "tx_bytes_per_round",
+                        action.tx_bytes_per_round.map(|value| value.to_string()),
+                    ),
+                    ("mtu_bytes", action.mtu_bytes.map(|value| value.to_string())),
+                    (
+                        "tx_queue_frames",
+                        action.tx_queue_frames.map(|value| value.to_string()),
+                    ),
+                    (
+                        "rx_queue_frames",
+                        action.rx_queue_frames.map(|value| value.to_string()),
+                    ),
+                ] {
+                    if let Some(value) = value {
+                        conditions.push(format!("{name}={value}"));
+                    }
+                }
+                conditions.join(", ")
+            };
+            Ok(AppliedCampaignAction {
+                operation: action.operation.clone(),
+                kind: if recover {
+                    "network_recover"
+                } else {
+                    "network_fault"
+                }
+                .to_owned(),
+                target: format!("network:{network}"),
+                detail: format!("{endpoints} simulated NIC endpoint(s): {detail}"),
+            })
+        }
         CampaignFaultKind::StorageFault => {
             let service_name = action
                 .service
@@ -2644,6 +2859,14 @@ mod tests {
             latency_rounds: None,
             torn_write_bytes: None,
             corrupt_read_xor: None,
+            drop_ppm: None,
+            duplicate_ppm: None,
+            corrupt_ppm: None,
+            jitter_rounds: None,
+            tx_bytes_per_round: None,
+            mtu_bytes: None,
+            tx_queue_frames: None,
+            rx_queue_frames: None,
         }
     }
 
@@ -2665,6 +2888,20 @@ mod tests {
                 vec![2]
             ]
         );
+    }
+
+    #[test]
+    fn campaign_network_action_keeps_each_selected_condition() {
+        let mut fault = campaign_fault(CampaignFaultKind::NetworkFault);
+        fault.drop_ppm = Some(1_000_000);
+        fault.latency_rounds = Some(3);
+        fault.tx_queue_frames = Some(2);
+
+        let action = campaign_action(&fault).unwrap();
+        assert!(matches!(action.kind, CampaignFaultKind::NetworkFault));
+        assert_eq!(action.drop_ppm, Some(1_000_000));
+        assert_eq!(action.latency_rounds, Some(3));
+        assert_eq!(action.tx_queue_frames, Some(2));
     }
 
     #[test]

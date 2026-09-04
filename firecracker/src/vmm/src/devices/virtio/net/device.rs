@@ -482,6 +482,19 @@ impl Net {
         }
     }
 
+    /// Replace the mutable packet conditions of a Theseus simulated NIC while
+    /// retaining its seeded stream, traffic evidence, partition state, and
+    /// topology-switch identity. Returns false for a host TAP device.
+    pub fn set_simulated_conditions(&mut self, conditions: SimNetConfig) -> bool {
+        match &mut self.backend {
+            NetBackend::Sim(sim) => {
+                sim.set_conditions(conditions);
+                true
+            }
+            NetBackend::Tap(_) => false,
+        }
+    }
+
     /// Block or restore one directed path from this simulated NIC to another
     /// simulated NIC on the same topology switch. Returns false for a host
     /// TAP or standalone simulated backend.
