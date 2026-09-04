@@ -88,6 +88,11 @@ with a stable breadth-first seed, then gives priority to untried schedules
 that extend an operation prefix which produced a new `THES:M:` marker or a
 failure. The report records that selection reason and the full candidate count.
 
+It also treats a changed simulated drive, network traffic/payload fingerprint,
+or virtual clock as a new topology state. This reaches divergent outcomes even
+when the guest prints the same markers. Ordinary serial output and declared
+fault names are not state coverage, so they cannot create artificial novelty.
+
 Emit the serial protocol with plain shell:
 
 ```sh

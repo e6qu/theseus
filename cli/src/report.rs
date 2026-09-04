@@ -126,6 +126,8 @@ struct CampaignResult {
     #[serde(default)]
     generated_candidates: usize,
     #[serde(default)]
+    unique_topology_states: usize,
+    #[serde(default)]
     runs: Vec<CampaignRun>,
     #[serde(default)]
     properties: Vec<CampaignProperty>,
@@ -143,6 +145,8 @@ struct CampaignRun {
     actions: Vec<CampaignAction>,
     #[serde(default)]
     selection: String,
+    #[serde(default)]
+    state_novel: bool,
     status: String,
     #[serde(default)]
     novelty: Vec<String>,
@@ -469,9 +473,10 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         coverage: Some(Coverage {
             label: "Campaign corpus".to_owned(),
             summary: format!(
-                "{} of {} deterministic candidates selected by marker coverage; {} reusable checkpoint nodes, {} prefix reuses",
+                "{} of {} deterministic candidates selected by marker and topology-state coverage; {} unique topology states; {} reusable checkpoint nodes, {} prefix reuses",
                 result.runs.len(),
                 result.generated_candidates,
+                result.unique_topology_states,
                 result.checkpoint_nodes,
                 result.checkpoint_reuses,
             ),
@@ -596,7 +601,7 @@ if(m.error){{const e=section('Error');e.append(el('pre',m.error));}}
 const replay=section(m.command_label);replay.append(el('pre',m.command));
 if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));if(n.serial_log){{d.append(el('p','serial log: '+n.serial_log));}}d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
-if(m.campaign_runs.length){{const s=section('Generated timelines');s.append(table(m.campaign_runs.map(r=>[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none']),['Run','Operations','Candidates','Selection','Applied actions','Status','New markers']));}}
+if(m.campaign_runs.length){{const s=section('Generated timelines');s.append(table(m.campaign_runs.map(r=>[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',r.state_novel?'new':'seen',r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none']),['Run','Operations','Candidates','Selection','Topology state','Applied actions','Status','New markers']));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
 if(m.replay_verification){{const s=section('Replay verification');s.append(table([[m.replay_verification.status,m.replay_verification.detail]],['Status','Detail']));}}
 if(m.checks.length){{const s=section('Checks');s.append(table(m.checks.map(c=>[c.name,c.kind,c.status,c.detail]),['Name','Kind','Status','Detail']));}}
@@ -665,7 +670,7 @@ mod tests {
         );
         write_json(
             &directory.path().join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s)","actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"unique_topology_states":3,"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
         );
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
@@ -678,8 +683,14 @@ mod tests {
         assert!(html.contains("network:backplane"));
         assert!(html.contains("consistent_read"));
         assert!(html.contains("4 reusable checkpoint nodes, 7 prefix reuses"));
-        assert!(html.contains("1 of 12 deterministic candidates selected by marker coverage"));
-        assert!(html.contains("extends 1-operation prefix with 2 new marker(s)"));
+        assert!(html.contains(
+            "1 of 12 deterministic candidates selected by marker and topology-state coverage"
+        ));
+        assert!(html.contains("3 unique topology states"));
+        assert!(
+            html.contains("extends 1-operation prefix with 2 new marker(s) and new topology state")
+        );
+        assert!(html.contains("Topology state"));
     }
 
     #[test]
