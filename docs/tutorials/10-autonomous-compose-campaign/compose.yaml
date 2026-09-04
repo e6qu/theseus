@@ -72,6 +72,12 @@ x-theseus:
         after: write
         error_ppm: 1000000
         torn_write_bytes: 1
+      # Restore the replica's declared drive settings after retry. Existing
+      # disk bytes and the deterministic I/O stream stay in place.
+      - kind: storage_recover
+        service: replica
+        drive: data
+        after: retry
     properties:
       - name: consistent_read
         kind: always

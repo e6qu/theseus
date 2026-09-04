@@ -61,7 +61,7 @@ Key architectural differences with Theseus:
   its test templates and property APIs. Theseus accepts a designated Compose
   driver, text UART operations, lifecycle/clock candidates, barrier-triggered
   named-network `partition`/`heal`, directed service-to-service
-  `link_partition`/`link_heal`, simulated-drive `storage_fault`, packet-condition
+  `link_partition`/`link_heal`, simulated-drive `storage_fault`/`storage_recover`, packet-condition
   `network_fault`/`network_recover`, and
   `always`/`sometimes`/`reachable`/`unreachable` serial properties. It reduces
   an individual violation by re-running locked full topologies, supports

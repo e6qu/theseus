@@ -24,8 +24,10 @@ Start with `compose.yaml`.
    `latency_rounds`, `jitter_rounds`, `tx_bytes_per_round`, `mtu_bytes`,
    `tx_queue_frames`, or `rx_queue_frames`. `network_recover` restores each
    service's declared network conditions. `storage_fault` changes one named
-   simulated drive. Give these actions `after: <operation>`; Theseus applies
-   them immediately after that operation reports its checkpoint.
+   simulated drive; `storage_recover` restores that drive's declared settings
+   without discarding guest-written bytes. Give these actions
+   `after: <operation>`; Theseus applies them immediately after that operation
+   reports its checkpoint.
    `link_partition` and `link_heal` are narrower: give them `network`, `from`,
    and `to` to block or restore only that directed service-to-service path.
 4. Add properties. `always` needs every timeline to contain the assertion.
@@ -46,6 +48,10 @@ and a `network_recover` after `retry` run together, in that operation order.
 The recovery restores only packet conditions: a simultaneous partition or
 directed-link action remains in force. This lets you test recovery without a
 host-side test script.
+
+`storage_fault` and `storage_recover` form the same pair for a drive. Recovery
+does not roll back writes or reseed the I/O stream; it only restores the
+conditions declared in that service's manifest.
 
 Then minimize it:
 
