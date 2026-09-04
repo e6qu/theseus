@@ -19,9 +19,13 @@ Start with `compose.yaml`.
    after each input it waits for `THES:CHECKPOINT:<operation-name>` before it
    injects the next one. No SDK or host-side wrapper is required.
 3. List fault candidates. `partition` and `heal` change every simulated NIC on
-   a named network. `storage_fault` changes one named simulated drive. Give
-   these actions `after: <operation>`; Theseus applies them immediately after
-   that operation reports its checkpoint.
+   a named network. `network_fault` changes selected packet conditions on every
+   NIC on that network; set any of `drop_ppm`, `duplicate_ppm`, `corrupt_ppm`,
+   `latency_rounds`, `jitter_rounds`, `tx_bytes_per_round`, `mtu_bytes`,
+   `tx_queue_frames`, or `rx_queue_frames`. `network_recover` restores each
+   service's declared network conditions. `storage_fault` changes one named
+   simulated drive. Give these actions `after: <operation>`; Theseus applies
+   them immediately after that operation reports its checkpoint.
    `link_partition` and `link_heal` are narrower: give them `network`, `from`,
    and `to` to block or restore only that directed service-to-service path.
 4. Add properties. `always` needs every timeline to contain the assertion.
@@ -37,9 +41,11 @@ report, and prints the failing property. The campaign result also records each
 applied topology action. Replay checks that action sequence as well as the
 normal serial, network, and storage evidence.
 
-A candidate pair is one timeline. For example, a `partition` after `write`
-and a `heal` after `retry` run together, in that operation order. This lets you
-test recovery without a host-side test script.
+A candidate pair is one timeline. For example, a `network_fault` after `write`
+and a `network_recover` after `retry` run together, in that operation order.
+The recovery restores only packet conditions: a simultaneous partition or
+directed-link action remains in force. This lets you test recovery without a
+host-side test script.
 
 Then minimize it:
 

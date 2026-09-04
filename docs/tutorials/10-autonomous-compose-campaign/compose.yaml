@@ -41,6 +41,17 @@ x-theseus:
       - kind: heal
         network: backplane
         after: retry
+      # Packet conditions are independent from partition state. This drops all
+      # new frames after write, then restores each service's declared baseline
+      # after retry without resetting traffic evidence or the seeded stream.
+      - kind: network_fault
+        network: backplane
+        after: write
+        drop_ppm: 1000000
+        latency_rounds: 2
+      - kind: network_recover
+        network: backplane
+        after: retry
       # A directed link fault leaves api -> auditor and replica -> api live.
       # Only new api -> replica frames are dropped until link_heal runs.
       - kind: link_partition
