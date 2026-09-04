@@ -52,15 +52,19 @@ x-theseus:
       - kind: network_recover
         network: backplane
         after: retry
-      # Match only IPv4 Ethernet frames. Non-IPv4 frames keep flowing. This
-      # removes the rule after retry without changing ordinary conditions.
+      # Match only IPv4 Ethernet frames on api -> replica. Non-IPv4 frames
+      # and api -> auditor keep flowing. Recovery removes only this rule.
       - kind: packet_fault
         network: backplane
+        from: api
+        to: replica
         after: write
         ethertype: 0x0800
         drop_ppm: 1000000
       - kind: packet_recover
         network: backplane
+        from: api
+        to: replica
         after: retry
         ethertype: 0x0800
       # A directed link fault leaves api -> auditor and replica -> api live.

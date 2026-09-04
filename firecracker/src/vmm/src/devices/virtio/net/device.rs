@@ -516,6 +516,21 @@ impl Net {
         }
     }
 
+    /// Set or remove deterministic EtherType loss on one directed simulated
+    /// topology-switch path. Returns false for host TAPs and standalone
+    /// simulated NICs.
+    pub fn set_simulated_link_packet_drop_rule(
+        &mut self,
+        destination: &str,
+        ethertype: u16,
+        drop_ppm: Option<u32>,
+    ) -> bool {
+        match &mut self.backend {
+            NetBackend::Sim(sim) => sim.set_link_packet_drop_rule(destination, ethertype, drop_ppm),
+            NetBackend::Tap(_) => false,
+        }
+    }
+
     /// Block or restore one directed path from this simulated NIC to another
     /// simulated NIC on the same topology switch. Returns false for a host
     /// TAP or standalone simulated backend.

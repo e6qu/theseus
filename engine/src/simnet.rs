@@ -229,8 +229,17 @@ pub struct SimSwitch {
     /// isolate every port; this set models the more common asymmetric outage
     /// where only one service-to-service path is unavailable.
     blocked_links: BTreeSet<(String, String)>,
+    /// Per-path EtherType loss rules. Unlike a NIC-wide packet rule, these
+    /// apply only while a frame crosses one selected switch path.
+    packet_drop_rules: BTreeMap<(String, String, u16), SimSwitchPacketDropRule>,
     round: u64,
     next_frame: u64,
+}
+
+#[derive(Debug)]
+struct SimSwitchPacketDropRule {
+    drop_ppm: u32,
+    rng: ChaCha8Rng,
 }
 
 /// Shared ownership used by all simulated NICs in one topology runner.
@@ -292,6 +301,8 @@ impl SimSwitch {
         self.ports.remove(port);
         self.blocked_links
             .retain(|(source, destination)| source != port && destination != port);
+        self.packet_drop_rules
+            .retain(|(source, destination, _), _| source != port && destination != port);
     }
 
     /// Block or restore a single directed path between two attached ports.
@@ -318,6 +329,49 @@ impl SimSwitch {
         Ok(())
     }
 
+    /// Set or remove deterministic loss for one EtherType on one directed
+    /// path. A new rule gets an independent stream derived from the source
+    /// NIC seed and stable path identity, so other traffic cannot change its
+    /// decisions.
+    pub fn set_link_packet_drop_rule(
+        &mut self,
+        source: &str,
+        destination: &str,
+        ethertype: u16,
+        drop_ppm: Option<u32>,
+        seed: u64,
+    ) -> Result<(), SimSwitchError> {
+        if !self.ports.contains_key(source) {
+            return Err(SimSwitchError::InvalidPort(source.to_owned()));
+        }
+        if !self.ports.contains_key(destination) {
+            return Err(SimSwitchError::InvalidPort(destination.to_owned()));
+        }
+        let key = (source.to_owned(), destination.to_owned(), ethertype);
+        let Some(drop_ppm) = drop_ppm else {
+            self.packet_drop_rules.remove(&key);
+            return Ok(());
+        };
+        debug_assert!(drop_ppm <= 1_000_000);
+        if let Some(rule) = self.packet_drop_rules.get_mut(&key) {
+            rule.drop_ppm = drop_ppm;
+            return Ok(());
+        }
+        self.packet_drop_rules.insert(
+            key,
+            SimSwitchPacketDropRule {
+                drop_ppm,
+                rng: ChaCha8Rng::seed_from_u64(link_packet_rule_seed(
+                    seed,
+                    source,
+                    destination,
+                    ethertype,
+                )),
+            },
+        );
+        Ok(())
+    }
+
     /// Change a destination port's bound for subsequently delivered frames.
     /// Existing queued frames remain intact so this is a timeline action, not
     /// a retroactive mutation of already-observed traffic.
@@ -333,6 +387,10 @@ impl SimSwitch {
         let ready_round = self.round.saturating_add(u64::from(delay_rounds));
         let sequence = self.next_frame;
         self.next_frame = self.next_frame.saturating_add(1);
+        let ethertype = frame
+            .get(12..14)
+            .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]));
+        let packet_drop_rules = &mut self.packet_drop_rules;
         for (port, destination) in &mut self.ports {
             if include_source || port != source {
                 if self
@@ -344,6 +402,20 @@ impl SimSwitch {
                         &destination.trace,
                         self.round,
                         SimNetDropReason::LinkPartition,
+                        frame,
+                    );
+                    continue;
+                }
+                if ethertype.is_some_and(|ethertype| {
+                    packet_drop_rules
+                        .get_mut(&(source.to_owned(), port.clone(), ethertype))
+                        .is_some_and(|rule| rule.rng.next_u32() % 1_000_000 < rule.drop_ppm)
+                }) {
+                    destination.dropped += 1;
+                    trace_drop(
+                        &destination.trace,
+                        self.round,
+                        SimNetDropReason::PacketRule,
                         frame,
                     );
                     continue;
@@ -399,6 +471,17 @@ impl SimSwitch {
     pub fn ports(&self) -> Vec<String> {
         self.ports.keys().cloned().collect()
     }
+}
+
+fn link_packet_rule_seed(seed: u64, source: &str, destination: &str, ethertype: u16) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(seed.to_le_bytes());
+    hasher.update(source.as_bytes());
+    hasher.update([0]);
+    hasher.update(destination.as_bytes());
+    hasher.update(ethertype.to_be_bytes());
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("SHA-256 prefix is 8 bytes"))
 }
 
 /// Keep each RX queue ordered by deterministic delivery time, with submission
@@ -576,6 +659,24 @@ impl SimNet {
             drop_ppm,
         });
         self.packet_drop_rules.sort_by_key(|rule| rule.ethertype);
+    }
+
+    /// Set or remove deterministic loss for one EtherType on one directed
+    /// topology-switch path. Returns false for a standalone NIC.
+    pub fn set_link_packet_drop_rule(
+        &mut self,
+        destination: &str,
+        ethertype: u16,
+        drop_ppm: Option<u32>,
+    ) -> bool {
+        let (Some(switch), Some(source)) = (&self.switch, &self.endpoint) else {
+            return false;
+        };
+        switch
+            .lock()
+            .expect("simulated switch lock poisoned")
+            .set_link_packet_drop_rule(source, destination, ethertype, drop_ppm, self.config.seed)
+            .is_ok()
     }
 
     /// Remove the deterministic loss rule for one Ethernet EtherType without
@@ -1291,6 +1392,42 @@ mod tests {
         switch.set_link_blocked("api", "replica", false).unwrap();
         switch.deliver("api", false, 0, b"retry");
         assert_eq!(switch.receive("replica"), Some(b"retry".to_vec()));
+    }
+
+    #[test]
+    fn shared_switch_packet_rule_matches_only_one_directed_ethertype_path() {
+        let replica_trace = Arc::new(Mutex::new(Vec::new()));
+        let mut switch = SimSwitch::new();
+        switch
+            .attach("api", 0, Arc::new(Mutex::new(Vec::new())))
+            .unwrap();
+        switch.attach("replica", 0, replica_trace.clone()).unwrap();
+        switch
+            .attach("auditor", 0, Arc::new(Mutex::new(Vec::new())))
+            .unwrap();
+        let ipv4 = [0_u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x08, 0x00];
+        let arp = [0_u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x08, 0x06];
+
+        switch
+            .set_link_packet_drop_rule("api", "replica", 0x0800, Some(1_000_000), 42)
+            .unwrap();
+        switch.deliver("api", false, 0, &ipv4);
+        assert_eq!(switch.receive("replica"), None);
+        assert_eq!(switch.receive("auditor"), Some(ipv4.to_vec()));
+        switch.deliver("api", false, 0, &arp);
+        assert_eq!(switch.receive("replica"), Some(arp.to_vec()));
+        assert_eq!(switch.dropped("replica"), 1);
+        assert!(replica_trace
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|frame| { frame.drop_reason == Some(SimNetDropReason::PacketRule) }));
+
+        switch
+            .set_link_packet_drop_rule("api", "replica", 0x0800, None, 42)
+            .unwrap();
+        switch.deliver("api", false, 0, &ipv4);
+        assert_eq!(switch.receive("replica"), Some(ipv4.to_vec()));
     }
 
     #[test]

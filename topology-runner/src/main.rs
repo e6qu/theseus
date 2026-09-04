@@ -744,6 +744,31 @@ impl ServiceVm {
         Ok(changed)
     }
 
+    fn set_network_link_packet_drop_rule(
+        &self,
+        network: &str,
+        destination: &str,
+        ethertype: u16,
+        drop_ppm: Option<u32>,
+    ) -> Result<(), String> {
+        let net = self
+            .networks
+            .iter()
+            .find(|(name, _)| name == network)
+            .map(|(_, net)| net)
+            .ok_or_else(|| format!("campaign packet source is not on network: {network}"))?;
+        if !net
+            .lock()
+            .map_err(|_| "simulated network lock poisoned".to_owned())?
+            .set_simulated_link_packet_drop_rule(destination, ethertype, drop_ppm)
+        {
+            return Err(format!(
+                "network is not a simulated topology link: {network}"
+            ));
+        }
+        Ok(())
+    }
+
     fn network_endpoint(&self, network: &str) -> Result<Option<String>, String> {
         self.networks
             .iter()
@@ -1596,17 +1621,30 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
             },
             fault.after.as_deref().expect("validated action operation")
         ),
-        CampaignFaultKind::PacketFault | CampaignFaultKind::PacketRecover => format!(
-            "{}:{}:0x{:04x}@{}",
-            fault.network.as_deref().expect("validated action network"),
-            match fault.kind {
+        CampaignFaultKind::PacketFault | CampaignFaultKind::PacketRecover => {
+            let kind = match fault.kind {
                 CampaignFaultKind::PacketFault => "packet_fault",
                 CampaignFaultKind::PacketRecover => "packet_recover",
                 _ => unreachable!(),
-            },
-            fault.ethertype.expect("validated action ethertype"),
-            fault.after.as_deref().expect("validated action operation")
-        ),
+            };
+            let target = match (fault.from.as_deref(), fault.to.as_deref()) {
+                (Some(from), Some(to)) => format!(
+                    "{}:{from}->{to}",
+                    fault.network.as_deref().expect("validated action network")
+                ),
+                (None, None) => fault
+                    .network
+                    .as_deref()
+                    .expect("validated action network")
+                    .to_owned(),
+                _ => unreachable!("validated packet target"),
+            };
+            format!(
+                "{target}:{kind}:0x{:04x}@{}",
+                fault.ethertype.expect("validated action ethertype"),
+                fault.after.as_deref().expect("validated action operation")
+            )
+        }
     }
 }
 
@@ -2647,19 +2685,71 @@ fn apply_campaign_action(
                         .ok_or_else(|| "campaign packet fault has no drop_ppm".to_owned())
                 })
                 .transpose()?;
-            let mut endpoints = driver
-                .vm
-                .set_network_packet_drop_rule(network, ethertype, drop_ppm)?;
-            for service in services.values() {
-                endpoints += service
-                    .vm
-                    .set_network_packet_drop_rule(network, ethertype, drop_ppm)?;
-            }
-            if endpoints == 0 {
-                return Err(format!(
-                    "campaign packet action network has no endpoints: {network}"
-                ));
-            }
+            let (target, detail_prefix) = match (action.from.as_deref(), action.to.as_deref()) {
+                (Some(from), Some(to)) => {
+                    let destination = if to == driver_name {
+                        driver.vm.network_endpoint(network)?
+                    } else {
+                        services
+                            .get(to)
+                            .ok_or_else(|| {
+                                format!("campaign packet destination did not start: {to}")
+                            })?
+                            .vm
+                            .network_endpoint(network)?
+                    }
+                    .ok_or_else(|| {
+                        format!("campaign packet destination is not on network: {to}/{network}")
+                    })?;
+                    if from == driver_name {
+                        driver.vm.set_network_link_packet_drop_rule(
+                            network,
+                            &destination,
+                            ethertype,
+                            drop_ppm,
+                        )?;
+                    } else {
+                        services
+                            .get_mut(from)
+                            .ok_or_else(|| format!("campaign packet source did not start: {from}"))?
+                            .vm
+                            .set_network_link_packet_drop_rule(
+                                network,
+                                &destination,
+                                ethertype,
+                                drop_ppm,
+                            )?;
+                    }
+                    (
+                        format!("network:{network}/{from}->{to}/ethertype:0x{ethertype:04x}"),
+                        "one simulated directed link".to_owned(),
+                    )
+                }
+                (None, None) => {
+                    let mut endpoints = driver
+                        .vm
+                        .set_network_packet_drop_rule(network, ethertype, drop_ppm)?;
+                    for service in services.values() {
+                        endpoints += service
+                            .vm
+                            .set_network_packet_drop_rule(network, ethertype, drop_ppm)?;
+                    }
+                    if endpoints == 0 {
+                        return Err(format!(
+                            "campaign packet action network has no endpoints: {network}"
+                        ));
+                    }
+                    (
+                        format!("network:{network}/ethertype:0x{ethertype:04x}"),
+                        format!("{endpoints} simulated NIC endpoint(s)"),
+                    )
+                }
+                _ => {
+                    return Err(
+                        "campaign packet action has an incomplete directed target".to_owned()
+                    );
+                }
+            };
             Ok(AppliedCampaignAction {
                 operation: action.operation.clone(),
                 kind: if recover {
@@ -2668,14 +2758,12 @@ fn apply_campaign_action(
                     "packet_fault"
                 }
                 .to_owned(),
-                target: format!("network:{network}/ethertype:0x{ethertype:04x}"),
+                target,
                 detail: match drop_ppm {
-                    Some(drop_ppm) => format!(
-                        "{endpoints} simulated NIC endpoint(s): drop_ppm={drop_ppm} for matching Ethernet frames"
-                    ),
-                    None => format!(
-                        "{endpoints} simulated NIC endpoint(s): removed matching Ethernet-frame loss rule"
-                    ),
+                    Some(drop_ppm) => {
+                        format!("{detail_prefix}: drop_ppm={drop_ppm} for matching Ethernet frames")
+                    }
+                    None => format!("{detail_prefix}: removed matching Ethernet-frame loss rule"),
                 },
             })
         }
@@ -3034,6 +3122,8 @@ mod tests {
     #[test]
     fn campaign_packet_action_keeps_its_ethertype_target() {
         let mut fault = campaign_fault(CampaignFaultKind::PacketFault);
+        fault.from = Some("api".to_owned());
+        fault.to = Some("replica".to_owned());
         fault.ethertype = Some(0x0800);
         fault.drop_ppm = Some(1_000_000);
 
@@ -3043,7 +3133,7 @@ mod tests {
         assert_eq!(action.drop_ppm, Some(1_000_000));
         assert_eq!(
             campaign_fault_name(&fault),
-            "backplane:packet_fault:0x0800@write"
+            "backplane:api->replica:packet_fault:0x0800@write"
         );
     }
 

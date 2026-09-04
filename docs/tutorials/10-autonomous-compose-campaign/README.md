@@ -27,7 +27,8 @@ Start with `compose.yaml`.
    simulated drive; `storage_recover` restores that drive's declared settings
    without discarding guest-written bytes. `packet_fault` drops only Ethernet
    frames with one `ethertype` (for example `0x0800` for IPv4); give it
-   `drop_ppm`. `packet_recover` removes that one matching rule. Give these actions
+   `drop_ppm`. Add `from` and `to` to limit the rule to one directed service
+   path. `packet_recover` removes that one matching rule. Give these actions
    `after: <operation>`; Theseus applies them immediately after that operation
    reports its checkpoint.
    `link_partition` and `link_heal` are narrower: give them `network`, `from`,
@@ -56,7 +57,8 @@ does not roll back writes or reseed the I/O stream; it only restores the
 conditions declared in that service's manifest.
 
 `packet_fault` and `packet_recover` form a narrow network pair. They match the
-Ethernet header only; they are not an IP, TCP, or payload filter. Recovery
+Ethernet header only; they are not an IP, TCP, or payload filter. With `from`
+and `to`, the switch applies the rule only to that directed path. Recovery
 removes the selected EtherType rule while leaving partitions, directed links,
 and ordinary packet conditions unchanged.
 
