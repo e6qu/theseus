@@ -987,9 +987,31 @@ fn campaign_plan(
                         "campaign action references unknown network {network:?}",
                     )));
                 }
+                let directed = match (candidate.from.as_deref(), candidate.to.as_deref()) {
+                    (None, None) => None,
+                    (Some(from), Some(to)) if from != to => {
+                        for service_name in [from, to] {
+                            let service = services.get(service_name).ok_or_else(|| {
+                                ComposeError::Invalid(format!(
+                                    "campaign packet action references unknown service {service_name:?}",
+                                ))
+                            })?;
+                            if !service.networks.iter().any(|name| name == network) {
+                                return Err(ComposeError::Invalid(format!(
+                                    "campaign packet action service {service_name:?} is not on network {network:?}",
+                                )));
+                            }
+                        }
+                        Some((from, to))
+                    }
+                    _ => {
+                        return Err(ComposeError::Invalid(
+                            "campaign packet action requires both distinct from and to services"
+                                .to_owned(),
+                        ));
+                    }
+                };
                 if candidate.service.is_some()
-                    || candidate.from.is_some()
-                    || candidate.to.is_some()
                     || candidate.drive.is_some()
                     || candidate.at_round.is_some()
                     || candidate.duration_rounds.is_some()
@@ -1007,7 +1029,7 @@ fn campaign_plan(
                     || candidate.rx_queue_frames.is_some()
                 {
                     return Err(ComposeError::Invalid(
-                        "campaign packet_fault/packet_recover actions accept only network, after, ethertype, and drop_ppm"
+                        "campaign packet_fault/packet_recover actions accept network, after, ethertype, drop_ppm, and optional from/to"
                             .to_owned(),
                     ));
                 }
@@ -1036,8 +1058,8 @@ fn campaign_plan(
                     kind: candidate.kind,
                     service: None,
                     network: Some(network.to_owned()),
-                    from: None,
-                    to: None,
+                    from: directed.map(|(from, _)| from.to_owned()),
+                    to: directed.map(|(_, to)| to.to_owned()),
                     drive: None,
                     after: Some(after.to_owned()),
                     at_round: None,
@@ -1559,9 +1581,9 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_an_ethertype_matched_packet_fault_and_recovery() {
+    fn normalizes_a_directed_ethertype_matched_packet_fault_and_recovery() {
         let directory = fixture(
-            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: retry\n        input: 'retry\\n'\n    faults:\n      - kind: packet_fault\n        network: backplane\n        after: write\n        ethertype: 0x0800\n        drop_ppm: 1000000\n      - kind: packet_recover\n        network: backplane\n        after: retry\n        ethertype: 0x0800\n",
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: retry\n        input: 'retry\\n'\n    faults:\n      - kind: packet_fault\n        network: backplane\n        from: api\n        to: worker\n        after: write\n        ethertype: 0x0800\n        drop_ppm: 1000000\n      - kind: packet_recover\n        network: backplane\n        from: api\n        to: worker\n        after: retry\n        ethertype: 0x0800\n",
         );
         let campaign = load_compose_plan(directory.path().join("compose.yaml"))
             .unwrap()
@@ -1573,6 +1595,8 @@ mod tests {
         ));
         assert_eq!(campaign.faults[0].ethertype, Some(0x0800));
         assert_eq!(campaign.faults[0].drop_ppm, Some(1_000_000));
+        assert_eq!(campaign.faults[0].from.as_deref(), Some("api"));
+        assert_eq!(campaign.faults[0].to.as_deref(), Some("worker"));
         assert!(matches!(
             campaign.faults[1].kind,
             CampaignFaultKind::PacketRecover

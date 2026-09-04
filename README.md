@@ -101,7 +101,8 @@ the host-side random sources are seeded automatically from the run seed)
   campaign: UART operations, lifecycle candidates, named-network
   `partition`/`heal` actions, directed `link_partition`/`link_heal` actions,
   simulated-drive `storage_fault`/`storage_recover`, packet-condition
-  `network_fault`/`network_recover`, EtherType-matched `packet_fault`/`packet_recover`
+  `network_fault`/`network_recover`, EtherType-matched (optionally directed)
+  `packet_fault`/`packet_recover`
   actions, and runtime properties. Theseus
   explores bounded candidate sequences in that deterministic corpus and
   reduces a violating operation history to one replay bundle.
