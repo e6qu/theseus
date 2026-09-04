@@ -1001,9 +1001,9 @@ fn campaign_plan(
                             .to_owned(),
                     ));
                 }
-                if candidate.ip_protocol.is_some() && ethertype != 0x0800 {
+                if candidate.ip_protocol.is_some() && !matches!(ethertype, 0x0800 | 0x86dd) {
                     return Err(ComposeError::Invalid(
-                        "campaign packet protocol selectors require IPv4 ethertype 0x0800"
+                        "campaign packet protocol selectors require IPv4 (0x0800) or IPv6 (0x86dd) ethertype"
                             .to_owned(),
                     ));
                 }

@@ -28,7 +28,7 @@ Start with `compose.yaml`.
    without discarding guest-written bytes. `packet_fault` drops only Ethernet
    frames with one `ethertype` (for example `0x0800` for IPv4); give it
    `drop_ppm`. Add `ip_protocol` and optional `source_port`/`destination_port`
-   for IPv4 TCP or UDP headers. Add `from` and `to` to limit the rule to one directed service
+   for IPv4 or IPv6 TCP or UDP headers. Add `from` and `to` to limit the rule to one directed service
    path. `packet_recover` removes that one matching rule. Give these actions
    `after: <operation>`; Theseus applies them immediately after that operation
    reports its checkpoint.
