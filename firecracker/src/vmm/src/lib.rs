@@ -147,7 +147,7 @@ use crate::devices::virtio::block::device::Block;
 use crate::devices::virtio::device::{VirtioDevice, VirtioDeviceId, VirtioDeviceType};
 use crate::devices::virtio::mem::device::VirtioMem;
 use crate::devices::virtio::mem::{VIRTIO_MEM_DEV_ID, VirtioMemError, VirtioMemStatus};
-use crate::devices::virtio::net::Net;
+use crate::devices::virtio::net::{Net, SharedSimSwitch, SimNetState};
 use crate::devices::virtio::pmem::device::Pmem;
 use crate::devices::virtio::rng::Entropy;
 use crate::devices::virtio::rng::device::ENTROPY_DEV_ID;
@@ -347,6 +347,61 @@ impl Vmm {
             });
 
         mmds
+    }
+
+    /// Theseus: return the complete deterministic state of one simulated
+    /// network device.  The topology runner stores this beside a Firecracker
+    /// snapshot because a shared switch is owned by the runner, not by the
+    /// microVM snapshot format.
+    pub fn simulated_network_state(&self, id: &str) -> Option<SimNetState> {
+        self.device_manager
+            .with_virtio_device::<Net, _, _>(id, |net| net.simulated_state())
+            .ok()
+            .flatten()
+    }
+
+    /// Theseus: access a simulated network device by its stable device ID.
+    /// The closure form keeps checkpoint orchestration out of Firecracker's
+    /// general-purpose device API while avoiding stale device handles after a
+    /// microVM restore.
+    pub fn with_simulated_network<R>(&self, id: &str, f: impl FnOnce(&mut Net) -> R) -> Option<R> {
+        self.device_manager
+            .with_virtio_device::<Net, _, _>(id, f)
+            .ok()
+    }
+
+    /// Theseus: access a simulated block device by its stable drive ID.
+    /// As with NICs, restored VMs own fresh device instances, so callers must
+    /// resolve the device through the VMM instead of retaining an old Arc.
+    pub fn with_simulated_block<R>(&self, id: &str, f: impl FnOnce(&mut Block) -> R) -> Option<R> {
+        self.device_manager
+            .with_virtio_device::<Block, _, _>(id, f)
+            .ok()
+    }
+
+    /// Theseus: restore deterministic state after reconnecting a restored
+    /// NIC to its topology-owned switch. Returns false for unknown or
+    /// non-simulated devices.
+    pub fn restore_simulated_network(&mut self, id: &str, state: SimNetState) -> bool {
+        self.device_manager
+            .with_virtio_device::<Net, _, _>(id, |net| net.restore_simulated_state(state))
+            .unwrap_or(false)
+    }
+
+    /// Theseus: reconnect a restored simulated NIC to a topology-owned
+    /// shared switch. Snapshot persistence deliberately does not serialize
+    /// host-owned switch handles.
+    pub fn attach_simulated_network(
+        &mut self,
+        id: &str,
+        switch: SharedSimSwitch,
+        endpoint: impl Into<String>,
+    ) -> bool {
+        self.device_manager
+            .with_virtio_device::<Net, _, _>(id, |net| {
+                net.attach_simulated_switch(switch, endpoint)
+            })
+            .unwrap_or(false)
     }
 
     /// Theseus: re-seed the entropy device. Used by timeline branching — call

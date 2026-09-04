@@ -30,7 +30,8 @@ use crate::devices::virtio::iovec::{
 };
 use crate::devices::virtio::net::metrics::{NetDeviceMetrics, NetMetricsPerDevice};
 use crate::devices::virtio::net::sim::{
-    SharedSimSwitch, SimNet, SimNetConfig, SimNetFrame, SimNetPacketSelector, SimNetStats,
+    SharedSimSwitch, SimNet, SimNetConfig, SimNetFrame, SimNetPacketSelector, SimNetState,
+    SimNetStats,
 };
 use crate::devices::virtio::net::tap::Tap;
 use crate::devices::virtio::net::{
@@ -466,6 +467,38 @@ impl Net {
         match &self.backend {
             NetBackend::Sim(sim) => Some(sim.config()),
             NetBackend::Tap(_) => None,
+        }
+    }
+
+    /// Capture deterministic simulated NIC state for a topology checkpoint.
+    pub fn simulated_state(&self) -> Option<SimNetState> {
+        match &self.backend {
+            NetBackend::Sim(sim) => Some(sim.save_state()),
+            NetBackend::Tap(_) => None,
+        }
+    }
+
+    /// Restore deterministic simulated NIC state without changing its shared
+    /// switch attachment or trace sink. Returns false for host TAPs.
+    pub fn restore_simulated_state(&mut self, state: SimNetState) -> bool {
+        match &mut self.backend {
+            NetBackend::Sim(sim) => {
+                sim.restore_state(state);
+                true
+            }
+            NetBackend::Tap(_) => false,
+        }
+    }
+
+    /// Reconnect a restored simulated NIC to a topology-owned switch.
+    pub fn attach_simulated_switch(
+        &mut self,
+        switch: SharedSimSwitch,
+        endpoint: impl Into<String>,
+    ) -> bool {
+        match &mut self.backend {
+            NetBackend::Sim(sim) => sim.attach_switch(switch, endpoint).is_ok(),
+            NetBackend::Tap(_) => false,
         }
     }
 
@@ -922,8 +955,8 @@ impl Net {
         };
         // SAFETY:
         // * We ensured that `self.rx_buffer` has at least one DescriptorChain parsed in it.
-        let len = unsafe { Self::read_tap(tap, &mut self.rx_buffer, mrg_rxbuf) }
-            .map_err(NetError::IO)?;
+        let len =
+            unsafe { Self::read_tap(tap, &mut self.rx_buffer, mrg_rxbuf) }.map_err(NetError::IO)?;
         // SAFETY:
         // * len will never be bigger that u32::MAX
         let len: u32 = len.try_into().unwrap();

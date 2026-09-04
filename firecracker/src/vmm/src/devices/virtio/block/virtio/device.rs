@@ -110,7 +110,7 @@ impl DiskProperties {
         })
     }
 
-    fn anonymous(size_bytes: u64, id: &str) -> Result<Self, VirtioBlockError> {
+    pub(crate) fn anonymous(size_bytes: u64, id: &str) -> Result<Self, VirtioBlockError> {
         let memfd = memfd::MemfdOptions::default()
             .create("theseus_simulated_block")
             .map_err(|error| {
@@ -254,6 +254,20 @@ pub(crate) struct SimulatedBlock {
     delayed: VecDeque<DelayedSimulatedRequest>,
 }
 
+/// Persistent guest-visible state for Theseus' memory-backed block device.
+/// Delayed virtio requests live in guest memory and the virtio queue snapshot;
+/// a whole-topology checkpoint is taken at a scheduler barrier before new
+/// campaign input, so the backend has no host-owned request in flight.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SimulatedBlockState {
+    pub bytes: Vec<u8>,
+    pub error_ppm: u32,
+    pub latency_rounds: u32,
+    pub torn_write_bytes: Option<u32>,
+    pub corrupt_read_xor: Option<u8>,
+    pub rng: ChaCha8Rng,
+}
+
 impl SimulatedBlock {
     fn new(config: &SimulatedBlockConfig) -> Result<Self, VirtioBlockError> {
         let size_bytes = u64::from(config.size_mib)
@@ -281,6 +295,29 @@ impl SimulatedBlock {
 
     fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    pub(crate) fn save_state(&self) -> SimulatedBlockState {
+        SimulatedBlockState {
+            bytes: self.bytes.clone(),
+            error_ppm: self.error_ppm,
+            latency_rounds: self.latency_rounds,
+            torn_write_bytes: self.torn_write_bytes,
+            corrupt_read_xor: self.corrupt_read_xor,
+            rng: self.rng.clone(),
+        }
+    }
+
+    pub(crate) fn restore_state(state: SimulatedBlockState) -> Self {
+        Self {
+            bytes: state.bytes,
+            error_ppm: state.error_ppm,
+            latency_rounds: state.latency_rounds,
+            torn_write_bytes: state.torn_write_bytes,
+            corrupt_read_xor: state.corrupt_read_xor,
+            rng: state.rng,
+            delayed: VecDeque::new(),
+        }
     }
 
     pub(crate) fn write(&mut self, offset: usize, data: &[u8]) {
@@ -480,7 +517,6 @@ impl VirtioBlock {
         disk_properties: DiskProperties,
         simulated: Option<SimulatedBlock>,
     ) -> Result<VirtioBlock, VirtioBlockError> {
-
         let rate_limiter = config
             .rate_limiter
             .map(RateLimiter::from)
@@ -752,7 +788,9 @@ impl VirtioBlock {
             used_any = true;
             queue
                 .add_used(finished.desc_idx, finished.num_bytes_to_mem)
-                .unwrap_or_else(|error| error!("Failed to complete simulated block request: {error}"));
+                .unwrap_or_else(|error| {
+                    error!("Failed to complete simulated block request: {error}")
+                });
         }
         if used_any {
             queue.advance_used_ring_idx();
@@ -1317,7 +1355,9 @@ mod tests {
             let status_addr = GuestAddress(vq.dtable[2].addr.get());
 
             let empty_data = vec![0; 512];
-            let rand_data = (0..1024).map(|i| b'a' + (i % 26) as u8).collect::<Vec<u8>>(); // deterministic content
+            let rand_data = (0..1024)
+                .map(|i| b'a' + (i % 26) as u8)
+                .collect::<Vec<u8>>(); // deterministic content
 
             // Write with invalid data len (not a multiple of 512).
             {

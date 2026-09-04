@@ -53,8 +53,8 @@ Key architectural differences with Theseus:
   commodity path — far less mechanism, no kernel patches, at the price of
   that leak.
 - **Exploration guidance**: Antithesis uses coverage-guided RL at scale.
-  Theseus currently retains Compose campaign timelines with new application
-  markers, while its single-VM explorer uses deterministic DFS and marker
+  Theseus restores Compose campaign candidates from a reusable whole-topology
+  checkpoint, while its single-VM explorer uses deterministic DFS and marker
   novelty ordering. Ground-truth single-step coverage exists as the reference
   for a future fast instrumentor.
 - **Campaign interface**: Antithesis can drive unmodified workloads through
@@ -65,7 +65,7 @@ Key architectural differences with Theseus:
   `network_fault`/`network_recover`, EtherType-matched and directed
   `packet_fault`/`packet_recover`, and
   `always`/`sometimes`/`reachable`/`unreachable` serial properties. It reduces
-  an individual violation by re-running locked full topologies, supports
+  an individual violation from the same whole-topology checkpoint, supports
   bounded fault sequences, and fingerprints the applied actions on replay, but
   it does not yet have Antithesis's
   copy-on-write whole-topology snapshots or its large-scale RL scheduler.
