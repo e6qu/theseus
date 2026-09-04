@@ -62,7 +62,7 @@ Key architectural differences with Theseus:
   driver, text UART operations, lifecycle/clock candidates, barrier-triggered
   named-network `partition`/`heal`, directed service-to-service
   `link_partition`/`link_heal`, simulated-drive `storage_fault`/`storage_recover`, packet-condition
-  `network_fault`/`network_recover`, and
+  `network_fault`/`network_recover`, EtherType-matched `packet_fault`/`packet_recover`, and
   `always`/`sometimes`/`reachable`/`unreachable` serial properties. It reduces
   an individual violation by re-running locked full topologies, supports
   bounded fault sequences, and fingerprints the applied actions on replay, but

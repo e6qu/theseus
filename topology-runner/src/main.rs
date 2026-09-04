@@ -98,6 +98,8 @@ struct CampaignFault {
     #[serde(default)]
     corrupt_read_xor: Option<u8>,
     #[serde(default)]
+    ethertype: Option<u16>,
+    #[serde(default)]
     drop_ppm: Option<u32>,
     #[serde(default)]
     duplicate_ppm: Option<u32>,
@@ -129,6 +131,8 @@ enum CampaignFaultKind {
     StorageRecover,
     NetworkFault,
     NetworkRecover,
+    PacketFault,
+    PacketRecover,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -345,6 +349,8 @@ struct CampaignAction {
     torn_write_bytes: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     corrupt_read_xor: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ethertype: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     drop_ppm: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -715,6 +721,29 @@ impl ServiceVm {
         Ok(changed)
     }
 
+    fn set_network_packet_drop_rule(
+        &self,
+        network: &str,
+        ethertype: u16,
+        drop_ppm: Option<u32>,
+    ) -> Result<usize, String> {
+        let mut changed = 0;
+        for (name, net) in &self.networks {
+            if name != network {
+                continue;
+            }
+            if !net
+                .lock()
+                .map_err(|_| "simulated network lock poisoned".to_owned())?
+                .set_simulated_packet_drop_rule(ethertype, drop_ppm)
+            {
+                return Err(format!("network is not simulated: {network}"));
+            }
+            changed += 1;
+        }
+        Ok(changed)
+    }
+
     fn network_endpoint(&self, network: &str) -> Result<Option<String>, String> {
         self.networks
             .iter()
@@ -837,6 +866,7 @@ impl ServiceVm {
                                     SimNetDropReason::Partition => "partition",
                                     SimNetDropReason::LinkPartition => "link_partition",
                                     SimNetDropReason::RandomLoss => "random_loss",
+                                    SimNetDropReason::PacketRule => "packet_rule",
                                     SimNetDropReason::TransmitQueue => "tx_queue",
                                     SimNetDropReason::ReceiveQueue => "rx_queue",
                                     SimNetDropReason::ReceiveBuffer => "rx_buffer",
@@ -1399,7 +1429,9 @@ fn campaign_fault_applies(
         | CampaignFaultKind::StorageFault
         | CampaignFaultKind::StorageRecover
         | CampaignFaultKind::NetworkFault
-        | CampaignFaultKind::NetworkRecover => {
+        | CampaignFaultKind::NetworkRecover
+        | CampaignFaultKind::PacketFault
+        | CampaignFaultKind::PacketRecover => {
             let Some(after) = &fault.after else {
                 return false;
             };
@@ -1491,6 +1523,7 @@ fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
         latency_rounds: fault.latency_rounds,
         torn_write_bytes: fault.torn_write_bytes,
         corrupt_read_xor: fault.corrupt_read_xor,
+        ethertype: fault.ethertype,
         drop_ppm: fault.drop_ppm,
         duplicate_ppm: fault.duplicate_ppm,
         corrupt_ppm: fault.corrupt_ppm,
@@ -1561,6 +1594,17 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
                 CampaignFaultKind::NetworkRecover => "network_recover",
                 _ => unreachable!(),
             },
+            fault.after.as_deref().expect("validated action operation")
+        ),
+        CampaignFaultKind::PacketFault | CampaignFaultKind::PacketRecover => format!(
+            "{}:{}:0x{:04x}@{}",
+            fault.network.as_deref().expect("validated action network"),
+            match fault.kind {
+                CampaignFaultKind::PacketFault => "packet_fault",
+                CampaignFaultKind::PacketRecover => "packet_recover",
+                _ => unreachable!(),
+            },
+            fault.ethertype.expect("validated action ethertype"),
             fault.after.as_deref().expect("validated action operation")
         ),
     }
@@ -2587,6 +2631,54 @@ fn apply_campaign_action(
                 detail: format!("{endpoints} simulated NIC endpoint(s): {detail}"),
             })
         }
+        CampaignFaultKind::PacketFault | CampaignFaultKind::PacketRecover => {
+            let network = action
+                .network
+                .as_deref()
+                .ok_or_else(|| "campaign packet action has no network".to_owned())?;
+            let ethertype = action
+                .ethertype
+                .ok_or_else(|| "campaign packet action has no ethertype".to_owned())?;
+            let recover = matches!(action.kind, CampaignFaultKind::PacketRecover);
+            let drop_ppm = (!recover)
+                .then(|| {
+                    action
+                        .drop_ppm
+                        .ok_or_else(|| "campaign packet fault has no drop_ppm".to_owned())
+                })
+                .transpose()?;
+            let mut endpoints = driver
+                .vm
+                .set_network_packet_drop_rule(network, ethertype, drop_ppm)?;
+            for service in services.values() {
+                endpoints += service
+                    .vm
+                    .set_network_packet_drop_rule(network, ethertype, drop_ppm)?;
+            }
+            if endpoints == 0 {
+                return Err(format!(
+                    "campaign packet action network has no endpoints: {network}"
+                ));
+            }
+            Ok(AppliedCampaignAction {
+                operation: action.operation.clone(),
+                kind: if recover {
+                    "packet_recover"
+                } else {
+                    "packet_fault"
+                }
+                .to_owned(),
+                target: format!("network:{network}/ethertype:0x{ethertype:04x}"),
+                detail: match drop_ppm {
+                    Some(drop_ppm) => format!(
+                        "{endpoints} simulated NIC endpoint(s): drop_ppm={drop_ppm} for matching Ethernet frames"
+                    ),
+                    None => format!(
+                        "{endpoints} simulated NIC endpoint(s): removed matching Ethernet-frame loss rule"
+                    ),
+                },
+            })
+        }
         CampaignFaultKind::StorageFault | CampaignFaultKind::StorageRecover => {
             let service_name = action
                 .service
@@ -2893,6 +2985,7 @@ mod tests {
             latency_rounds: None,
             torn_write_bytes: None,
             corrupt_read_xor: None,
+            ethertype: None,
             drop_ppm: None,
             duplicate_ppm: None,
             corrupt_ppm: None,
@@ -2936,6 +3029,22 @@ mod tests {
         assert_eq!(action.drop_ppm, Some(1_000_000));
         assert_eq!(action.latency_rounds, Some(3));
         assert_eq!(action.tx_queue_frames, Some(2));
+    }
+
+    #[test]
+    fn campaign_packet_action_keeps_its_ethertype_target() {
+        let mut fault = campaign_fault(CampaignFaultKind::PacketFault);
+        fault.ethertype = Some(0x0800);
+        fault.drop_ppm = Some(1_000_000);
+
+        let action = campaign_action(&fault).unwrap();
+        assert!(matches!(action.kind, CampaignFaultKind::PacketFault));
+        assert_eq!(action.ethertype, Some(0x0800));
+        assert_eq!(action.drop_ppm, Some(1_000_000));
+        assert_eq!(
+            campaign_fault_name(&fault),
+            "backplane:packet_fault:0x0800@write"
+        );
     }
 
     #[test]

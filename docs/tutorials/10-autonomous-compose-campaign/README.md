@@ -25,7 +25,9 @@ Start with `compose.yaml`.
    `tx_queue_frames`, or `rx_queue_frames`. `network_recover` restores each
    service's declared network conditions. `storage_fault` changes one named
    simulated drive; `storage_recover` restores that drive's declared settings
-   without discarding guest-written bytes. Give these actions
+   without discarding guest-written bytes. `packet_fault` drops only Ethernet
+   frames with one `ethertype` (for example `0x0800` for IPv4); give it
+   `drop_ppm`. `packet_recover` removes that one matching rule. Give these actions
    `after: <operation>`; Theseus applies them immediately after that operation
    reports its checkpoint.
    `link_partition` and `link_heal` are narrower: give them `network`, `from`,
@@ -52,6 +54,11 @@ host-side test script.
 `storage_fault` and `storage_recover` form the same pair for a drive. Recovery
 does not roll back writes or reseed the I/O stream; it only restores the
 conditions declared in that service's manifest.
+
+`packet_fault` and `packet_recover` form a narrow network pair. They match the
+Ethernet header only; they are not an IP, TCP, or payload filter. Recovery
+removes the selected EtherType rule while leaving partitions, directed links,
+and ordinary packet conditions unchanged.
 
 Then minimize it:
 

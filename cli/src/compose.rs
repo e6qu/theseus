@@ -129,6 +129,8 @@ struct ComposeCampaignFault {
     #[serde(default)]
     corrupt_read_xor: Option<u8>,
     #[serde(default)]
+    ethertype: Option<u16>,
+    #[serde(default)]
     drop_ppm: Option<u32>,
     #[serde(default)]
     duplicate_ppm: Option<u32>,
@@ -162,6 +164,8 @@ pub enum CampaignFaultKind {
     StorageRecover,
     NetworkFault,
     NetworkRecover,
+    PacketFault,
+    PacketRecover,
 }
 
 #[derive(Debug, Deserialize)]
@@ -308,6 +312,8 @@ pub struct CampaignFaultPlan {
     pub torn_write_bytes: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub corrupt_read_xor: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ethertype: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drop_ppm: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -532,6 +538,7 @@ fn campaign_plan(
                     || candidate.latency_rounds.is_some()
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
+                    || candidate.ethertype.is_some()
                     || has_network_conditions
                 {
                     return Err(ComposeError::Invalid(
@@ -585,6 +592,7 @@ fn campaign_plan(
                     latency_rounds: None,
                     torn_write_bytes: None,
                     corrupt_read_xor: None,
+                    ethertype: None,
                     drop_ppm: None,
                     duplicate_ppm: None,
                     corrupt_ppm: None,
@@ -630,6 +638,7 @@ fn campaign_plan(
                     || candidate.latency_rounds.is_some()
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
+                    || candidate.ethertype.is_some()
                     || has_network_conditions
                 {
                     return Err(ComposeError::Invalid(
@@ -651,6 +660,7 @@ fn campaign_plan(
                     latency_rounds: None,
                     torn_write_bytes: None,
                     corrupt_read_xor: None,
+                    ethertype: None,
                     drop_ppm: None,
                     duplicate_ppm: None,
                     corrupt_ppm: None,
@@ -714,6 +724,7 @@ fn campaign_plan(
                     || candidate.latency_rounds.is_some()
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
+                    || candidate.ethertype.is_some()
                     || has_network_conditions
                 {
                     return Err(ComposeError::Invalid(
@@ -736,6 +747,7 @@ fn campaign_plan(
                     latency_rounds: None,
                     torn_write_bytes: None,
                     corrupt_read_xor: None,
+                    ethertype: None,
                     drop_ppm: None,
                     duplicate_ppm: None,
                     corrupt_ppm: None,
@@ -802,6 +814,7 @@ fn campaign_plan(
                     || candidate.duration_rounds.is_some()
                     || candidate.nanoseconds.is_some()
                     || has_network_conditions
+                    || candidate.ethertype.is_some()
                 {
                     return Err(ComposeError::Invalid(
                         "campaign storage_fault accepts service, drive, after, error_ppm, latency_rounds, torn_write_bytes, and corrupt_read_xor"
@@ -835,6 +848,7 @@ fn campaign_plan(
                     latency_rounds: candidate.latency_rounds,
                     torn_write_bytes: candidate.torn_write_bytes,
                     corrupt_read_xor: candidate.corrupt_read_xor,
+                    ethertype: None,
                     drop_ppm: None,
                     duplicate_ppm: None,
                     corrupt_ppm: None,
@@ -879,6 +893,7 @@ fn campaign_plan(
                     || candidate.error_ppm.is_some()
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
+                    || candidate.ethertype.is_some()
                 {
                     return Err(ComposeError::Invalid(
                         "campaign network_fault/network_recover actions accept only network, after, and packet-condition fields"
@@ -926,6 +941,7 @@ fn campaign_plan(
                     latency_rounds: candidate.latency_rounds,
                     torn_write_bytes: None,
                     corrupt_read_xor: None,
+                    ethertype: None,
                     drop_ppm: candidate.drop_ppm,
                     duplicate_ppm: candidate.duplicate_ppm,
                     corrupt_ppm: candidate.corrupt_ppm,
@@ -934,6 +950,113 @@ fn campaign_plan(
                     mtu_bytes: candidate.mtu_bytes,
                     tx_queue_frames: candidate.tx_queue_frames,
                     rx_queue_frames: candidate.rx_queue_frames,
+                });
+            }
+            CampaignFaultKind::PacketFault | CampaignFaultKind::PacketRecover => {
+                let network = candidate.network.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign packet_fault/packet_recover action requires network".to_owned(),
+                    )
+                })?;
+                let after = candidate.after.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign packet_fault/packet_recover action requires after".to_owned(),
+                    )
+                })?;
+                let ethertype = candidate.ethertype.ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign packet_fault/packet_recover action requires ethertype".to_owned(),
+                    )
+                })?;
+                if ethertype < 0x0600 {
+                    return Err(ComposeError::Invalid(
+                        "campaign packet_fault ethertype must be an Ethernet EtherType (at least 0x0600)"
+                            .to_owned(),
+                    ));
+                }
+                if !after_is_operation(after) {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign action after references unknown operation {after:?}",
+                    )));
+                }
+                if !services
+                    .values()
+                    .any(|service| service.networks.iter().any(|name| name == network))
+                {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign action references unknown network {network:?}",
+                    )));
+                }
+                if candidate.service.is_some()
+                    || candidate.from.is_some()
+                    || candidate.to.is_some()
+                    || candidate.drive.is_some()
+                    || candidate.at_round.is_some()
+                    || candidate.duration_rounds.is_some()
+                    || candidate.nanoseconds.is_some()
+                    || candidate.error_ppm.is_some()
+                    || candidate.latency_rounds.is_some()
+                    || candidate.torn_write_bytes.is_some()
+                    || candidate.corrupt_read_xor.is_some()
+                    || candidate.duplicate_ppm.is_some()
+                    || candidate.corrupt_ppm.is_some()
+                    || candidate.jitter_rounds.is_some()
+                    || candidate.tx_bytes_per_round.is_some()
+                    || candidate.mtu_bytes.is_some()
+                    || candidate.tx_queue_frames.is_some()
+                    || candidate.rx_queue_frames.is_some()
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign packet_fault/packet_recover actions accept only network, after, ethertype, and drop_ppm"
+                            .to_owned(),
+                    ));
+                }
+                let drop_ppm = candidate.drop_ppm.unwrap_or(0);
+                if drop_ppm > 1_000_000 {
+                    return Err(ComposeError::Invalid(
+                        "campaign packet_fault drop_ppm must be at most 1000000".to_owned(),
+                    ));
+                }
+                if matches!(candidate.kind, CampaignFaultKind::PacketFault)
+                    && candidate.drop_ppm.is_none()
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign packet_fault requires drop_ppm".to_owned(),
+                    ));
+                }
+                if matches!(candidate.kind, CampaignFaultKind::PacketRecover)
+                    && candidate.drop_ppm.is_some()
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign packet_recover accepts only network, after, and ethertype"
+                            .to_owned(),
+                    ));
+                }
+                faults.push(CampaignFaultPlan {
+                    kind: candidate.kind,
+                    service: None,
+                    network: Some(network.to_owned()),
+                    from: None,
+                    to: None,
+                    drive: None,
+                    after: Some(after.to_owned()),
+                    at_round: None,
+                    duration_rounds: None,
+                    nanoseconds: None,
+                    error_ppm: None,
+                    latency_rounds: None,
+                    torn_write_bytes: None,
+                    corrupt_read_xor: None,
+                    ethertype: Some(ethertype),
+                    drop_ppm: matches!(candidate.kind, CampaignFaultKind::PacketFault)
+                        .then_some(drop_ppm),
+                    duplicate_ppm: None,
+                    corrupt_ppm: None,
+                    jitter_rounds: None,
+                    tx_bytes_per_round: None,
+                    mtu_bytes: None,
+                    tx_queue_frames: None,
+                    rx_queue_frames: None,
                 });
             }
         }
@@ -1433,6 +1556,29 @@ mod tests {
             campaign.faults[6].kind,
             CampaignFaultKind::NetworkRecover
         ));
+    }
+
+    #[test]
+    fn normalizes_an_ethertype_matched_packet_fault_and_recovery() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: retry\n        input: 'retry\\n'\n    faults:\n      - kind: packet_fault\n        network: backplane\n        after: write\n        ethertype: 0x0800\n        drop_ppm: 1000000\n      - kind: packet_recover\n        network: backplane\n        after: retry\n        ethertype: 0x0800\n",
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        assert!(matches!(
+            campaign.faults[0].kind,
+            CampaignFaultKind::PacketFault
+        ));
+        assert_eq!(campaign.faults[0].ethertype, Some(0x0800));
+        assert_eq!(campaign.faults[0].drop_ppm, Some(1_000_000));
+        assert!(matches!(
+            campaign.faults[1].kind,
+            CampaignFaultKind::PacketRecover
+        ));
+        assert_eq!(campaign.faults[1].ethertype, Some(0x0800));
+        assert_eq!(campaign.faults[1].drop_ppm, None);
     }
 
     #[test]
