@@ -93,6 +93,11 @@ or virtual clock as a new topology state. This reaches divergent outcomes even
 when the guest prints the same markers. Ordinary serial output and declared
 fault names are not state coverage, so they cannot create artificial novelty.
 
+When you replay a campaign bundle, Theseus does not search again. It restores
+and runs the recorded operation and fault corpus in the recorded order, then
+checks the selection reasons, marker novelty, topology-state signatures, and
+applied actions. The report shows whether that campaign replay verified.
+
 Emit the serial protocol with plain shell:
 
 ```sh
