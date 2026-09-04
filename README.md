@@ -104,8 +104,8 @@ the host-side random sources are seeded automatically from the run seed)
   `network_fault`/`network_recover`, EtherType-matched (optionally directed)
   `packet_fault`/`packet_recover`
   actions, and runtime properties. Theseus
-  explores bounded candidate sequences in that deterministic corpus and
-  reduces a violating operation history to one replay bundle.
+  explores bounded candidate sequences from one reusable whole-topology
+  checkpoint and reduces a violating operation history to one replay bundle.
 - **Run on a Linux+KVM host** (on Apple Silicon, a privileged aarch64
   Docker container works).
 

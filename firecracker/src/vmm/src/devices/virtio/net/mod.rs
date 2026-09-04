@@ -29,8 +29,7 @@ mod generated;
 
 pub use sim::{
     SharedSimSwitch, SimNet, SimNetConfig, SimNetDropReason, SimNetFrame, SimNetFrameDirection,
-    SimNetPacketSelector, SimNetStats,
-    SimSwitchError,
+    SimNetPacketSelector, SimNetState, SimNetStats, SimSwitchError, SimSwitchState,
 };
 pub use tap::{Tap, TapError};
 use vm_memory::VolatileMemoryError;

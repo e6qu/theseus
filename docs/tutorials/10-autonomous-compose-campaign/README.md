@@ -71,9 +71,10 @@ theseus compose explore --minimize theseus-compose-campaign \
 theseus compose replay stale-read-replay --output stale-read-rerun
 ```
 
-Minimization re-runs complete locked topologies while removing operations. The
-result is one ordinary Compose replay bundle with a check that proves the
-counterexample still occurs.
+Theseus boots the complete topology once, then restores every candidate and
+every minimization attempt from that same checkpoint. The result is one
+ordinary Compose replay bundle with a check that proves the counterexample
+still occurs.
 
 Emit the serial protocol with plain shell:
 

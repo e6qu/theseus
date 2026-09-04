@@ -37,9 +37,10 @@ pub struct NetConfigSpaceState {
 pub struct NetState {
     pub id: String,
     pub tap_if_name: String,
-    /// Simulated-backend config, if this device uses one. In-flight frames in
-    /// the sim RX queue are *not* snapshotted: the orchestrator re-drives
-    /// traffic per branch, so branches start with an empty queue.
+    /// Simulated-backend config, if this device uses one. Whole-topology
+    /// checkpoints retain in-flight queues, seeded streams, and counters in
+    /// the runner-owned `SimNetState`; this Firecracker-local state keeps the
+    /// device snapshot portable and is reattached by the runner on restore.
     #[serde(default)]
     pub sim: Option<SimNetConfig>,
     rx_rate_limiter_state: RateLimiterState,

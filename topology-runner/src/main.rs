@@ -16,13 +16,14 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use theseus_engine::simnet::{SharedSimSwitch, SimSwitch};
+use theseus_engine::simnet::{SharedSimSwitch, SimSwitch, SimSwitchState};
 use vmm::builder::build_microvm_for_boot;
 use vmm::devices::virtio::block::device::Block;
 use vmm::devices::virtio::block::virtio::device::SimulatedBlockConfig;
 use vmm::devices::virtio::net::{
-    Net, SimNetConfig, SimNetDropReason, SimNetFrameDirection, SimNetPacketSelector,
+    Net, SimNetConfig, SimNetDropReason, SimNetFrameDirection, SimNetPacketSelector, SimNetState,
 };
+use vmm::persist::{VmInfo, create_snapshot, restore_from_snapshot};
 use vmm::rate_limiter::RateLimiter;
 use vmm::resources::VmResources;
 use vmm::seccomp::get_empty_filters;
@@ -30,6 +31,10 @@ use vmm::vmm_config::boot_source::BootSourceConfig;
 use vmm::vmm_config::entropy::EntropyDeviceConfig;
 use vmm::vmm_config::instance_info::InstanceInfo;
 use vmm::vmm_config::machine_config::{MachineConfigUpdate, VirtualTimeConfig};
+use vmm::vmm_config::snapshot::{
+    CreateSnapshotParams, LoadSnapshotParams, MemBackendConfig, MemBackendType,
+    SnapshotLoadHugePageConfig, SnapshotType,
+};
 use vmm::{EventManager, FcExitCode, Vmm};
 
 const USAGE: &str =
@@ -549,8 +554,32 @@ struct AppliedFault {
 struct ServiceVm {
     vmm: Arc<Mutex<Vmm>>,
     event_manager: EventManager,
-    storage: Vec<Arc<Mutex<Block>>>,
-    networks: Vec<(String, Arc<Mutex<Net>>)>,
+    storage: Vec<String>,
+    networks: Vec<(String, String)>,
+    network_endpoints: BTreeMap<String, String>,
+}
+
+struct ServiceVmCheckpoint {
+    snapshot_path: PathBuf,
+    memory_path: PathBuf,
+    networks: BTreeMap<String, SimNetState>,
+}
+
+#[derive(Clone)]
+struct ServiceSchedulerCheckpoint {
+    serial_contents: Vec<Vec<u8>>,
+    next_fault: usize,
+    paused_until: Option<u64>,
+    faults: Vec<AppliedFault>,
+    network_traffic: BTreeMap<String, NetworkTraffic>,
+    network_trace: BTreeMap<String, Vec<NetworkFrame>>,
+}
+
+struct CampaignCheckpoint {
+    switches: BTreeMap<String, SimSwitchState>,
+    services: BTreeMap<String, ServiceVmCheckpoint>,
+    scheduler: BTreeMap<String, ServiceSchedulerCheckpoint>,
+    round: u64,
 }
 
 impl ServiceVm {
@@ -563,10 +592,10 @@ impl ServiceVm {
     }
 
     fn advance_simulated_networks(&self) -> Result<(), String> {
-        for (_, net) in &self.networks {
-            net.lock()
-                .map_err(|_| "simulated network lock poisoned".to_owned())?
-                .advance_simulated_round();
+        let vmm = self.vmm.lock().expect("VMM lock poisoned");
+        for (_, id) in &self.networks {
+            vmm.with_simulated_network(id, |net| net.advance_simulated_round())
+                .ok_or_else(|| format!("network device disappeared: {id}"))?;
         }
         Ok(())
     }
@@ -633,12 +662,13 @@ impl ServiceVm {
         storage
             .iter()
             .zip(&self.storage)
-            .map(|(plan, block)| {
-                let block = block
-                    .lock()
-                    .map_err(|_| "simulated storage lock poisoned".to_owned())?;
-                let bytes = block
-                    .simulated_bytes()
+            .map(|(plan, id)| {
+                let vmm = self.vmm.lock().expect("VMM lock poisoned");
+                let bytes = vmm
+                    .with_simulated_block(id, |block| {
+                        block.simulated_bytes().map(ToOwned::to_owned)
+                    })
+                    .flatten()
                     .ok_or_else(|| format!("storage is not simulated: {}", plan.id))?;
                 Ok((plan.id.clone(), format!("{:x}", Sha256::digest(bytes))))
             })
@@ -647,20 +677,49 @@ impl ServiceVm {
 
     fn set_network_partition(&self, network: &str, partitioned: bool) -> Result<usize, String> {
         let mut changed = 0;
-        for (name, net) in &self.networks {
+        let vmm = self.vmm.lock().expect("VMM lock poisoned");
+        for (name, id) in &self.networks {
             if name != network {
                 continue;
             }
-            if !net
-                .lock()
-                .map_err(|_| "simulated network lock poisoned".to_owned())?
-                .set_simulated_partitioned(partitioned)
+            if !vmm
+                .with_simulated_network(id, |net| net.set_simulated_partitioned(partitioned))
+                .unwrap_or(false)
             {
                 return Err(format!("network is not simulated: {network}"));
             }
             changed += 1;
         }
         Ok(changed)
+    }
+
+    fn save_network_states(&self) -> Result<BTreeMap<String, SimNetState>, String> {
+        let vmm = self.vmm.lock().expect("VMM lock poisoned");
+        self.networks
+            .iter()
+            .map(|(name, id)| {
+                vmm.simulated_network_state(id)
+                    .map(|state| (name.clone(), state))
+                    .ok_or_else(|| format!("network is not simulated: {name}"))
+            })
+            .collect()
+    }
+
+    fn restore_network_states(&self, states: BTreeMap<String, SimNetState>) -> Result<(), String> {
+        if states.len() != self.networks.len() {
+            return Err("checkpoint network set does not match service".to_owned());
+        }
+        let mut vmm = self.vmm.lock().expect("VMM lock poisoned");
+        for (name, id) in &self.networks {
+            let state = states
+                .get(name)
+                .ok_or_else(|| format!("checkpoint is missing network: {name}"))?
+                .clone();
+            if !vmm.restore_simulated_network(id, state) {
+                return Err(format!("network is not simulated: {name}"));
+            }
+        }
+        Ok(())
     }
 
     fn set_network_conditions(
@@ -670,15 +729,14 @@ impl ServiceVm {
         action: Option<&CampaignAction>,
     ) -> Result<usize, String> {
         let mut changed = 0;
-        for (name, net) in &self.networks {
+        let vmm = self.vmm.lock().expect("VMM lock poisoned");
+        for (name, id) in &self.networks {
             if name != network {
                 continue;
             }
-            let mut net = net
-                .lock()
-                .map_err(|_| "simulated network lock poisoned".to_owned())?;
-            let current = net
-                .sim_config()
+            let current = vmm
+                .with_simulated_network(id, |net| net.sim_config())
+                .flatten()
                 .ok_or_else(|| format!("network is not simulated: {network}"))?;
             let mut conditions = if action.is_some() {
                 current
@@ -727,7 +785,10 @@ impl ServiceVm {
                     conditions.rx_queue_frames = value;
                 }
             }
-            if !net.set_simulated_conditions(conditions) {
+            if !vmm
+                .with_simulated_network(id, |net| net.set_simulated_conditions(conditions))
+                .unwrap_or(false)
+            {
                 return Err(format!("network is not simulated: {network}"));
             }
             changed += 1;
@@ -742,14 +803,16 @@ impl ServiceVm {
         drop_ppm: Option<u32>,
     ) -> Result<usize, String> {
         let mut changed = 0;
-        for (name, net) in &self.networks {
+        let vmm = self.vmm.lock().expect("VMM lock poisoned");
+        for (name, id) in &self.networks {
             if name != network {
                 continue;
             }
-            if !net
-                .lock()
-                .map_err(|_| "simulated network lock poisoned".to_owned())?
-                .set_simulated_packet_drop_rule(selector, drop_ppm)
+            if !vmm
+                .with_simulated_network(id, |net| {
+                    net.set_simulated_packet_drop_rule(selector, drop_ppm)
+                })
+                .unwrap_or(false)
             {
                 return Err(format!("network is not simulated: {network}"));
             }
@@ -769,12 +832,14 @@ impl ServiceVm {
             .networks
             .iter()
             .find(|(name, _)| name == network)
-            .map(|(_, net)| net)
+            .map(|(_, id)| id)
             .ok_or_else(|| format!("campaign packet source is not on network: {network}"))?;
-        if !net
-            .lock()
-            .map_err(|_| "simulated network lock poisoned".to_owned())?
-            .set_simulated_link_packet_drop_rule(destination, selector, drop_ppm)
+        let vmm = self.vmm.lock().expect("VMM lock poisoned");
+        if !vmm
+            .with_simulated_network(net, |net| {
+                net.set_simulated_link_packet_drop_rule(destination, selector, drop_ppm)
+            })
+            .unwrap_or(false)
         {
             return Err(format!(
                 "network is not a simulated topology link: {network}"
@@ -787,10 +852,12 @@ impl ServiceVm {
         self.networks
             .iter()
             .find(|(name, _)| name == network)
-            .map(|(_, net)| {
-                net.lock()
-                    .map_err(|_| "simulated network lock poisoned".to_owned())?
-                    .simulated_endpoint()
+            .map(|(_, id)| {
+                self.vmm
+                    .lock()
+                    .expect("VMM lock poisoned")
+                    .with_simulated_network(id, |net| net.simulated_endpoint())
+                    .flatten()
                     .ok_or_else(|| format!("network is not simulated: {network}"))
             })
             .transpose()
@@ -802,15 +869,17 @@ impl ServiceVm {
         destination: &str,
         blocked: bool,
     ) -> Result<(), String> {
-        let (_, net) = self
+        let (_, id) = self
             .networks
             .iter()
             .find(|(name, _)| name == network)
             .ok_or_else(|| format!("service is not on network: {network}"))?;
-        if !net
-            .lock()
-            .map_err(|_| "simulated network lock poisoned".to_owned())?
-            .set_simulated_link_blocked(destination, blocked)
+        let vmm = self.vmm.lock().expect("VMM lock poisoned");
+        if !vmm
+            .with_simulated_network(id, |net| {
+                net.set_simulated_link_blocked(destination, blocked)
+            })
+            .unwrap_or(false)
         {
             return Err(format!(
                 "network does not have a topology switch: {network}"
@@ -832,19 +901,21 @@ impl ServiceVm {
             .iter()
             .position(|item| item.id == drive)
             .ok_or_else(|| format!("storage drive disappeared: {drive}"))?;
-        let block = self
+        let id = self
             .storage
             .get(index)
             .ok_or_else(|| format!("simulated storage disappeared: {drive}"))?;
-        if !block
-            .lock()
-            .map_err(|_| "simulated storage lock poisoned".to_owned())?
-            .set_simulated_faults(
-                error_ppm,
-                latency_rounds,
-                torn_write_bytes,
-                corrupt_read_xor,
-            )
+        let vmm = self.vmm.lock().expect("VMM lock poisoned");
+        if !vmm
+            .with_simulated_block(id, |block| {
+                block.set_simulated_faults(
+                    error_ppm,
+                    latency_rounds,
+                    torn_write_bytes,
+                    corrupt_read_xor,
+                )
+            })
+            .unwrap_or(false)
         {
             return Err(format!("storage is not simulated: {drive}"));
         }
@@ -852,14 +923,13 @@ impl ServiceVm {
     }
 
     fn network_traffic(&self) -> Result<BTreeMap<String, NetworkTraffic>, String> {
+        let vmm = self.vmm.lock().expect("VMM lock poisoned");
         self.networks
             .iter()
-            .map(|(name, net)| {
-                let net = net
-                    .lock()
-                    .map_err(|_| "simulated network lock poisoned".to_owned())?;
-                let stats = net
-                    .simulated_stats()
+            .map(|(name, id)| {
+                let stats = vmm
+                    .with_simulated_network(id, |net| net.simulated_stats())
+                    .flatten()
                     .ok_or_else(|| format!("network is not simulated: {name}"))?;
                 Ok((
                     name.clone(),
@@ -878,14 +948,13 @@ impl ServiceVm {
     }
 
     fn network_trace(&self) -> Result<BTreeMap<String, Vec<NetworkFrame>>, String> {
+        let vmm = self.vmm.lock().expect("VMM lock poisoned");
         self.networks
             .iter()
-            .map(|(name, net)| {
-                let net = net
-                    .lock()
-                    .map_err(|_| "simulated network lock poisoned".to_owned())?;
-                let trace = net
-                    .simulated_trace()
+            .map(|(name, id)| {
+                let trace = vmm
+                    .with_simulated_network(id, |net| net.simulated_trace())
+                    .flatten()
                     .ok_or_else(|| format!("network is not simulated: {name}"))?;
                 Ok((
                     name.clone(),
@@ -919,6 +988,31 @@ impl ServiceVm {
             })
             .collect()
     }
+
+    fn snapshot(&mut self, directory: &Path) -> Result<ServiceVmCheckpoint, String> {
+        fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+        let networks = self.save_network_states()?;
+        let snapshot_path = directory.join("state.snap");
+        let memory_path = directory.join("memory.snap");
+        let mut vmm = self.vmm.lock().expect("VMM lock poisoned");
+        let vm_info = VmInfo::from(&*vmm);
+        create_snapshot(
+            &mut vmm,
+            &vm_info,
+            &CreateSnapshotParams {
+                snapshot_type: SnapshotType::Full,
+                snapshot_path: snapshot_path.clone(),
+                mem_file_path: memory_path.clone(),
+                sync_snapshot_files: true,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(ServiceVmCheckpoint {
+            snapshot_path,
+            memory_path,
+            networks,
+        })
+    }
 }
 
 struct ServiceRuntime {
@@ -945,6 +1039,91 @@ impl ServiceRuntime {
         }
         Ok(())
     }
+}
+
+fn capture_campaign_checkpoint(
+    directory: &Path,
+    services: &mut BTreeMap<String, ServiceRuntime>,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    round: u64,
+) -> Result<CampaignCheckpoint, String> {
+    fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    // Stop every vCPU before capturing any VM or topology-owned state. This
+    // is a barrier: no NIC queue, serial byte, or scheduler action can land
+    // in only one side of the checkpoint.
+    for service in services.values() {
+        service.vm.pause()?;
+    }
+    let result = (|| {
+        let mut snapshots = BTreeMap::new();
+        let mut scheduler = BTreeMap::new();
+        for (name, service) in services.iter_mut() {
+            let serial_contents = service
+                .serial_logs
+                .iter()
+                .map(|path| {
+                    fs::read(path)
+                        .map_err(|error| format!("cannot checkpoint {}: {error}", path.display()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            snapshots.insert(
+                name.clone(),
+                service
+                    .vm
+                    .snapshot(&directory.join("services").join(name))?,
+            );
+            scheduler.insert(
+                name.clone(),
+                ServiceSchedulerCheckpoint {
+                    serial_contents,
+                    next_fault: service.next_fault,
+                    paused_until: service.paused_until,
+                    faults: service.faults.clone(),
+                    network_traffic: service.network_traffic.clone(),
+                    network_trace: service.network_trace.clone(),
+                },
+            );
+        }
+        let switches = switches
+            .iter()
+            .map(|(name, switch)| {
+                switch
+                    .lock()
+                    .map_err(|_| "simulated switch lock poisoned".to_owned())
+                    .map(|switch| (name.clone(), switch.save_state()))
+            })
+            .collect::<Result<BTreeMap<_, _>, String>>()?;
+        Ok(CampaignCheckpoint {
+            switches,
+            services: snapshots,
+            scheduler,
+            round,
+        })
+    })();
+    for service in services.values() {
+        service.vm.stop();
+    }
+    result
+}
+
+fn restore_campaign_serial_logs(
+    directory: &Path,
+    checkpoint: &ServiceSchedulerCheckpoint,
+) -> Result<Vec<PathBuf>, String> {
+    checkpoint
+        .serial_contents
+        .iter()
+        .enumerate()
+        .map(|(index, contents)| {
+            let path = if index == 0 {
+                directory.join("serial.log")
+            } else {
+                directory.join(format!("serial-{index}.log"))
+            };
+            fs::write(&path, contents).map_err(|error| error.to_string())?;
+            Ok(path)
+        })
+        .collect()
 }
 
 fn main() -> std::process::ExitCode {
@@ -1016,6 +1195,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         execute(
             topology,
             &output,
+            None,
             expected_serial,
             expected_faults,
             expected_network,
@@ -1027,18 +1207,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
 }
 
-/// Execute an autonomous campaign as a deterministic corpus of complete
-/// topology timelines.  A topology service is the workload driver: Theseus
-/// writes operation bytes to its UART, while every service stays inside the
-/// same simulated switch and fault scheduler.  Starting complete timelines is
-/// deliberately the initial checkpoint representation: every retained run is
-/// a locked, independently replayable topology bundle, rather than a host
-/// process whose state cannot be reproduced.
+/// Execute an autonomous campaign from one reusable, whole-topology branch
+/// point. Each child restores every VM, simulated NIC/switch, UART transcript,
+/// and scheduler cursor before its own operation history is injected.
 fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
     let campaign = topology
         .campaign
         .take()
         .expect("campaign execution requires a campaign");
+    let checkpoint =
+        boot_campaign_checkpoint(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
     let base = serde_json::to_vec(&topology)
         .map_err(|error| format!("cannot encode campaign base plan: {error}"))?;
     let schedules = campaign_schedules(&campaign);
@@ -1053,7 +1231,18 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
             .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
         apply_campaign_schedule(&mut run, &campaign, schedule)?;
         let run_dir = output.join("runs").join(format!("{index:03}"));
-        let status = execute(run, &run_dir, None, None, None, None, None, None, None);
+        let status = execute(
+            run,
+            &run_dir,
+            Some(&checkpoint),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         let markers = campaign_markers(&run_dir)?;
         let actions = campaign_actions(&run_dir)?;
         let novelty = markers
@@ -1119,6 +1308,106 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
     }
 }
 
+fn boot_campaign_checkpoint(
+    topology: &mut TopologyPlan,
+    directory: &Path,
+    driver: &str,
+) -> Result<CampaignCheckpoint, String> {
+    fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    if let Some(runner) = &mut topology.topology_runner {
+        fs::create_dir_all(directory.join("artifacts")).map_err(|error| error.to_string())?;
+        let locked = lock_artifact(directory, "theseus-topology", runner)?;
+        runner.path = fs::canonicalize(locked)
+            .map_err(|error| error.to_string())?
+            .display()
+            .to_string();
+    }
+    let names = topology.services.keys().cloned().collect::<Vec<_>>();
+    for name in &names {
+        let service = &topology.services[name];
+        let service_dir = directory.join("services").join(name);
+        fs::create_dir_all(service_dir.join("artifacts")).map_err(|error| error.to_string())?;
+        let kernel = lock_artifact(&service_dir, "kernel", &service.run.guest.kernel)?;
+        let initramfs = lock_artifact(&service_dir, "initramfs", &service.run.guest.initramfs)?;
+        let runtime = lock_artifact(
+            &service_dir,
+            "firecracker",
+            &service.run.runtime.firecracker,
+        )?;
+        let service = topology
+            .services
+            .get_mut(name)
+            .expect("topology service missing");
+        service.run.runtime.firecracker.path = fs::canonicalize(runtime)
+            .map_err(|error| error.to_string())?
+            .display()
+            .to_string();
+        service.run.guest.kernel.path = fs::canonicalize(kernel)
+            .map_err(|error| error.to_string())?
+            .display()
+            .to_string();
+        service.run.guest.initramfs.path = fs::canonicalize(initramfs)
+            .map_err(|error| error.to_string())?
+            .display()
+            .to_string();
+    }
+    fs::write(
+        directory.join("replay-plan.json"),
+        serde_json::to_vec_pretty(&topology).expect("checkpoint replay plan serializes"),
+    )
+    .map_err(|error| error.to_string())?;
+    let mut switches: BTreeMap<String, SharedSimSwitch> = topology
+        .networks
+        .keys()
+        .map(|name| (name.clone(), Arc::new(Mutex::new(SimSwitch::new()))))
+        .collect();
+    let mut services = BTreeMap::new();
+    for name in &names {
+        let service = &topology.services[name];
+        let serial = directory.join("services").join(name).join("serial.log");
+        let vm = build_service(
+            name,
+            0,
+            service,
+            Path::new(&service.run.guest.kernel.path),
+            Path::new(&service.run.guest.initramfs.path),
+            &serial,
+            &mut switches,
+        )?;
+        services.insert(
+            name.clone(),
+            ServiceRuntime {
+                vm,
+                serial_logs: vec![serial],
+                next_fault: 0,
+                paused_until: None,
+                faults: Vec::new(),
+                network_traffic: BTreeMap::new(),
+                network_trace: BTreeMap::new(),
+            },
+        );
+    }
+    for service in services.values() {
+        service.vm.resume()?;
+    }
+    let boot_timeout = topology
+        .services
+        .values()
+        .map(|service| service.run.run.timeout_secs)
+        .max()
+        .unwrap_or(5);
+    let driver = services
+        .get(driver)
+        .ok_or_else(|| format!("campaign driver did not start: {driver}"))?;
+    wait_for_serial_for(
+        &driver.serial_logs[0],
+        b"THES:M:42",
+        "campaign driver serial readiness",
+        Duration::from_secs(boot_timeout),
+    )?;
+    capture_campaign_checkpoint(directory, &mut services, &switches, 0)
+}
+
 fn campaign_actions(run: &Path) -> Result<Vec<AppliedCampaignAction>, String> {
     let result_path = run.join("topology-result.json");
     let result = fs::read(&result_path)
@@ -1129,8 +1418,8 @@ fn campaign_actions(run: &Path) -> Result<Vec<AppliedCampaignAction>, String> {
 }
 
 /// Delta-debug the first timeline that violates an individual property.  The
-/// reducer removes one operation at a time and re-executes the complete,
-/// locked topology.  It does not pretend that `sometimes` and `reachable`
+/// reducer removes one operation at a time and restores the same complete,
+/// locked topology checkpoint. It does not pretend that `sometimes` and `reachable`
 /// failures have a single counterexample: those properties fail because the
 /// corpus has no witness, so their full first schedule is retained.
 fn execute_campaign_minimized(
@@ -1150,6 +1439,8 @@ fn execute_campaign_minimized(
             .map_err(|error| format!("cannot read campaign result: {error}"))?,
     )
     .map_err(|error| format!("cannot parse campaign result: {error}"))?;
+    let checkpoint =
+        boot_campaign_checkpoint(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
     let base = serde_json::to_vec(&topology)
         .map_err(|error| format!("cannot encode campaign base plan: {error}"))?;
     let (property, mut schedule) = campaign_counterexample(&campaign, source, &recorded)?;
@@ -1177,7 +1468,18 @@ fn execute_campaign_minimized(
         let mut plan: TopologyPlan = serde_json::from_slice(&base)
             .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
         apply_campaign_schedule(&mut plan, &campaign, &candidate)?;
-        let _ = execute(plan, &directory, None, None, None, None, None, None, None);
+        let _ = execute(
+            plan,
+            &directory,
+            Some(&checkpoint),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         if property_fails_in_run(&property, &directory) {
             schedule = candidate;
         } else {
@@ -1188,7 +1490,18 @@ fn execute_campaign_minimized(
         .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
     apply_campaign_schedule(&mut final_plan, &campaign, &schedule)?;
     add_counterexample_check(&mut final_plan, &campaign, &property)?;
-    execute(final_plan, output, None, None, None, None, None, None, None)?;
+    execute(
+        final_plan,
+        output,
+        Some(&checkpoint),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
     let minimized_operations = schedule
         .operations
         .iter()
@@ -1782,6 +2095,7 @@ fn campaign_serial_contains(run: &Path, service: &str, needle: &[u8]) -> bool {
 fn execute(
     mut topology: TopologyPlan,
     output: &Path,
+    checkpoint: Option<&CampaignCheckpoint>,
     expected_serial: Option<BTreeMap<String, Vec<String>>>,
     expected_faults: Option<BTreeMap<String, String>>,
     expected_network: Option<String>,
@@ -1790,13 +2104,15 @@ fn execute(
     expected_traffic: Option<BTreeMap<String, BTreeMap<String, NetworkTraffic>>>,
     expected_virtual_time: Option<BTreeMap<String, Option<Vec<u64>>>>,
 ) -> Result<(), String> {
-    if let Some(runner) = &mut topology.topology_runner {
-        fs::create_dir_all(output.join("artifacts")).map_err(|error| error.to_string())?;
-        let locked = lock_artifact(output, "theseus-topology", runner)?;
-        runner.path = fs::canonicalize(locked)
-            .map_err(|error| error.to_string())?
-            .display()
-            .to_string();
+    if checkpoint.is_none() {
+        if let Some(runner) = &mut topology.topology_runner {
+            fs::create_dir_all(output.join("artifacts")).map_err(|error| error.to_string())?;
+            let locked = lock_artifact(output, "theseus-topology", runner)?;
+            runner.path = fs::canonicalize(locked)
+                .map_err(|error| error.to_string())?
+                .display()
+                .to_string();
+        }
     }
     let mut switches: BTreeMap<String, SharedSimSwitch> = topology
         .networks
@@ -1805,33 +2121,35 @@ fn execute(
         .collect();
     let mut services = BTreeMap::new();
     let names = topology.services.keys().cloned().collect::<Vec<_>>();
-    for name in &names {
-        let service = &topology.services[name];
-        let service_dir = output.join("services").join(name);
-        fs::create_dir_all(service_dir.join("artifacts")).map_err(|error| error.to_string())?;
-        let kernel = lock_artifact(&service_dir, "kernel", &service.run.guest.kernel)?;
-        let initramfs = lock_artifact(&service_dir, "initramfs", &service.run.guest.initramfs)?;
-        let runtime = lock_artifact(
-            &service_dir,
-            "firecracker",
-            &service.run.runtime.firecracker,
-        )?;
-        let locked = topology
-            .services
-            .get_mut(name)
-            .expect("topology service missing");
-        locked.run.runtime.firecracker.path = fs::canonicalize(runtime)
-            .map_err(|error| error.to_string())?
-            .display()
-            .to_string();
-        locked.run.guest.kernel.path = fs::canonicalize(kernel)
-            .map_err(|error| error.to_string())?
-            .display()
-            .to_string();
-        locked.run.guest.initramfs.path = fs::canonicalize(initramfs)
-            .map_err(|error| error.to_string())?
-            .display()
-            .to_string();
+    if checkpoint.is_none() {
+        for name in &names {
+            let service = &topology.services[name];
+            let service_dir = output.join("services").join(name);
+            fs::create_dir_all(service_dir.join("artifacts")).map_err(|error| error.to_string())?;
+            let kernel = lock_artifact(&service_dir, "kernel", &service.run.guest.kernel)?;
+            let initramfs = lock_artifact(&service_dir, "initramfs", &service.run.guest.initramfs)?;
+            let runtime = lock_artifact(
+                &service_dir,
+                "firecracker",
+                &service.run.runtime.firecracker,
+            )?;
+            let locked = topology
+                .services
+                .get_mut(name)
+                .expect("topology service missing");
+            locked.run.runtime.firecracker.path = fs::canonicalize(runtime)
+                .map_err(|error| error.to_string())?
+                .display()
+                .to_string();
+            locked.run.guest.kernel.path = fs::canonicalize(kernel)
+                .map_err(|error| error.to_string())?
+                .display()
+                .to_string();
+            locked.run.guest.initramfs.path = fs::canonicalize(initramfs)
+                .map_err(|error| error.to_string())?
+                .display()
+                .to_string();
+        }
     }
     fs::write(
         output.join("replay-plan.json"),
@@ -1841,28 +2159,82 @@ fn execute(
     for name in &names {
         let service = &topology.services[name];
         let service_dir = output.join("services").join(name);
+        fs::create_dir_all(&service_dir).map_err(|error| error.to_string())?;
         let serial = service_dir.join("serial.log");
-        let vm = build_service(
-            name,
-            0,
-            service,
-            Path::new(&service.run.guest.kernel.path),
-            Path::new(&service.run.guest.initramfs.path),
-            &serial,
-            &mut switches,
-        )?;
+        let (vm, serial_logs, next_fault, paused_until, faults, network_traffic, network_trace) =
+            if let Some(checkpoint) = checkpoint {
+                let scheduler = checkpoint
+                    .scheduler
+                    .get(name)
+                    .ok_or_else(|| format!("checkpoint is missing scheduler state for {name}"))?;
+                let serial_logs = restore_campaign_serial_logs(&service_dir, scheduler)?;
+                let serial = serial_logs
+                    .first()
+                    .ok_or_else(|| format!("checkpoint has no serial log for {name}"))?;
+                let vm = restore_service(
+                    name,
+                    0,
+                    service,
+                    Path::new(&service.run.guest.kernel.path),
+                    Path::new(&service.run.guest.initramfs.path),
+                    serial,
+                    &switches,
+                    checkpoint
+                        .services
+                        .get(name)
+                        .ok_or_else(|| format!("checkpoint is missing VM state for {name}"))?,
+                )?;
+                (
+                    vm,
+                    serial_logs,
+                    scheduler.next_fault,
+                    scheduler.paused_until,
+                    scheduler.faults.clone(),
+                    scheduler.network_traffic.clone(),
+                    scheduler.network_trace.clone(),
+                )
+            } else {
+                (
+                    build_service(
+                        name,
+                        0,
+                        service,
+                        Path::new(&service.run.guest.kernel.path),
+                        Path::new(&service.run.guest.initramfs.path),
+                        &serial,
+                        &mut switches,
+                    )?,
+                    vec![serial],
+                    0,
+                    None,
+                    Vec::new(),
+                    BTreeMap::new(),
+                    BTreeMap::new(),
+                )
+            };
         services.insert(
             name.clone(),
             ServiceRuntime {
                 vm,
-                serial_logs: vec![serial],
-                next_fault: 0,
-                paused_until: None,
-                faults: Vec::new(),
-                network_traffic: BTreeMap::new(),
-                network_trace: BTreeMap::new(),
+                serial_logs,
+                next_fault,
+                paused_until,
+                faults,
+                network_traffic,
+                network_trace,
             },
         );
+    }
+    if let Some(checkpoint) = checkpoint {
+        for (name, state) in &checkpoint.switches {
+            switches
+                .get(name)
+                .ok_or_else(|| format!("checkpoint switch disappeared: {name}"))?
+                .lock()
+                .map_err(|_| "simulated switch lock poisoned".to_owned())?
+                .restore_state(state.clone())
+                .map_err(|error| error.to_string())?;
+        }
     }
     for name in &names {
         let service = &services[name];
@@ -1896,7 +2268,7 @@ fn execute(
         .max()
         .unwrap_or(1);
     let deadline = Instant::now() + Duration::from_secs(timeout);
-    let mut round = 0;
+    let mut round = checkpoint.map_or(0, |checkpoint| checkpoint.round);
     while Instant::now() < deadline
         && services
             .values()
@@ -2876,7 +3248,16 @@ fn apply_campaign_action(
 }
 
 fn wait_for_serial(serial_log: &Path, needle: &[u8], purpose: &str) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    wait_for_serial_for(serial_log, needle, purpose, Duration::from_secs(5))
+}
+
+fn wait_for_serial_for(
+    serial_log: &Path,
+    needle: &[u8],
+    purpose: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if fs::read(serial_log)
             .is_ok_and(|serial| serial.windows(needle.len()).any(|window| window == needle))
@@ -2948,15 +3329,12 @@ fn evaluate_checks(checks: &[CheckPlan], serial_logs: &[PathBuf]) -> Vec<CheckRe
         .collect()
 }
 
-fn build_service(
-    name: &str,
-    instance: usize,
+fn service_resources(
     service: &ServicePlan,
     kernel: &Path,
     initramfs: &Path,
     serial: &Path,
-    switches: &mut BTreeMap<String, SharedSimSwitch>,
-) -> Result<ServiceVm, String> {
+) -> Result<VmResources, String> {
     let mut resources = VmResources::default();
     resources
         .build_boot_source(BootSourceConfig {
@@ -2990,8 +3368,22 @@ fn build_service(
         })
         .map_err(|error| error.to_string())?;
     resources.serial_out_path = Some(serial.to_path_buf());
+    Ok(resources)
+}
+
+fn build_service(
+    name: &str,
+    instance: usize,
+    service: &ServicePlan,
+    kernel: &Path,
+    initramfs: &Path,
+    serial: &Path,
+    switches: &mut BTreeMap<String, SharedSimSwitch>,
+) -> Result<ServiceVm, String> {
+    let mut resources = service_resources(service, kernel, initramfs, serial)?;
     let mut simulated_storage = Vec::new();
     let mut simulated_networks = Vec::new();
+    let mut network_endpoints = BTreeMap::new();
     for storage in &service.run.storage {
         let block = Arc::new(Mutex::new(
             Block::new_simulated(SimulatedBlockConfig {
@@ -3011,13 +3403,14 @@ fn build_service(
             })?,
         ));
         resources.block.add_virtio_device(block.clone());
-        simulated_storage.push(block);
+        simulated_storage.push(storage.id.clone());
     }
     for network in &service.networks {
         let switch = switches
             .get(network)
             .ok_or_else(|| format!("service {name}: unknown network {network}"))?
             .clone();
+        let endpoint = format!("{network}/{name}-{instance}");
         let net = Arc::new(Mutex::new(
             Net::new_with_sim_switch(
                 format!("net-{network}"),
@@ -3036,7 +3429,7 @@ fn build_service(
                     rx_queue_frames: service.run.network.rx_queue_frames,
                 },
                 switch,
-                format!("{network}/{name}-{instance}"),
+                endpoint.clone(),
                 None,
                 RateLimiter::default(),
                 RateLimiter::default(),
@@ -3045,7 +3438,8 @@ fn build_service(
             .map_err(|error| error.to_string())?,
         ));
         resources.net_builder.add_device(net.clone());
-        simulated_networks.push((network.clone(), net));
+        simulated_networks.push((network.clone(), format!("net-{network}")));
+        network_endpoints.insert(network.clone(), endpoint);
     }
     let mut event_manager = EventManager::new().map_err(|error| error.to_string())?;
     let vmm = build_microvm_for_boot(
@@ -3060,7 +3454,84 @@ fn build_service(
         event_manager,
         storage: simulated_storage,
         networks: simulated_networks,
+        network_endpoints,
     })
+}
+
+fn restore_service(
+    name: &str,
+    instance: usize,
+    service: &ServicePlan,
+    kernel: &Path,
+    initramfs: &Path,
+    serial: &Path,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    checkpoint: &ServiceVmCheckpoint,
+) -> Result<ServiceVm, String> {
+    let mut resources = service_resources(service, kernel, initramfs, serial)?;
+    let networks = service
+        .networks
+        .iter()
+        .map(|network| (network.clone(), format!("net-{network}")))
+        .collect::<Vec<_>>();
+    let network_endpoints = service
+        .networks
+        .iter()
+        .map(|network| (network.clone(), format!("{network}/{name}-{instance}")))
+        .collect::<BTreeMap<_, _>>();
+    let storage = service
+        .run
+        .storage
+        .iter()
+        .map(|storage| storage.id.clone())
+        .collect();
+    let mut event_manager = EventManager::new().map_err(|error| error.to_string())?;
+    let vmm = restore_from_snapshot(
+        &InstanceInfo::default(),
+        &mut event_manager,
+        &get_empty_filters(),
+        &LoadSnapshotParams {
+            snapshot_path: checkpoint.snapshot_path.clone(),
+            mem_backend: MemBackendConfig {
+                backend_path: checkpoint.memory_path.clone(),
+                backend_type: MemBackendType::File,
+            },
+            track_dirty_pages: false,
+            resume_vm: false,
+            network_overrides: Vec::new(),
+            vsock_override: None,
+            clock_realtime: false,
+            huge_pages: SnapshotLoadHugePageConfig::Snapshot,
+        },
+        &mut resources,
+    )
+    .map_err(|error| error.to_string())?;
+    let vm = ServiceVm {
+        vmm,
+        event_manager,
+        storage,
+        networks,
+        network_endpoints,
+    };
+    {
+        let mut vmm = vm.vmm.lock().expect("VMM lock poisoned");
+        for (network, id) in &vm.networks {
+            let switch = switches
+                .get(network)
+                .ok_or_else(|| format!("checkpoint network disappeared: {network}"))?
+                .clone();
+            let endpoint = vm
+                .network_endpoints
+                .get(network)
+                .ok_or_else(|| format!("checkpoint endpoint disappeared: {network}"))?
+                .clone();
+            if !vmm.attach_simulated_network(id, switch, endpoint) {
+                return Err(format!("cannot reconnect restored network: {network}"));
+            }
+        }
+    }
+    vm.restore_network_states(checkpoint.networks.clone())?;
+    Ok(vm)
 }
 
 fn lock_artifact(service_dir: &Path, name: &str, artifact: &Artifact) -> Result<PathBuf, String> {

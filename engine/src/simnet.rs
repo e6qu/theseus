@@ -27,8 +27,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use rand_chacha::rand_core::{RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use rand_chacha::rand_core::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -153,14 +153,14 @@ pub struct SimNetFrame {
 
 const FRAME_TRACE_LIMIT: usize = 64;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingFrame {
     ready_round: u64,
     sequence: u64,
     bytes: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingTransmit {
     delay_rounds: u32,
     bytes: Vec<u8>,
@@ -201,6 +201,28 @@ pub struct SimNet {
     endpoint: Option<String>,
 }
 
+/// In-process deterministic NIC state for a topology checkpoint. The shared
+/// switch is saved separately; trace sinks remain attached to the child
+/// timeline rather than being copied from its parent.
+#[derive(Clone)]
+pub struct SimNetState {
+    config: SimNetConfig,
+    packet_drop_rules: Vec<SimNetPacketDropRule>,
+    rx_queue: VecDeque<PendingFrame>,
+    tx_queue: VecDeque<PendingTransmit>,
+    round: u64,
+    next_frame: u64,
+    tx_bytes_remaining: u64,
+    rng: ChaCha8Rng,
+    tx_frames: u64,
+    rx_frames: u64,
+    dropped: u64,
+    duplicated: u64,
+    corrupted: u64,
+    tx_hasher: Sha256,
+    rx_hasher: Sha256,
+}
+
 /// A deterministic packet-loss rule for one Ethernet EtherType.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SimNetPacketDropRule {
@@ -211,7 +233,7 @@ struct SimNetPacketDropRule {
 /// Parsed-header selector for deterministic simulated packet rules. Theseus
 /// intentionally limits matching to Ethernet, IPv4, and TCP/UDP ports; it
 /// never inspects payload bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SimNetPacketSelector {
     pub ethertype: u16,
     pub ip_protocol: Option<u8>,
@@ -312,10 +334,29 @@ pub struct SimSwitch {
     next_frame: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SimSwitchPacketDropRule {
     drop_ppm: u32,
     rng: ChaCha8Rng,
+}
+
+/// Serializable deterministic switch state for a topology checkpoint.
+/// Frame traces intentionally remain outside this state: they are immutable
+/// evidence for the parent timeline, not guest-visible transport state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimSwitchState {
+    ports: BTreeMap<String, SimSwitchPortState>,
+    blocked_links: BTreeSet<(String, String)>,
+    packet_drop_rules: BTreeMap<(String, String, SimNetPacketSelector), SimSwitchPacketDropRule>,
+    round: u64,
+    next_frame: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SimSwitchPortState {
+    rx_queue: VecDeque<PendingFrame>,
+    rx_queue_frames: u32,
+    dropped: u64,
 }
 
 /// Shared ownership used by all simulated NICs in one topology runner.
@@ -347,6 +388,54 @@ impl SimSwitch {
     /// Make an empty topology switch.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Capture all guest-visible deterministic switch state for a topology
+    /// checkpoint. Traces are deliberately excluded because replay evidence
+    /// belongs to the parent timeline, not its restored child.
+    pub fn save_state(&self) -> SimSwitchState {
+        SimSwitchState {
+            ports: self
+                .ports
+                .iter()
+                .map(|(name, port)| {
+                    (
+                        name.clone(),
+                        SimSwitchPortState {
+                            rx_queue: port.rx_queue.clone(),
+                            rx_queue_frames: port.rx_queue_frames,
+                            dropped: port.dropped,
+                        },
+                    )
+                })
+                .collect(),
+            blocked_links: self.blocked_links.clone(),
+            packet_drop_rules: self.packet_drop_rules.clone(),
+            round: self.round,
+            next_frame: self.next_frame,
+        }
+    }
+
+    /// Restore a checkpoint into the existing attached ports. A topology must
+    /// attach the same stable endpoints before restoration so trace sinks keep
+    /// their child-timeline ownership.
+    pub fn restore_state(&mut self, state: SimSwitchState) -> Result<(), SimSwitchError> {
+        if self.ports.keys().ne(state.ports.keys()) {
+            return Err(SimSwitchError::InvalidPort(
+                "checkpoint ports do not match attached topology".to_owned(),
+            ));
+        }
+        for (name, saved) in state.ports {
+            let port = self.ports.get_mut(&name).expect("checked checkpoint port");
+            port.rx_queue = saved.rx_queue;
+            port.rx_queue_frames = saved.rx_queue_frames;
+            port.dropped = saved.dropped;
+        }
+        self.blocked_links = state.blocked_links;
+        self.packet_drop_rules = state.packet_drop_rules;
+        self.round = state.round;
+        self.next_frame = state.next_frame;
+        Ok(())
     }
 
     fn attach(
@@ -687,8 +776,74 @@ impl SimNet {
         })
     }
 
+    /// Attach a restored standalone simulated NIC to its topology switch.
+    /// Restore creates the device before the topology-owned switch exists;
+    /// the runner reconnects the same stable endpoint before restoring queued
+    /// NIC and switch state.
+    pub fn attach_switch(
+        &mut self,
+        switch: SharedSimSwitch,
+        endpoint: impl Into<String>,
+    ) -> Result<(), SimSwitchError> {
+        if self.switch.is_some() || self.endpoint.is_some() {
+            return Err(SimSwitchError::DuplicatePort(
+                "simulated NIC already attached".to_owned(),
+            ));
+        }
+        let endpoint = endpoint.into();
+        switch
+            .lock()
+            .expect("simulated switch lock poisoned")
+            .attach(&endpoint, self.config.rx_queue_frames, self.trace.clone())?;
+        self.switch = Some(switch);
+        self.endpoint = Some(endpoint);
+        Ok(())
+    }
+
     pub fn config(&self) -> SimNetConfig {
         self.config
+    }
+
+    /// Capture guest-visible deterministic NIC state. The topology restores
+    /// its switch state separately before resuming child services.
+    pub fn save_state(&self) -> SimNetState {
+        SimNetState {
+            config: self.config,
+            packet_drop_rules: self.packet_drop_rules.clone(),
+            rx_queue: self.rx_queue.clone(),
+            tx_queue: self.tx_queue.clone(),
+            round: self.round,
+            next_frame: self.next_frame,
+            tx_bytes_remaining: self.tx_bytes_remaining,
+            rng: self.rng.clone(),
+            tx_frames: self.tx_frames,
+            rx_frames: self.rx_frames,
+            dropped: self.dropped,
+            duplicated: self.duplicated,
+            corrupted: self.corrupted,
+            tx_hasher: self.tx_hasher.clone(),
+            rx_hasher: self.rx_hasher.clone(),
+        }
+    }
+
+    /// Restore an in-process checkpoint without changing attached switch or
+    /// trace ownership.
+    pub fn restore_state(&mut self, state: SimNetState) {
+        self.config = state.config;
+        self.packet_drop_rules = state.packet_drop_rules;
+        self.rx_queue = state.rx_queue;
+        self.tx_queue = state.tx_queue;
+        self.round = state.round;
+        self.next_frame = state.next_frame;
+        self.tx_bytes_remaining = state.tx_bytes_remaining;
+        self.rng = state.rng;
+        self.tx_frames = state.tx_frames;
+        self.rx_frames = state.rx_frames;
+        self.dropped = state.dropped;
+        self.duplicated = state.duplicated;
+        self.corrupted = state.corrupted;
+        self.tx_hasher = state.tx_hasher;
+        self.rx_hasher = state.rx_hasher;
     }
 
     /// Change whether this simulated link drops newly transmitted frames as a
@@ -1183,6 +1338,28 @@ mod tests {
     }
 
     #[test]
+    fn nic_checkpoint_restores_queued_frames_and_seeded_rules() {
+        let mut sim = SimNet::new(SimNetConfig {
+            loopback: true,
+            latency_rounds: 2,
+            ..Default::default()
+        });
+        sim.write_frame(b"queued");
+        let checkpoint = sim.save_state();
+        sim.advance_round();
+        sim.advance_round();
+        let mut buffer = [0; 16];
+        assert_eq!(sim.read_frame(&mut buffer), Some(6));
+
+        sim.restore_state(checkpoint);
+        assert!(!sim.has_pending_rx());
+        sim.advance_round();
+        sim.advance_round();
+        assert_eq!(sim.read_frame(&mut buffer), Some(6));
+        assert_eq!(&buffer[..6], b"queued");
+    }
+
+    #[test]
     fn packet_selector_matches_ipv4_tcp_ports_without_inspecting_payload() {
         let selector = SimNetPacketSelector {
             ethertype: 0x0800,
@@ -1508,11 +1685,13 @@ mod tests {
         assert_eq!(switch.receive("replica"), None);
         assert_eq!(switch.receive("auditor"), Some(b"request".to_vec()));
         assert_eq!(switch.dropped("replica"), 1);
-        assert!(replica_trace
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|frame| { frame.drop_reason == Some(SimNetDropReason::LinkPartition) }));
+        assert!(
+            replica_trace
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|frame| { frame.drop_reason == Some(SimNetDropReason::LinkPartition) })
+        );
 
         switch.set_link_blocked("api", "replica", false).unwrap();
         switch.deliver("api", false, 0, b"retry");
@@ -1542,17 +1721,48 @@ mod tests {
         switch.deliver("api", false, 0, &arp);
         assert_eq!(switch.receive("replica"), Some(arp.to_vec()));
         assert_eq!(switch.dropped("replica"), 1);
-        assert!(replica_trace
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|frame| { frame.drop_reason == Some(SimNetDropReason::PacketRule) }));
+        assert!(
+            replica_trace
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|frame| { frame.drop_reason == Some(SimNetDropReason::PacketRule) })
+        );
 
         switch
             .set_link_packet_drop_rule("api", "replica", 0x0800.into(), None, 42)
             .unwrap();
         switch.deliver("api", false, 0, &ipv4);
         assert_eq!(switch.receive("replica"), Some(ipv4.to_vec()));
+    }
+
+    #[test]
+    fn shared_switch_checkpoint_restores_queues_rules_and_round() {
+        let mut switch = SimSwitch::new();
+        switch
+            .attach("api", 0, Arc::new(Mutex::new(Vec::new())))
+            .unwrap();
+        switch
+            .attach("replica", 0, Arc::new(Mutex::new(Vec::new())))
+            .unwrap();
+        let frame = [0_u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x08, 0x00];
+        switch
+            .set_link_packet_drop_rule("api", "replica", 0x0800.into(), Some(1_000_000), 7)
+            .unwrap();
+        switch.deliver("api", false, 2, b"queued");
+        let checkpoint = switch.save_state();
+        switch
+            .set_link_packet_drop_rule("api", "replica", 0x0800.into(), None, 7)
+            .unwrap();
+        switch.deliver("api", false, 0, &frame);
+        assert_eq!(switch.receive("replica"), Some(frame.to_vec()));
+
+        switch.restore_state(checkpoint).unwrap();
+        switch.deliver("api", false, 0, &frame);
+        assert_eq!(switch.receive("replica"), None);
+        switch.advance_round();
+        switch.advance_round();
+        assert_eq!(switch.receive("replica"), Some(b"queued".to_vec()));
     }
 
     #[test]

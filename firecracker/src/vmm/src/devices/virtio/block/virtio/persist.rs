@@ -7,7 +7,7 @@ use device::ConfigSpace;
 use serde::{Deserialize, Serialize};
 use vmm_sys_util::eventfd::EventFd;
 
-use super::device::DiskProperties;
+use super::device::{DiskProperties, SimulatedBlock};
 use super::*;
 use crate::devices::virtio::block::persist::BlockConstructorArgs;
 use crate::devices::virtio::block::virtio::device::FileEngineType;
@@ -60,6 +60,8 @@ pub struct VirtioBlockState {
     pub virtio_state: VirtioDeviceState,
     rate_limiter_state: RateLimiterState,
     file_engine_type: FileEngineTypeState,
+    #[serde(default)]
+    simulated: Option<super::device::SimulatedBlockState>,
 }
 
 impl Persist<'_> for VirtioBlock {
@@ -78,6 +80,7 @@ impl Persist<'_> for VirtioBlock {
             virtio_state: VirtioDeviceState::from_device(self),
             rate_limiter_state: self.rate_limiter.save(),
             file_engine_type: FileEngineTypeState::from(self.file_engine_type()),
+            simulated: self.simulated.as_ref().map(SimulatedBlock::save_state),
         }
     }
 
@@ -89,11 +92,20 @@ impl Persist<'_> for VirtioBlock {
         let rate_limiter = RateLimiter::restore((), &state.rate_limiter_state)
             .map_err(VirtioBlockError::RateLimiter)?;
 
-        let disk_properties = DiskProperties::new(
-            state.disk_path.clone(),
-            is_read_only,
-            state.file_engine_type.into(),
-        )?;
+        let (disk_properties, simulated) = match state.simulated.clone() {
+            Some(simulated) => (
+                DiskProperties::anonymous(simulated.bytes.len() as u64, &state.id)?,
+                Some(SimulatedBlock::restore_state(simulated)),
+            ),
+            None => (
+                DiskProperties::new(
+                    state.disk_path.clone(),
+                    is_read_only,
+                    state.file_engine_type.into(),
+                )?,
+                None,
+            ),
+        };
 
         let queue_evts = [EventFd::new(libc::EFD_NONBLOCK).map_err(VirtioBlockError::EventFd)?];
 
@@ -134,7 +146,7 @@ impl Persist<'_> for VirtioBlock {
             rate_limiter,
             is_io_engine_throttled: false,
             metrics: BlockMetricsPerDevice::alloc(state.id.clone()),
-            simulated: None,
+            simulated,
         })
     }
 }
@@ -144,7 +156,7 @@ mod tests {
     use vmm_sys_util::tempfile::TempFile;
 
     use super::*;
-    use crate::devices::virtio::block::virtio::device::VirtioBlockConfig;
+    use crate::devices::virtio::block::virtio::device::{SimulatedBlockConfig, VirtioBlockConfig};
     use crate::devices::virtio::device::VirtioDevice;
     use crate::devices::virtio::test_utils::default_mem;
 
@@ -187,6 +199,25 @@ mod tests {
         assert_eq!(FileEngineType::Sync, FileEngineTypeState::Sync.into());
         // Test default impl.
         assert_eq!(FileEngineTypeState::default(), FileEngineTypeState::Sync);
+    }
+
+    #[test]
+    fn simulated_block_state_restores_without_a_host_backing_path() {
+        let block = VirtioBlock::new_simulated(SimulatedBlockConfig {
+            drive_id: "data".to_owned(),
+            size_mib: 1,
+            seed: 7,
+            error_ppm: 0,
+            latency_rounds: 0,
+            torn_write_bytes: None,
+            corrupt_read_xor: None,
+        })
+        .unwrap();
+        let state = block.save();
+        let restored =
+            VirtioBlock::restore(BlockConstructorArgs { mem: default_mem() }, &state).unwrap();
+        assert!(restored.is_simulated());
+        assert_eq!(restored.simulated_bytes().unwrap().len(), 1024 * 1024);
     }
 
     #[test]
