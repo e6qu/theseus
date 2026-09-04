@@ -175,6 +175,7 @@ struct CampaignResult {
     checkpoint_nodes: usize,
     checkpoint_reuses: usize,
     generated_candidates: usize,
+    unique_topology_states: usize,
     runs: Vec<CampaignRun>,
     properties: Vec<CampaignPropertyResult>,
 }
@@ -190,6 +191,8 @@ struct CampaignRun {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     actions: Vec<AppliedCampaignAction>,
     selection: String,
+    state_sha256: String,
+    state_novel: bool,
     status: &'static str,
     novelty: Vec<String>,
 }
@@ -1422,6 +1425,7 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
     fs::create_dir_all(output.join("runs")).map_err(|error| error.to_string())?;
     let mut runs = Vec::new();
     let mut seen_markers = std::collections::BTreeSet::new();
+    let mut seen_topology_states = std::collections::BTreeSet::new();
     let mut pending = (0..schedules.len()).collect::<Vec<_>>();
     let mut observations = Vec::new();
     while runs.len() < usize::from(campaign.max_runs) && !pending.is_empty() {
@@ -1467,6 +1471,8 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
         }
         let markers = campaign_markers(&run_dir)?;
         let actions = campaign_actions(&run_dir)?;
+        let state_sha256 = campaign_topology_state_sha256(&run_dir)?;
+        let state_novel = seen_topology_states.insert(state_sha256.clone());
         let novelty = markers
             .into_iter()
             .filter(|marker| seen_markers.insert(marker.clone()))
@@ -1475,6 +1481,7 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
         observations.push(CampaignGuidanceObservation {
             operations: schedule.operations.clone(),
             novel_markers: novelty.len(),
+            novel_state: state_novel,
             failed,
         });
         runs.push(CampaignRun {
@@ -1489,6 +1496,8 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
             faults: campaign_fault_names(&campaign, &schedule.faults),
             actions,
             selection,
+            state_sha256,
+            state_novel,
             status: if failed { "failed" } else { "passed" },
             novelty,
         });
@@ -1524,6 +1533,7 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
             checkpoint_nodes: checkpoints.nodes(),
             checkpoint_reuses: checkpoints.reuses,
             generated_candidates: schedules.len(),
+            unique_topology_states: seen_topology_states.len(),
             runs,
             properties,
         })
@@ -1938,7 +1948,21 @@ struct CampaignSchedule {
 struct CampaignGuidanceObservation {
     operations: Vec<usize>,
     novel_markers: usize,
+    novel_state: bool,
     failed: bool,
+}
+
+/// Stable state evidence that is meaningful to a topology campaign. It
+/// deliberately excludes serial output and applied-fault names: those are
+/// independent evidence streams and would make every candidate appear novel.
+#[derive(Deserialize, Serialize)]
+struct CampaignTopologyState {
+    #[serde(default)]
+    storage_sha256: BTreeMap<String, String>,
+    #[serde(default)]
+    network_traffic: BTreeMap<String, NetworkTraffic>,
+    #[serde(default)]
+    virtual_time_ns: Option<Vec<u64>>,
 }
 
 fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
@@ -1985,11 +2009,11 @@ fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
     schedules
 }
 
-/// Choose the next leaf from observed serial-marker coverage rather than
-/// spending the campaign budget in declaration order. An observation only
-/// guides schedules that extend the exact operation history which produced it;
-/// fault variants remain separate leaves and all ties fall back to the stable
-/// breadth-first candidate order.
+/// Choose the next leaf from observed marker and topology-state coverage
+/// rather than spending the campaign budget in declaration order. An
+/// observation only guides schedules that extend the exact operation history
+/// which produced it; fault variants remain separate leaves and all ties fall
+/// back to the stable breadth-first candidate order.
 fn select_campaign_schedule(
     schedules: &[CampaignSchedule],
     pending: &[usize],
@@ -2006,34 +2030,45 @@ fn select_campaign_schedule(
             if !candidate.operations.starts_with(&observation.operations) {
                 continue;
             }
-            // A marker is the campaign's user-visible coverage signal. A
-            // failed leaf is also valuable: explore its direct continuations
-            // before unrelated work, without treating one failure as proof.
+            // Markers are the campaign's user-visible coverage signal. The
+            // final drive/network/clock state catches meaningful divergence
+            // even when the guest emits the same markers. A failed leaf is
+            // also valuable, but neither signal is proof on its own.
             let signal = observation.novel_markers.saturating_mul(1_000)
+                + usize::from(observation.novel_state).saturating_mul(250)
                 + usize::from(observation.failed).saturating_mul(100);
             let candidate_score = signal.saturating_mul(256) + observation.operations.len();
             if candidate_score > score {
                 score = candidate_score;
-                reason = Some((
-                    observation.novel_markers,
-                    observation.failed,
-                    observation.operations.len(),
-                ));
+                reason = Some(observation);
             }
         }
         if score > selected_score {
             selected = pending_index;
             selected_score = score;
-            selected_reason = match reason.expect("nonzero guidance has a reason") {
-                (markers, _, depth) if markers > 0 => {
-                    format!("extends {depth}-operation prefix with {markers} new marker(s)")
-                }
-                (_, true, depth) => format!("extends {depth}-operation failing prefix"),
-                _ => unreachable!("nonzero guidance is marker or failure driven"),
-            };
+            selected_reason =
+                campaign_guidance_reason(reason.expect("nonzero guidance has a reason"));
         }
     }
     (selected, selected_reason)
+}
+
+fn campaign_guidance_reason(observation: &CampaignGuidanceObservation) -> String {
+    let mut signals = Vec::new();
+    if observation.novel_markers > 0 {
+        signals.push(format!("{} new marker(s)", observation.novel_markers));
+    }
+    if observation.novel_state {
+        signals.push("new topology state".to_owned());
+    }
+    if observation.failed {
+        signals.push("failure".to_owned());
+    }
+    format!(
+        "extends {}-operation prefix with {}",
+        observation.operations.len(),
+        signals.join(" and ")
+    )
 }
 
 /// Generate combinations in declaration order. The operation history supplies
@@ -2355,6 +2390,24 @@ fn campaign_markers(run: &Path) -> Result<Vec<String>, String> {
         }
     }
     Ok(markers.into_iter().collect())
+}
+
+fn campaign_topology_state_sha256(run: &Path) -> Result<String, String> {
+    let mut states = BTreeMap::new();
+    let services = fs::read_dir(run.join("services")).map_err(|error| error.to_string())?;
+    for service in services {
+        let service = service.map_err(|error| error.to_string())?;
+        let name = service.file_name().to_string_lossy().into_owned();
+        let path = service.path().join("result.json");
+        let state: CampaignTopologyState = serde_json::from_slice(
+            &fs::read(&path).map_err(|error| format!("cannot read {}: {error}", path.display()))?,
+        )
+        .map_err(|error| format!("cannot parse {}: {error}", path.display()))?;
+        states.insert(name, state);
+    }
+    let encoded = serde_json::to_vec(&states)
+        .map_err(|error| format!("cannot encode campaign topology state: {error}"))?;
+    Ok(format!("{:x}", Sha256::digest(encoded)))
 }
 
 fn evaluate_campaign_properties(
@@ -3970,12 +4023,44 @@ mod tests {
             &[CampaignGuidanceObservation {
                 operations: vec![0],
                 novel_markers: 2,
+                novel_state: false,
                 failed: false,
             }],
         );
 
         assert_eq!(selected, 1);
         assert_eq!(reason, "extends 1-operation prefix with 2 new marker(s)");
+    }
+
+    #[test]
+    fn campaign_selection_extends_a_new_topology_state_prefix() {
+        let schedules = vec![
+            CampaignSchedule {
+                operations: vec![0],
+                faults: Vec::new(),
+            },
+            CampaignSchedule {
+                operations: vec![1],
+                faults: Vec::new(),
+            },
+            CampaignSchedule {
+                operations: vec![0, 1],
+                faults: Vec::new(),
+            },
+        ];
+        let (selected, reason) = select_campaign_schedule(
+            &schedules,
+            &[1, 2],
+            &[CampaignGuidanceObservation {
+                operations: vec![0],
+                novel_markers: 0,
+                novel_state: true,
+                failed: false,
+            }],
+        );
+
+        assert_eq!(selected, 1);
+        assert_eq!(reason, "extends 1-operation prefix with new topology state");
     }
 
     #[test]
@@ -3994,6 +4079,28 @@ mod tests {
 
         assert_eq!(selected, 0);
         assert_eq!(reason, "canonical breadth-first seed");
+    }
+
+    #[test]
+    fn campaign_topology_state_ignores_serial_output() {
+        let directory =
+            std::env::temp_dir().join(format!("theseus-topology-state-{}", std::process::id()));
+        let service = directory.join("services/api");
+        fs::create_dir_all(&service).unwrap();
+        fs::write(
+            service.join("result.json"),
+            r#"{"serial_sha256":["first"],"storage_sha256":{"data":"drive"},"network_traffic":{"backplane":{"tx_frames":1,"rx_frames":2,"dropped":0}},"virtual_time_ns":[100]}"#,
+        )
+        .unwrap();
+        let first = campaign_topology_state_sha256(&directory).unwrap();
+        fs::write(
+            service.join("result.json"),
+            r#"{"serial_sha256":["second"],"storage_sha256":{"data":"drive"},"network_traffic":{"backplane":{"tx_frames":1,"rx_frames":2,"dropped":0}},"virtual_time_ns":[100]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(first, campaign_topology_state_sha256(&directory).unwrap());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     fn campaign_fault(kind: CampaignFaultKind) -> CampaignFault {
