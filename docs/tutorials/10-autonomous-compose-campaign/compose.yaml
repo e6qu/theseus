@@ -60,6 +60,8 @@ x-theseus:
         to: replica
         after: write
         ethertype: 0x0800
+        ip_protocol: 6
+        destination_port: 8080
         drop_ppm: 1000000
       - kind: packet_recover
         network: backplane
@@ -67,6 +69,8 @@ x-theseus:
         to: replica
         after: retry
         ethertype: 0x0800
+        ip_protocol: 6
+        destination_port: 8080
       # A directed link fault leaves api -> auditor and replica -> api live.
       # Only new api -> replica frames are dropped until link_heal runs.
       - kind: link_partition

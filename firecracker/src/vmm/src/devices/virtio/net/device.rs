@@ -30,7 +30,7 @@ use crate::devices::virtio::iovec::{
 };
 use crate::devices::virtio::net::metrics::{NetDeviceMetrics, NetMetricsPerDevice};
 use crate::devices::virtio::net::sim::{
-    SharedSimSwitch, SimNet, SimNetConfig, SimNetFrame, SimNetStats,
+    SharedSimSwitch, SimNet, SimNetConfig, SimNetFrame, SimNetPacketSelector, SimNetStats,
 };
 use crate::devices::virtio::net::tap::Tap;
 use crate::devices::virtio::net::{
@@ -500,15 +500,15 @@ impl Net {
     /// Returns false for a host TAP device.
     pub fn set_simulated_packet_drop_rule(
         &mut self,
-        ethertype: u16,
+        selector: SimNetPacketSelector,
         drop_ppm: Option<u32>,
     ) -> bool {
         match &mut self.backend {
             NetBackend::Sim(sim) => {
                 if let Some(drop_ppm) = drop_ppm {
-                    sim.set_packet_drop_rule(ethertype, drop_ppm);
+                    sim.set_packet_drop_rule(selector, drop_ppm);
                 } else {
-                    sim.clear_packet_drop_rule(ethertype);
+                    sim.clear_packet_drop_rule(selector);
                 }
                 true
             }
@@ -522,11 +522,11 @@ impl Net {
     pub fn set_simulated_link_packet_drop_rule(
         &mut self,
         destination: &str,
-        ethertype: u16,
+        selector: SimNetPacketSelector,
         drop_ppm: Option<u32>,
     ) -> bool {
         match &mut self.backend {
-            NetBackend::Sim(sim) => sim.set_link_packet_drop_rule(destination, ethertype, drop_ppm),
+            NetBackend::Sim(sim) => sim.set_link_packet_drop_rule(destination, selector, drop_ppm),
             NetBackend::Tap(_) => false,
         }
     }

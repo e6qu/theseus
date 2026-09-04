@@ -204,8 +204,75 @@ pub struct SimNet {
 /// A deterministic packet-loss rule for one Ethernet EtherType.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SimNetPacketDropRule {
-    ethertype: u16,
+    selector: SimNetPacketSelector,
     drop_ppm: u32,
+}
+
+/// Parsed-header selector for deterministic simulated packet rules. Theseus
+/// intentionally limits matching to Ethernet, IPv4, and TCP/UDP ports; it
+/// never inspects payload bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SimNetPacketSelector {
+    pub ethertype: u16,
+    pub ip_protocol: Option<u8>,
+    pub source_port: Option<u16>,
+    pub destination_port: Option<u16>,
+}
+
+impl SimNetPacketSelector {
+    fn matches(self, frame: &[u8]) -> bool {
+        if frame
+            .get(12..14)
+            .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+            != Some(self.ethertype)
+        {
+            return false;
+        }
+        let Some(ip_protocol) = self.ip_protocol else {
+            return self.source_port.is_none() && self.destination_port.is_none();
+        };
+        let Some(&version_and_ihl) = frame.get(14) else {
+            return false;
+        };
+        let header_bytes = usize::from(version_and_ihl & 0x0f) * 4;
+        if version_and_ihl >> 4 != 4
+            || header_bytes < 20
+            || frame.len() < 14 + header_bytes
+            || frame[23] != ip_protocol
+        {
+            return false;
+        }
+        if self.source_port.is_none() && self.destination_port.is_none() {
+            return true;
+        }
+        if !matches!(ip_protocol, 6 | 17) || frame.len() < 14 + header_bytes + 4 {
+            return false;
+        }
+        let source_port = u16::from_be_bytes([frame[14 + header_bytes], frame[15 + header_bytes]]);
+        let destination_port =
+            u16::from_be_bytes([frame[16 + header_bytes], frame[17 + header_bytes]]);
+        self.source_port.is_none_or(|port| port == source_port)
+            && self
+                .destination_port
+                .is_none_or(|port| port == destination_port)
+    }
+
+    fn specificity(self) -> u8 {
+        u8::from(self.ip_protocol.is_some())
+            + u8::from(self.source_port.is_some())
+            + u8::from(self.destination_port.is_some())
+    }
+}
+
+impl From<u16> for SimNetPacketSelector {
+    fn from(ethertype: u16) -> Self {
+        Self {
+            ethertype,
+            ip_protocol: None,
+            source_port: None,
+            destination_port: None,
+        }
+    }
 }
 
 /// A topology-owned deterministic Ethernet switch.
@@ -231,7 +298,7 @@ pub struct SimSwitch {
     blocked_links: BTreeSet<(String, String)>,
     /// Per-path EtherType loss rules. Unlike a NIC-wide packet rule, these
     /// apply only while a frame crosses one selected switch path.
-    packet_drop_rules: BTreeMap<(String, String, u16), SimSwitchPacketDropRule>,
+    packet_drop_rules: BTreeMap<(String, String, SimNetPacketSelector), SimSwitchPacketDropRule>,
     round: u64,
     next_frame: u64,
 }
@@ -337,7 +404,7 @@ impl SimSwitch {
         &mut self,
         source: &str,
         destination: &str,
-        ethertype: u16,
+        selector: SimNetPacketSelector,
         drop_ppm: Option<u32>,
         seed: u64,
     ) -> Result<(), SimSwitchError> {
@@ -347,7 +414,7 @@ impl SimSwitch {
         if !self.ports.contains_key(destination) {
             return Err(SimSwitchError::InvalidPort(destination.to_owned()));
         }
-        let key = (source.to_owned(), destination.to_owned(), ethertype);
+        let key = (source.to_owned(), destination.to_owned(), selector);
         let Some(drop_ppm) = drop_ppm else {
             self.packet_drop_rules.remove(&key);
             return Ok(());
@@ -365,7 +432,7 @@ impl SimSwitch {
                     seed,
                     source,
                     destination,
-                    ethertype,
+                    selector,
                 )),
             },
         );
@@ -387,9 +454,6 @@ impl SimSwitch {
         let ready_round = self.round.saturating_add(u64::from(delay_rounds));
         let sequence = self.next_frame;
         self.next_frame = self.next_frame.saturating_add(1);
-        let ethertype = frame
-            .get(12..14)
-            .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]));
         let packet_drop_rules = &mut self.packet_drop_rules;
         for (port, destination) in &mut self.ports {
             if include_source || port != source {
@@ -406,11 +470,14 @@ impl SimSwitch {
                     );
                     continue;
                 }
-                if ethertype.is_some_and(|ethertype| {
-                    packet_drop_rules
-                        .get_mut(&(source.to_owned(), port.clone(), ethertype))
-                        .is_some_and(|rule| rule.rng.next_u32() % 1_000_000 < rule.drop_ppm)
-                }) {
+                if packet_drop_rules
+                    .iter_mut()
+                    .filter(|((rule_source, rule_destination, selector), _)| {
+                        rule_source == source && rule_destination == port && selector.matches(frame)
+                    })
+                    .max_by_key(|((_, _, selector), _)| selector.specificity())
+                    .is_some_and(|(_, rule)| rule.rng.next_u32() % 1_000_000 < rule.drop_ppm)
+                {
                     destination.dropped += 1;
                     trace_drop(
                         &destination.trace,
@@ -473,13 +540,21 @@ impl SimSwitch {
     }
 }
 
-fn link_packet_rule_seed(seed: u64, source: &str, destination: &str, ethertype: u16) -> u64 {
+fn link_packet_rule_seed(
+    seed: u64,
+    source: &str,
+    destination: &str,
+    selector: SimNetPacketSelector,
+) -> u64 {
     let mut hasher = Sha256::new();
     hasher.update(seed.to_le_bytes());
     hasher.update(source.as_bytes());
     hasher.update([0]);
     hasher.update(destination.as_bytes());
-    hasher.update(ethertype.to_be_bytes());
+    hasher.update(selector.ethertype.to_be_bytes());
+    hasher.update([selector.ip_protocol.unwrap_or(0)]);
+    hasher.update(selector.source_port.unwrap_or(0).to_be_bytes());
+    hasher.update(selector.destination_port.unwrap_or(0).to_be_bytes());
     let digest = hasher.finalize();
     u64::from_le_bytes(digest[..8].try_into().expect("SHA-256 prefix is 8 bytes"))
 }
@@ -644,21 +719,24 @@ impl SimNet {
     /// Set deterministic loss for frames with one Ethernet EtherType. This
     /// changes only newly submitted matching frames; it preserves queued
     /// frames, counters, and the seeded decision stream.
-    pub fn set_packet_drop_rule(&mut self, ethertype: u16, drop_ppm: u32) {
+    pub fn set_packet_drop_rule(
+        &mut self,
+        selector: impl Into<SimNetPacketSelector>,
+        drop_ppm: u32,
+    ) {
+        let selector = selector.into();
         debug_assert!(drop_ppm <= 1_000_000);
         if let Some(rule) = self
             .packet_drop_rules
             .iter_mut()
-            .find(|rule| rule.ethertype == ethertype)
+            .find(|rule| rule.selector == selector)
         {
             rule.drop_ppm = drop_ppm;
             return;
         }
-        self.packet_drop_rules.push(SimNetPacketDropRule {
-            ethertype,
-            drop_ppm,
-        });
-        self.packet_drop_rules.sort_by_key(|rule| rule.ethertype);
+        self.packet_drop_rules
+            .push(SimNetPacketDropRule { selector, drop_ppm });
+        self.packet_drop_rules.sort_by_key(|rule| rule.selector);
     }
 
     /// Set or remove deterministic loss for one EtherType on one directed
@@ -666,24 +744,26 @@ impl SimNet {
     pub fn set_link_packet_drop_rule(
         &mut self,
         destination: &str,
-        ethertype: u16,
+        selector: impl Into<SimNetPacketSelector>,
         drop_ppm: Option<u32>,
     ) -> bool {
+        let selector = selector.into();
         let (Some(switch), Some(source)) = (&self.switch, &self.endpoint) else {
             return false;
         };
         switch
             .lock()
             .expect("simulated switch lock poisoned")
-            .set_link_packet_drop_rule(source, destination, ethertype, drop_ppm, self.config.seed)
+            .set_link_packet_drop_rule(source, destination, selector, drop_ppm, self.config.seed)
             .is_ok()
     }
 
     /// Remove the deterministic loss rule for one Ethernet EtherType without
     /// changing ordinary network conditions or any accumulated link state.
-    pub fn clear_packet_drop_rule(&mut self, ethertype: u16) {
+    pub fn clear_packet_drop_rule(&mut self, selector: impl Into<SimNetPacketSelector>) {
+        let selector = selector.into();
         self.packet_drop_rules
-            .retain(|rule| rule.ethertype != ethertype);
+            .retain(|rule| rule.selector != selector);
     }
 
     /// Block or restore this NIC's directed path to one peer on its shared
@@ -762,14 +842,12 @@ impl SimNet {
         if self.config.partitioned {
             return Some(SimNetDropReason::Partition);
         }
-        let ethertype = frame
-            .get(12..14)
-            .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]));
-        if let Some(rule) = ethertype.and_then(|ethertype| {
-            self.packet_drop_rules
-                .iter()
-                .find(|rule| rule.ethertype == ethertype)
-        }) {
+        if let Some(rule) = self
+            .packet_drop_rules
+            .iter()
+            .filter(|rule| rule.selector.matches(frame))
+            .max_by_key(|rule| rule.selector.specificity())
+        {
             if self.rng.next_u32() % 1_000_000 < rule.drop_ppm {
                 return Some(SimNetDropReason::PacketRule);
             }
@@ -1096,6 +1174,25 @@ mod tests {
     }
 
     #[test]
+    fn packet_selector_matches_ipv4_tcp_ports_without_inspecting_payload() {
+        let selector = SimNetPacketSelector {
+            ethertype: 0x0800,
+            ip_protocol: Some(6),
+            source_port: Some(1234),
+            destination_port: Some(8080),
+        };
+        let mut frame = vec![0; 14 + 20 + 20];
+        frame[12..14].copy_from_slice(&0x0800_u16.to_be_bytes());
+        frame[14] = 0x45;
+        frame[23] = 6;
+        frame[34..36].copy_from_slice(&1234_u16.to_be_bytes());
+        frame[36..38].copy_from_slice(&8080_u16.to_be_bytes());
+        assert!(selector.matches(&frame));
+        frame[36..38].copy_from_slice(&9090_u16.to_be_bytes());
+        assert!(!selector.matches(&frame));
+    }
+
+    #[test]
     fn test_frame_digests_are_deterministic_and_ordered() {
         let run = |frames: &[&[u8]]| {
             let mut sim = SimNet::new(SimNetConfig::default());
@@ -1385,9 +1482,11 @@ mod tests {
         assert_eq!(switch.receive("replica"), None);
         assert_eq!(switch.receive("auditor"), Some(b"request".to_vec()));
         assert_eq!(switch.dropped("replica"), 1);
-        assert!(replica_trace.lock().unwrap().iter().any(|frame| {
-            frame.drop_reason == Some(SimNetDropReason::LinkPartition)
-        }));
+        assert!(replica_trace
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|frame| { frame.drop_reason == Some(SimNetDropReason::LinkPartition) }));
 
         switch.set_link_blocked("api", "replica", false).unwrap();
         switch.deliver("api", false, 0, b"retry");
@@ -1409,7 +1508,7 @@ mod tests {
         let arp = [0_u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x08, 0x06];
 
         switch
-            .set_link_packet_drop_rule("api", "replica", 0x0800, Some(1_000_000), 42)
+            .set_link_packet_drop_rule("api", "replica", 0x0800.into(), Some(1_000_000), 42)
             .unwrap();
         switch.deliver("api", false, 0, &ipv4);
         assert_eq!(switch.receive("replica"), None);
@@ -1424,7 +1523,7 @@ mod tests {
             .any(|frame| { frame.drop_reason == Some(SimNetDropReason::PacketRule) }));
 
         switch
-            .set_link_packet_drop_rule("api", "replica", 0x0800, None, 42)
+            .set_link_packet_drop_rule("api", "replica", 0x0800.into(), None, 42)
             .unwrap();
         switch.deliver("api", false, 0, &ipv4);
         assert_eq!(switch.receive("replica"), Some(ipv4.to_vec()));
