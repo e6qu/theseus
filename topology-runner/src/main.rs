@@ -126,6 +126,7 @@ enum CampaignFaultKind {
     LinkPartition,
     LinkHeal,
     StorageFault,
+    StorageRecover,
     NetworkFault,
     NetworkRecover,
 }
@@ -1396,6 +1397,7 @@ fn campaign_fault_applies(
         | CampaignFaultKind::LinkPartition
         | CampaignFaultKind::LinkHeal
         | CampaignFaultKind::StorageFault
+        | CampaignFaultKind::StorageRecover
         | CampaignFaultKind::NetworkFault
         | CampaignFaultKind::NetworkRecover => {
             let Some(after) = &fault.after else {
@@ -1540,10 +1542,15 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
             },
             fault.after.as_deref().expect("validated action operation")
         ),
-        CampaignFaultKind::StorageFault => format!(
-            "{}:{}:storage_fault@{}",
+        CampaignFaultKind::StorageFault | CampaignFaultKind::StorageRecover => format!(
+            "{}:{}:{}@{}",
             fault.service.as_deref().expect("validated storage service"),
             fault.drive.as_deref().expect("validated storage drive"),
+            match fault.kind {
+                CampaignFaultKind::StorageFault => "storage_fault",
+                CampaignFaultKind::StorageRecover => "storage_recover",
+                _ => unreachable!(),
+            },
             fault.after.as_deref().expect("validated action operation")
         ),
         CampaignFaultKind::NetworkFault | CampaignFaultKind::NetworkRecover => format!(
@@ -2580,7 +2587,7 @@ fn apply_campaign_action(
                 detail: format!("{endpoints} simulated NIC endpoint(s): {detail}"),
             })
         }
-        CampaignFaultKind::StorageFault => {
+        CampaignFaultKind::StorageFault | CampaignFaultKind::StorageRecover => {
             let service_name = action
                 .service
                 .as_deref()
@@ -2589,22 +2596,45 @@ fn apply_campaign_action(
                 .drive
                 .as_deref()
                 .ok_or_else(|| "campaign storage action has no drive".to_owned())?;
-            let error_ppm = action.error_ppm.unwrap_or(0);
-            let latency_rounds = action.latency_rounds.unwrap_or(0);
+            let recover = matches!(action.kind, CampaignFaultKind::StorageRecover);
             let storage = &topology
                 .services
                 .get(service_name)
                 .ok_or_else(|| format!("campaign storage service disappeared: {service_name}"))?
                 .run
                 .storage;
+            let baseline = storage
+                .iter()
+                .find(|item| item.id == drive)
+                .ok_or_else(|| format!("campaign storage drive disappeared: {drive}"))?;
+            let error_ppm = if recover {
+                baseline.error_ppm
+            } else {
+                action.error_ppm.unwrap_or(0)
+            };
+            let latency_rounds = if recover {
+                baseline.latency_rounds
+            } else {
+                action.latency_rounds.unwrap_or(0)
+            };
+            let torn_write_bytes = if recover {
+                baseline.torn_write_bytes
+            } else {
+                action.torn_write_bytes
+            };
+            let corrupt_read_xor = if recover {
+                baseline.corrupt_read_xor
+            } else {
+                action.corrupt_read_xor
+            };
             if service_name == driver_name {
                 driver.vm.set_storage_fault(
                     storage,
                     drive,
                     error_ppm,
                     latency_rounds,
-                    action.torn_write_bytes,
-                    action.corrupt_read_xor,
+                    torn_write_bytes,
+                    corrupt_read_xor,
                 )?;
             } else {
                 services
@@ -2618,17 +2648,21 @@ fn apply_campaign_action(
                         drive,
                         error_ppm,
                         latency_rounds,
-                        action.torn_write_bytes,
-                        action.corrupt_read_xor,
+                        torn_write_bytes,
+                        corrupt_read_xor,
                     )?;
             }
             Ok(AppliedCampaignAction {
                 operation: action.operation.clone(),
-                kind: "storage_fault".to_owned(),
+                kind: if recover {
+                    "storage_recover"
+                } else {
+                    "storage_fault"
+                }
+                .to_owned(),
                 target: format!("service:{service_name}/drive:{drive}"),
                 detail: format!(
-                    "error_ppm={error_ppm}, latency_rounds={latency_rounds}, torn_write_bytes={:?}, corrupt_read_xor={:?}",
-                    action.torn_write_bytes, action.corrupt_read_xor
+                    "error_ppm={error_ppm}, latency_rounds={latency_rounds}, torn_write_bytes={torn_write_bytes:?}, corrupt_read_xor={corrupt_read_xor:?}"
                 ),
             })
         }
@@ -2902,6 +2936,21 @@ mod tests {
         assert_eq!(action.drop_ppm, Some(1_000_000));
         assert_eq!(action.latency_rounds, Some(3));
         assert_eq!(action.tx_queue_frames, Some(2));
+    }
+
+    #[test]
+    fn campaign_storage_recovery_keeps_the_drive_target() {
+        let mut fault = campaign_fault(CampaignFaultKind::StorageRecover);
+        fault.service = Some("replica".to_owned());
+        fault.network = None;
+        fault.drive = Some("data".to_owned());
+        fault.after = Some("retry".to_owned());
+
+        let action = campaign_action(&fault).unwrap();
+        assert!(matches!(action.kind, CampaignFaultKind::StorageRecover));
+        assert_eq!(action.service.as_deref(), Some("replica"));
+        assert_eq!(action.drive.as_deref(), Some("data"));
+        assert_eq!(action.operation, "retry");
     }
 
     #[test]

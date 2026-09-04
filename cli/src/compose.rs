@@ -159,6 +159,7 @@ pub enum CampaignFaultKind {
     LinkPartition,
     LinkHeal,
     StorageFault,
+    StorageRecover,
     NetworkFault,
     NetworkRecover,
 }
@@ -745,7 +746,7 @@ fn campaign_plan(
                     rx_queue_frames: None,
                 });
             }
-            CampaignFaultKind::StorageFault => {
+            CampaignFaultKind::StorageFault | CampaignFaultKind::StorageRecover => {
                 let service_name = candidate.service.as_deref().ok_or_else(|| {
                     ComposeError::Invalid(
                         "campaign storage_fault action requires service".to_owned(),
@@ -783,7 +784,8 @@ fn campaign_plan(
                         "campaign storage_fault error_ppm must be at most 1000000".to_owned(),
                     ));
                 }
-                if error_ppm == 0
+                if matches!(candidate.kind, CampaignFaultKind::StorageFault)
+                    && error_ppm == 0
                     && candidate.latency_rounds.unwrap_or(0) == 0
                     && candidate.torn_write_bytes.is_none()
                     && candidate.corrupt_read_xor.is_none()
@@ -806,6 +808,17 @@ fn campaign_plan(
                             .to_owned(),
                     ));
                 }
+                if matches!(candidate.kind, CampaignFaultKind::StorageRecover)
+                    && (candidate.error_ppm.is_some()
+                        || candidate.latency_rounds.is_some()
+                        || candidate.torn_write_bytes.is_some()
+                        || candidate.corrupt_read_xor.is_some())
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign storage_recover accepts only service, drive, and after"
+                            .to_owned(),
+                    ));
+                }
                 faults.push(CampaignFaultPlan {
                     kind: candidate.kind,
                     service: Some(service_name.to_owned()),
@@ -817,7 +830,8 @@ fn campaign_plan(
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
-                    error_ppm: Some(error_ppm),
+                    error_ppm: matches!(candidate.kind, CampaignFaultKind::StorageFault)
+                        .then_some(error_ppm),
                     latency_rounds: candidate.latency_rounds,
                     torn_write_bytes: candidate.torn_write_bytes,
                     corrupt_read_xor: candidate.corrupt_read_xor,
@@ -1379,7 +1393,7 @@ mod tests {
     #[test]
     fn normalizes_operation_barrier_topology_actions() {
         let directory = fixture(
-            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: read\n        input: 'read\\n'\n    faults:\n      - kind: partition\n        network: backplane\n        after: write\n      - kind: link_partition\n        network: backplane\n        from: api\n        to: worker\n        after: write\n      - kind: link_heal\n        network: backplane\n        from: api\n        to: worker\n        after: read\n      - kind: storage_fault\n        service: worker\n        drive: data\n        after: write\n        error_ppm: 1000000\n        torn_write_bytes: 1\n      - kind: network_fault\n        network: backplane\n        after: write\n        drop_ppm: 1000000\n        latency_rounds: 3\n      - kind: network_recover\n        network: backplane\n        after: read\n",
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: read\n        input: 'read\\n'\n    faults:\n      - kind: partition\n        network: backplane\n        after: write\n      - kind: link_partition\n        network: backplane\n        from: api\n        to: worker\n        after: write\n      - kind: link_heal\n        network: backplane\n        from: api\n        to: worker\n        after: read\n      - kind: storage_fault\n        service: worker\n        drive: data\n        after: write\n        error_ppm: 1000000\n        torn_write_bytes: 1\n      - kind: storage_recover\n        service: worker\n        drive: data\n        after: read\n      - kind: network_fault\n        network: backplane\n        after: write\n        drop_ppm: 1000000\n        latency_rounds: 3\n      - kind: network_recover\n        network: backplane\n        after: read\n",
         );
         let worker = directory.path().join("worker/theseus.toml");
         let input = fs::read_to_string(&worker).unwrap();
@@ -1407,12 +1421,16 @@ mod tests {
         assert_eq!(campaign.faults[3].error_ppm, Some(1_000_000));
         assert!(matches!(
             campaign.faults[4].kind,
-            CampaignFaultKind::NetworkFault
+            CampaignFaultKind::StorageRecover
         ));
-        assert_eq!(campaign.faults[4].drop_ppm, Some(1_000_000));
-        assert_eq!(campaign.faults[4].latency_rounds, Some(3));
         assert!(matches!(
             campaign.faults[5].kind,
+            CampaignFaultKind::NetworkFault
+        ));
+        assert_eq!(campaign.faults[5].drop_ppm, Some(1_000_000));
+        assert_eq!(campaign.faults[5].latency_rounds, Some(3));
+        assert!(matches!(
+            campaign.faults[6].kind,
             CampaignFaultKind::NetworkRecover
         ));
     }
