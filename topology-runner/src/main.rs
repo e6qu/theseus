@@ -39,6 +39,7 @@ use vmm::{EventManager, FcExitCode, Vmm};
 
 const USAGE: &str =
     "Usage: theseus-topology --plan topology-plan.json --output replay-dir [--minimize]";
+const MAX_CAMPAIGN_CANDIDATES: usize = 4_096;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct TopologyPlan {
@@ -173,6 +174,7 @@ struct CampaignResult {
     driver: String,
     checkpoint_nodes: usize,
     checkpoint_reuses: usize,
+    generated_candidates: usize,
     runs: Vec<CampaignRun>,
     properties: Vec<CampaignPropertyResult>,
 }
@@ -187,6 +189,7 @@ struct CampaignRun {
     faults: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     actions: Vec<AppliedCampaignAction>,
+    selection: String,
     status: &'static str,
     novelty: Vec<String>,
 }
@@ -1419,7 +1422,13 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
     fs::create_dir_all(output.join("runs")).map_err(|error| error.to_string())?;
     let mut runs = Vec::new();
     let mut seen_markers = std::collections::BTreeSet::new();
-    for (index, schedule) in schedules.iter().enumerate() {
+    let mut pending = (0..schedules.len()).collect::<Vec<_>>();
+    let mut observations = Vec::new();
+    while runs.len() < usize::from(campaign.max_runs) && !pending.is_empty() {
+        let index = runs.len();
+        let (pending_index, selection) =
+            select_campaign_schedule(&schedules, &pending, &observations);
+        let schedule = &schedules[pending.remove(pending_index)];
         let prefix = checkpoints.checkpoint_for_schedule(&topology, &campaign, schedule, output)?;
         let mut replay: TopologyPlan = serde_json::from_slice(&base)
             .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
@@ -1462,6 +1471,12 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
             .into_iter()
             .filter(|marker| seen_markers.insert(marker.clone()))
             .collect::<Vec<_>>();
+        let failed = status.is_err();
+        observations.push(CampaignGuidanceObservation {
+            operations: schedule.operations.clone(),
+            novel_markers: novelty.len(),
+            failed,
+        });
         runs.push(CampaignRun {
             index,
             operations: schedule
@@ -1473,7 +1488,8 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
                 .then(|| campaign_fault_name(&campaign.faults[schedule.faults[0]])),
             faults: campaign_fault_names(&campaign, &schedule.faults),
             actions,
-            status: if status.is_ok() { "passed" } else { "failed" },
+            selection,
+            status: if failed { "failed" } else { "passed" },
             novelty,
         });
     }
@@ -1507,6 +1523,7 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
                 .clone(),
             checkpoint_nodes: checkpoints.nodes(),
             checkpoint_reuses: checkpoints.reuses,
+            generated_candidates: schedules.len(),
             runs,
             properties,
         })
@@ -1911,10 +1928,17 @@ fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
         .any(|service| campaign_serial_contains(run, &service, property.contains.as_bytes()))
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct CampaignSchedule {
     operations: Vec<usize>,
     faults: Vec<usize>,
+}
+
+#[derive(Clone, Debug)]
+struct CampaignGuidanceObservation {
+    operations: Vec<usize>,
+    novel_markers: usize,
+    failed: bool,
 }
 
 fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
@@ -1954,8 +1978,62 @@ fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
             });
         }
     }
-    schedules.truncate(usize::from(campaign.max_runs));
+    // `max_runs` bounds executed leaves, but guidance needs a broader pool to
+    // choose from. Keep that pool finite even for a manifest with many
+    // compatible fault combinations.
+    schedules.truncate(MAX_CAMPAIGN_CANDIDATES);
     schedules
+}
+
+/// Choose the next leaf from observed serial-marker coverage rather than
+/// spending the campaign budget in declaration order. An observation only
+/// guides schedules that extend the exact operation history which produced it;
+/// fault variants remain separate leaves and all ties fall back to the stable
+/// breadth-first candidate order.
+fn select_campaign_schedule(
+    schedules: &[CampaignSchedule],
+    pending: &[usize],
+    observations: &[CampaignGuidanceObservation],
+) -> (usize, String) {
+    let mut selected = 0;
+    let mut selected_score = 0_usize;
+    let mut selected_reason = "canonical breadth-first seed".to_owned();
+    for (pending_index, schedule_index) in pending.iter().enumerate() {
+        let candidate = &schedules[*schedule_index];
+        let mut score = 0_usize;
+        let mut reason = None;
+        for observation in observations {
+            if !candidate.operations.starts_with(&observation.operations) {
+                continue;
+            }
+            // A marker is the campaign's user-visible coverage signal. A
+            // failed leaf is also valuable: explore its direct continuations
+            // before unrelated work, without treating one failure as proof.
+            let signal = observation.novel_markers.saturating_mul(1_000)
+                + usize::from(observation.failed).saturating_mul(100);
+            let candidate_score = signal.saturating_mul(256) + observation.operations.len();
+            if candidate_score > score {
+                score = candidate_score;
+                reason = Some((
+                    observation.novel_markers,
+                    observation.failed,
+                    observation.operations.len(),
+                ));
+            }
+        }
+        if score > selected_score {
+            selected = pending_index;
+            selected_score = score;
+            selected_reason = match reason.expect("nonzero guidance has a reason") {
+                (markers, _, depth) if markers > 0 => {
+                    format!("extends {depth}-operation prefix with {markers} new marker(s)")
+                }
+                (_, true, depth) => format!("extends {depth}-operation failing prefix"),
+                _ => unreachable!("nonzero guidance is marker or failure driven"),
+            };
+        }
+    }
+    (selected, selected_reason)
 }
 
 /// Generate combinations in declaration order. The operation history supplies
@@ -3868,6 +3946,54 @@ mod tests {
             campaign_prefix_key(&ordinary),
             campaign_prefix_key(&faulted)
         );
+    }
+
+    #[test]
+    fn campaign_selection_extends_a_marker_novel_prefix_before_canonical_work() {
+        let schedules = vec![
+            CampaignSchedule {
+                operations: vec![0],
+                faults: Vec::new(),
+            },
+            CampaignSchedule {
+                operations: vec![1],
+                faults: Vec::new(),
+            },
+            CampaignSchedule {
+                operations: vec![0, 1],
+                faults: Vec::new(),
+            },
+        ];
+        let (selected, reason) = select_campaign_schedule(
+            &schedules,
+            &[1, 2],
+            &[CampaignGuidanceObservation {
+                operations: vec![0],
+                novel_markers: 2,
+                failed: false,
+            }],
+        );
+
+        assert_eq!(selected, 1);
+        assert_eq!(reason, "extends 1-operation prefix with 2 new marker(s)");
+    }
+
+    #[test]
+    fn campaign_selection_keeps_canonical_order_without_a_signal() {
+        let schedules = vec![
+            CampaignSchedule {
+                operations: vec![0],
+                faults: Vec::new(),
+            },
+            CampaignSchedule {
+                operations: vec![1],
+                faults: Vec::new(),
+            },
+        ];
+        let (selected, reason) = select_campaign_schedule(&schedules, &[0, 1], &[]);
+
+        assert_eq!(selected, 0);
+        assert_eq!(reason, "canonical breadth-first seed");
     }
 
     fn campaign_fault(kind: CampaignFaultKind) -> CampaignFault {

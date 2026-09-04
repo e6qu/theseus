@@ -83,6 +83,11 @@ The campaign report shows checkpoint-node and prefix-reuse counts. They are
 execution details only: each run's `replay-plan.json` still contains the full
 operation history and replays independently.
 
+Theseus does not spend `max_runs` strictly in declaration order. It starts
+with a stable breadth-first seed, then gives priority to untried schedules
+that extend an operation prefix which produced a new `THES:M:` marker or a
+failure. The report records that selection reason and the full candidate count.
+
 Emit the serial protocol with plain shell:
 
 ```sh
