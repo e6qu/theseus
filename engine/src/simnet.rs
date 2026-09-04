@@ -231,17 +231,26 @@ impl SimNetPacketSelector {
         let Some(ip_protocol) = self.ip_protocol else {
             return self.source_port.is_none() && self.destination_port.is_none();
         };
-        let Some(&version_and_ihl) = frame.get(14) else {
-            return false;
+        let header_bytes = match self.ethertype {
+            0x0800 => {
+                let Some(&version_and_ihl) = frame.get(14) else {
+                    return false;
+                };
+                let header_bytes = usize::from(version_and_ihl & 0x0f) * 4;
+                if version_and_ihl >> 4 != 4
+                    || header_bytes < 20
+                    || frame.len() < 14 + header_bytes
+                    || frame[23] != ip_protocol
+                {
+                    return false;
+                }
+                header_bytes
+            }
+            0x86dd if frame.len() >= 14 + 40 && frame[14] >> 4 == 6 && frame[20] == ip_protocol => {
+                40
+            }
+            _ => return false,
         };
-        let header_bytes = usize::from(version_and_ihl & 0x0f) * 4;
-        if version_and_ihl >> 4 != 4
-            || header_bytes < 20
-            || frame.len() < 14 + header_bytes
-            || frame[23] != ip_protocol
-        {
-            return false;
-        }
         if self.source_port.is_none() && self.destination_port.is_none() {
             return true;
         }
@@ -1190,6 +1199,23 @@ mod tests {
         assert!(selector.matches(&frame));
         frame[36..38].copy_from_slice(&9090_u16.to_be_bytes());
         assert!(!selector.matches(&frame));
+    }
+
+    #[test]
+    fn packet_selector_matches_ipv6_udp_ports() {
+        let selector = SimNetPacketSelector {
+            ethertype: 0x86dd,
+            ip_protocol: Some(17),
+            source_port: Some(5353),
+            destination_port: Some(5353),
+        };
+        let mut frame = vec![0; 14 + 40 + 8];
+        frame[12..14].copy_from_slice(&0x86dd_u16.to_be_bytes());
+        frame[14] = 0x60;
+        frame[20] = 17;
+        frame[54..56].copy_from_slice(&5353_u16.to_be_bytes());
+        frame[56..58].copy_from_slice(&5353_u16.to_be_bytes());
+        assert!(selector.matches(&frame));
     }
 
     #[test]
