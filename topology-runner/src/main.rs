@@ -54,6 +54,12 @@ struct CampaignPlan {
     #[serde(default)]
     properties: Vec<CampaignProperty>,
     max_runs: u16,
+    #[serde(default = "default_campaign_faults_per_run")]
+    max_faults_per_run: u8,
+}
+
+fn default_campaign_faults_per_run() -> u8 {
+    2
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -140,6 +146,8 @@ struct CampaignRun {
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    faults: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     actions: Vec<AppliedCampaignAction>,
     status: &'static str,
     novelty: Vec<String>,
@@ -163,6 +171,8 @@ struct RecordedCampaignRun {
     operations: Vec<String>,
     #[serde(default)]
     fault: Option<String>,
+    #[serde(default)]
+    faults: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -172,6 +182,8 @@ struct CampaignMinimization {
     minimized_operations: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    faults: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -879,9 +891,9 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
                 .iter()
                 .map(|operation| campaign.operations[*operation].name.clone())
                 .collect(),
-            fault: schedule
-                .fault
-                .map(|fault| campaign_fault_name(&campaign.faults[fault])),
+            fault: (schedule.faults.len() == 1)
+                .then(|| campaign_fault_name(&campaign.faults[schedule.faults[0]])),
+            faults: campaign_fault_names(&campaign, &schedule.faults),
             actions,
             status: if status.is_ok() { "passed" } else { "failed" },
             novelty,
@@ -977,7 +989,7 @@ fn execute_campaign_minimized(
     while index < schedule.operations.len() {
         let mut candidate = CampaignSchedule {
             operations: schedule.operations.clone(),
-            fault: schedule.fault,
+            faults: schedule.faults.clone(),
         };
         candidate.operations.remove(index);
         if candidate.operations.is_empty() {
@@ -1012,9 +1024,9 @@ fn execute_campaign_minimized(
             property: property.name.clone(),
             original_operations,
             minimized_operations,
-            fault: schedule
-                .fault
-                .map(|fault| campaign_fault_name(&campaign.faults[fault])),
+            fault: (schedule.faults.len() == 1)
+                .then(|| campaign_fault_name(&campaign.faults[schedule.faults[0]])),
+            faults: campaign_fault_names(&campaign, &schedule.faults),
         })
         .expect("campaign minimization serializes"),
     )
@@ -1095,9 +1107,13 @@ fn campaign_counterexample(
                     .ok_or_else(|| format!("recorded operation is no longer declared: {name}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let fault = recorded_run
-            .fault
-            .as_ref()
+        let names = if recorded_run.faults.is_empty() {
+            recorded_run.fault.iter().cloned().collect()
+        } else {
+            recorded_run.faults.clone()
+        };
+        let faults = names
+            .iter()
             .map(|name| {
                 campaign
                     .faults
@@ -1105,7 +1121,7 @@ fn campaign_counterexample(
                     .position(|fault| campaign_fault_name(fault) == *name)
                     .ok_or_else(|| format!("recorded fault is no longer declared: {name}"))
             })
-            .transpose()?;
+            .collect::<Result<Vec<_>, _>>()?;
         return Ok((
             CampaignProperty {
                 name: property.name.clone(),
@@ -1113,7 +1129,7 @@ fn campaign_counterexample(
                 contains: property.contains.clone(),
                 service: property.service.clone(),
             },
-            CampaignSchedule { operations, fault },
+            CampaignSchedule { operations, faults },
         ));
     }
     Err("campaign bundle has no failing property to minimize".to_owned())
@@ -1149,7 +1165,7 @@ fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
 #[derive(Debug)]
 struct CampaignSchedule {
     operations: Vec<usize>,
-    fault: Option<usize>,
+    faults: Vec<usize>,
 }
 
 fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
@@ -1168,19 +1184,96 @@ fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
     for history in operations {
         schedules.push(CampaignSchedule {
             operations: history.clone(),
-            fault: None,
+            faults: Vec::new(),
         });
-        for fault in 0..campaign.faults.len() {
-            if campaign_fault_applies(&campaign.faults[fault], &history, campaign) {
-                schedules.push(CampaignSchedule {
-                    operations: history.clone(),
-                    fault: Some(fault),
-                });
-            }
+        let applicable = campaign
+            .faults
+            .iter()
+            .enumerate()
+            .filter_map(|(index, fault)| {
+                campaign_fault_applies(fault, &history, campaign).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for faults in campaign_fault_combinations(
+            &campaign.faults,
+            &applicable,
+            usize::from(campaign.max_faults_per_run),
+        ) {
+            schedules.push(CampaignSchedule {
+                operations: history.clone(),
+                faults,
+            });
         }
     }
     schedules.truncate(usize::from(campaign.max_runs));
     schedules
+}
+
+/// Generate combinations in declaration order. The operation history supplies
+/// the timeline ordering for barrier actions, so a combination represents one
+/// complete failure/recovery scenario rather than host-side interleaving.
+fn campaign_fault_combinations(
+    faults: &[CampaignFault],
+    applicable: &[usize],
+    maximum: usize,
+) -> Vec<Vec<usize>> {
+    fn visit(
+        faults: &[CampaignFault],
+        applicable: &[usize],
+        maximum: usize,
+        start: usize,
+        selected: &mut Vec<usize>,
+        output: &mut Vec<Vec<usize>>,
+    ) {
+        if !selected.is_empty() {
+            output.push(selected.clone());
+        }
+        if selected.len() == maximum {
+            return;
+        }
+        for (offset, index) in applicable.iter().enumerate().skip(start) {
+            if selected
+                .iter()
+                .all(|chosen| campaign_faults_compatible(&faults[*chosen], &faults[*index]))
+            {
+                selected.push(*index);
+                visit(faults, applicable, maximum, offset + 1, selected, output);
+                selected.pop();
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    visit(faults, applicable, maximum, 0, &mut Vec::new(), &mut output);
+    output
+}
+
+fn campaign_faults_compatible(first: &CampaignFault, second: &CampaignFault) -> bool {
+    let lifecycle = |fault: &CampaignFault| {
+        matches!(
+            fault.kind,
+            CampaignFaultKind::Pause | CampaignFaultKind::Restart | CampaignFaultKind::ClockJump
+        )
+    };
+    if !lifecycle(first) || !lifecycle(second) || first.service != second.service {
+        return true;
+    }
+    let first_round = first.at_round.expect("validated lifecycle round");
+    let second_round = second.at_round.expect("validated lifecycle round");
+    if first_round == second_round {
+        return false;
+    }
+    let (earlier, later) = if first_round < second_round {
+        (first, second_round)
+    } else {
+        (second, first_round)
+    };
+    !matches!(earlier.kind, CampaignFaultKind::Pause)
+        || later
+            >= earlier
+                .at_round
+                .expect("validated lifecycle round")
+                .saturating_add(earlier.duration_rounds.expect("validated pause duration"))
 }
 
 fn campaign_fault_applies(
@@ -1212,18 +1305,21 @@ fn apply_campaign_schedule(
     campaign: &CampaignPlan,
     schedule: &CampaignSchedule,
 ) -> Result<(), String> {
-    let selected = schedule.fault.map(|index| &campaign.faults[index]);
+    let selected = schedule
+        .faults
+        .iter()
+        .map(|index| &campaign.faults[*index])
+        .collect::<Vec<_>>();
     let events = schedule
         .operations
         .iter()
         .map(|operation| {
             let operation = &campaign.operations[*operation];
             let actions = selected
+                .iter()
                 .filter(|candidate| candidate.after.as_deref() == Some(&operation.name))
-                .map(campaign_action)
-                .transpose()?
-                .into_iter()
-                .collect();
+                .map(|candidate| campaign_action(candidate))
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(EventPlan {
                 data_hex: operation.input_hex.clone(),
                 checkpoint: Some(format!("THES:CHECKPOINT:{}", operation.name)),
@@ -1236,8 +1332,7 @@ fn apply_campaign_schedule(
         .get_mut(&campaign.driver)
         .ok_or_else(|| format!("campaign driver disappeared: {}", campaign.driver))?;
     driver.run.events = events;
-    if let Some(fault) = schedule.fault {
-        let candidate = &campaign.faults[fault];
+    for candidate in selected {
         if matches!(
             candidate.kind,
             CampaignFaultKind::Pause | CampaignFaultKind::Restart | CampaignFaultKind::ClockJump
@@ -1336,6 +1431,13 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
             fault.after.as_deref().expect("validated action operation")
         ),
     }
+}
+
+fn campaign_fault_names(campaign: &CampaignPlan, faults: &[usize]) -> Vec<String> {
+    faults
+        .iter()
+        .map(|index| campaign_fault_name(&campaign.faults[*index]))
+        .collect()
 }
 
 fn campaign_markers(run: &Path) -> Result<Vec<String>, String> {
@@ -2525,6 +2627,45 @@ fn lock_artifact(service_dir: &Path, name: &str, artifact: &Artifact) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn campaign_fault(kind: CampaignFaultKind) -> CampaignFault {
+        CampaignFault {
+            kind,
+            service: None,
+            network: Some("backplane".to_owned()),
+            from: None,
+            to: None,
+            drive: None,
+            after: Some("write".to_owned()),
+            at_round: None,
+            duration_rounds: None,
+            nanoseconds: None,
+            error_ppm: None,
+            latency_rounds: None,
+            torn_write_bytes: None,
+            corrupt_read_xor: None,
+        }
+    }
+
+    #[test]
+    fn campaign_fault_combinations_keep_declaration_order() {
+        let faults = vec![
+            campaign_fault(CampaignFaultKind::Partition),
+            campaign_fault(CampaignFaultKind::Heal),
+            campaign_fault(CampaignFaultKind::LinkPartition),
+        ];
+        assert_eq!(
+            campaign_fault_combinations(&faults, &[0, 1, 2], 2),
+            vec![
+                vec![0],
+                vec![0, 1],
+                vec![0, 2],
+                vec![1],
+                vec![1, 2],
+                vec![2]
+            ]
+        );
+    }
 
     #[test]
     fn recorded_serial_fingerprints_use_bundle_local_logs() {

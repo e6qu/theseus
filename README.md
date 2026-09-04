@@ -101,8 +101,8 @@ the host-side random sources are seeded automatically from the run seed)
   campaign: UART operations, lifecycle candidates, named-network
   `partition`/`heal` actions, directed `link_partition`/`link_heal` actions,
   simulated-drive `storage_fault` actions, and runtime properties. Theseus
-  explores that deterministic corpus and reduces a violating operation history
-  to one replay bundle.
+  explores bounded candidate sequences in that deterministic corpus and
+  reduces a violating operation history to one replay bundle.
 - **Run on a Linux+KVM host** (on Apple Silicon, a privileged aarch64
   Docker container works).
 

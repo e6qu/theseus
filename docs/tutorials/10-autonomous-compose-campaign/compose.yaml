@@ -20,7 +20,10 @@ networks:
 x-theseus:
   campaign:
     driver: api
-    max_runs: 12
+    max_runs: 40
+    # Explore one candidate and ordered pairs. The run cap still bounds the
+    # complete corpus, even if this list grows.
+    max_faults_per_run: 2
     operations:
       - name: write
         input: "write\n"

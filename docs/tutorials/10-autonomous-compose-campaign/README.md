@@ -26,7 +26,9 @@ Start with `compose.yaml`.
    and `to` to block or restore only that directed service-to-service path.
 4. Add properties. `always` needs every timeline to contain the assertion.
    `sometimes` and `reachable` need one witness. `unreachable` needs none.
-5. Run `theseus compose explore`.
+5. Set `max_faults_per_run` to explore candidate sequences. It defaults to 2
+   and is capped at 4; `max_runs` remains the final bound on work.
+6. Run `theseus compose explore`.
 
 The API deliberately reports a stale read as
 `THES:ASSERT:consistent_read:fail`. Exploration exits non-zero after writing a
@@ -34,6 +36,10 @@ locked campaign bundle. `run.sh` treats that failure as expected, renders a
 report, and prints the failing property. The campaign result also records each
 applied topology action. Replay checks that action sequence as well as the
 normal serial, network, and storage evidence.
+
+A candidate pair is one timeline. For example, a `partition` after `write`
+and a `heal` after `retry` run together, in that operation order. This lets you
+test recovery without a host-side test script.
 
 Then minimize it:
 

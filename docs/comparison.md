@@ -63,8 +63,9 @@ Key architectural differences with Theseus:
   named-network `partition`/`heal`, directed service-to-service
   `link_partition`/`link_heal`, simulated-drive `storage_fault`, and
   `always`/`sometimes`/`reachable`/`unreachable` serial properties. It reduces
-  an individual violation by re-running locked full topologies and fingerprints
-  the applied actions on replay, but it does not yet have Antithesis's
+  an individual violation by re-running locked full topologies, supports
+  bounded fault sequences, and fingerprints the applied actions on replay, but
+  it does not yet have Antithesis's
   copy-on-write whole-topology snapshots or its large-scale RL scheduler.
 
 If you can pay for the product and want instruction-exact replay plus
