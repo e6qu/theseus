@@ -20,7 +20,9 @@ use theseus_engine::simnet::{SharedSimSwitch, SimSwitch};
 use vmm::builder::build_microvm_for_boot;
 use vmm::devices::virtio::block::device::Block;
 use vmm::devices::virtio::block::virtio::device::SimulatedBlockConfig;
-use vmm::devices::virtio::net::{Net, SimNetConfig, SimNetDropReason, SimNetFrameDirection};
+use vmm::devices::virtio::net::{
+    Net, SimNetConfig, SimNetDropReason, SimNetFrameDirection, SimNetPacketSelector,
+};
 use vmm::rate_limiter::RateLimiter;
 use vmm::resources::VmResources;
 use vmm::seccomp::get_empty_filters;
@@ -99,6 +101,12 @@ struct CampaignFault {
     corrupt_read_xor: Option<u8>,
     #[serde(default)]
     ethertype: Option<u16>,
+    #[serde(default)]
+    ip_protocol: Option<u8>,
+    #[serde(default)]
+    source_port: Option<u16>,
+    #[serde(default)]
+    destination_port: Option<u16>,
     #[serde(default)]
     drop_ppm: Option<u32>,
     #[serde(default)]
@@ -351,6 +359,12 @@ struct CampaignAction {
     corrupt_read_xor: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ethertype: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ip_protocol: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    destination_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     drop_ppm: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -724,7 +738,7 @@ impl ServiceVm {
     fn set_network_packet_drop_rule(
         &self,
         network: &str,
-        ethertype: u16,
+        selector: SimNetPacketSelector,
         drop_ppm: Option<u32>,
     ) -> Result<usize, String> {
         let mut changed = 0;
@@ -735,7 +749,7 @@ impl ServiceVm {
             if !net
                 .lock()
                 .map_err(|_| "simulated network lock poisoned".to_owned())?
-                .set_simulated_packet_drop_rule(ethertype, drop_ppm)
+                .set_simulated_packet_drop_rule(selector, drop_ppm)
             {
                 return Err(format!("network is not simulated: {network}"));
             }
@@ -748,7 +762,7 @@ impl ServiceVm {
         &self,
         network: &str,
         destination: &str,
-        ethertype: u16,
+        selector: SimNetPacketSelector,
         drop_ppm: Option<u32>,
     ) -> Result<(), String> {
         let net = self
@@ -760,7 +774,7 @@ impl ServiceVm {
         if !net
             .lock()
             .map_err(|_| "simulated network lock poisoned".to_owned())?
-            .set_simulated_link_packet_drop_rule(destination, ethertype, drop_ppm)
+            .set_simulated_link_packet_drop_rule(destination, selector, drop_ppm)
         {
             return Err(format!(
                 "network is not a simulated topology link: {network}"
@@ -1549,6 +1563,9 @@ fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
         torn_write_bytes: fault.torn_write_bytes,
         corrupt_read_xor: fault.corrupt_read_xor,
         ethertype: fault.ethertype,
+        ip_protocol: fault.ip_protocol,
+        source_port: fault.source_port,
+        destination_port: fault.destination_port,
         drop_ppm: fault.drop_ppm,
         duplicate_ppm: fault.duplicate_ppm,
         corrupt_ppm: fault.corrupt_ppm,
@@ -2677,6 +2694,12 @@ fn apply_campaign_action(
             let ethertype = action
                 .ethertype
                 .ok_or_else(|| "campaign packet action has no ethertype".to_owned())?;
+            let selector = SimNetPacketSelector {
+                ethertype,
+                ip_protocol: action.ip_protocol,
+                source_port: action.source_port,
+                destination_port: action.destination_port,
+            };
             let recover = matches!(action.kind, CampaignFaultKind::PacketRecover);
             let drop_ppm = (!recover)
                 .then(|| {
@@ -2705,7 +2728,7 @@ fn apply_campaign_action(
                         driver.vm.set_network_link_packet_drop_rule(
                             network,
                             &destination,
-                            ethertype,
+                            selector,
                             drop_ppm,
                         )?;
                     } else {
@@ -2716,7 +2739,7 @@ fn apply_campaign_action(
                             .set_network_link_packet_drop_rule(
                                 network,
                                 &destination,
-                                ethertype,
+                                selector,
                                 drop_ppm,
                             )?;
                     }
@@ -2728,11 +2751,11 @@ fn apply_campaign_action(
                 (None, None) => {
                     let mut endpoints = driver
                         .vm
-                        .set_network_packet_drop_rule(network, ethertype, drop_ppm)?;
+                        .set_network_packet_drop_rule(network, selector, drop_ppm)?;
                     for service in services.values() {
                         endpoints += service
                             .vm
-                            .set_network_packet_drop_rule(network, ethertype, drop_ppm)?;
+                            .set_network_packet_drop_rule(network, selector, drop_ppm)?;
                     }
                     if endpoints == 0 {
                         return Err(format!(
@@ -3074,6 +3097,9 @@ mod tests {
             torn_write_bytes: None,
             corrupt_read_xor: None,
             ethertype: None,
+            ip_protocol: None,
+            source_port: None,
+            destination_port: None,
             drop_ppm: None,
             duplicate_ppm: None,
             corrupt_ppm: None,

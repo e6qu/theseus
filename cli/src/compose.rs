@@ -131,6 +131,12 @@ struct ComposeCampaignFault {
     #[serde(default)]
     ethertype: Option<u16>,
     #[serde(default)]
+    ip_protocol: Option<u8>,
+    #[serde(default)]
+    source_port: Option<u16>,
+    #[serde(default)]
+    destination_port: Option<u16>,
+    #[serde(default)]
     drop_ppm: Option<u32>,
     #[serde(default)]
     duplicate_ppm: Option<u32>,
@@ -314,6 +320,12 @@ pub struct CampaignFaultPlan {
     pub corrupt_read_xor: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ethertype: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_protocol: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drop_ppm: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -593,6 +605,9 @@ fn campaign_plan(
                     torn_write_bytes: None,
                     corrupt_read_xor: None,
                     ethertype: None,
+                    ip_protocol: None,
+                    source_port: None,
+                    destination_port: None,
                     drop_ppm: None,
                     duplicate_ppm: None,
                     corrupt_ppm: None,
@@ -661,6 +676,9 @@ fn campaign_plan(
                     torn_write_bytes: None,
                     corrupt_read_xor: None,
                     ethertype: None,
+                    ip_protocol: None,
+                    source_port: None,
+                    destination_port: None,
                     drop_ppm: None,
                     duplicate_ppm: None,
                     corrupt_ppm: None,
@@ -748,6 +766,9 @@ fn campaign_plan(
                     torn_write_bytes: None,
                     corrupt_read_xor: None,
                     ethertype: None,
+                    ip_protocol: None,
+                    source_port: None,
+                    destination_port: None,
                     drop_ppm: None,
                     duplicate_ppm: None,
                     corrupt_ppm: None,
@@ -849,6 +870,9 @@ fn campaign_plan(
                     torn_write_bytes: candidate.torn_write_bytes,
                     corrupt_read_xor: candidate.corrupt_read_xor,
                     ethertype: None,
+                    ip_protocol: None,
+                    source_port: None,
+                    destination_port: None,
                     drop_ppm: None,
                     duplicate_ppm: None,
                     corrupt_ppm: None,
@@ -942,6 +966,9 @@ fn campaign_plan(
                     torn_write_bytes: None,
                     corrupt_read_xor: None,
                     ethertype: None,
+                    ip_protocol: None,
+                    source_port: None,
+                    destination_port: None,
                     drop_ppm: candidate.drop_ppm,
                     duplicate_ppm: candidate.duplicate_ppm,
                     corrupt_ppm: candidate.corrupt_ppm,
@@ -971,6 +998,20 @@ fn campaign_plan(
                 if ethertype < 0x0600 {
                     return Err(ComposeError::Invalid(
                         "campaign packet_fault ethertype must be an Ethernet EtherType (at least 0x0600)"
+                            .to_owned(),
+                    ));
+                }
+                if candidate.ip_protocol.is_some() && ethertype != 0x0800 {
+                    return Err(ComposeError::Invalid(
+                        "campaign packet protocol selectors require IPv4 ethertype 0x0800"
+                            .to_owned(),
+                    ));
+                }
+                if (candidate.source_port.is_some() || candidate.destination_port.is_some())
+                    && !matches!(candidate.ip_protocol, Some(6 | 17))
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign packet port selectors require ip_protocol 6 (TCP) or 17 (UDP)"
                             .to_owned(),
                     ));
                 }
@@ -1070,6 +1111,9 @@ fn campaign_plan(
                     torn_write_bytes: None,
                     corrupt_read_xor: None,
                     ethertype: Some(ethertype),
+                    ip_protocol: candidate.ip_protocol,
+                    source_port: candidate.source_port,
+                    destination_port: candidate.destination_port,
                     drop_ppm: matches!(candidate.kind, CampaignFaultKind::PacketFault)
                         .then_some(drop_ppm),
                     duplicate_ppm: None,

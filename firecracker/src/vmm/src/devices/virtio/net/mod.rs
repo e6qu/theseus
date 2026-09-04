@@ -29,7 +29,7 @@ mod generated;
 
 pub use sim::{
     SharedSimSwitch, SimNet, SimNetConfig, SimNetDropReason, SimNetFrame, SimNetFrameDirection,
-    SimNetStats,
+    SimNetPacketSelector, SimNetStats,
     SimSwitchError,
 };
 pub use tap::{Tap, TapError};
