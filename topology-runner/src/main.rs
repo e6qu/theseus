@@ -23,7 +23,7 @@ use vmm::devices::virtio::block::virtio::device::SimulatedBlockConfig;
 use vmm::devices::virtio::net::{
     Net, SimNetConfig, SimNetDropReason, SimNetFrameDirection, SimNetPacketSelector, SimNetState,
 };
-use vmm::persist::{VmInfo, create_snapshot, restore_from_snapshot};
+use vmm::persist::{create_snapshot, restore_from_snapshot, VmInfo};
 use vmm::rate_limiter::RateLimiter;
 use vmm::resources::VmResources;
 use vmm::seccomp::get_empty_filters;
@@ -171,6 +171,8 @@ struct CampaignResult {
     format: &'static str,
     status: &'static str,
     driver: String,
+    checkpoint_nodes: usize,
+    checkpoint_reuses: usize,
     runs: Vec<CampaignRun>,
     properties: Vec<CampaignPropertyResult>,
 }
@@ -559,6 +561,7 @@ struct ServiceVm {
     network_endpoints: BTreeMap<String, String>,
 }
 
+#[derive(Clone)]
 struct ServiceVmCheckpoint {
     snapshot_path: PathBuf,
     memory_path: PathBuf,
@@ -575,11 +578,34 @@ struct ServiceSchedulerCheckpoint {
     network_trace: BTreeMap<String, Vec<NetworkFrame>>,
 }
 
+#[derive(Clone)]
 struct CampaignCheckpoint {
     switches: BTreeMap<String, SimSwitchState>,
     services: BTreeMap<String, ServiceVmCheckpoint>,
     scheduler: BTreeMap<String, ServiceSchedulerCheckpoint>,
     round: u64,
+}
+
+/// One materialized node in a campaign operation-prefix tree. The VMM state
+/// is deliberately not serialized into the result JSON: its immutable
+/// Firecracker snapshots already live under `checkpoints/` and are consumed
+/// only by this invocation. The locked replay bundle remains a normal,
+/// self-contained event plan.
+#[derive(Clone)]
+struct CampaignPrefixCheckpoint {
+    checkpoint: CampaignCheckpoint,
+    actions: Vec<AppliedCampaignAction>,
+}
+
+/// Restore a checkpoint for each distinct operation/action prefix once, then
+/// fork every leaf from its nearest materialized ancestor. This is a real tree
+/// rather than a cache keyed only by operation names: the key includes the
+/// exact serial input and barrier actions, so a faulted prefix never leaks into
+/// an ordinary sibling.
+struct CampaignCheckpointTree {
+    root: CampaignCheckpoint,
+    prefixes: BTreeMap<String, CampaignPrefixCheckpoint>,
+    reuses: usize,
 }
 
 impl ServiceVm {
@@ -1126,6 +1152,172 @@ fn restore_campaign_serial_logs(
         .collect()
 }
 
+impl CampaignCheckpointTree {
+    fn new(root: CampaignCheckpoint) -> Self {
+        Self {
+            root,
+            prefixes: BTreeMap::new(),
+            reuses: 0,
+        }
+    }
+
+    fn checkpoint_for_schedule(
+        &mut self,
+        topology: &TopologyPlan,
+        campaign: &CampaignPlan,
+        schedule: &CampaignSchedule,
+        directory: &Path,
+    ) -> Result<CampaignPrefixCheckpoint, String> {
+        let events = campaign_schedule_events(campaign, schedule)?;
+        let mut prefix = Vec::new();
+        let mut parent = CampaignPrefixCheckpoint {
+            checkpoint: self.root.clone(),
+            actions: Vec::new(),
+        };
+        for event in events {
+            prefix.push(event);
+            let key = campaign_prefix_key(&prefix)?;
+            if let Some(existing) = self.prefixes.get(&key) {
+                self.reuses += 1;
+                parent = existing.clone();
+                continue;
+            }
+            let (checkpoint, applied) = checkpoint_campaign_operation(
+                topology,
+                &campaign.driver,
+                &parent.checkpoint,
+                &prefix[prefix.len() - 1],
+                &directory.join("checkpoints").join(&key),
+            )?;
+            let mut actions = parent.actions.clone();
+            actions.extend(applied);
+            parent = CampaignPrefixCheckpoint {
+                checkpoint,
+                actions,
+            };
+            self.prefixes.insert(key, parent.clone());
+        }
+        Ok(parent)
+    }
+
+    fn nodes(&self) -> usize {
+        // Include the boot/readiness root, which is also a reusable snapshot.
+        self.prefixes.len() + 1
+    }
+}
+
+fn campaign_prefix_key(events: &[EventPlan]) -> Result<String, String> {
+    let encoded = serde_json::to_vec(events)
+        .map_err(|error| format!("cannot encode campaign checkpoint prefix: {error}"))?;
+    Ok(format!("{:x}", Sha256::digest(encoded)))
+}
+
+/// Resume a parent topology snapshot just long enough to execute one driver
+/// operation. Its UART checkpoint is the fork barrier. We then stop every
+/// vCPU and capture the complete resulting topology, so sibling operations
+/// begin from byte-identical VM, disk, network, serial, and scheduler state.
+fn checkpoint_campaign_operation(
+    topology: &TopologyPlan,
+    driver_name: &str,
+    parent: &CampaignCheckpoint,
+    event: &EventPlan,
+    directory: &Path,
+) -> Result<(CampaignCheckpoint, Vec<AppliedCampaignAction>), String> {
+    let switches: BTreeMap<String, SharedSimSwitch> = topology
+        .networks
+        .keys()
+        .map(|name| (name.clone(), Arc::new(Mutex::new(SimSwitch::new()))))
+        .collect();
+    let names = topology.services.keys().cloned().collect::<Vec<_>>();
+    let mut services = BTreeMap::new();
+    for name in &names {
+        let service = &topology.services[name];
+        let service_dir = directory.join("services").join(name);
+        fs::create_dir_all(&service_dir).map_err(|error| error.to_string())?;
+        let scheduler = parent
+            .scheduler
+            .get(name)
+            .ok_or_else(|| format!("checkpoint is missing scheduler state for {name}"))?;
+        let serial_logs = restore_campaign_serial_logs(&service_dir, scheduler)?;
+        let serial = serial_logs
+            .first()
+            .ok_or_else(|| format!("checkpoint has no serial log for {name}"))?;
+        let vm = restore_service(
+            name,
+            0,
+            service,
+            Path::new(&service.run.guest.kernel.path),
+            Path::new(&service.run.guest.initramfs.path),
+            serial,
+            &switches,
+            parent
+                .services
+                .get(name)
+                .ok_or_else(|| format!("checkpoint is missing VM state for {name}"))?,
+        )?;
+        services.insert(
+            name.clone(),
+            ServiceRuntime {
+                vm,
+                serial_logs,
+                next_fault: scheduler.next_fault,
+                paused_until: scheduler.paused_until,
+                faults: scheduler.faults.clone(),
+                network_traffic: scheduler.network_traffic.clone(),
+                network_trace: scheduler.network_trace.clone(),
+            },
+        );
+    }
+    for (name, state) in &parent.switches {
+        switches
+            .get(name)
+            .ok_or_else(|| format!("checkpoint switch disappeared: {name}"))?
+            .lock()
+            .map_err(|_| "simulated switch lock poisoned".to_owned())?
+            .restore_state(state.clone())
+            .map_err(|error| error.to_string())?;
+    }
+    for name in &names {
+        services[name].vm.resume()?;
+    }
+    let mut driver = services
+        .remove(driver_name)
+        .ok_or_else(|| format!("campaign driver disappeared: {driver_name}"))?;
+    let serial = driver.serial_logs[0].clone();
+    let mut applied = Vec::new();
+    let injection = inject_campaign_events(
+        driver_name,
+        &mut driver,
+        std::slice::from_ref(event),
+        &serial,
+        topology,
+        &mut services,
+        &mut applied,
+    );
+    services.insert(driver_name.to_owned(), driver);
+    injection?;
+    let checkpoint =
+        capture_campaign_checkpoint(directory, &mut services, &switches, parent.round)?;
+    Ok((checkpoint, applied))
+}
+
+fn write_campaign_prefix_actions(
+    directory: &Path,
+    actions: Vec<AppliedCampaignAction>,
+) -> Result<(), String> {
+    let path = directory.join("topology-result.json");
+    let mut result: TopologyResult = serde_json::from_slice(
+        &fs::read(&path).map_err(|error| format!("cannot read {}: {error}", path.display()))?,
+    )
+    .map_err(|error| format!("cannot parse {}: {error}", path.display()))?;
+    result.actions = actions;
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&result).expect("topology result serializes"),
+    )
+    .map_err(|error| error.to_string())
+}
+
 fn main() -> std::process::ExitCode {
     match run(env::args().skip(1).collect()) {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -1219,6 +1411,7 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
         boot_campaign_checkpoint(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
     let base = serde_json::to_vec(&topology)
         .map_err(|error| format!("cannot encode campaign base plan: {error}"))?;
+    let mut checkpoints = CampaignCheckpointTree::new(checkpoint);
     let schedules = campaign_schedules(&campaign);
     if schedules.is_empty() {
         return Err("campaign produced no schedules".to_owned());
@@ -1227,14 +1420,26 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
     let mut runs = Vec::new();
     let mut seen_markers = std::collections::BTreeSet::new();
     for (index, schedule) in schedules.iter().enumerate() {
-        let mut run: TopologyPlan = serde_json::from_slice(&base)
+        let prefix = checkpoints.checkpoint_for_schedule(&topology, &campaign, schedule, output)?;
+        let mut replay: TopologyPlan = serde_json::from_slice(&base)
             .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
-        apply_campaign_schedule(&mut run, &campaign, schedule)?;
+        apply_campaign_schedule(&mut replay, &campaign, schedule)?;
+        let mut run: TopologyPlan = serde_json::from_slice(
+            &serde_json::to_vec(&replay)
+                .map_err(|error| format!("cannot encode campaign replay plan: {error}"))?,
+        )
+        .map_err(|error| format!("cannot decode campaign tail plan: {error}"))?;
+        run.services
+            .get_mut(&campaign.driver)
+            .expect("campaign driver remains in replay plan")
+            .run
+            .events
+            .clear();
         let run_dir = output.join("runs").join(format!("{index:03}"));
         let status = execute(
             run,
             &run_dir,
-            Some(&checkpoint),
+            Some(&prefix.checkpoint),
             None,
             None,
             None,
@@ -1243,6 +1448,14 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
             None,
             None,
         );
+        fs::write(
+            run_dir.join("replay-plan.json"),
+            serde_json::to_vec_pretty(&replay).expect("campaign replay plan serializes"),
+        )
+        .map_err(|error| error.to_string())?;
+        if run_dir.join("topology-result.json").exists() {
+            write_campaign_prefix_actions(&run_dir, prefix.actions)?;
+        }
         let markers = campaign_markers(&run_dir)?;
         let actions = campaign_actions(&run_dir)?;
         let novelty = markers
@@ -1292,6 +1505,8 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
                 .expect("campaign remains in replay plan")
                 .driver
                 .clone(),
+            checkpoint_nodes: checkpoints.nodes(),
+            checkpoint_reuses: checkpoints.reuses,
             runs,
             properties,
         })
@@ -1443,6 +1658,7 @@ fn execute_campaign_minimized(
         boot_campaign_checkpoint(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
     let base = serde_json::to_vec(&topology)
         .map_err(|error| format!("cannot encode campaign base plan: {error}"))?;
+    let mut checkpoints = CampaignCheckpointTree::new(checkpoint);
     let (property, mut schedule) = campaign_counterexample(&campaign, source, &recorded)?;
     let original_operations = schedule
         .operations
@@ -1465,13 +1681,26 @@ fn execute_campaign_minimized(
         }
         let directory = attempts.join(format!("{attempt:03}"));
         attempt += 1;
-        let mut plan: TopologyPlan = serde_json::from_slice(&base)
+        let prefix =
+            checkpoints.checkpoint_for_schedule(&topology, &campaign, &candidate, output)?;
+        let mut replay: TopologyPlan = serde_json::from_slice(&base)
             .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
-        apply_campaign_schedule(&mut plan, &campaign, &candidate)?;
-        let _ = execute(
+        apply_campaign_schedule(&mut replay, &campaign, &candidate)?;
+        let mut plan: TopologyPlan = serde_json::from_slice(
+            &serde_json::to_vec(&replay)
+                .map_err(|error| format!("cannot encode campaign replay plan: {error}"))?,
+        )
+        .map_err(|error| format!("cannot decode campaign tail plan: {error}"))?;
+        plan.services
+            .get_mut(&campaign.driver)
+            .expect("campaign driver remains in replay plan")
+            .run
+            .events
+            .clear();
+        let result = execute(
             plan,
             &directory,
-            Some(&checkpoint),
+            Some(&prefix.checkpoint),
             None,
             None,
             None,
@@ -1480,20 +1709,42 @@ fn execute_campaign_minimized(
             None,
             None,
         );
+        fs::write(
+            directory.join("replay-plan.json"),
+            serde_json::to_vec_pretty(&replay).expect("campaign replay plan serializes"),
+        )
+        .map_err(|error| error.to_string())?;
+        if directory.join("topology-result.json").exists() {
+            write_campaign_prefix_actions(&directory, prefix.actions)?;
+        }
+        let _ = result;
         if property_fails_in_run(&property, &directory) {
             schedule = candidate;
         } else {
             index += 1;
         }
     }
-    let mut final_plan: TopologyPlan = serde_json::from_slice(&base)
+    let prefix = checkpoints.checkpoint_for_schedule(&topology, &campaign, &schedule, output)?;
+    let mut replay: TopologyPlan = serde_json::from_slice(&base)
         .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
-    apply_campaign_schedule(&mut final_plan, &campaign, &schedule)?;
-    add_counterexample_check(&mut final_plan, &campaign, &property)?;
-    execute(
+    apply_campaign_schedule(&mut replay, &campaign, &schedule)?;
+    add_counterexample_check(&mut replay, &campaign, &property)?;
+    let mut final_plan: TopologyPlan = serde_json::from_slice(
+        &serde_json::to_vec(&replay)
+            .map_err(|error| format!("cannot encode campaign replay plan: {error}"))?,
+    )
+    .map_err(|error| format!("cannot decode campaign tail plan: {error}"))?;
+    final_plan
+        .services
+        .get_mut(&campaign.driver)
+        .expect("campaign driver remains in replay plan")
+        .run
+        .events
+        .clear();
+    let result = execute(
         final_plan,
         output,
-        Some(&checkpoint),
+        Some(&prefix.checkpoint),
         None,
         None,
         None,
@@ -1501,7 +1752,16 @@ fn execute_campaign_minimized(
         None,
         None,
         None,
-    )?;
+    );
+    fs::write(
+        output.join("replay-plan.json"),
+        serde_json::to_vec_pretty(&replay).expect("campaign replay plan serializes"),
+    )
+    .map_err(|error| error.to_string())?;
+    if output.join("topology-result.json").exists() {
+        write_campaign_prefix_actions(output, prefix.actions)?;
+    }
+    result?;
     let minimized_operations = schedule
         .operations
         .iter()
@@ -1799,28 +2059,12 @@ fn apply_campaign_schedule(
     campaign: &CampaignPlan,
     schedule: &CampaignSchedule,
 ) -> Result<(), String> {
+    let events = campaign_schedule_events(campaign, schedule)?;
     let selected = schedule
         .faults
         .iter()
         .map(|index| &campaign.faults[*index])
         .collect::<Vec<_>>();
-    let events = schedule
-        .operations
-        .iter()
-        .map(|operation| {
-            let operation = &campaign.operations[*operation];
-            let actions = selected
-                .iter()
-                .filter(|candidate| candidate.after.as_deref() == Some(&operation.name))
-                .map(|candidate| campaign_action(candidate))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(EventPlan {
-                data_hex: operation.input_hex.clone(),
-                checkpoint: Some(format!("THES:CHECKPOINT:{}", operation.name)),
-                actions,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
     let driver = topology
         .services
         .get_mut(&campaign.driver)
@@ -1856,6 +2100,34 @@ fn apply_campaign_schedule(
         }
     }
     Ok(())
+}
+
+fn campaign_schedule_events(
+    campaign: &CampaignPlan,
+    schedule: &CampaignSchedule,
+) -> Result<Vec<EventPlan>, String> {
+    let selected = schedule
+        .faults
+        .iter()
+        .map(|index| &campaign.faults[*index])
+        .collect::<Vec<_>>();
+    schedule
+        .operations
+        .iter()
+        .map(|operation| {
+            let operation = &campaign.operations[*operation];
+            let actions = selected
+                .iter()
+                .filter(|candidate| candidate.after.as_deref() == Some(&operation.name))
+                .map(|candidate| campaign_action(candidate))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(EventPlan {
+                data_hex: operation.input_hex.clone(),
+                checkpoint: Some(format!("THES:CHECKPOINT:{}", operation.name)),
+                actions,
+            })
+        })
+        .collect()
 }
 
 fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
@@ -3550,6 +3822,53 @@ fn lock_artifact(service_dir: &Path, name: &str, artifact: &Artifact) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn campaign_prefix_key_includes_barrier_actions() {
+        let ordinary = vec![EventPlan {
+            data_hex: "70696e670a".to_owned(),
+            checkpoint: Some("THES:CHECKPOINT:ping".to_owned()),
+            actions: Vec::new(),
+        }];
+        let faulted = vec![EventPlan {
+            data_hex: "70696e670a".to_owned(),
+            checkpoint: Some("THES:CHECKPOINT:ping".to_owned()),
+            actions: vec![CampaignAction {
+                operation: "ping".to_owned(),
+                kind: CampaignFaultKind::Partition,
+                service: None,
+                network: Some("backplane".to_owned()),
+                from: None,
+                to: None,
+                drive: None,
+                error_ppm: None,
+                latency_rounds: None,
+                torn_write_bytes: None,
+                corrupt_read_xor: None,
+                ethertype: None,
+                ip_protocol: None,
+                source_port: None,
+                destination_port: None,
+                drop_ppm: None,
+                duplicate_ppm: None,
+                corrupt_ppm: None,
+                jitter_rounds: None,
+                tx_bytes_per_round: None,
+                mtu_bytes: None,
+                tx_queue_frames: None,
+                rx_queue_frames: None,
+            }],
+        }];
+
+        assert_eq!(
+            campaign_prefix_key(&ordinary),
+            campaign_prefix_key(&ordinary)
+        );
+        assert_ne!(
+            campaign_prefix_key(&ordinary),
+            campaign_prefix_key(&faulted)
+        );
+    }
 
     fn campaign_fault(kind: CampaignFaultKind) -> CampaignFault {
         CampaignFault {

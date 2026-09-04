@@ -120,6 +120,10 @@ struct CampaignResult {
     status: String,
     driver: String,
     #[serde(default)]
+    checkpoint_nodes: usize,
+    #[serde(default)]
+    checkpoint_reuses: usize,
+    #[serde(default)]
     runs: Vec<CampaignRun>,
     #[serde(default)]
     properties: Vec<CampaignProperty>,
@@ -460,7 +464,12 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         nodes: Vec::new(),
         coverage: Some(Coverage {
             label: "Campaign corpus".to_owned(),
-            summary: format!("{} deterministic topology timelines", result.runs.len()),
+            summary: format!(
+                "{} deterministic topology timelines; {} reusable checkpoint nodes, {} prefix reuses",
+                result.runs.len(),
+                result.checkpoint_nodes,
+                result.checkpoint_reuses,
+            ),
         }),
         minimization: None,
         replay_verification: None,
@@ -651,7 +660,7 @@ mod tests {
         );
         write_json(
             &directory.path().join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","checkpoint_nodes":4,"checkpoint_reuses":7,"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
         );
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
@@ -663,6 +672,7 @@ mod tests {
         assert!(html.contains("Applied actions"));
         assert!(html.contains("network:backplane"));
         assert!(html.contains("consistent_read"));
+        assert!(html.contains("4 reusable checkpoint nodes, 7 prefix reuses"));
     }
 
     #[test]
