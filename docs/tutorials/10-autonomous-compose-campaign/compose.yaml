@@ -122,3 +122,5 @@ x-theseus:
         kind: reachable
         service: api
         contains: "THES:ASSERT:consistent_read:fail"
+        contains_all: ["THES:M:stale"]
+        contains_none: ["THES:ASSERT:panic"]
