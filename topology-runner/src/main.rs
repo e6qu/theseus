@@ -82,6 +82,10 @@ struct CampaignOperation {
     input_hex: String,
     #[serde(default)]
     requires: Vec<String>,
+    #[serde(default)]
+    excludes: Vec<String>,
+    #[serde(default)]
+    max_uses: Option<u8>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2219,14 +2223,18 @@ fn campaign_operation_is_ready(
     history: &[usize],
     operation: usize,
 ) -> bool {
-    campaign.operations[operation]
-        .requires
-        .iter()
-        .all(|requirement| {
-            history
-                .iter()
-                .any(|prior| campaign.operations[*prior].name == requirement.as_str())
-        })
+    let candidate = &campaign.operations[operation];
+    candidate.requires.iter().all(|requirement| {
+        history
+            .iter()
+            .any(|prior| campaign.operations[*prior].name == requirement.as_str())
+    }) && candidate.excludes.iter().all(|exclusion| {
+        history
+            .iter()
+            .all(|prior| campaign.operations[*prior].name != exclusion.as_str())
+    }) && candidate.max_uses.map_or(true, |maximum| {
+        history.iter().filter(|prior| **prior == operation).count() < usize::from(maximum)
+    })
 }
 
 fn ordered_operation_histories<F>(
@@ -4594,6 +4602,21 @@ mod tests {
                 vec![0, 1, 0],
                 vec![0, 1, 1],
             ]
+        );
+    }
+
+    #[test]
+    fn campaign_operation_histories_obey_exclusions_and_use_bounds() {
+        assert_eq!(
+            ordered_operation_histories(2, 3, |history, operation| {
+                let writes = history.iter().filter(|prior| **prior == 0).count();
+                match operation {
+                    0 => writes < 1,
+                    1 => history.contains(&0) && !history.contains(&1),
+                    _ => false,
+                }
+            }),
+            vec![vec![0], vec![0, 1]]
         );
     }
 

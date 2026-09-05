@@ -118,6 +118,25 @@ struct Node {
 #[derive(Deserialize)]
 struct TopologyPlan {
     format: String,
+    #[serde(default)]
+    campaign: Option<CampaignPlan>,
+}
+
+#[derive(Deserialize)]
+struct CampaignPlan {
+    #[serde(default)]
+    operations: Vec<CampaignOperation>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct CampaignOperation {
+    name: String,
+    #[serde(default)]
+    requires: Vec<String>,
+    #[serde(default)]
+    excludes: Vec<String>,
+    #[serde(default)]
+    max_uses: Option<u8>,
 }
 
 #[derive(Deserialize)]
@@ -212,6 +231,7 @@ struct ReportModel {
     campaign_minimization: Option<CampaignMinimization>,
     replay_verification: Option<ReplayVerification>,
     campaign_runs: Vec<CampaignRun>,
+    campaign_operations: Vec<CampaignOperation>,
 }
 
 #[derive(Serialize)]
@@ -299,6 +319,7 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
         campaign_minimization: None,
         replay_verification: result.replay_verification,
         campaign_runs: Vec::new(),
+        campaign_operations: Vec::new(),
     })
 }
 
@@ -375,6 +396,7 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
         campaign_minimization: None,
         replay_verification: result.replay_verification,
         campaign_runs: Vec::new(),
+        campaign_operations: Vec::new(),
     })
 }
 
@@ -459,11 +481,13 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
         campaign_minimization,
         replay_verification: None,
         campaign_runs: Vec::new(),
+        campaign_operations: Vec::new(),
     })
 }
 
 fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
     let result: CampaignResult = read_json(root, Path::new("campaign-result.json"))?;
+    let plan: TopologyPlan = read_json(root, Path::new("replay-plan.json"))?;
     if result.format != "theseus-compose-campaign-result-v1" {
         return Err(ReportError::Invalid(format!(
             "unsupported campaign result format {:?}",
@@ -513,6 +537,10 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         campaign_minimization: None,
         replay_verification: result.replay_verification,
         campaign_runs: result.runs,
+        campaign_operations: plan
+            .campaign
+            .map(|campaign| campaign.operations)
+            .unwrap_or_default(),
     })
 }
 
@@ -630,6 +658,7 @@ if(m.error){{const e=section('Error');e.append(el('pre',m.error));}}
 const replay=section(m.command_label);replay.append(el('pre',m.command));
 if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));if(n.serial_log){{d.append(el('p','serial log: '+n.serial_log));}}d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
+if(m.campaign_operations.length){{const s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Requires earlier','Excludes earlier','Maximum uses']));}}
 if(m.campaign_runs.length){{const s=section('Generated timelines');s.append(table(m.campaign_runs.map(r=>[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',r.state_novel?'new':'seen',r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none']),['Run','Operations','Candidates','Selection','Topology state','Applied actions','Status','New markers']));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
 if(m.campaign_minimization){{const x=m.campaign_minimization,s=section('Campaign minimization');s.append(table([[x.property,x.original_operations.join(' → ')||'none',x.minimized_operations.join(' → ')||'none',x.original_faults.join(' + ')||'none',x.minimized_faults.join(' + ')||'none',String(x.operation_attempts),String(x.fault_attempts)]],['Property','Original operations','1-minimal operations','Original faults','1-minimal faults','Operation replays','Fault replays']));}}
@@ -704,7 +733,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         write_json(
             &directory.path().join("replay-plan.json"),
-            r#"{"format":"theseus-compose-plan-v1"}"#,
+            r#"{"format":"theseus-compose-plan-v1","campaign":{"operations":[{"name":"write","max_uses":1},{"name":"close","requires":["write"],"max_uses":1},{"name":"read","requires":["write"],"excludes":["close"]}]}}"#,
         );
         write_json(
             &directory.path().join("campaign-result.json"),
@@ -729,6 +758,11 @@ mod tests {
             html.contains("extends 1-operation prefix with 2 new marker(s) and new topology state")
         );
         assert!(html.contains("Topology state"));
+        assert!(html.contains("Operation model"));
+        assert!(html.contains("Requires earlier"));
+        assert!(html.contains("Excludes earlier"));
+        assert!(html.contains("Maximum uses"));
+        assert!(html.contains("unbounded"));
         assert!(html.contains("Replay verification"));
         assert!(html.contains("1 recorded campaign timelines reproduced"));
     }
