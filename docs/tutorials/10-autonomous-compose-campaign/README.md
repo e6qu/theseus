@@ -24,6 +24,10 @@ Start with `compose.yaml`.
    Add `excludes: [operation-name]` to block an operation after a named earlier
    operation, and `max_uses` (1 through 4) to cap its repetitions. These rules
    describe the valid workload state machine without a host-side driver.
+   Add `requires_markers: [marker]` or `excludes_markers: [marker]` when the
+   decision depends on what the guest actually reported. Theseus reads
+   `THES:M:marker` lines from the restored parent checkpoint before extending
+   it, so a blocked operation never consumes a campaign run.
 3. List fault candidates. `partition` and `heal` change every simulated NIC on
    a named network. `network_fault` changes selected packet conditions on every
    NIC on that network; set any of `drop_ppm`, `duplicate_ppm`, `corrupt_ppm`,
@@ -58,11 +62,11 @@ normal serial, network, and storage evidence.
 
 A candidate pair is one timeline. For example, a `network_fault` after `write`
 and a `network_recover` after `retry` run together, in that operation order.
-Theseus explores operation histories breadth-first, so it tries every valid
-one-step operation before two-step histories, then valid ordered pairs such as
-`write → read_stale`. Repeated operations are valid unless `max_uses` limits
-them. Preconditions and exclusions keep it from spending runs on impossible
-pairs such as `read_stale → write` or `read_stale → retry` here.
+Theseus explores operation histories breadth-first. It first tests one-step
+operations, then pairs such as `write → read_stale`. Here `read_stale` needs
+the `written` marker and `retry` rejects `stale`, so root reads and retries
+after a stale read are skipped from their restored parent states. Repeated
+operations are valid unless `max_uses` limits them.
 The recovery restores only packet conditions: a simultaneous partition or
 directed-link action remains in force. This lets you test recovery without a
 host-side test script.
@@ -100,9 +104,9 @@ The campaign report shows checkpoint-node and prefix-reuse counts. They are
 execution details only: each run's `replay-plan.json` still contains the full
 operation history and replays independently.
 
-The report also shows the operation model: each operation's earlier-operation
-requirements, exclusions, and maximum use count. Use it to verify that a
-generated timeline followed the state rules you declared.
+The report shows the operation model, including earlier-operation rules and
+observed-marker guards. It also counts marker-guard leaves skipped before a
+campaign run started.
 
 Theseus first runs every one-operation history without faults. It then gives
 priority to untried schedules that extend an operation prefix which produced a
@@ -123,6 +127,7 @@ Emit the serial protocol with plain shell:
 
 ```sh
 printf '%s\n' 'THES:ASSERT:consistent_read:pass'
+printf '%s\n' 'THES:M:written'
 printf '%s\n' 'THES:CHECKPOINT:write'
 ```
 

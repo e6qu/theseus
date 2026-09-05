@@ -30,15 +30,18 @@ x-theseus:
     operations:
       - name: write
         input: "write\n"
+        # The driver announces this boot marker before Theseus snapshots the
+        # campaign root. Marker guards read the restored serial transcript.
+        requires_markers: ["42"]
         max_uses: 1
       - name: read_stale
         input: "read_stale\n"
-        requires: [write]
+        requires_markers: [written]
         max_uses: 1
       - name: retry
         input: "retry\n"
-        requires: [write]
-        excludes: [read_stale]
+        requires_markers: [written]
+        excludes_markers: [stale]
         max_uses: 1
     faults:
       # These run after the named operation emits its checkpoint. Every NIC

@@ -30,6 +30,7 @@ grep -a '"kind": "partition"' theseus-compose-campaign/campaign-result.json
 grep -a '"kind": "link_partition"' theseus-compose-campaign/campaign-result.json
 grep -a '"kind": "storage_fault"' theseus-compose-campaign/campaign-result.json
 grep -a '"faults": \[' theseus-compose-campaign/campaign-result.json
+grep -a '"marker_guard_rejections":' theseus-compose-campaign/campaign-result.json
 if theseus compose explore --minimize theseus-compose-campaign --output stale-read-replay; then
     echo 'expected the minimized stale-read counterexample' >&2
     exit 1
@@ -42,6 +43,7 @@ grep -a 'counterexample: consistent_read' stale-read-rerun/services/api/result.j
 theseus report --output campaign-report theseus-compose-campaign
 grep -a 'Autonomous Compose campaign' campaign-report/index.html
 grep -a 'Operation model' campaign-report/index.html
+grep -a 'Requires observed marker' campaign-report/index.html
 theseus report --output minimized-report stale-read-replay
 grep -a 'Campaign minimization' minimized-report/index.html
 echo 'PASS: Theseus found and reported the intentional stale-read timeline'
