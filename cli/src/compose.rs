@@ -195,7 +195,8 @@ pub enum CampaignFaultKind {
 struct ComposeProperty {
     name: String,
     kind: PropertyKind,
-    contains: String,
+    #[serde(default)]
+    contains: Option<String>,
     #[serde(default)]
     contains_all: Vec<String>,
     #[serde(default)]
@@ -203,7 +204,22 @@ struct ComposeProperty {
     #[serde(default)]
     contains_none: Vec<String>,
     #[serde(default)]
+    predicate: Option<ComposeSerialPredicate>,
+    #[serde(default)]
     service: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeSerialPredicate {
+    #[serde(default)]
+    contains: Option<String>,
+    #[serde(default)]
+    all: Vec<ComposeSerialPredicate>,
+    #[serde(default)]
+    any: Vec<ComposeSerialPredicate>,
+    #[serde(default)]
+    none: Vec<ComposeSerialPredicate>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -385,7 +401,8 @@ pub struct CampaignFaultPlan {
 pub struct PropertyPlan {
     pub name: String,
     pub kind: PropertyKind,
-    pub contains: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contains: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contains_all: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -393,7 +410,21 @@ pub struct PropertyPlan {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contains_none: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub predicate: Option<SerialPredicatePlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SerialPredicatePlan {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contains: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub all: Vec<SerialPredicatePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub any: Vec<SerialPredicatePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub none: Vec<SerialPredicatePlan>,
 }
 
 /// Load a Compose topology and lock every referenced service artifact into a
@@ -1196,9 +1227,25 @@ fn campaign_plan(
                 property.name
             )));
         }
-        if property.contains.is_empty() {
+        if property.contains.as_ref().is_some_and(String::is_empty) {
             return Err(ComposeError::Invalid(format!(
                 "campaign property {:?} has an empty contains value",
+                property.name
+            )));
+        }
+        if property.contains.is_none() && property.predicate.is_none() {
+            return Err(ComposeError::Invalid(format!(
+                "campaign property {:?} needs contains or predicate",
+                property.name
+            )));
+        }
+        if property.contains.is_none()
+            && (!property.contains_all.is_empty()
+                || !property.contains_any.is_empty()
+                || !property.contains_none.is_empty())
+        {
+            return Err(ComposeError::Invalid(format!(
+                "campaign property {:?} needs contains before compound predicates",
                 property.name
             )));
         }
@@ -1219,6 +1266,10 @@ fn campaign_plan(
                 )));
             }
         }
+        let predicate = property
+            .predicate
+            .map(|predicate| normalize_serial_predicate(predicate, &property.name))
+            .transpose()?;
         properties.push(PropertyPlan {
             name: property.name,
             kind: property.kind,
@@ -1226,6 +1277,7 @@ fn campaign_plan(
             contains_all: property.contains_all,
             contains_any: property.contains_any,
             contains_none: property.contains_none,
+            predicate,
             service: property.service,
         });
     }
@@ -1239,6 +1291,44 @@ fn campaign_plan(
         max_faults_per_run: campaign.max_faults_per_run,
         max_operations_per_run: campaign.max_operations_per_run,
     }))
+}
+
+fn normalize_serial_predicate(
+    predicate: ComposeSerialPredicate,
+    property_name: &str,
+) -> Result<SerialPredicatePlan, ComposeError> {
+    if predicate.contains.as_ref().is_some_and(String::is_empty) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign property {property_name:?} has an empty nested contains value"
+        )));
+    }
+    if predicate.contains.is_none()
+        && predicate.all.is_empty()
+        && predicate.any.is_empty()
+        && predicate.none.is_empty()
+    {
+        return Err(ComposeError::Invalid(format!(
+            "campaign property {property_name:?} has an empty nested predicate"
+        )));
+    }
+    Ok(SerialPredicatePlan {
+        contains: predicate.contains,
+        all: predicate
+            .all
+            .into_iter()
+            .map(|child| normalize_serial_predicate(child, property_name))
+            .collect::<Result<_, _>>()?,
+        any: predicate
+            .any
+            .into_iter()
+            .map(|child| normalize_serial_predicate(child, property_name))
+            .collect::<Result<_, _>>()?,
+        none: predicate
+            .none
+            .into_iter()
+            .map(|child| normalize_serial_predicate(child, property_name))
+            .collect::<Result<_, _>>()?,
+    })
 }
 
 fn validate_campaign_operation_rules(
@@ -1801,6 +1891,20 @@ mod tests {
             ["THES:CHECKPOINT:write", "THES:M:written"]
         );
         assert_eq!(property.contains_none, ["THES:ASSERT:panic"]);
+    }
+
+    #[test]
+    fn parses_nested_campaign_property_predicates() {
+        let property: ComposeProperty = serde_yaml::from_str(
+            "name: durable_write\nkind: always\npredicate:\n  all:\n    - contains: THES:ASSERT:write:pass\n    - any:\n        - contains: THES:CHECKPOINT:write\n        - contains: THES:M:write_complete\n    - none:\n        - contains: THES:ASSERT:panic\n",
+        )
+        .unwrap();
+        let predicate =
+            normalize_serial_predicate(property.predicate.unwrap(), &property.name).unwrap();
+
+        assert_eq!(predicate.all.len(), 3);
+        assert_eq!(predicate.all[1].any.len(), 2);
+        assert_eq!(predicate.all[2].none.len(), 1);
     }
 
     #[test]

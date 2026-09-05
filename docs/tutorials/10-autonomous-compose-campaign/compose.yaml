@@ -121,7 +121,12 @@ x-theseus:
       - name: stale_read_is_reachable
         kind: reachable
         service: api
-        contains: "THES:ASSERT:consistent_read:fail"
-        contains_all: ["THES:M:stale"]
-        contains_any: ["THES:CHECKPOINT:read_stale", "THES:M:stale"]
-        contains_none: ["THES:ASSERT:panic"]
+        predicate:
+          all:
+            - contains: "THES:ASSERT:consistent_read:fail"
+            - contains: "THES:M:stale"
+            - any:
+                - contains: "THES:CHECKPOINT:read_stale"
+                - contains: "THES:M:stale"
+            - none:
+                - contains: "THES:ASSERT:panic"
