@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use regex::bytes::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use theseus_engine::simnet::{SharedSimSwitch, SimSwitch, SimSwitchState};
@@ -191,6 +192,8 @@ struct CampaignProperty {
 struct SerialPredicate {
     #[serde(default)]
     contains: Option<String>,
+    #[serde(default)]
+    matches: Option<String>,
     #[serde(default)]
     all: Vec<SerialPredicate>,
     #[serde(default)]
@@ -3109,6 +3112,15 @@ fn serial_matches_nested_predicate(serial: &[u8], predicate: &SerialPredicate) -
         .map(|needle| serial_contains(serial, needle))
         .unwrap_or(true)
         && predicate
+            .matches
+            .as_ref()
+            .map(|expression| {
+                Regex::new(expression)
+                    .map(|expression| expression.is_match(serial))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true)
+        && predicate
             .all
             .iter()
             .all(|child| serial_matches_nested_predicate(serial, child))
@@ -3162,6 +3174,9 @@ fn nested_predicate_description(predicate: &SerialPredicate) -> String {
         .as_ref()
         .map(|contains| vec![format!("contains {contains:?}")])
         .unwrap_or_default();
+    if let Some(expression) = &predicate.matches {
+        clauses.push(format!("matches {expression:?}"));
+    }
     if !predicate.all.is_empty() {
         clauses.push(format!(
             "all [{}]",
@@ -4710,15 +4725,18 @@ mod tests {
             contains_none: Vec::new(),
             predicate: Some(SerialPredicate {
                 contains: None,
+                matches: None,
                 all: vec![
                     SerialPredicate {
                         contains: Some("THES:ASSERT:write:pass".to_owned()),
+                        matches: None,
                         all: Vec::new(),
                         any: Vec::new(),
                         none: Vec::new(),
                     },
                     SerialPredicate {
                         contains: Some("THES:M:written".to_owned()),
+                        matches: None,
                         all: Vec::new(),
                         any: Vec::new(),
                         none: Vec::new(),
@@ -4727,12 +4745,14 @@ mod tests {
                 any: vec![
                     SerialPredicate {
                         contains: Some("THES:CHECKPOINT:write".to_owned()),
+                        matches: None,
                         all: Vec::new(),
                         any: Vec::new(),
                         none: Vec::new(),
                     },
                     SerialPredicate {
-                        contains: Some("THES:M:write_complete".to_owned()),
+                        contains: None,
+                        matches: Some("THES:M:write_[a-z]+".to_owned()),
                         all: Vec::new(),
                         any: Vec::new(),
                         none: Vec::new(),
@@ -4740,6 +4760,7 @@ mod tests {
                 ],
                 none: vec![SerialPredicate {
                     contains: Some("THES:ASSERT:panic".to_owned()),
+                    matches: None,
                     all: Vec::new(),
                     any: Vec::new(),
                     none: Vec::new(),

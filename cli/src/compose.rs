@@ -13,6 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use regex::bytes::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -214,6 +215,8 @@ struct ComposeProperty {
 struct ComposeSerialPredicate {
     #[serde(default)]
     contains: Option<String>,
+    #[serde(default)]
+    matches: Option<String>,
     #[serde(default)]
     all: Vec<ComposeSerialPredicate>,
     #[serde(default)]
@@ -419,6 +422,8 @@ pub struct PropertyPlan {
 pub struct SerialPredicatePlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contains: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matches: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub all: Vec<SerialPredicatePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1302,7 +1307,20 @@ fn normalize_serial_predicate(
             "campaign property {property_name:?} has an empty nested contains value"
         )));
     }
+    if predicate.matches.as_ref().is_some_and(String::is_empty) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign property {property_name:?} has an empty nested matches value"
+        )));
+    }
+    if let Some(expression) = &predicate.matches {
+        Regex::new(expression).map_err(|error| {
+            ComposeError::Invalid(format!(
+                "campaign property {property_name:?} has invalid nested regex {expression:?}: {error}"
+            ))
+        })?;
+    }
     if predicate.contains.is_none()
+        && predicate.matches.is_none()
         && predicate.all.is_empty()
         && predicate.any.is_empty()
         && predicate.none.is_empty()
@@ -1313,6 +1331,7 @@ fn normalize_serial_predicate(
     }
     Ok(SerialPredicatePlan {
         contains: predicate.contains,
+        matches: predicate.matches,
         all: predicate
             .all
             .into_iter()
@@ -1896,7 +1915,7 @@ mod tests {
     #[test]
     fn parses_nested_campaign_property_predicates() {
         let property: ComposeProperty = serde_yaml::from_str(
-            "name: durable_write\nkind: always\npredicate:\n  all:\n    - contains: THES:ASSERT:write:pass\n    - any:\n        - contains: THES:CHECKPOINT:write\n        - contains: THES:M:write_complete\n    - none:\n        - contains: THES:ASSERT:panic\n",
+            "name: durable_write\nkind: always\npredicate:\n  all:\n    - contains: THES:ASSERT:write:pass\n    - any:\n        - matches: THES:CHECKPOINT:write_[0-9]+\n        - contains: THES:M:write_complete\n    - none:\n        - contains: THES:ASSERT:panic\n",
         )
         .unwrap();
         let predicate =
@@ -1904,7 +1923,28 @@ mod tests {
 
         assert_eq!(predicate.all.len(), 3);
         assert_eq!(predicate.all[1].any.len(), 2);
+        assert_eq!(
+            predicate.all[1].any[0].matches.as_deref(),
+            Some("THES:CHECKPOINT:write_[0-9]+")
+        );
         assert_eq!(predicate.all[2].none.len(), 1);
+    }
+
+    #[test]
+    fn rejects_invalid_nested_campaign_regexes() {
+        let error = normalize_serial_predicate(
+            ComposeSerialPredicate {
+                contains: None,
+                matches: Some("[".to_owned()),
+                all: Vec::new(),
+                any: Vec::new(),
+                none: Vec::new(),
+            },
+            "durable_write",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("invalid nested regex"));
     }
 
     #[test]

@@ -126,7 +126,7 @@ x-theseus:
             - contains: "THES:ASSERT:consistent_read:fail"
             - contains: "THES:M:stale"
             - any:
-                - contains: "THES:CHECKPOINT:read_stale"
+                - matches: "THES:CHECKPOINT:read_(stale|fresh)"
                 - contains: "THES:M:stale"
             - none:
                 - contains: "THES:ASSERT:panic"
