@@ -210,6 +210,8 @@ struct CampaignRun {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     actions: Vec<AppliedCampaignAction>,
     selection: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    program_counters: BTreeMap<String, Vec<String>>,
     state_sha256: String,
     state_novel: bool,
     status: &'static str,
@@ -248,6 +250,8 @@ struct RecordedCampaignRun {
     actions: Vec<AppliedCampaignAction>,
     #[serde(default)]
     selection: String,
+    #[serde(default)]
+    program_counters: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     novelty: Vec<String>,
     #[serde(default)]
@@ -620,6 +624,7 @@ struct ServiceVmCheckpoint {
 #[derive(Clone)]
 struct ServiceSchedulerCheckpoint {
     serial_contents: Vec<Vec<u8>>,
+    program_counters: Vec<u64>,
     next_fault: usize,
     paused_until: Option<u64>,
     faults: Vec<AppliedFault>,
@@ -1088,6 +1093,14 @@ impl ServiceVm {
             networks,
         })
     }
+
+    fn paused_program_counters(&self) -> Result<Vec<u64>, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .paused_vcpu_program_counters()
+            .map_err(|error| error.to_string())
+    }
 }
 
 struct ServiceRuntime {
@@ -1151,6 +1164,7 @@ fn capture_campaign_checkpoint(
                 name.clone(),
                 ServiceSchedulerCheckpoint {
                     serial_contents,
+                    program_counters: service.vm.paused_program_counters()?,
                     next_fault: service.next_fault,
                     paused_until: service.paused_until,
                     faults: service.faults.clone(),
@@ -1593,7 +1607,8 @@ fn execute_campaign(
         }
         let markers = campaign_markers(&run_dir)?;
         let actions = campaign_actions(&run_dir)?;
-        let state_sha256 = campaign_topology_state_sha256(&run_dir)?;
+        let program_counters = campaign_checkpoint_program_counters(&prefix.checkpoint);
+        let state_sha256 = campaign_topology_state_sha256(&run_dir, &program_counters)?;
         let state_novel = seen_topology_states.insert(state_sha256.clone());
         let novelty = markers
             .into_iter()
@@ -1618,6 +1633,7 @@ fn execute_campaign(
             faults: campaign_fault_names(&campaign, &schedule.faults),
             actions,
             selection,
+            program_counters,
             state_sha256,
             state_novel,
             status: if failed { "failed" } else { "passed" },
@@ -2420,6 +2436,10 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     if !expected.selection.is_empty() && expected.selection != actual.selection {
         mismatches.push("selection".to_owned());
     }
+    if !expected.program_counters.is_empty() && expected.program_counters != actual.program_counters
+    {
+        mismatches.push("checkpoint program counters".to_owned());
+    }
     if !expected.novelty.is_empty() && expected.novelty != actual.novelty {
         mismatches.push("marker coverage".to_owned());
     }
@@ -2831,7 +2851,29 @@ fn campaign_markers(run: &Path) -> Result<Vec<String>, String> {
     Ok(markers.into_iter().collect())
 }
 
-fn campaign_topology_state_sha256(run: &Path) -> Result<String, String> {
+fn campaign_checkpoint_program_counters(
+    checkpoint: &CampaignCheckpoint,
+) -> BTreeMap<String, Vec<String>> {
+    checkpoint
+        .scheduler
+        .iter()
+        .map(|(service, state)| {
+            (
+                service.clone(),
+                state
+                    .program_counters
+                    .iter()
+                    .map(|pc| format!("{pc:#x}"))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn campaign_topology_state_sha256(
+    run: &Path,
+    program_counters: &BTreeMap<String, Vec<String>>,
+) -> Result<String, String> {
     let mut states = BTreeMap::new();
     let services = fs::read_dir(run.join("services")).map_err(|error| error.to_string())?;
     for service in services {
@@ -2844,7 +2886,7 @@ fn campaign_topology_state_sha256(run: &Path) -> Result<String, String> {
         .map_err(|error| format!("cannot parse {}: {error}", path.display()))?;
         states.insert(name, state);
     }
-    let encoded = serde_json::to_vec(&states)
+    let encoded = serde_json::to_vec(&(states, program_counters))
         .map_err(|error| format!("cannot encode campaign topology state: {error}"))?;
     Ok(format!("{:x}", Sha256::digest(encoded)))
 }
@@ -4447,6 +4489,7 @@ mod tests {
                 "api".to_owned(),
                 ServiceSchedulerCheckpoint {
                     serial_contents: vec![b"THES:M:42\nTHES:M:written\n".to_vec()],
+                    program_counters: vec![0x8000],
                     next_fault: 0,
                     paused_until: None,
                     faults: Vec::new(),
@@ -4607,6 +4650,7 @@ mod tests {
             faults: vec!["backplane:partition@write".to_owned()],
             actions: Vec::new(),
             selection: "extends 1-operation prefix with new topology state".to_owned(),
+            program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
             state_sha256: "state".to_owned(),
             state_novel: true,
             status: "passed",
@@ -4618,6 +4662,7 @@ mod tests {
             faults: actual.faults.clone(),
             actions: Vec::new(),
             selection: actual.selection.clone(),
+            program_counters: actual.program_counters.clone(),
             novelty: actual.novelty.clone(),
             state_sha256: actual.state_sha256.clone(),
             state_novel: true,
@@ -4644,14 +4689,17 @@ mod tests {
             r#"{"serial_sha256":["first"],"storage_sha256":{"data":"drive"},"network_traffic":{"backplane":{"tx_frames":1,"rx_frames":2,"dropped":0}},"virtual_time_ns":[100]}"#,
         )
         .unwrap();
-        let first = campaign_topology_state_sha256(&directory).unwrap();
+        let first = campaign_topology_state_sha256(&directory, &BTreeMap::new()).unwrap();
         fs::write(
             service.join("result.json"),
             r#"{"serial_sha256":["second"],"storage_sha256":{"data":"drive"},"network_traffic":{"backplane":{"tx_frames":1,"rx_frames":2,"dropped":0}},"virtual_time_ns":[100]}"#,
         )
         .unwrap();
 
-        assert_eq!(first, campaign_topology_state_sha256(&directory).unwrap());
+        assert_eq!(
+            first,
+            campaign_topology_state_sha256(&directory, &BTreeMap::new()).unwrap()
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 
