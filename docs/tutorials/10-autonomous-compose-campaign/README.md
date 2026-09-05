@@ -18,6 +18,9 @@ Start with `compose.yaml`.
 2. List operations as ordinary text. Theseus injects them into the driver UART;
    after each input it waits for `THES:CHECKPOINT:<operation-name>` before it
    injects the next one. No SDK or host-side wrapper is required.
+   Add `requires: [operation-name]` when an operation needs one or more earlier
+   operations. Theseus generates only histories where every requirement has
+   already occurred; unknown, duplicate, and cyclic requirements are rejected.
 3. List fault candidates. `partition` and `heal` change every simulated NIC on
    a named network. `network_fault` changes selected packet conditions on every
    NIC on that network; set any of `drop_ppm`, `duplicate_ppm`, `corrupt_ppm`,
@@ -52,9 +55,10 @@ normal serial, network, and storage evidence.
 
 A candidate pair is one timeline. For example, a `network_fault` after `write`
 and a `network_recover` after `retry` run together, in that operation order.
-Theseus explores operation histories breadth-first, so it tries every one-step
-operation before two-step histories, then every ordered pair such as
-`write → read_stale` and `read_stale → write`. Repeated operations are valid.
+Theseus explores operation histories breadth-first, so it tries every valid
+one-step operation before two-step histories, then valid ordered pairs such as
+`write → read_stale`. Repeated operations are valid. Preconditions keep it
+from spending runs on impossible pairs such as `read_stale → write` here.
 The recovery restores only packet conditions: a simultaneous partition or
 directed-link action remains in force. This lets you test recovery without a
 host-side test script.

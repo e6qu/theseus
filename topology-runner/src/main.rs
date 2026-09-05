@@ -80,6 +80,8 @@ fn default_campaign_operations_per_run() -> u8 {
 struct CampaignOperation {
     name: String,
     input_hex: String,
+    #[serde(default)]
+    requires: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2208,16 +2210,42 @@ fn campaign_operation_histories(campaign: &CampaignPlan) -> Vec<Vec<usize>> {
     ordered_operation_histories(
         campaign.operations.len(),
         usize::from(campaign.max_operations_per_run),
+        |history, operation| campaign_operation_is_ready(campaign, history, operation),
     )
 }
 
-fn ordered_operation_histories(operation_count: usize, maximum_depth: usize) -> Vec<Vec<usize>> {
+fn campaign_operation_is_ready(
+    campaign: &CampaignPlan,
+    history: &[usize],
+    operation: usize,
+) -> bool {
+    campaign.operations[operation]
+        .requires
+        .iter()
+        .all(|requirement| {
+            history
+                .iter()
+                .any(|prior| campaign.operations[*prior].name == requirement.as_str())
+        })
+}
+
+fn ordered_operation_histories<F>(
+    operation_count: usize,
+    maximum_depth: usize,
+    mut operation_is_ready: F,
+) -> Vec<Vec<usize>>
+where
+    F: FnMut(&[usize], usize) -> bool,
+{
     let mut histories = Vec::new();
     let mut frontier = vec![Vec::new()];
     for _ in 0..maximum_depth {
         let mut next = Vec::new();
         for prefix in frontier {
             for operation in 0..operation_count {
+                if !operation_is_ready(&prefix, operation) {
+                    continue;
+                }
                 let mut history = prefix.clone();
                 history.push(operation);
                 histories.push(history.clone());
@@ -4531,7 +4559,7 @@ mod tests {
     #[test]
     fn campaign_operation_histories_cover_order_and_repetition_breadth_first() {
         assert_eq!(
-            ordered_operation_histories(2, 3),
+            ordered_operation_histories(2, 3, |_, _| true),
             vec![
                 vec![0],
                 vec![1],
@@ -4547,6 +4575,24 @@ mod tests {
                 vec![1, 0, 1],
                 vec![1, 1, 0],
                 vec![1, 1, 1],
+            ]
+        );
+    }
+
+    #[test]
+    fn campaign_operation_histories_obey_preconditions() {
+        assert_eq!(
+            ordered_operation_histories(2, 3, |history, operation| {
+                operation == 0 || history.contains(&0)
+            }),
+            vec![
+                vec![0],
+                vec![0, 0],
+                vec![0, 1],
+                vec![0, 0, 0],
+                vec![0, 0, 1],
+                vec![0, 1, 0],
+                vec![0, 1, 1],
             ]
         );
     }
