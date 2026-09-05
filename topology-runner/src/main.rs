@@ -173,7 +173,8 @@ enum CampaignFaultKind {
 struct CampaignProperty {
     name: String,
     kind: PropertyKind,
-    contains: String,
+    #[serde(default)]
+    contains: Option<String>,
     #[serde(default)]
     contains_all: Vec<String>,
     #[serde(default)]
@@ -181,7 +182,21 @@ struct CampaignProperty {
     #[serde(default)]
     contains_none: Vec<String>,
     #[serde(default)]
+    predicate: Option<SerialPredicate>,
+    #[serde(default)]
     service: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct SerialPredicate {
+    #[serde(default)]
+    contains: Option<String>,
+    #[serde(default)]
+    all: Vec<SerialPredicate>,
+    #[serde(default)]
+    any: Vec<SerialPredicate>,
+    #[serde(default)]
+    none: Vec<SerialPredicate>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -464,6 +479,8 @@ struct CheckPlan {
     contains_any: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     contains_none: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    predicate: Option<SerialPredicate>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2121,7 +2138,8 @@ fn add_counterexample_check(
         .ok_or_else(|| format!("property service disappeared: {service}"))?;
     let compound = !property.contains_all.is_empty()
         || !property.contains_any.is_empty()
-        || !property.contains_none.is_empty();
+        || !property.contains_none.is_empty()
+        || property.predicate.is_some();
     let kind = match (property.kind, compound) {
         (PropertyKind::Unreachable, false) => CheckKind::SerialContains,
         (PropertyKind::Always | PropertyKind::Sometimes | PropertyKind::Reachable, false) => {
@@ -2135,10 +2153,11 @@ fn add_counterexample_check(
     check.run.checks.push(CheckPlan {
         name: format!("counterexample: {}", property.name),
         kind,
-        value: property.contains.clone(),
+        value: property.contains.clone().unwrap_or_default(),
         contains_all: property.contains_all.clone(),
         contains_any: property.contains_any.clone(),
         contains_none: property.contains_none.clone(),
+        predicate: property.predicate.clone(),
     });
     Ok(())
 }
@@ -2208,6 +2227,7 @@ fn campaign_counterexample(
                 contains_all: property.contains_all.clone(),
                 contains_any: property.contains_any.clone(),
                 contains_none: property.contains_none.clone(),
+                predicate: property.predicate.clone(),
                 service: property.service.clone(),
             },
             CampaignSchedule { operations, faults },
@@ -3051,11 +3071,15 @@ fn campaign_serial_matches_property(
 fn serial_matches_property(serial: &[u8], property: &CampaignProperty) -> bool {
     serial_matches_predicate(
         serial,
-        &property.contains,
+        property.contains.as_deref().unwrap_or_default(),
         &property.contains_all,
         &property.contains_any,
         &property.contains_none,
-    )
+    ) && property
+        .predicate
+        .as_ref()
+        .map(|predicate| serial_matches_nested_predicate(serial, predicate))
+        .unwrap_or(true)
 }
 
 fn serial_matches_predicate(
@@ -3065,7 +3089,7 @@ fn serial_matches_predicate(
     contains_any: &[String],
     contains_none: &[String],
 ) -> bool {
-    serial_contains(serial, contains)
+    (contains.is_empty() || serial_contains(serial, contains))
         && contains_all
             .iter()
             .all(|needle| serial_contains(serial, needle))
@@ -3078,6 +3102,27 @@ fn serial_matches_predicate(
             .all(|needle| !serial_contains(serial, needle))
 }
 
+fn serial_matches_nested_predicate(serial: &[u8], predicate: &SerialPredicate) -> bool {
+    predicate
+        .contains
+        .as_ref()
+        .map(|needle| serial_contains(serial, needle))
+        .unwrap_or(true)
+        && predicate
+            .all
+            .iter()
+            .all(|child| serial_matches_nested_predicate(serial, child))
+        && (predicate.any.is_empty()
+            || predicate
+                .any
+                .iter()
+                .any(|child| serial_matches_nested_predicate(serial, child)))
+        && predicate
+            .none
+            .iter()
+            .all(|child| !serial_matches_nested_predicate(serial, child))
+}
+
 fn serial_contains(serial: &[u8], needle: &str) -> bool {
     !needle.is_empty()
         && serial
@@ -3086,7 +3131,11 @@ fn serial_contains(serial: &[u8], needle: &str) -> bool {
 }
 
 fn campaign_property_description(property: &CampaignProperty) -> String {
-    let mut clauses = vec![format!("contains {:?}", property.contains)];
+    let mut clauses = property
+        .contains
+        .as_ref()
+        .map(|contains| vec![format!("contains {contains:?}")])
+        .unwrap_or_default();
     if !property.contains_all.is_empty() {
         clauses.push(format!("also contains all {:?}", property.contains_all));
     }
@@ -3095,6 +3144,56 @@ fn campaign_property_description(property: &CampaignProperty) -> String {
     }
     if !property.contains_none.is_empty() {
         clauses.push(format!("contains none of {:?}", property.contains_none));
+    }
+    if let Some(predicate) = &property.predicate {
+        let description = nested_predicate_description(predicate);
+        clauses.push(if clauses.is_empty() {
+            description
+        } else {
+            format!("also satisfies {description}")
+        });
+    }
+    clauses.join("; ")
+}
+
+fn nested_predicate_description(predicate: &SerialPredicate) -> String {
+    let mut clauses = predicate
+        .contains
+        .as_ref()
+        .map(|contains| vec![format!("contains {contains:?}")])
+        .unwrap_or_default();
+    if !predicate.all.is_empty() {
+        clauses.push(format!(
+            "all [{}]",
+            predicate
+                .all
+                .iter()
+                .map(nested_predicate_description)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !predicate.any.is_empty() {
+        clauses.push(format!(
+            "any [{}]",
+            predicate
+                .any
+                .iter()
+                .map(nested_predicate_description)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !predicate.none.is_empty() {
+        clauses.push(format!(
+            "none [{}]",
+            predicate
+                .none
+                .iter()
+                .map(nested_predicate_description)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     clauses.join("; ")
 }
@@ -4346,7 +4445,11 @@ fn evaluate_checks(checks: &[CheckPlan], serial_logs: &[PathBuf]) -> Vec<CheckRe
                 &check.contains_all,
                 &check.contains_any,
                 &check.contains_none,
-            );
+            ) && check
+                .predicate
+                .as_ref()
+                .map(|predicate| serial_matches_nested_predicate(&serial, predicate))
+                .unwrap_or(true);
             let passed = match check.kind {
                 CheckKind::SerialContains | CheckKind::MarkerSeen => contains,
                 CheckKind::SerialNotContains | CheckKind::MarkerNotSeen => !contains,
@@ -4589,7 +4692,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compound_serial_properties_require_one_transcript() {
+    fn nested_serial_properties_require_one_transcript() {
         let run =
             std::env::temp_dir().join(format!("theseus-compound-property-{}", std::process::id()));
         let api = run.join("services/api");
@@ -4601,13 +4704,47 @@ mod tests {
         let property = CampaignProperty {
             name: "durable_write".to_owned(),
             kind: PropertyKind::Always,
-            contains: "THES:ASSERT:write:pass".to_owned(),
-            contains_all: vec!["THES:M:written".to_owned()],
-            contains_any: vec![
-                "THES:CHECKPOINT:write".to_owned(),
-                "THES:M:write_complete".to_owned(),
-            ],
-            contains_none: vec!["THES:ASSERT:panic".to_owned()],
+            contains: None,
+            contains_all: Vec::new(),
+            contains_any: Vec::new(),
+            contains_none: Vec::new(),
+            predicate: Some(SerialPredicate {
+                contains: None,
+                all: vec![
+                    SerialPredicate {
+                        contains: Some("THES:ASSERT:write:pass".to_owned()),
+                        all: Vec::new(),
+                        any: Vec::new(),
+                        none: Vec::new(),
+                    },
+                    SerialPredicate {
+                        contains: Some("THES:M:written".to_owned()),
+                        all: Vec::new(),
+                        any: Vec::new(),
+                        none: Vec::new(),
+                    },
+                ],
+                any: vec![
+                    SerialPredicate {
+                        contains: Some("THES:CHECKPOINT:write".to_owned()),
+                        all: Vec::new(),
+                        any: Vec::new(),
+                        none: Vec::new(),
+                    },
+                    SerialPredicate {
+                        contains: Some("THES:M:write_complete".to_owned()),
+                        all: Vec::new(),
+                        any: Vec::new(),
+                        none: Vec::new(),
+                    },
+                ],
+                none: vec![SerialPredicate {
+                    contains: Some("THES:ASSERT:panic".to_owned()),
+                    all: Vec::new(),
+                    any: Vec::new(),
+                    none: Vec::new(),
+                }],
+            }),
             service: None,
         };
 
