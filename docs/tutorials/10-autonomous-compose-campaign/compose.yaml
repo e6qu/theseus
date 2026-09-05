@@ -21,6 +21,9 @@ x-theseus:
   campaign:
     driver: api
     max_runs: 40
+    # Explore every ordered operation history through this depth. Repetition is
+    # intentional: it models retries and repeated reads without a host driver.
+    max_operations_per_run: 3
     # Explore one candidate and ordered pairs. The run cap still bounds the
     # complete corpus, even if this list grows.
     max_faults_per_run: 2

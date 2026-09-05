@@ -36,8 +36,11 @@ Start with `compose.yaml`.
    and `to` to block or restore only that directed service-to-service path.
 4. Add properties. `always` needs every timeline to contain the assertion.
    `sometimes` and `reachable` need one witness. `unreachable` needs none.
-5. Set `max_faults_per_run` to explore candidate sequences. It defaults to 2
-   and is capped at 4; `max_runs` remains the final bound on work.
+5. Set `max_operations_per_run` to explore every ordered operation history,
+   including repeated operations such as retries. It defaults to 3 and is
+   capped at 4. Set `max_faults_per_run` to explore candidate fault sequences;
+   it defaults to 2 and is capped at 4. `max_runs` remains the final bound on
+   executed work.
 6. Run `theseus compose explore`.
 
 The API deliberately reports a stale read as
@@ -49,6 +52,9 @@ normal serial, network, and storage evidence.
 
 A candidate pair is one timeline. For example, a `network_fault` after `write`
 and a `network_recover` after `retry` run together, in that operation order.
+Theseus explores operation histories breadth-first, so it tries every one-step
+operation before two-step histories, then every ordered pair such as
+`write → read_stale` and `read_stale → write`. Repeated operations are valid.
 The recovery restores only packet conditions: a simultaneous partition or
 directed-link action remains in force. This lets you test recovery without a
 host-side test script.
@@ -86,10 +92,10 @@ The campaign report shows checkpoint-node and prefix-reuse counts. They are
 execution details only: each run's `replay-plan.json` still contains the full
 operation history and replays independently.
 
-Theseus does not spend `max_runs` strictly in declaration order. It starts
-with a stable breadth-first seed, then gives priority to untried schedules
-that extend an operation prefix which produced a new `THES:M:` marker or a
-failure. The report records that selection reason and the full candidate count.
+Theseus first runs every one-operation history without faults. It then gives
+priority to untried schedules that extend an operation prefix which produced a
+new `THES:M:` marker or a failure. The report records that selection reason and
+the full candidate count.
 
 It also treats a changed simulated drive, network traffic/payload fingerprint,
 or virtual clock as a new topology state. This reaches divergent outcomes even
