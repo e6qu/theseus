@@ -20,6 +20,7 @@ networks:
 x-theseus:
   campaign:
     driver: api
+    stages: [write, read, recovery]
     max_runs: 40
     # Explore every ordered operation history through this depth. Repetition is
     # intentional: it models retries and repeated reads without a host driver.
@@ -30,16 +31,19 @@ x-theseus:
     operations:
       - name: write
         input: "write\n"
+        stage: write
         # The driver announces this boot marker before Theseus snapshots the
         # campaign root. Marker guards read the restored serial transcript.
         requires_markers: ["42"]
         max_uses: 1
       - name: read_stale
         input: "read_stale\n"
+        stage: read
         requires_markers: [written]
         max_uses: 1
       - name: retry
         input: "retry\n"
+        stage: recovery
         requires_markers: [written]
         excludes_markers: [stale]
         max_uses: 1
