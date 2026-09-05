@@ -238,6 +238,8 @@ pub enum VmmError {
     MmioDeviceManager(device_manager::mmio::MmioError),
     /// Error getting the KVM dirty bitmap. {0}
     DirtyBitmap(kvm_ioctls::Error),
+    /// Theseus: error reading a paused vCPU program counter. {0}
+    GuestProgramCounter(kvm_ioctls::Error),
     /// I8042 error: {0}
     I8042Error(devices::legacy::I8042DeviceError),
     #[cfg(target_arch = "x86_64")]
@@ -440,6 +442,43 @@ impl Vmm {
                 .map(|region| region.iter().map(|v| v.count_ones() as u64).sum::<u64>())
                 .sum(),
         )
+    }
+
+    /// Theseus: read the program counter of each paused KVM vCPU. These are
+    /// zero-instrumentation checkpoint samples, not instruction coverage;
+    /// callers must pause the VM first so a vCPU cannot advance between the
+    /// snapshot barrier and this read.
+    pub fn paused_vcpu_program_counters(&self) -> Result<Vec<u64>, VmmError> {
+        if self.instance_info.state != VmState::Paused {
+            return Err(VmmError::VcpuPause);
+        }
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        let handles = kvm_vm.vcpus_handles();
+        handles
+            .iter()
+            .map(|handle| {
+                #[cfg(target_arch = "aarch64")]
+                {
+                    let mut value = [0u8; 8];
+                    handle
+                        .vcpu_fd
+                        .get_one_reg(crate::arch::aarch64::regs::PC, &mut value)
+                        .map_err(VmmError::GuestProgramCounter)?;
+                    Ok(u64::from_ne_bytes(value))
+                }
+                #[cfg(target_arch = "x86_64")]
+                {
+                    handle
+                        .vcpu_fd
+                        .get_regs()
+                        .map(|registers| registers.rip)
+                        .map_err(VmmError::GuestProgramCounter)
+                }
+            })
+            .collect()
     }
 
     /// Theseus: push an event byte into the guest's control-channel FIFO.
