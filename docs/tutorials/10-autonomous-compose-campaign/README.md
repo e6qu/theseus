@@ -49,8 +49,9 @@ Start with `compose.yaml`.
    and `to` to block or restore only that directed service-to-service path.
 4. Add properties. `always` needs every timeline to contain the assertion.
    `sometimes` and `reachable` need one witness. `unreachable` needs none.
-   Add `contains_all` for evidence that must accompany `contains`, and
-   `contains_none` for evidence forbidden in that same service transcript.
+   Add `contains_all` for evidence that must accompany `contains`, `contains_any`
+   for one of several acceptable markers, and `contains_none` for evidence
+   forbidden in that same service transcript.
 5. Set `max_operations_per_run` to explore every ordered operation history,
    including repeated operations such as retries. It defaults to 3 and is
    capped at 4. Set `max_faults_per_run` to explore candidate fault sequences;

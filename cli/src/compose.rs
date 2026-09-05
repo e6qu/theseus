@@ -199,6 +199,8 @@ struct ComposeProperty {
     #[serde(default)]
     contains_all: Vec<String>,
     #[serde(default)]
+    contains_any: Vec<String>,
+    #[serde(default)]
     contains_none: Vec<String>,
     #[serde(default)]
     service: Option<String>,
@@ -386,6 +388,8 @@ pub struct PropertyPlan {
     pub contains: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contains_all: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contains_any: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contains_none: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1199,6 +1203,7 @@ fn campaign_plan(
             )));
         }
         if property.contains_all.iter().any(String::is_empty)
+            || property.contains_any.iter().any(String::is_empty)
             || property.contains_none.iter().any(String::is_empty)
         {
             return Err(ComposeError::Invalid(format!(
@@ -1219,6 +1224,7 @@ fn campaign_plan(
             kind: property.kind,
             contains: property.contains,
             contains_all: property.contains_all,
+            contains_any: property.contains_any,
             contains_none: property.contains_none,
             service: property.service,
         });
@@ -1785,11 +1791,15 @@ mod tests {
     #[test]
     fn parses_compound_campaign_property_predicates() {
         let property: ComposeProperty = serde_yaml::from_str(
-            "name: durable_write\nkind: always\ncontains: THES:ASSERT:write:pass\ncontains_all: [THES:M:written]\ncontains_none: [THES:ASSERT:panic]\n",
+            "name: durable_write\nkind: always\ncontains: THES:ASSERT:write:pass\ncontains_all: [THES:M:written]\ncontains_any: [THES:CHECKPOINT:write, THES:M:written]\ncontains_none: [THES:ASSERT:panic]\n",
         )
         .unwrap();
 
         assert_eq!(property.contains_all, ["THES:M:written"]);
+        assert_eq!(
+            property.contains_any,
+            ["THES:CHECKPOINT:write", "THES:M:written"]
+        );
         assert_eq!(property.contains_none, ["THES:ASSERT:panic"]);
     }
 
