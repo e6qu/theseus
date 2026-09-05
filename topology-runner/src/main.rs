@@ -248,6 +248,8 @@ struct CampaignMinimization {
     minimized_operations: Vec<String>,
     original_faults: Vec<String>,
     minimized_faults: Vec<String>,
+    operation_attempts: usize,
+    fault_attempts: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1768,11 +1770,11 @@ fn campaign_actions(run: &Path) -> Result<Vec<AppliedCampaignAction>, String> {
 }
 
 /// Delta-debug the first timeline that violates an individual property. The
-/// reducer removes operations, then selected faults, and restores the same
-/// complete, locked topology checkpoint for every attempt. It does not pretend
-/// that `sometimes` and `reachable` failures have a single counterexample:
-/// those properties fail because the corpus has no witness, so their full first
-/// schedule is retained.
+/// reducer uses coarse-to-fine delta debugging for operations, then selected
+/// faults, restoring the same complete, locked topology checkpoint for every
+/// attempt. It does not pretend that `sometimes` and `reachable` failures have
+/// a single counterexample: those properties fail because the corpus has no
+/// witness, so their full first schedule is retained.
 fn execute_campaign_minimized(
     mut topology: TopologyPlan,
     output: &Path,
@@ -1805,16 +1807,36 @@ fn execute_campaign_minimized(
     let attempts = output.join("minimization-attempts");
     fs::create_dir_all(&attempts).map_err(|error| error.to_string())?;
     let mut attempt = 0_usize;
-    let mut index = 0;
-    while index < schedule.operations.len() {
-        let candidate = campaign_without_operation(&schedule, index);
-        if candidate.operations.is_empty() {
-            index += 1;
-            continue;
-        }
+    let faults = schedule.faults.clone();
+    let (operations, operation_attempts) =
+        minimize_campaign_items(schedule.operations.clone(), 1, |operations| {
+            let candidate = CampaignSchedule {
+                operations: operations.to_vec(),
+                faults: faults.clone(),
+            };
+            let directory = attempts.join(format!("{attempt:03}"));
+            attempt += 1;
+            execute_campaign_minimization_attempt(
+                &topology,
+                &campaign,
+                &base,
+                &mut checkpoints,
+                &candidate,
+                &property,
+                output,
+                &directory,
+            )
+        })?;
+    schedule.operations = operations;
+    let operations = schedule.operations.clone();
+    let (faults, fault_attempts) = minimize_campaign_items(schedule.faults.clone(), 0, |faults| {
+        let candidate = CampaignSchedule {
+            operations: operations.clone(),
+            faults: faults.to_vec(),
+        };
         let directory = attempts.join(format!("{attempt:03}"));
         attempt += 1;
-        if execute_campaign_minimization_attempt(
+        execute_campaign_minimization_attempt(
             &topology,
             &campaign,
             &base,
@@ -1823,32 +1845,9 @@ fn execute_campaign_minimized(
             &property,
             output,
             &directory,
-        )? {
-            schedule = candidate;
-        } else {
-            index += 1;
-        }
-    }
-    let mut index = 0;
-    while index < schedule.faults.len() {
-        let candidate = campaign_without_fault(&schedule, index);
-        let directory = attempts.join(format!("{attempt:03}"));
-        attempt += 1;
-        if execute_campaign_minimization_attempt(
-            &topology,
-            &campaign,
-            &base,
-            &mut checkpoints,
-            &candidate,
-            &property,
-            output,
-            &directory,
-        )? {
-            schedule = candidate;
-        } else {
-            index += 1;
-        }
-    }
+        )
+    })?;
+    schedule.faults = faults;
     let prefix = checkpoints.checkpoint_for_schedule(&topology, &campaign, &schedule, output)?;
     let mut replay: TopologyPlan = serde_json::from_slice(&base)
         .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
@@ -1900,6 +1899,8 @@ fn execute_campaign_minimized(
             minimized_operations,
             original_faults,
             minimized_faults: campaign_fault_names(&campaign, &schedule.faults),
+            operation_attempts,
+            fault_attempts,
             fault: (schedule.faults.len() == 1)
                 .then(|| campaign_fault_name(&campaign.faults[schedule.faults[0]])),
             faults: campaign_fault_names(&campaign, &schedule.faults),
@@ -1915,6 +1916,48 @@ fn execute_campaign_minimized(
     } else {
         Err("campaign counterexample did not reproduce during minimization".to_owned())
     }
+}
+
+/// Apply classic `ddmin` deletion passes. Start with broad contiguous chunks,
+/// then refine only when no chunk can be removed. At its finest granularity the
+/// result is still 1-minimal, while long irrelevant prefixes disappear in one
+/// replay attempt.
+fn minimize_campaign_items<F>(
+    mut items: Vec<usize>,
+    minimum_len: usize,
+    mut property_fails: F,
+) -> Result<(Vec<usize>, usize), String>
+where
+    F: FnMut(&[usize]) -> Result<bool, String>,
+{
+    let mut granularity = 2_usize;
+    let mut attempts = 0_usize;
+    while items.len() > minimum_len {
+        let chunk_len = items.len().div_ceil(granularity);
+        let mut reduced = None;
+        for start in (0..items.len()).step_by(chunk_len) {
+            let end = (start + chunk_len).min(items.len());
+            if items.len() - (end - start) < minimum_len {
+                continue;
+            }
+            let mut candidate = items.clone();
+            candidate.drain(start..end);
+            attempts += 1;
+            if property_fails(&candidate)? {
+                reduced = Some(candidate);
+                break;
+            }
+        }
+        if let Some(candidate) = reduced {
+            items = candidate;
+            granularity = granularity.saturating_sub(1).max(2);
+        } else if granularity >= items.len() {
+            break;
+        } else {
+            granularity = (granularity * 2).min(items.len());
+        }
+    }
+    Ok((items, attempts))
 }
 
 /// Run one candidate from its longest reusable operation/action checkpoint.
@@ -2094,18 +2137,6 @@ fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
 struct CampaignSchedule {
     operations: Vec<usize>,
     faults: Vec<usize>,
-}
-
-fn campaign_without_operation(schedule: &CampaignSchedule, index: usize) -> CampaignSchedule {
-    let mut candidate = schedule.clone();
-    candidate.operations.remove(index);
-    candidate
-}
-
-fn campaign_without_fault(schedule: &CampaignSchedule, index: usize) -> CampaignSchedule {
-    let mut candidate = schedule.clone();
-    candidate.faults.remove(index);
-    candidate
 }
 
 #[derive(Clone, Debug)]
@@ -4471,19 +4502,25 @@ mod tests {
     }
 
     #[test]
-    fn campaign_fault_reduction_keeps_operation_and_fault_order() {
-        let schedule = CampaignSchedule {
-            operations: vec![3, 5],
-            faults: vec![2, 7, 11],
-        };
+    fn campaign_delta_debugging_removes_large_irrelevant_chunks() {
+        let mut attempted_lengths = Vec::new();
+        let (reduced, attempts) = minimize_campaign_items((0..8).collect(), 1, |candidate| {
+            attempted_lengths.push(candidate.len());
+            Ok(candidate.contains(&7))
+        })
+        .unwrap();
 
-        assert_eq!(campaign_without_fault(&schedule, 1).operations, vec![3, 5]);
-        assert_eq!(campaign_without_fault(&schedule, 1).faults, vec![2, 11]);
-        assert_eq!(campaign_without_operation(&schedule, 0).operations, vec![5]);
-        assert_eq!(
-            campaign_without_operation(&schedule, 0).faults,
-            vec![2, 7, 11]
-        );
+        assert_eq!(reduced, vec![7]);
+        assert!(attempted_lengths.contains(&4));
+        assert_eq!(attempts, attempted_lengths.len());
+    }
+
+    #[test]
+    fn campaign_delta_debugging_can_remove_every_fault() {
+        let (reduced, attempts) = minimize_campaign_items(vec![2, 7, 11], 0, |_| Ok(true)).unwrap();
+
+        assert!(reduced.is_empty());
+        assert!(attempts > 0);
     }
 
     #[test]
