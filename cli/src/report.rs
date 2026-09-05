@@ -136,6 +136,10 @@ struct CampaignOperation {
     #[serde(default)]
     excludes: Vec<String>,
     #[serde(default)]
+    requires_markers: Vec<String>,
+    #[serde(default)]
+    excludes_markers: Vec<String>,
+    #[serde(default)]
     max_uses: Option<u8>,
 }
 
@@ -161,6 +165,8 @@ struct CampaignResult {
     checkpoint_reuses: usize,
     #[serde(default)]
     generated_candidates: usize,
+    #[serde(default)]
+    marker_guard_rejections: usize,
     #[serde(default)]
     unique_topology_states: usize,
     #[serde(default)]
@@ -525,9 +531,10 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         coverage: Some(Coverage {
             label: "Campaign corpus".to_owned(),
             summary: format!(
-                "{} of {} deterministic candidates selected by marker and topology-state coverage; {} unique topology states; {} reusable checkpoint nodes, {} prefix reuses",
+                "{} of {} deterministic candidates selected by marker and topology-state coverage; {} marker-guard leaves skipped; {} unique topology states; {} reusable checkpoint nodes, {} prefix reuses",
                 result.runs.len(),
                 result.generated_candidates,
+                result.marker_guard_rejections,
                 result.unique_topology_states,
                 result.checkpoint_nodes,
                 result.checkpoint_reuses,
@@ -658,7 +665,7 @@ if(m.error){{const e=section('Error');e.append(el('pre',m.error));}}
 const replay=section(m.command_label);replay.append(el('pre',m.command));
 if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));if(n.serial_log){{d.append(el('p','serial log: '+n.serial_log));}}d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
-if(m.campaign_operations.length){{const s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Requires earlier','Excludes earlier','Maximum uses']));}}
+if(m.campaign_operations.length){{const s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Maximum uses']));}}
 if(m.campaign_runs.length){{const s=section('Generated timelines');s.append(table(m.campaign_runs.map(r=>[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',r.state_novel?'new':'seen',r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none']),['Run','Operations','Candidates','Selection','Topology state','Applied actions','Status','New markers']));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
 if(m.campaign_minimization){{const x=m.campaign_minimization,s=section('Campaign minimization');s.append(table([[x.property,x.original_operations.join(' → ')||'none',x.minimized_operations.join(' → ')||'none',x.original_faults.join(' + ')||'none',x.minimized_faults.join(' + ')||'none',String(x.operation_attempts),String(x.fault_attempts)]],['Property','Original operations','1-minimal operations','Original faults','1-minimal faults','Operation replays','Fault replays']));}}
@@ -733,11 +740,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         write_json(
             &directory.path().join("replay-plan.json"),
-            r#"{"format":"theseus-compose-plan-v1","campaign":{"operations":[{"name":"write","max_uses":1},{"name":"close","requires":["write"],"max_uses":1},{"name":"read","requires":["write"],"excludes":["close"]}]}}"#,
+            r#"{"format":"theseus-compose-plan-v1","campaign":{"operations":[{"name":"write","max_uses":1},{"name":"close","requires":["write"],"requires_markers":["written"],"max_uses":1},{"name":"read","requires":["write"],"excludes":["close"],"excludes_markers":["closed"]}]}}"#,
         );
         write_json(
             &directory.path().join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"unique_topology_states":3,"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"marker_guard_rejections":2,"unique_topology_states":3,"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
         );
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
@@ -753,6 +760,7 @@ mod tests {
         assert!(html.contains(
             "1 of 12 deterministic candidates selected by marker and topology-state coverage"
         ));
+        assert!(html.contains("2 marker-guard leaves skipped"));
         assert!(html.contains("3 unique topology states"));
         assert!(
             html.contains("extends 1-operation prefix with 2 new marker(s) and new topology state")
@@ -761,6 +769,8 @@ mod tests {
         assert!(html.contains("Operation model"));
         assert!(html.contains("Requires earlier"));
         assert!(html.contains("Excludes earlier"));
+        assert!(html.contains("Requires observed marker"));
+        assert!(html.contains("Excludes observed marker"));
         assert!(html.contains("Maximum uses"));
         assert!(html.contains("unbounded"));
         assert!(html.contains("Replay verification"));

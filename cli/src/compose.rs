@@ -103,6 +103,10 @@ struct ComposeOperation {
     #[serde(default)]
     excludes: Vec<String>,
     #[serde(default)]
+    requires_markers: Vec<String>,
+    #[serde(default)]
+    excludes_markers: Vec<String>,
+    #[serde(default)]
     max_uses: Option<u8>,
 }
 
@@ -300,6 +304,10 @@ pub struct OperationPlan {
     pub requires: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excludes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_markers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excludes_markers: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_uses: Option<u8>,
 }
@@ -543,6 +551,8 @@ fn campaign_plan(
             input_hex: hex(operation.input.as_bytes()),
             requires: operation.requires,
             excludes: operation.excludes,
+            requires_markers: operation.requires_markers,
+            excludes_markers: operation.excludes_markers,
             max_uses: operation.max_uses,
         });
     }
@@ -1241,6 +1251,32 @@ fn validate_campaign_operation_rules(operations: &[OperationPlan]) -> Result<(),
                 )));
             }
         }
+        let mut required_markers = BTreeSet::new();
+        for marker in &operation.requires_markers {
+            validate_name("campaign operation required marker", marker)?;
+            if !required_markers.insert(marker) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} requires marker {:?} more than once",
+                    operation.name, marker
+                )));
+            }
+        }
+        let mut excluded_markers = BTreeSet::new();
+        for marker in &operation.excludes_markers {
+            validate_name("campaign operation excluded marker", marker)?;
+            if !excluded_markers.insert(marker) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} excludes marker {:?} more than once",
+                    operation.name, marker
+                )));
+            }
+            if required_markers.contains(marker) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} both requires and excludes marker {:?}",
+                    operation.name, marker
+                )));
+            }
+        }
         if operation
             .max_uses
             .is_some_and(|maximum| maximum == 0 || maximum > 4)
@@ -1738,6 +1774,7 @@ x-theseus:
       - name: write
         input: "write\n"
         max_uses: 1
+        requires_markers: [booted]
       - name: close
         input: "close\n"
         requires: [write]
@@ -1746,6 +1783,7 @@ x-theseus:
         input: "read\n"
         requires: [write]
         excludes: [close]
+        excludes_markers: [closed]
 "#,
         );
         let campaign = load_compose_plan(directory.path().join("compose.yaml"))
@@ -1753,7 +1791,9 @@ x-theseus:
             .campaign
             .unwrap();
         assert_eq!(campaign.operations[0].max_uses, Some(1));
+        assert_eq!(campaign.operations[0].requires_markers, vec!["booted"]);
         assert_eq!(campaign.operations[2].excludes, vec!["close"]);
+        assert_eq!(campaign.operations[2].excludes_markers, vec!["closed"]);
     }
 
     #[test]
@@ -1928,6 +1968,32 @@ x-theseus:
         assert!(error
             .to_string()
             .contains("max_uses must be between 1 and 4"));
+    }
+
+    #[test]
+    fn rejects_conflicting_campaign_operation_marker_guards() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: read
+        input: "read\n"
+        requires_markers: [written]
+        excludes_markers: [written]
+"#,
+        );
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("both requires and excludes marker"));
     }
 
     #[test]

@@ -85,6 +85,10 @@ struct CampaignOperation {
     #[serde(default)]
     excludes: Vec<String>,
     #[serde(default)]
+    requires_markers: Vec<String>,
+    #[serde(default)]
+    excludes_markers: Vec<String>,
+    #[serde(default)]
     max_uses: Option<u8>,
 }
 
@@ -187,6 +191,7 @@ struct CampaignResult {
     checkpoint_nodes: usize,
     checkpoint_reuses: usize,
     generated_candidates: usize,
+    marker_guard_rejections: usize,
     unique_topology_states: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     replay_verification: Option<CampaignReplayVerification>,
@@ -1205,20 +1210,32 @@ impl CampaignCheckpointTree {
         }
     }
 
-    fn checkpoint_for_schedule(
+    /// Materialize a history one operation at a time. Each state and marker
+    /// guard sees the exact restored parent checkpoint, so an invalid earlier
+    /// operation can never become a prefix for a later leaf.
+    fn checkpoint_for_guarded_schedule(
         &mut self,
         topology: &TopologyPlan,
         campaign: &CampaignPlan,
         schedule: &CampaignSchedule,
         directory: &Path,
-    ) -> Result<CampaignPrefixCheckpoint, String> {
+    ) -> Result<Option<CampaignPrefixCheckpoint>, String> {
         let events = campaign_schedule_events(campaign, schedule)?;
         let mut prefix = Vec::new();
         let mut parent = CampaignPrefixCheckpoint {
             checkpoint: self.root.clone(),
             actions: Vec::new(),
         };
-        for event in events {
+        for (index, (operation, event)) in schedule.operations.iter().zip(events).enumerate() {
+            if !campaign_operation_is_ready(campaign, &schedule.operations[..index], *operation)
+                || !campaign_operation_marker_guards_are_ready(
+                    campaign,
+                    &parent.checkpoint,
+                    *operation,
+                )
+            {
+                return Ok(None);
+            }
             prefix.push(event);
             let key = campaign_prefix_key(&prefix)?;
             if let Some(existing) = self.prefixes.get(&key) {
@@ -1241,7 +1258,7 @@ impl CampaignCheckpointTree {
             };
             self.prefixes.insert(key, parent.clone());
         }
-        Ok(parent)
+        Ok(Some(parent))
     }
 
     fn nodes(&self) -> usize {
@@ -1489,6 +1506,7 @@ fn execute_campaign(
     let mut pending = (0..schedules.len()).collect::<Vec<_>>();
     let mut observations = Vec::new();
     let mut replay_mismatches = Vec::new();
+    let mut marker_guard_rejections = 0_usize;
     while runs.len()
         < replay_schedules
             .as_ref()
@@ -1518,8 +1536,26 @@ fn execute_campaign(
                 None,
             )
         };
-        let prefix =
-            checkpoints.checkpoint_for_schedule(&topology, &campaign, &schedule, output)?;
+        // Guards inspect each exact restored parent checkpoint. A fault after
+        // an earlier operation is visible to the next operation's guard, just
+        // as it is to the guest; impossible prefixes never become leaves.
+        let Some(prefix) =
+            checkpoints.checkpoint_for_guarded_schedule(&topology, &campaign, &schedule, output)?
+        else {
+            if expected.is_some() {
+                return Err(format!(
+                    "recorded campaign history no longer satisfies its marker guards: {}",
+                    schedule
+                        .operations
+                        .iter()
+                        .map(|operation| campaign.operations[*operation].name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" -> ")
+                ));
+            }
+            marker_guard_rejections += 1;
+            continue;
+        };
         let mut replay: TopologyPlan = serde_json::from_slice(&base)
             .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
         apply_campaign_schedule(&mut replay, &campaign, &schedule)?;
@@ -1595,6 +1631,9 @@ fn execute_campaign(
         }
         runs.push(run);
     }
+    if runs.is_empty() {
+        return Err("campaign produced no schedules after marker guards".to_owned());
+    }
     let properties = evaluate_campaign_properties(&campaign, output, &runs)?;
     let passed = runs.iter().all(|run| run.status == "passed")
         && properties
@@ -1636,6 +1675,7 @@ fn execute_campaign(
             checkpoint_nodes: checkpoints.nodes(),
             checkpoint_reuses: checkpoints.reuses,
             generated_candidates: schedules.len(),
+            marker_guard_rejections,
             unique_topology_states: seen_topology_states.len(),
             replay_verification: recorded.map(|recorded| CampaignReplayVerification {
                 status: if replay_verified { "passed" } else { "failed" },
@@ -1860,7 +1900,11 @@ fn execute_campaign_minimized(
         )
     })?;
     schedule.faults = faults;
-    let prefix = checkpoints.checkpoint_for_schedule(&topology, &campaign, &schedule, output)?;
+    let prefix = checkpoints
+        .checkpoint_for_guarded_schedule(&topology, &campaign, &schedule, output)?
+        .ok_or_else(|| {
+            "minimized campaign history no longer satisfies its marker guards".to_owned()
+        })?;
     let mut replay: TopologyPlan = serde_json::from_slice(&base)
         .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
     apply_campaign_schedule(&mut replay, &campaign, &schedule)?;
@@ -1985,7 +2029,11 @@ fn execute_campaign_minimization_attempt(
     output: &Path,
     directory: &Path,
 ) -> Result<bool, String> {
-    let prefix = checkpoints.checkpoint_for_schedule(topology, campaign, schedule, output)?;
+    let Some(prefix) =
+        checkpoints.checkpoint_for_guarded_schedule(topology, campaign, schedule, output)?
+    else {
+        return Ok(false);
+    };
     let mut replay: TopologyPlan = serde_json::from_slice(base)
         .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
     apply_campaign_schedule(&mut replay, campaign, schedule)?;
@@ -2149,6 +2197,39 @@ fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
 struct CampaignSchedule {
     operations: Vec<usize>,
     faults: Vec<usize>,
+}
+
+fn campaign_operation_marker_guards_are_ready(
+    campaign: &CampaignPlan,
+    checkpoint: &CampaignCheckpoint,
+    operation: usize,
+) -> bool {
+    let markers = campaign_checkpoint_markers(checkpoint);
+    let candidate = &campaign.operations[operation];
+    candidate
+        .requires_markers
+        .iter()
+        .all(|marker| markers.contains(marker))
+        && candidate
+            .excludes_markers
+            .iter()
+            .all(|marker| !markers.contains(marker))
+}
+
+fn campaign_checkpoint_markers(
+    checkpoint: &CampaignCheckpoint,
+) -> std::collections::BTreeSet<String> {
+    let mut markers = std::collections::BTreeSet::new();
+    for service in checkpoint.scheduler.values() {
+        for serial in &service.serial_contents {
+            for line in String::from_utf8_lossy(serial).lines() {
+                if let Some(marker) = line.trim().strip_prefix("THES:M:") {
+                    markers.insert(marker.to_owned());
+                }
+            }
+        }
+    }
+    markers
 }
 
 #[derive(Clone, Debug)]
@@ -4328,6 +4409,67 @@ fn lock_artifact(service_dir: &Path, name: &str, artifact: &Artifact) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn campaign_marker_guards_use_the_restored_parent_transcript() {
+        let campaign = CampaignPlan {
+            driver: "api".to_owned(),
+            operations: vec![
+                CampaignOperation {
+                    name: "write".to_owned(),
+                    input_hex: "77726974650a".to_owned(),
+                    requires: Vec::new(),
+                    excludes: Vec::new(),
+                    requires_markers: Vec::new(),
+                    excludes_markers: Vec::new(),
+                    max_uses: Some(1),
+                },
+                CampaignOperation {
+                    name: "read".to_owned(),
+                    input_hex: "726561640a".to_owned(),
+                    requires: vec!["write".to_owned()],
+                    excludes: Vec::new(),
+                    requires_markers: vec!["written".to_owned()],
+                    excludes_markers: vec!["closed".to_owned()],
+                    max_uses: Some(1),
+                },
+            ],
+            faults: Vec::new(),
+            properties: Vec::new(),
+            max_runs: 8,
+            max_faults_per_run: 1,
+            max_operations_per_run: 2,
+        };
+        let checkpoint = CampaignCheckpoint {
+            switches: BTreeMap::new(),
+            services: BTreeMap::new(),
+            scheduler: BTreeMap::from([(
+                "api".to_owned(),
+                ServiceSchedulerCheckpoint {
+                    serial_contents: vec![b"THES:M:42\nTHES:M:written\n".to_vec()],
+                    next_fault: 0,
+                    paused_until: None,
+                    faults: Vec::new(),
+                    network_traffic: BTreeMap::new(),
+                    network_trace: BTreeMap::new(),
+                },
+            )]),
+            round: 0,
+        };
+
+        assert!(campaign_operation_marker_guards_are_ready(
+            &campaign,
+            &checkpoint,
+            1
+        ));
+
+        let mut closed = checkpoint.clone();
+        closed.scheduler.get_mut("api").unwrap().serial_contents[0]
+            .extend_from_slice(b"THES:M:closed\n");
+        assert!(!campaign_operation_marker_guards_are_ready(
+            &campaign, &closed, 1
+        ));
+    }
 
     #[test]
     fn campaign_prefix_key_includes_barrier_actions() {
