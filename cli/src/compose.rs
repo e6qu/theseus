@@ -82,6 +82,8 @@ struct ComposeCampaign {
     driver: String,
     operations: Vec<ComposeOperation>,
     #[serde(default)]
+    stages: Vec<String>,
+    #[serde(default)]
     faults: Vec<ComposeCampaignFault>,
     #[serde(default)]
     properties: Vec<ComposeProperty>,
@@ -98,6 +100,8 @@ struct ComposeCampaign {
 struct ComposeOperation {
     name: String,
     input: String,
+    #[serde(default)]
+    stage: Option<String>,
     #[serde(default)]
     requires: Vec<String>,
     #[serde(default)]
@@ -289,6 +293,8 @@ pub struct ComposeServicePlan {
 pub struct CampaignPlan {
     pub driver: String,
     pub operations: Vec<OperationPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<String>,
     pub faults: Vec<CampaignFaultPlan>,
     pub properties: Vec<PropertyPlan>,
     pub max_runs: u16,
@@ -300,6 +306,8 @@ pub struct CampaignPlan {
 pub struct OperationPlan {
     pub name: String,
     pub input_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -549,6 +557,7 @@ fn campaign_plan(
         operations.push(OperationPlan {
             name: operation.name,
             input_hex: hex(operation.input.as_bytes()),
+            stage: operation.stage,
             requires: operation.requires,
             excludes: operation.excludes,
             requires_markers: operation.requires_markers,
@@ -556,7 +565,7 @@ fn campaign_plan(
             max_uses: operation.max_uses,
         });
     }
-    validate_campaign_operation_rules(&operations)?;
+    validate_campaign_operation_rules(&operations, &campaign.stages)?;
     let mut faults = Vec::with_capacity(campaign.faults.len());
     for candidate in campaign.faults {
         let after_is_operation =
@@ -1199,6 +1208,7 @@ fn campaign_plan(
     Ok(Some(CampaignPlan {
         driver: campaign.driver,
         operations,
+        stages: campaign.stages,
         faults,
         properties,
         max_runs: campaign.max_runs,
@@ -1207,12 +1217,37 @@ fn campaign_plan(
     }))
 }
 
-fn validate_campaign_operation_rules(operations: &[OperationPlan]) -> Result<(), ComposeError> {
+fn validate_campaign_operation_rules(
+    operations: &[OperationPlan],
+    stages: &[String],
+) -> Result<(), ComposeError> {
+    let mut stage_names = BTreeSet::new();
+    for stage in stages {
+        validate_name("campaign stage", stage)?;
+        if !stage_names.insert(stage) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign stage {stage:?} is declared more than once"
+            )));
+        }
+    }
     let names = operations
         .iter()
         .map(|operation| operation.name.as_str())
         .collect::<BTreeSet<_>>();
     for operation in operations {
+        if let Some(stage) = &operation.stage {
+            if !stage_names.contains(stage) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} references unknown stage {stage:?}",
+                    operation.name
+                )));
+            }
+        } else if !stages.is_empty() {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {:?} must declare one of the campaign stages",
+                operation.name
+            )));
+        }
         let mut requirements = BTreeSet::new();
         for requirement in &operation.requires {
             validate_name("campaign operation requirement", requirement)?;

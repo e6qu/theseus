@@ -58,6 +58,8 @@ struct CampaignPlan {
     driver: String,
     operations: Vec<CampaignOperation>,
     #[serde(default)]
+    stages: Vec<String>,
+    #[serde(default)]
     faults: Vec<CampaignFault>,
     #[serde(default)]
     properties: Vec<CampaignProperty>,
@@ -80,6 +82,8 @@ fn default_campaign_operations_per_run() -> u8 {
 struct CampaignOperation {
     name: String,
     input_hex: String,
+    #[serde(default)]
+    stage: Option<String>,
     #[serde(default)]
     requires: Vec<String>,
     #[serde(default)]
@@ -2321,17 +2325,39 @@ fn campaign_operation_is_ready(
     operation: usize,
 ) -> bool {
     let candidate = &campaign.operations[operation];
-    candidate.requires.iter().all(|requirement| {
-        history
+    let candidate_stage = candidate.stage.as_ref().and_then(|stage| {
+        campaign
+            .stages
             .iter()
-            .any(|prior| campaign.operations[*prior].name == requirement.as_str())
-    }) && candidate.excludes.iter().all(|exclusion| {
-        history
-            .iter()
-            .all(|prior| campaign.operations[*prior].name != exclusion.as_str())
-    }) && candidate.max_uses.map_or(true, |maximum| {
-        history.iter().filter(|prior| **prior == operation).count() < usize::from(maximum)
-    })
+            .position(|declared| declared == stage)
+    });
+    let stages_are_ordered = history.iter().all(|prior| {
+        let prior_stage = campaign.operations[*prior]
+            .stage
+            .as_ref()
+            .and_then(|stage| {
+                campaign
+                    .stages
+                    .iter()
+                    .position(|declared| declared == stage)
+            });
+        prior_stage.is_none()
+            || candidate_stage.is_none_or(|candidate| prior_stage <= Some(candidate))
+    });
+    stages_are_ordered
+        && candidate.requires.iter().all(|requirement| {
+            history
+                .iter()
+                .any(|prior| campaign.operations[*prior].name == requirement.as_str())
+        })
+        && candidate.excludes.iter().all(|exclusion| {
+            history
+                .iter()
+                .all(|prior| campaign.operations[*prior].name != exclusion.as_str())
+        })
+        && candidate.max_uses.map_or(true, |maximum| {
+            history.iter().filter(|prior| **prior == operation).count() < usize::from(maximum)
+        })
 }
 
 fn ordered_operation_histories<F>(
@@ -4460,6 +4486,7 @@ mod tests {
                 CampaignOperation {
                     name: "write".to_owned(),
                     input_hex: "77726974650a".to_owned(),
+                    stage: None,
                     requires: Vec::new(),
                     excludes: Vec::new(),
                     requires_markers: Vec::new(),
@@ -4469,6 +4496,7 @@ mod tests {
                 CampaignOperation {
                     name: "read".to_owned(),
                     input_hex: "726561640a".to_owned(),
+                    stage: None,
                     requires: vec!["write".to_owned()],
                     excludes: Vec::new(),
                     requires_markers: vec!["written".to_owned()],
@@ -4476,6 +4504,7 @@ mod tests {
                     max_uses: Some(1),
                 },
             ],
+            stages: Vec::new(),
             faults: Vec::new(),
             properties: Vec::new(),
             max_runs: 8,

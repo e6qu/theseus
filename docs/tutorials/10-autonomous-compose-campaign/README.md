@@ -28,6 +28,9 @@ Start with `compose.yaml`.
    decision depends on what the guest actually reported. Theseus reads
    `THES:M:marker` lines from the restored parent checkpoint before extending
    it, so a blocked operation never consumes a campaign run.
+   Use `stages: [setup, workload, recovery]` and give every operation a
+   `stage`. Histories may stay in a stage or move forward, never back. This is
+   the compact way to express a workflow without pairwise exclusions.
 3. List fault candidates. `partition` and `heal` change every simulated NIC on
    a named network. `network_fault` changes selected packet conditions on every
    NIC on that network; set any of `drop_ppm`, `duplicate_ppm`, `corrupt_ppm`,
