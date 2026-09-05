@@ -75,9 +75,10 @@ Theseus boots the complete topology once, then restores every candidate and
 every minimization attempt from that same checkpoint. Theseus also snapshots
 each distinct operation prefix after its UART barrier. Schedules that share a
 prefix restore that node instead of re-running its earlier operations. The
-result is one
-ordinary Compose replay bundle with a check that proves the counterexample
-still occurs.
+reducer first removes operations, then removes selected topology faults, while
+the same property still fails. `minimization.json` records both the original
+and minimized operation and fault sequences. The result is one ordinary Compose
+replay bundle with a check that proves the counterexample still occurs.
 
 The campaign report shows checkpoint-node and prefix-reuse counts. They are
 execution details only: each run's `replay-plan.json` still contains the full
