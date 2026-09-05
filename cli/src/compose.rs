@@ -100,6 +100,10 @@ struct ComposeOperation {
     input: String,
     #[serde(default)]
     requires: Vec<String>,
+    #[serde(default)]
+    excludes: Vec<String>,
+    #[serde(default)]
+    max_uses: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,6 +298,10 @@ pub struct OperationPlan {
     pub input_hex: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excludes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_uses: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -534,9 +542,11 @@ fn campaign_plan(
             name: operation.name,
             input_hex: hex(operation.input.as_bytes()),
             requires: operation.requires,
+            excludes: operation.excludes,
+            max_uses: operation.max_uses,
         });
     }
-    validate_campaign_operation_requirements(&operations)?;
+    validate_campaign_operation_rules(&operations)?;
     let mut faults = Vec::with_capacity(campaign.faults.len());
     for candidate in campaign.faults {
         let after_is_operation =
@@ -1187,9 +1197,7 @@ fn campaign_plan(
     }))
 }
 
-fn validate_campaign_operation_requirements(
-    operations: &[OperationPlan],
-) -> Result<(), ComposeError> {
+fn validate_campaign_operation_rules(operations: &[OperationPlan]) -> Result<(), ComposeError> {
     let names = operations
         .iter()
         .map(|operation| operation.name.as_str())
@@ -1210,6 +1218,37 @@ fn validate_campaign_operation_requirements(
                     operation.name, requirement
                 )));
             }
+        }
+        let mut exclusions = BTreeSet::new();
+        for exclusion in &operation.excludes {
+            validate_name("campaign operation exclusion", exclusion)?;
+            if !names.contains(exclusion.as_str()) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} excludes unknown operation {:?}",
+                    operation.name, exclusion
+                )));
+            }
+            if !exclusions.insert(exclusion) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} excludes {:?} more than once",
+                    operation.name, exclusion
+                )));
+            }
+            if requirements.contains(exclusion) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} both requires and excludes {:?}",
+                    operation.name, exclusion
+                )));
+            }
+        }
+        if operation
+            .max_uses
+            .is_some_and(|maximum| maximum == 0 || maximum > 4)
+        {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {:?} max_uses must be between 1 and 4",
+                operation.name
+            )));
         }
     }
     let mut reachable = BTreeSet::new();
@@ -1683,6 +1722,41 @@ x-theseus:
     }
 
     #[test]
+    fn normalizes_campaign_operation_state_rules() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input: "write\n"
+        max_uses: 1
+      - name: close
+        input: "close\n"
+        requires: [write]
+        max_uses: 1
+      - name: read
+        input: "read\n"
+        requires: [write]
+        excludes: [close]
+"#,
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        assert_eq!(campaign.operations[0].max_uses, Some(1));
+        assert_eq!(campaign.operations[2].excludes, vec!["close"]);
+    }
+
+    #[test]
     fn normalizes_operation_barrier_topology_actions() {
         let directory = fixture(
             "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: read\n        input: 'read\\n'\n    faults:\n      - kind: partition\n        network: backplane\n        after: write\n      - kind: link_partition\n        network: backplane\n        from: api\n        to: worker\n        after: write\n      - kind: link_heal\n        network: backplane\n        from: api\n        to: worker\n        after: read\n      - kind: storage_fault\n        service: worker\n        drive: data\n        after: write\n        error_ppm: 1000000\n        torn_write_bytes: 1\n      - kind: storage_recover\n        service: worker\n        drive: data\n        after: read\n      - kind: network_fault\n        network: backplane\n        after: write\n        drop_ppm: 1000000\n        latency_rounds: 3\n      - kind: network_recover\n        network: backplane\n        after: read\n",
@@ -1825,6 +1899,35 @@ x-theseus:
         assert!(error
             .to_string()
             .contains("operation requirements cannot reach"));
+    }
+
+    #[test]
+    fn rejects_invalid_campaign_operation_state_rules() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input: "write\n"
+        max_uses: 0
+      - name: read
+        input: "read\n"
+        requires: [write]
+        excludes: [write]
+"#,
+        );
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("max_uses must be between 1 and 4"));
     }
 
     #[test]

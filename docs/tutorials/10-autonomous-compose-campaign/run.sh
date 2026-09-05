@@ -41,6 +41,7 @@ theseus compose replay stale-read-replay --output stale-read-rerun
 grep -a 'counterexample: consistent_read' stale-read-rerun/services/api/result.json
 theseus report --output campaign-report theseus-compose-campaign
 grep -a 'Autonomous Compose campaign' campaign-report/index.html
+grep -a 'Operation model' campaign-report/index.html
 theseus report --output minimized-report stale-read-replay
 grep -a 'Campaign minimization' minimized-report/index.html
 echo 'PASS: Theseus found and reported the intentional stale-read timeline'

@@ -30,12 +30,16 @@ x-theseus:
     operations:
       - name: write
         input: "write\n"
+        max_uses: 1
       - name: read_stale
         input: "read_stale\n"
         requires: [write]
+        max_uses: 1
       - name: retry
         input: "retry\n"
         requires: [write]
+        excludes: [read_stale]
+        max_uses: 1
     faults:
       # These run after the named operation emits its checkpoint. Every NIC
       # on this named network changes together, so the next operation sees a
