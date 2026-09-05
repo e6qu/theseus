@@ -49,6 +49,8 @@ Start with `compose.yaml`.
    and `to` to block or restore only that directed service-to-service path.
 4. Add properties. `always` needs every timeline to contain the assertion.
    `sometimes` and `reachable` need one witness. `unreachable` needs none.
+   Add `contains_all` for evidence that must accompany `contains`, and
+   `contains_none` for evidence forbidden in that same service transcript.
 5. Set `max_operations_per_run` to explore every ordered operation history,
    including repeated operations such as retries. It defaults to 3 and is
    capped at 4. Set `max_faults_per_run` to explore candidate fault sequences;
@@ -100,8 +102,9 @@ reducer removes large contiguous chunks first, then narrows to individual
 operations and selected topology faults while the same property still fails.
 `minimization.json` records both sequences and the replay attempts used for
 each pass. `theseus report stale-read-replay` shows the same evidence. The
-result is one ordinary Compose replay bundle with a check that proves the
-counterexample still occurs.
+result is one ordinary Compose replay bundle. For a compound property, Theseus
+re-evaluates the complete predicate against its locked serial transcript after
+every reduction attempt and in the final bundle.
 
 The campaign report shows checkpoint-node and prefix-reuse counts. They are
 execution details only: each run's `replay-plan.json` still contains the full

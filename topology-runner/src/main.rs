@@ -175,6 +175,10 @@ struct CampaignProperty {
     kind: PropertyKind,
     contains: String,
     #[serde(default)]
+    contains_all: Vec<String>,
+    #[serde(default)]
+    contains_none: Vec<String>,
+    #[serde(default)]
     service: Option<String>,
 }
 
@@ -452,6 +456,10 @@ struct CheckPlan {
     name: String,
     kind: CheckKind,
     value: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    contains_all: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    contains_none: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -459,6 +467,8 @@ struct CheckPlan {
 enum CheckKind {
     SerialContains,
     SerialNotContains,
+    SerialPropertyMatches,
+    SerialPropertyDoesNotMatch,
     MarkerSeen,
     MarkerNotSeen,
 }
@@ -1928,7 +1938,7 @@ fn execute_campaign_minimized(
     let mut replay: TopologyPlan = serde_json::from_slice(&base)
         .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
     apply_campaign_schedule(&mut replay, &campaign, &schedule)?;
-    add_counterexample_check(&mut replay, &campaign, &property)?;
+    add_counterexample_check(&mut replay, &property)?;
     let mut final_plan: TopologyPlan = serde_json::from_slice(
         &serde_json::to_vec(&replay)
             .map_err(|error| format!("cannot encode campaign replay plan: {error}"))?,
@@ -2094,24 +2104,34 @@ fn execute_campaign_minimization_attempt(
 
 fn add_counterexample_check(
     topology: &mut TopologyPlan,
-    campaign: &CampaignPlan,
     property: &CampaignProperty,
 ) -> Result<(), String> {
-    let service = property.service.as_ref().unwrap_or(&campaign.driver);
+    // An unscoped property may have failed in any service. The locked bundle is
+    // still re-evaluated below, but no one service check can prove it.
+    let Some(service) = property.service.as_ref() else {
+        return Ok(());
+    };
     let check = topology
         .services
         .get_mut(service)
         .ok_or_else(|| format!("property service disappeared: {service}"))?;
-    let kind = match property.kind {
-        PropertyKind::Unreachable => CheckKind::SerialContains,
-        PropertyKind::Always | PropertyKind::Sometimes | PropertyKind::Reachable => {
+    let compound = !property.contains_all.is_empty() || !property.contains_none.is_empty();
+    let kind = match (property.kind, compound) {
+        (PropertyKind::Unreachable, false) => CheckKind::SerialContains,
+        (PropertyKind::Always | PropertyKind::Sometimes | PropertyKind::Reachable, false) => {
             CheckKind::SerialNotContains
+        }
+        (PropertyKind::Unreachable, true) => CheckKind::SerialPropertyMatches,
+        (PropertyKind::Always | PropertyKind::Sometimes | PropertyKind::Reachable, true) => {
+            CheckKind::SerialPropertyDoesNotMatch
         }
     };
     check.run.checks.push(CheckPlan {
         name: format!("counterexample: {}", property.name),
         kind,
         value: property.contains.clone(),
+        contains_all: property.contains_all.clone(),
+        contains_none: property.contains_none.clone(),
     });
     Ok(())
 }
@@ -2178,6 +2198,8 @@ fn campaign_counterexample(
                 name: property.name.clone(),
                 kind: property.kind,
                 contains: property.contains.clone(),
+                contains_all: property.contains_all.clone(),
+                contains_none: property.contains_none.clone(),
                 service: property.service.clone(),
             },
             CampaignSchedule { operations, faults },
@@ -2210,7 +2232,7 @@ fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
         });
     services
         .into_iter()
-        .any(|service| campaign_serial_contains(run, &service, property.contains.as_bytes()))
+        .any(|service| campaign_serial_matches_property(run, &service, property))
 }
 
 #[derive(Clone, Debug)]
@@ -2935,10 +2957,10 @@ fn evaluate_campaign_properties(
                         .map(|service| vec![service.clone()])
                         .unwrap_or_else(|| campaign_services(output, run.index));
                     services.into_iter().any(|service| {
-                        campaign_serial_contains(
+                        campaign_serial_matches_property(
                             &output.join("runs").join(format!("{:03}", run.index)),
                             &service,
-                            property.contains.as_bytes(),
+                            property,
                         )
                     })
                 })
@@ -2960,10 +2982,10 @@ fn evaluate_campaign_properties(
                 kind,
                 status: if passed { "passed" } else { "failed" },
                 detail: format!(
-                    "{} of {} retained timelines contained {:?}",
+                    "{} of {} retained timelines satisfied {}",
                     found,
                     runs.len(),
-                    property.contains
+                    campaign_property_description(property)
                 ),
             })
         })
@@ -2984,8 +3006,12 @@ fn campaign_services(output: &Path, run: usize) -> Vec<String> {
     .collect()
 }
 
-fn campaign_serial_contains(run: &Path, service: &str, needle: &[u8]) -> bool {
-    fs::read_dir(run.join("services").join(service))
+fn campaign_serial_matches_property(
+    run: &Path,
+    service: &str,
+    property: &CampaignProperty,
+) -> bool {
+    let mut logs = fs::read_dir(run.join("services").join(service))
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
@@ -2994,12 +3020,66 @@ fn campaign_serial_contains(run: &Path, service: &str, needle: &[u8]) -> bool {
             let name = name.to_string_lossy();
             name == "serial.log" || (name.starts_with("serial-") && name.ends_with(".log"))
         })
-        .any(|entry| {
-            fs::read(entry.path())
-                .unwrap_or_default()
-                .windows(needle.len())
-                .any(|value| value == needle)
-        })
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    logs.sort_by_key(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| {
+                name.strip_prefix("serial-")
+                    .and_then(|suffix| suffix.strip_suffix(".log"))
+                    .and_then(|index| index.parse::<usize>().ok())
+            })
+            .map(|index| index + 1)
+            .unwrap_or(0)
+    });
+    let serial = logs
+        .into_iter()
+        .flat_map(|path| fs::read(path).unwrap_or_default())
+        .collect::<Vec<_>>();
+    serial_matches_property(&serial, property)
+}
+
+fn serial_matches_property(serial: &[u8], property: &CampaignProperty) -> bool {
+    serial_matches_predicate(
+        serial,
+        &property.contains,
+        &property.contains_all,
+        &property.contains_none,
+    )
+}
+
+fn serial_matches_predicate(
+    serial: &[u8],
+    contains: &str,
+    contains_all: &[String],
+    contains_none: &[String],
+) -> bool {
+    serial_contains(serial, contains)
+        && contains_all
+            .iter()
+            .all(|needle| serial_contains(serial, needle))
+        && contains_none
+            .iter()
+            .all(|needle| !serial_contains(serial, needle))
+}
+
+fn serial_contains(serial: &[u8], needle: &str) -> bool {
+    !needle.is_empty()
+        && serial
+            .windows(needle.len())
+            .any(|value| value == needle.as_bytes())
+}
+
+fn campaign_property_description(property: &CampaignProperty) -> String {
+    let mut clauses = vec![format!("contains {:?}", property.contains)];
+    if !property.contains_all.is_empty() {
+        clauses.push(format!("also contains all {:?}", property.contains_all));
+    }
+    if !property.contains_none.is_empty() {
+        clauses.push(format!("contains none of {:?}", property.contains_none));
+    }
+    clauses.join("; ")
 }
 
 fn execute(
@@ -4239,9 +4319,21 @@ fn evaluate_checks(checks: &[CheckPlan], serial_logs: &[PathBuf]) -> Vec<CheckRe
                     .windows(needle.len())
                     .any(|window| window == needle)
             });
+            let serial = serial_logs
+                .iter()
+                .flat_map(|path| fs::read(path).unwrap_or_default())
+                .collect::<Vec<_>>();
+            let predicate_matches = serial_matches_predicate(
+                &serial,
+                &check.value,
+                &check.contains_all,
+                &check.contains_none,
+            );
             let passed = match check.kind {
                 CheckKind::SerialContains | CheckKind::MarkerSeen => contains,
                 CheckKind::SerialNotContains | CheckKind::MarkerNotSeen => !contains,
+                CheckKind::SerialPropertyMatches => predicate_matches,
+                CheckKind::SerialPropertyDoesNotMatch => !predicate_matches,
             };
             CheckResult {
                 name: check.name.clone(),
@@ -4477,6 +4569,41 @@ fn lock_artifact(service_dir: &Path, name: &str, artifact: &Artifact) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compound_serial_properties_require_one_transcript() {
+        let run =
+            std::env::temp_dir().join(format!("theseus-compound-property-{}", std::process::id()));
+        let api = run.join("services/api");
+        let worker = run.join("services/worker");
+        fs::create_dir_all(&api).unwrap();
+        fs::create_dir_all(&worker).unwrap();
+        fs::write(api.join("serial.log"), "THES:ASSERT:write:pass\n").unwrap();
+        fs::write(worker.join("serial.log"), "THES:M:written\n").unwrap();
+        let property = CampaignProperty {
+            name: "durable_write".to_owned(),
+            kind: PropertyKind::Always,
+            contains: "THES:ASSERT:write:pass".to_owned(),
+            contains_all: vec!["THES:M:written".to_owned()],
+            contains_none: vec!["THES:ASSERT:panic".to_owned()],
+            service: None,
+        };
+
+        assert!(!property_matches_in_run(&property, &run));
+        fs::write(
+            api.join("serial.log"),
+            "THES:ASSERT:write:pass\nTHES:M:written\n",
+        )
+        .unwrap();
+        assert!(property_matches_in_run(&property, &run));
+        fs::write(
+            api.join("serial.log"),
+            "THES:ASSERT:write:pass\nTHES:M:written\nTHES:ASSERT:panic\n",
+        )
+        .unwrap();
+        assert!(!property_matches_in_run(&property, &run));
+        fs::remove_dir_all(run).unwrap();
+    }
 
     #[test]
     fn campaign_marker_guards_use_the_restored_parent_transcript() {
