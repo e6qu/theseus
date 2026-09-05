@@ -89,6 +89,8 @@ struct ComposeCampaign {
     max_runs: u16,
     #[serde(default = "default_campaign_faults_per_run")]
     max_faults_per_run: u8,
+    #[serde(default = "default_campaign_operations_per_run")]
+    max_operations_per_run: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -281,6 +283,7 @@ pub struct CampaignPlan {
     pub properties: Vec<PropertyPlan>,
     pub max_runs: u16,
     pub max_faults_per_run: u8,
+    pub max_operations_per_run: u8,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -470,6 +473,10 @@ fn default_campaign_faults_per_run() -> u8 {
     2
 }
 
+fn default_campaign_operations_per_run() -> u8 {
+    3
+}
+
 fn campaign_plan(
     campaign: Option<ComposeTheseus>,
     services: &BTreeMap<String, ComposeServicePlan>,
@@ -496,6 +503,11 @@ fn campaign_plan(
     if campaign.max_faults_per_run == 0 || campaign.max_faults_per_run > 4 {
         return Err(ComposeError::Invalid(
             "campaign max_faults_per_run must be between 1 and 4".to_owned(),
+        ));
+    }
+    if campaign.max_operations_per_run == 0 || campaign.max_operations_per_run > 4 {
+        return Err(ComposeError::Invalid(
+            "campaign max_operations_per_run must be between 1 and 4".to_owned(),
         ));
     }
     let mut names = BTreeSet::new();
@@ -1165,6 +1177,7 @@ fn campaign_plan(
         properties,
         max_runs: campaign.max_runs,
         max_faults_per_run: campaign.max_faults_per_run,
+        max_operations_per_run: campaign.max_operations_per_run,
     }))
 }
 
@@ -1576,6 +1589,7 @@ mod tests {
         assert_eq!(campaign.operations[0].input_hex, "70757420616c7068610a");
         assert_eq!(campaign.faults[0].service.as_deref(), Some("worker"));
         assert_eq!(campaign.max_faults_per_run, 2);
+        assert_eq!(campaign.max_operations_per_run, 3);
         assert_eq!(campaign.properties.len(), 2);
     }
 
@@ -1665,6 +1679,15 @@ mod tests {
         );
         let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
         assert!(error.to_string().contains("max_faults_per_run"));
+    }
+
+    #[test]
+    fn rejects_an_unbounded_campaign_operation_sequence() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_operations_per_run: 5\n    operations:\n      - name: request\n        input: 'request\\n'\n",
+        );
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error.to_string().contains("max_operations_per_run"));
     }
 
     #[test]

@@ -64,10 +64,16 @@ struct CampaignPlan {
     max_runs: u16,
     #[serde(default = "default_campaign_faults_per_run")]
     max_faults_per_run: u8,
+    #[serde(default = "default_campaign_operations_per_run")]
+    max_operations_per_run: u8,
 }
 
 fn default_campaign_faults_per_run() -> u8 {
     2
+}
+
+fn default_campaign_operations_per_run() -> u8 {
+    3
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2161,23 +2167,15 @@ struct CampaignTopologyState {
 }
 
 fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
-    let mut operations = Vec::new();
-    // Deterministic breadth-first operation histories.  This gives each
-    // operation a single-step attempt before longer histories consume budget.
-    for depth in 1..=campaign.operations.len() {
-        for start in 0..campaign.operations.len() {
-            let history = (0..depth)
-                .map(|offset| (start + offset) % campaign.operations.len())
-                .collect::<Vec<_>>();
-            operations.push(history);
-        }
-    }
     let mut schedules = Vec::new();
-    for history in operations {
+    for history in campaign_operation_histories(campaign) {
         schedules.push(CampaignSchedule {
             operations: history.clone(),
             faults: Vec::new(),
         });
+        if schedules.len() == MAX_CAMPAIGN_CANDIDATES {
+            return schedules;
+        }
         let applicable = campaign
             .faults
             .iter()
@@ -2195,13 +2193,43 @@ fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
                 operations: history.clone(),
                 faults,
             });
+            if schedules.len() == MAX_CAMPAIGN_CANDIDATES {
+                return schedules;
+            }
         }
     }
-    // `max_runs` bounds executed leaves, but guidance needs a broader pool to
-    // choose from. Keep that pool finite even for a manifest with many
-    // compatible fault combinations.
-    schedules.truncate(MAX_CAMPAIGN_CANDIDATES);
     schedules
+}
+
+/// Enumerate every ordered operation history, including repetitions, in stable
+/// breadth-first order. A manifest controls the depth explicitly; the global
+/// candidate cap remains the final guard for wide workloads and fault products.
+fn campaign_operation_histories(campaign: &CampaignPlan) -> Vec<Vec<usize>> {
+    ordered_operation_histories(
+        campaign.operations.len(),
+        usize::from(campaign.max_operations_per_run),
+    )
+}
+
+fn ordered_operation_histories(operation_count: usize, maximum_depth: usize) -> Vec<Vec<usize>> {
+    let mut histories = Vec::new();
+    let mut frontier = vec![Vec::new()];
+    for _ in 0..maximum_depth {
+        let mut next = Vec::new();
+        for prefix in frontier {
+            for operation in 0..operation_count {
+                let mut history = prefix.clone();
+                history.push(operation);
+                histories.push(history.clone());
+                next.push(history);
+                if histories.len() == MAX_CAMPAIGN_CANDIDATES {
+                    return histories;
+                }
+            }
+        }
+        frontier = next;
+    }
+    histories
 }
 
 fn recorded_campaign_schedules(
@@ -2291,7 +2319,7 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
 }
 
 /// Choose the next leaf from observed marker and topology-state coverage
-/// rather than spending the campaign budget in declaration order. An
+/// after first seeding every one-operation history without faults. An
 /// observation only guides schedules that extend the exact operation history
 /// which produced it; fault variants remain separate leaves and all ties fall
 /// back to the stable breadth-first candidate order.
@@ -2300,6 +2328,19 @@ fn select_campaign_schedule(
     pending: &[usize],
     observations: &[CampaignGuidanceObservation],
 ) -> (usize, String) {
+    if let Some((pending_index, _)) = pending.iter().enumerate().find(|(_, schedule_index)| {
+        let candidate = &schedules[**schedule_index];
+        candidate.operations.len() == 1
+            && candidate.faults.is_empty()
+            && !observations
+                .iter()
+                .any(|observation| observation.operations == candidate.operations)
+    }) {
+        return (
+            pending_index,
+            "canonical breadth-first operation seed".to_owned(),
+        );
+    }
     let mut selected = 0;
     let mut selected_score = 0_usize;
     let mut selected_reason = "canonical breadth-first seed".to_owned();
@@ -4300,7 +4341,7 @@ mod tests {
     }
 
     #[test]
-    fn campaign_selection_extends_a_marker_novel_prefix_before_canonical_work() {
+    fn campaign_selection_seeds_each_root_operation_before_extensions() {
         let schedules = vec![
             CampaignSchedule {
                 operations: vec![0],
@@ -4326,8 +4367,8 @@ mod tests {
             }],
         );
 
-        assert_eq!(selected, 1);
-        assert_eq!(reason, "extends 1-operation prefix with 2 new marker(s)");
+        assert_eq!(selected, 0);
+        assert_eq!(reason, "canonical breadth-first operation seed");
     }
 
     #[test]
@@ -4348,7 +4389,7 @@ mod tests {
         ];
         let (selected, reason) = select_campaign_schedule(
             &schedules,
-            &[1, 2],
+            &[2],
             &[CampaignGuidanceObservation {
                 operations: vec![0],
                 novel_markers: 0,
@@ -4357,7 +4398,7 @@ mod tests {
             }],
         );
 
-        assert_eq!(selected, 1);
+        assert_eq!(selected, 0);
         assert_eq!(reason, "extends 1-operation prefix with new topology state");
     }
 
@@ -4376,7 +4417,7 @@ mod tests {
         let (selected, reason) = select_campaign_schedule(&schedules, &[0, 1], &[]);
 
         assert_eq!(selected, 0);
-        assert_eq!(reason, "canonical breadth-first seed");
+        assert_eq!(reason, "canonical breadth-first operation seed");
     }
 
     #[test]
@@ -4483,6 +4524,29 @@ mod tests {
                 vec![1],
                 vec![1, 2],
                 vec![2]
+            ]
+        );
+    }
+
+    #[test]
+    fn campaign_operation_histories_cover_order_and_repetition_breadth_first() {
+        assert_eq!(
+            ordered_operation_histories(2, 3),
+            vec![
+                vec![0],
+                vec![1],
+                vec![0, 0],
+                vec![0, 1],
+                vec![1, 0],
+                vec![1, 1],
+                vec![0, 0, 0],
+                vec![0, 0, 1],
+                vec![0, 1, 0],
+                vec![0, 1, 1],
+                vec![1, 0, 0],
+                vec![1, 0, 1],
+                vec![1, 1, 0],
+                vec![1, 1, 1],
             ]
         );
     }
