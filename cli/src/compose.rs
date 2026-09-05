@@ -98,6 +98,8 @@ struct ComposeCampaign {
 struct ComposeOperation {
     name: String,
     input: String,
+    #[serde(default)]
+    requires: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -290,6 +292,8 @@ pub struct CampaignPlan {
 pub struct OperationPlan {
     pub name: String,
     pub input_hex: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -529,8 +533,10 @@ fn campaign_plan(
         operations.push(OperationPlan {
             name: operation.name,
             input_hex: hex(operation.input.as_bytes()),
+            requires: operation.requires,
         });
     }
+    validate_campaign_operation_requirements(&operations)?;
     let mut faults = Vec::with_capacity(campaign.faults.len());
     for candidate in campaign.faults {
         let after_is_operation =
@@ -1181,6 +1187,61 @@ fn campaign_plan(
     }))
 }
 
+fn validate_campaign_operation_requirements(
+    operations: &[OperationPlan],
+) -> Result<(), ComposeError> {
+    let names = operations
+        .iter()
+        .map(|operation| operation.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for operation in operations {
+        let mut requirements = BTreeSet::new();
+        for requirement in &operation.requires {
+            validate_name("campaign operation requirement", requirement)?;
+            if !names.contains(requirement.as_str()) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} requires unknown operation {:?}",
+                    operation.name, requirement
+                )));
+            }
+            if !requirements.insert(requirement) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} requires {:?} more than once",
+                    operation.name, requirement
+                )));
+            }
+        }
+    }
+    let mut reachable = BTreeSet::new();
+    loop {
+        let before = reachable.len();
+        for operation in operations {
+            if operation
+                .requires
+                .iter()
+                .all(|requirement| reachable.contains(requirement.as_str()))
+            {
+                reachable.insert(operation.name.as_str());
+            }
+        }
+        if reachable.len() == before {
+            break;
+        }
+    }
+    if reachable.len() == operations.len() {
+        return Ok(());
+    }
+    let blocked = operations
+        .iter()
+        .filter(|operation| !reachable.contains(operation.name.as_str()))
+        .map(|operation| operation.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(ComposeError::Invalid(format!(
+        "campaign operation requirements cannot reach: {blocked}"
+    )))
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -1594,6 +1655,34 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_campaign_operation_requirements() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input: "write\n"
+      - name: read
+        input: "read\n"
+        requires: [write]
+"#,
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        assert_eq!(campaign.operations[1].requires, vec!["write"]);
+    }
+
+    #[test]
     fn normalizes_operation_barrier_topology_actions() {
         let directory = fixture(
             "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: read\n        input: 'read\\n'\n    faults:\n      - kind: partition\n        network: backplane\n        after: write\n      - kind: link_partition\n        network: backplane\n        from: api\n        to: worker\n        after: write\n      - kind: link_heal\n        network: backplane\n        from: api\n        to: worker\n        after: read\n      - kind: storage_fault\n        service: worker\n        drive: data\n        after: write\n        error_ppm: 1000000\n        torn_write_bytes: 1\n      - kind: storage_recover\n        service: worker\n        drive: data\n        after: read\n      - kind: network_fault\n        network: backplane\n        after: write\n        drop_ppm: 1000000\n        latency_rounds: 3\n      - kind: network_recover\n        network: backplane\n        after: read\n",
@@ -1688,6 +1777,54 @@ mod tests {
         );
         let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
         assert!(error.to_string().contains("max_operations_per_run"));
+    }
+
+    #[test]
+    fn rejects_unknown_or_cyclic_campaign_operation_requirements() {
+        let unknown = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: read
+        input: "read\n"
+        requires: [write]
+"#,
+        );
+        let error = load_compose_plan(unknown.path().join("compose.yaml")).unwrap_err();
+        assert!(error.to_string().contains("requires unknown operation"));
+
+        let cyclic = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input: "write\n"
+        requires: [read]
+      - name: read
+        input: "read\n"
+        requires: [write]
+"#,
+        );
+        let error = load_compose_plan(cyclic.path().join("compose.yaml")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("operation requirements cannot reach"));
     }
 
     #[test]
