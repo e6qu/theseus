@@ -75,6 +75,23 @@ struct Minimization {
 }
 
 #[derive(Clone, Deserialize, Serialize)]
+struct CampaignMinimization {
+    property: String,
+    #[serde(default)]
+    original_operations: Vec<String>,
+    #[serde(default)]
+    minimized_operations: Vec<String>,
+    #[serde(default)]
+    original_faults: Vec<String>,
+    #[serde(default)]
+    minimized_faults: Vec<String>,
+    #[serde(default)]
+    operation_attempts: usize,
+    #[serde(default)]
+    fault_attempts: usize,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 struct Check {
     name: String,
     #[serde(default)]
@@ -192,6 +209,7 @@ struct ReportModel {
     nodes: Vec<Node>,
     coverage: Option<Coverage>,
     minimization: Option<Minimization>,
+    campaign_minimization: Option<CampaignMinimization>,
     replay_verification: Option<ReplayVerification>,
     campaign_runs: Vec<CampaignRun>,
 }
@@ -278,6 +296,7 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
         nodes: Vec::new(),
         coverage: None,
         minimization: None,
+        campaign_minimization: None,
         replay_verification: result.replay_verification,
         campaign_runs: Vec::new(),
     })
@@ -353,6 +372,7 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
         nodes: result.nodes,
         coverage,
         minimization: result.minimization,
+        campaign_minimization: None,
         replay_verification: result.replay_verification,
         campaign_runs: Vec::new(),
     })
@@ -368,6 +388,11 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
     if root.join("campaign-result.json").is_file() {
         return campaign(root);
     }
+    let campaign_minimization = root
+        .join("minimization.json")
+        .is_file()
+        .then(|| read_json(root, Path::new("minimization.json")))
+        .transpose()?;
     let services = root.join("services");
     let entries = fs::read_dir(&services).map_err(|source| ReportError::Read {
         path: services.clone(),
@@ -431,6 +456,7 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
         nodes: Vec::new(),
         coverage: None,
         minimization: None,
+        campaign_minimization,
         replay_verification: None,
         campaign_runs: Vec::new(),
     })
@@ -484,6 +510,7 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
             ),
         }),
         minimization: None,
+        campaign_minimization: None,
         replay_verification: result.replay_verification,
         campaign_runs: result.runs,
     })
@@ -605,6 +632,7 @@ if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const 
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
 if(m.campaign_runs.length){{const s=section('Generated timelines');s.append(table(m.campaign_runs.map(r=>[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',r.state_novel?'new':'seen',r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none']),['Run','Operations','Candidates','Selection','Topology state','Applied actions','Status','New markers']));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
+if(m.campaign_minimization){{const x=m.campaign_minimization,s=section('Campaign minimization');s.append(table([[x.property,x.original_operations.join(' → ')||'none',x.minimized_operations.join(' → ')||'none',x.original_faults.join(' + ')||'none',x.minimized_faults.join(' + ')||'none',String(x.operation_attempts),String(x.fault_attempts)]],['Property','Original operations','1-minimal operations','Original faults','1-minimal faults','Operation replays','Fault replays']));}}
 if(m.replay_verification){{const s=section('Replay verification');s.append(table([[m.replay_verification.status,m.replay_verification.detail]],['Status','Detail']));}}
 if(m.checks.length){{const s=section('Checks');s.append(table(m.checks.map(c=>[c.name,c.kind,c.status,c.detail]),['Name','Kind','Status','Detail']));}}
 if(m.faults.length){{const s=section('Applied faults');s.append(table(m.faults.map(f=>[String(f.round),f.kind,f.detail]),['Round','Kind','Detail']));}}
@@ -655,12 +683,20 @@ mod tests {
             &service.join("result.json"),
             r#"{"status":"passed","checks":[{"name":"guest_exit","status":"passed","detail":"ok"}],"faults":[{"round":2,"kind":"restart","detail":"restarted"}]}"#,
         );
+        write_json(
+            &directory.path().join("minimization.json"),
+            r#"{"property":"consistent_read","original_operations":["write","retry","read"],"minimized_operations":["write","read"],"original_faults":["backplane:partition@write","backplane:heal@read"],"minimized_faults":["backplane:partition@write"],"operation_attempts":4,"fault_attempts":2}"#,
+        );
         fs::write(service.join("serial.log"), b"ready\n").unwrap();
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
         assert!(html.contains("Topology replay"));
         assert!(html.contains("restart"));
         assert!(html.contains("api: serial.log"));
+        assert!(html.contains("Campaign minimization"));
+        assert!(html.contains("1-minimal faults"));
+        assert!(html.contains("backplane:partition@write"));
+        assert!(html.contains("Operation replays"));
     }
 
     #[test]
