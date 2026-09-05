@@ -128,6 +128,8 @@ struct CampaignResult {
     #[serde(default)]
     unique_topology_states: usize,
     #[serde(default)]
+    replay_verification: Option<ReplayVerification>,
+    #[serde(default)]
     runs: Vec<CampaignRun>,
     #[serde(default)]
     properties: Vec<CampaignProperty>,
@@ -276,7 +278,7 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
         nodes: Vec::new(),
         coverage: None,
         minimization: None,
-        replay_verification: None,
+        replay_verification: result.replay_verification,
         campaign_runs: Vec::new(),
     })
 }
@@ -482,7 +484,7 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
             ),
         }),
         minimization: None,
-        replay_verification: None,
+        replay_verification: result.replay_verification,
         campaign_runs: result.runs,
     })
 }
@@ -670,7 +672,7 @@ mod tests {
         );
         write_json(
             &directory.path().join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"unique_topology_states":3,"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"unique_topology_states":3,"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
         );
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
@@ -691,6 +693,8 @@ mod tests {
             html.contains("extends 1-operation prefix with 2 new marker(s) and new topology state")
         );
         assert!(html.contains("Topology state"));
+        assert!(html.contains("Replay verification"));
+        assert!(html.contains("1 recorded campaign timelines reproduced"));
     }
 
     #[test]

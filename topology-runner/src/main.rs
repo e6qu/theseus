@@ -176,6 +176,8 @@ struct CampaignResult {
     checkpoint_reuses: usize,
     generated_candidates: usize,
     unique_topology_states: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_verification: Option<CampaignReplayVerification>,
     runs: Vec<CampaignRun>,
     properties: Vec<CampaignPropertyResult>,
 }
@@ -205,8 +207,16 @@ struct CampaignPropertyResult {
     detail: String,
 }
 
+#[derive(Debug, Serialize)]
+struct CampaignReplayVerification {
+    status: &'static str,
+    detail: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct RecordedCampaignResult {
+    #[serde(default)]
+    generated_candidates: usize,
     runs: Vec<RecordedCampaignRun>,
 }
 
@@ -217,6 +227,18 @@ struct RecordedCampaignRun {
     fault: Option<String>,
     #[serde(default)]
     faults: Vec<String>,
+    #[serde(default)]
+    actions: Vec<AppliedCampaignAction>,
+    #[serde(default)]
+    selection: String,
+    #[serde(default)]
+    novelty: Vec<String>,
+    #[serde(default)]
+    state_sha256: String,
+    #[serde(default)]
+    state_novel: bool,
+    #[serde(default)]
+    status: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1352,13 +1374,28 @@ fn run(args: Vec<String>) -> Result<(), String> {
         return Err("unsupported or empty topology plan".to_owned());
     }
     let service_names = topology.services.keys().cloned().collect::<Vec<_>>();
-    let expected_serial = recorded_serial_fingerprints(Path::new(plan), &service_names)?;
-    let expected_faults = recorded_fault_fingerprints(Path::new(plan), &service_names)?;
-    let expected_network = recorded_network_fingerprint(Path::new(plan))?;
-    let expected_actions = recorded_campaign_actions(Path::new(plan))?;
-    let expected_storage = recorded_storage_fingerprints(Path::new(plan), &service_names)?;
-    let expected_traffic = recorded_network_traffic(Path::new(plan), &service_names)?;
-    let expected_virtual_time = recorded_virtual_times(Path::new(plan), &service_names)?;
+    let recorded_campaign = recorded_campaign_result(Path::new(plan))?;
+    let (
+        expected_serial,
+        expected_faults,
+        expected_network,
+        expected_actions,
+        expected_storage,
+        expected_traffic,
+        expected_virtual_time,
+    ) = if recorded_campaign.is_some() {
+        (None, None, None, None, None, None, None)
+    } else {
+        (
+            recorded_serial_fingerprints(Path::new(plan), &service_names)?,
+            recorded_fault_fingerprints(Path::new(plan), &service_names)?,
+            recorded_network_fingerprint(Path::new(plan))?,
+            recorded_campaign_actions(Path::new(plan))?,
+            recorded_storage_fingerprints(Path::new(plan), &service_names)?,
+            recorded_network_traffic(Path::new(plan), &service_names)?,
+            recorded_virtual_times(Path::new(plan), &service_names)?,
+        )
+    };
     let output = PathBuf::from(output);
     if output.exists() {
         return Err(format!(
@@ -1384,7 +1421,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         if minimize {
             execute_campaign_minimized(topology, &output, Path::new(plan))
         } else {
-            execute_campaign(topology, &output)
+            execute_campaign(topology, &output, recorded_campaign.as_ref())
         }
     } else {
         if minimize {
@@ -1408,7 +1445,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
 /// Execute an autonomous campaign from one reusable, whole-topology branch
 /// point. Each child restores every VM, simulated NIC/switch, UART transcript,
 /// and scheduler cursor before its own operation history is injected.
-fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), String> {
+fn execute_campaign(
+    mut topology: TopologyPlan,
+    output: &Path,
+    recorded: Option<&RecordedCampaignResult>,
+) -> Result<(), String> {
     let campaign = topology
         .campaign
         .take()
@@ -1422,21 +1463,50 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
     if schedules.is_empty() {
         return Err("campaign produced no schedules".to_owned());
     }
+    let replay_schedules = recorded
+        .map(|recorded| recorded_campaign_schedules(&campaign, recorded))
+        .transpose()?;
     fs::create_dir_all(output.join("runs")).map_err(|error| error.to_string())?;
     let mut runs = Vec::new();
     let mut seen_markers = std::collections::BTreeSet::new();
     let mut seen_topology_states = std::collections::BTreeSet::new();
     let mut pending = (0..schedules.len()).collect::<Vec<_>>();
     let mut observations = Vec::new();
-    while runs.len() < usize::from(campaign.max_runs) && !pending.is_empty() {
+    let mut replay_mismatches = Vec::new();
+    while runs.len()
+        < replay_schedules
+            .as_ref()
+            .map_or(usize::from(campaign.max_runs), Vec::len)
+        && (replay_schedules.is_some() || !pending.is_empty())
+    {
         let index = runs.len();
-        let (pending_index, selection) =
-            select_campaign_schedule(&schedules, &pending, &observations);
-        let schedule = &schedules[pending.remove(pending_index)];
-        let prefix = checkpoints.checkpoint_for_schedule(&topology, &campaign, schedule, output)?;
+        let (schedule, selection, expected) = if let Some(replay_schedules) = &replay_schedules {
+            let expected = &recorded
+                .expect("replay schedules have recorded evidence")
+                .runs[index];
+            (
+                replay_schedules[index].clone(),
+                if expected.selection.is_empty() {
+                    "recorded campaign schedule".to_owned()
+                } else {
+                    expected.selection.clone()
+                },
+                Some(expected),
+            )
+        } else {
+            let (pending_index, selection) =
+                select_campaign_schedule(&schedules, &pending, &observations);
+            (
+                schedules[pending.remove(pending_index)].clone(),
+                selection,
+                None,
+            )
+        };
+        let prefix =
+            checkpoints.checkpoint_for_schedule(&topology, &campaign, &schedule, output)?;
         let mut replay: TopologyPlan = serde_json::from_slice(&base)
             .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
-        apply_campaign_schedule(&mut replay, &campaign, schedule)?;
+        apply_campaign_schedule(&mut replay, &campaign, &schedule)?;
         let mut run: TopologyPlan = serde_json::from_slice(
             &serde_json::to_vec(&replay)
                 .map_err(|error| format!("cannot encode campaign replay plan: {error}"))?,
@@ -1484,7 +1554,7 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
             novel_state: state_novel,
             failed,
         });
-        runs.push(CampaignRun {
+        let run = CampaignRun {
             index,
             operations: schedule
                 .operations
@@ -1500,13 +1570,26 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
             state_novel,
             status: if failed { "failed" } else { "passed" },
             novelty,
-        });
+        };
+        if let Some(expected) = expected {
+            let mismatches = campaign_replay_mismatches(expected, &run);
+            if !mismatches.is_empty() {
+                replay_mismatches.push(format!("run {index}: {}", mismatches.join(", ")));
+            }
+        }
+        runs.push(run);
     }
     let properties = evaluate_campaign_properties(&campaign, output, &runs)?;
     let passed = runs.iter().all(|run| run.status == "passed")
         && properties
             .iter()
             .all(|property| property.status == "passed");
+    let replay_verified = recorded.is_none()
+        || (replay_mismatches.is_empty()
+            && recorded.is_some_and(|recorded| {
+                recorded.generated_candidates == 0
+                    || recorded.generated_candidates == schedules.len()
+            }));
     let first_plan = output.join("runs/000/replay-plan.json");
     let mut replay: TopologyPlan = serde_json::from_slice(
         &fs::read(&first_plan)
@@ -1523,7 +1606,11 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
         output.join("campaign-result.json"),
         serde_json::to_vec_pretty(&CampaignResult {
             format: "theseus-compose-campaign-result-v1",
-            status: if passed { "passed" } else { "failed" },
+            status: if passed && replay_verified {
+                "passed"
+            } else {
+                "failed"
+            },
             driver: replay
                 .campaign
                 .as_ref()
@@ -1534,13 +1621,32 @@ fn execute_campaign(mut topology: TopologyPlan, output: &Path) -> Result<(), Str
             checkpoint_reuses: checkpoints.reuses,
             generated_candidates: schedules.len(),
             unique_topology_states: seen_topology_states.len(),
+            replay_verification: recorded.map(|recorded| CampaignReplayVerification {
+                status: if replay_verified { "passed" } else { "failed" },
+                detail: if replay_verified {
+                    format!("{} recorded campaign timelines reproduced", runs.len())
+                } else {
+                    let mut detail = replay_mismatches.clone();
+                    if recorded.generated_candidates != 0
+                        && recorded.generated_candidates != schedules.len()
+                    {
+                        detail.push("generated candidate corpus changed".to_owned());
+                    }
+                    detail.join("; ")
+                },
+            }),
             runs,
             properties,
         })
         .expect("campaign result serializes"),
     )
     .map_err(|error| error.to_string())?;
-    if passed {
+    if !replay_verified {
+        Err(format!(
+            "campaign replay verification failed; inspect {}",
+            output.display()
+        ))
+    } else if passed {
         Ok(())
     } else {
         Err(format!(
@@ -2007,6 +2113,92 @@ fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
     // compatible fault combinations.
     schedules.truncate(MAX_CAMPAIGN_CANDIDATES);
     schedules
+}
+
+fn recorded_campaign_schedules(
+    campaign: &CampaignPlan,
+    recorded: &RecordedCampaignResult,
+) -> Result<Vec<CampaignSchedule>, String> {
+    if recorded.runs.is_empty() {
+        return Err("recorded campaign has no schedules".to_owned());
+    }
+    recorded
+        .runs
+        .iter()
+        .map(|run| {
+            let operations = run
+                .operations
+                .iter()
+                .map(|name| {
+                    campaign
+                        .operations
+                        .iter()
+                        .position(|operation| operation.name == *name)
+                        .ok_or_else(|| {
+                            format!("recorded campaign operation is not declared: {name}")
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let names = if run.faults.is_empty() {
+                run.fault.iter().cloned().collect::<Vec<_>>()
+            } else {
+                run.faults.clone()
+            };
+            let faults = names
+                .iter()
+                .map(|name| {
+                    let matches = campaign
+                        .faults
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, fault)| {
+                            (campaign_fault_name(fault) == *name).then_some(index)
+                        })
+                        .collect::<Vec<_>>();
+                    match matches.as_slice() {
+                        [index] => Ok(*index),
+                        [] => Err(format!("recorded campaign fault is not declared: {name}")),
+                        _ => Err(format!("recorded campaign fault is ambiguous: {name}")),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(CampaignSchedule { operations, faults })
+        })
+        .collect()
+}
+
+fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignRun) -> Vec<String> {
+    let mut mismatches = Vec::new();
+    if expected.operations != actual.operations {
+        mismatches.push("operations".to_owned());
+    }
+    let expected_faults = if expected.faults.is_empty() {
+        expected.fault.iter().cloned().collect::<Vec<_>>()
+    } else {
+        expected.faults.clone()
+    };
+    if expected_faults != actual.faults {
+        mismatches.push("faults".to_owned());
+    }
+    if !expected.actions.is_empty() && expected.actions != actual.actions {
+        mismatches.push("actions".to_owned());
+    }
+    if !expected.selection.is_empty() && expected.selection != actual.selection {
+        mismatches.push("selection".to_owned());
+    }
+    if !expected.novelty.is_empty() && expected.novelty != actual.novelty {
+        mismatches.push("marker coverage".to_owned());
+    }
+    if !expected.state_sha256.is_empty()
+        && (expected.state_sha256 != actual.state_sha256
+            || expected.state_novel != actual.state_novel)
+    {
+        mismatches.push("topology-state coverage".to_owned());
+    }
+    if !expected.status.is_empty() && expected.status != actual.status {
+        mismatches.push("status".to_owned());
+    }
+    mismatches
 }
 
 /// Choose the next leaf from observed marker and topology-state coverage
@@ -2924,6 +3116,23 @@ fn recorded_campaign_actions(plan: &Path) -> Result<Option<Vec<AppliedCampaignAc
             .map_err(|error| format!("cannot parse {}: {error}", result_path.display())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("cannot read {}: {error}", result_path.display())),
+    }
+}
+
+fn recorded_campaign_result(plan: &Path) -> Result<Option<RecordedCampaignResult>, String> {
+    if plan.file_name().and_then(|name| name.to_str()) != Some("replay-plan.json") {
+        return Ok(None);
+    }
+    let path = plan
+        .parent()
+        .ok_or_else(|| format!("replay plan has no parent directory: {}", plan.display()))?
+        .join("campaign-result.json");
+    match fs::read(&path) {
+        Ok(result) => serde_json::from_slice(&result)
+            .map(Some)
+            .map_err(|error| format!("cannot parse {}: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("cannot read {}: {error}", path.display())),
     }
 }
 
@@ -4079,6 +4288,41 @@ mod tests {
 
         assert_eq!(selected, 0);
         assert_eq!(reason, "canonical breadth-first seed");
+    }
+
+    #[test]
+    fn campaign_replay_verifies_guidance_evidence() {
+        let actual = CampaignRun {
+            index: 0,
+            operations: vec!["write".to_owned()],
+            fault: None,
+            faults: vec!["backplane:partition@write".to_owned()],
+            actions: Vec::new(),
+            selection: "extends 1-operation prefix with new topology state".to_owned(),
+            state_sha256: "state".to_owned(),
+            state_novel: true,
+            status: "passed",
+            novelty: vec!["checkpoint".to_owned()],
+        };
+        let expected = RecordedCampaignRun {
+            operations: actual.operations.clone(),
+            fault: None,
+            faults: actual.faults.clone(),
+            actions: Vec::new(),
+            selection: actual.selection.clone(),
+            novelty: actual.novelty.clone(),
+            state_sha256: actual.state_sha256.clone(),
+            state_novel: true,
+            status: actual.status.to_owned(),
+        };
+
+        assert!(campaign_replay_mismatches(&expected, &actual).is_empty());
+        let mut changed = actual;
+        changed.state_sha256 = "other-state".to_owned();
+        assert_eq!(
+            campaign_replay_mismatches(&expected, &changed),
+            vec!["topology-state coverage"]
+        );
     }
 
     #[test]
