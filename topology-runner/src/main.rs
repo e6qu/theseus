@@ -177,6 +177,8 @@ struct CampaignProperty {
     #[serde(default)]
     contains_all: Vec<String>,
     #[serde(default)]
+    contains_any: Vec<String>,
+    #[serde(default)]
     contains_none: Vec<String>,
     #[serde(default)]
     service: Option<String>,
@@ -458,6 +460,8 @@ struct CheckPlan {
     value: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     contains_all: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    contains_any: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     contains_none: Vec<String>,
 }
@@ -2115,7 +2119,9 @@ fn add_counterexample_check(
         .services
         .get_mut(service)
         .ok_or_else(|| format!("property service disappeared: {service}"))?;
-    let compound = !property.contains_all.is_empty() || !property.contains_none.is_empty();
+    let compound = !property.contains_all.is_empty()
+        || !property.contains_any.is_empty()
+        || !property.contains_none.is_empty();
     let kind = match (property.kind, compound) {
         (PropertyKind::Unreachable, false) => CheckKind::SerialContains,
         (PropertyKind::Always | PropertyKind::Sometimes | PropertyKind::Reachable, false) => {
@@ -2131,6 +2137,7 @@ fn add_counterexample_check(
         kind,
         value: property.contains.clone(),
         contains_all: property.contains_all.clone(),
+        contains_any: property.contains_any.clone(),
         contains_none: property.contains_none.clone(),
     });
     Ok(())
@@ -2199,6 +2206,7 @@ fn campaign_counterexample(
                 kind: property.kind,
                 contains: property.contains.clone(),
                 contains_all: property.contains_all.clone(),
+                contains_any: property.contains_any.clone(),
                 contains_none: property.contains_none.clone(),
                 service: property.service.clone(),
             },
@@ -3045,6 +3053,7 @@ fn serial_matches_property(serial: &[u8], property: &CampaignProperty) -> bool {
         serial,
         &property.contains,
         &property.contains_all,
+        &property.contains_any,
         &property.contains_none,
     )
 }
@@ -3053,12 +3062,17 @@ fn serial_matches_predicate(
     serial: &[u8],
     contains: &str,
     contains_all: &[String],
+    contains_any: &[String],
     contains_none: &[String],
 ) -> bool {
     serial_contains(serial, contains)
         && contains_all
             .iter()
             .all(|needle| serial_contains(serial, needle))
+        && (contains_any.is_empty()
+            || contains_any
+                .iter()
+                .any(|needle| serial_contains(serial, needle)))
         && contains_none
             .iter()
             .all(|needle| !serial_contains(serial, needle))
@@ -3075,6 +3089,9 @@ fn campaign_property_description(property: &CampaignProperty) -> String {
     let mut clauses = vec![format!("contains {:?}", property.contains)];
     if !property.contains_all.is_empty() {
         clauses.push(format!("also contains all {:?}", property.contains_all));
+    }
+    if !property.contains_any.is_empty() {
+        clauses.push(format!("also contains one of {:?}", property.contains_any));
     }
     if !property.contains_none.is_empty() {
         clauses.push(format!("contains none of {:?}", property.contains_none));
@@ -4327,6 +4344,7 @@ fn evaluate_checks(checks: &[CheckPlan], serial_logs: &[PathBuf]) -> Vec<CheckRe
                 &serial,
                 &check.value,
                 &check.contains_all,
+                &check.contains_any,
                 &check.contains_none,
             );
             let passed = match check.kind {
@@ -4585,6 +4603,10 @@ mod tests {
             kind: PropertyKind::Always,
             contains: "THES:ASSERT:write:pass".to_owned(),
             contains_all: vec!["THES:M:written".to_owned()],
+            contains_any: vec![
+                "THES:CHECKPOINT:write".to_owned(),
+                "THES:M:write_complete".to_owned(),
+            ],
             contains_none: vec!["THES:ASSERT:panic".to_owned()],
             service: None,
         };
@@ -4592,13 +4614,19 @@ mod tests {
         assert!(!property_matches_in_run(&property, &run));
         fs::write(
             api.join("serial.log"),
-            "THES:ASSERT:write:pass\nTHES:M:written\n",
+            "THES:ASSERT:write:pass\nTHES:M:written\nTHES:CHECKPOINT:write\n",
         )
         .unwrap();
         assert!(property_matches_in_run(&property, &run));
         fs::write(
             api.join("serial.log"),
-            "THES:ASSERT:write:pass\nTHES:M:written\nTHES:ASSERT:panic\n",
+            "THES:ASSERT:write:pass\nTHES:M:written\nTHES:M:write_complete\n",
+        )
+        .unwrap();
+        assert!(property_matches_in_run(&property, &run));
+        fs::write(
+            api.join("serial.log"),
+            "THES:ASSERT:write:pass\nTHES:M:written\nTHES:M:write_complete\nTHES:ASSERT:panic\n",
         )
         .unwrap();
         assert!(!property_matches_in_run(&property, &run));
