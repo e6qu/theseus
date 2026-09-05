@@ -246,6 +246,8 @@ struct CampaignMinimization {
     property: String,
     original_operations: Vec<String>,
     minimized_operations: Vec<String>,
+    original_faults: Vec<String>,
+    minimized_faults: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1765,11 +1767,12 @@ fn campaign_actions(run: &Path) -> Result<Vec<AppliedCampaignAction>, String> {
         .map_err(|error| format!("cannot parse {}: {error}", result_path.display()))
 }
 
-/// Delta-debug the first timeline that violates an individual property.  The
-/// reducer removes one operation at a time and restores the same complete,
-/// locked topology checkpoint. It does not pretend that `sometimes` and `reachable`
-/// failures have a single counterexample: those properties fail because the
-/// corpus has no witness, so their full first schedule is retained.
+/// Delta-debug the first timeline that violates an individual property. The
+/// reducer removes operations, then selected faults, and restores the same
+/// complete, locked topology checkpoint for every attempt. It does not pretend
+/// that `sometimes` and `reachable` failures have a single counterexample:
+/// those properties fail because the corpus has no witness, so their full first
+/// schedule is retained.
 fn execute_campaign_minimized(
     mut topology: TopologyPlan,
     output: &Path,
@@ -1798,60 +1801,49 @@ fn execute_campaign_minimized(
         .iter()
         .map(|operation| campaign.operations[*operation].name.clone())
         .collect::<Vec<_>>();
+    let original_faults = campaign_fault_names(&campaign, &schedule.faults);
     let attempts = output.join("minimization-attempts");
     fs::create_dir_all(&attempts).map_err(|error| error.to_string())?;
     let mut attempt = 0_usize;
     let mut index = 0;
     while index < schedule.operations.len() {
-        let mut candidate = CampaignSchedule {
-            operations: schedule.operations.clone(),
-            faults: schedule.faults.clone(),
-        };
-        candidate.operations.remove(index);
+        let candidate = campaign_without_operation(&schedule, index);
         if candidate.operations.is_empty() {
             index += 1;
             continue;
         }
         let directory = attempts.join(format!("{attempt:03}"));
         attempt += 1;
-        let prefix =
-            checkpoints.checkpoint_for_schedule(&topology, &campaign, &candidate, output)?;
-        let mut replay: TopologyPlan = serde_json::from_slice(&base)
-            .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
-        apply_campaign_schedule(&mut replay, &campaign, &candidate)?;
-        let mut plan: TopologyPlan = serde_json::from_slice(
-            &serde_json::to_vec(&replay)
-                .map_err(|error| format!("cannot encode campaign replay plan: {error}"))?,
-        )
-        .map_err(|error| format!("cannot decode campaign tail plan: {error}"))?;
-        plan.services
-            .get_mut(&campaign.driver)
-            .expect("campaign driver remains in replay plan")
-            .run
-            .events
-            .clear();
-        let result = execute(
-            plan,
+        if execute_campaign_minimization_attempt(
+            &topology,
+            &campaign,
+            &base,
+            &mut checkpoints,
+            &candidate,
+            &property,
+            output,
             &directory,
-            Some(&prefix.checkpoint),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        fs::write(
-            directory.join("replay-plan.json"),
-            serde_json::to_vec_pretty(&replay).expect("campaign replay plan serializes"),
-        )
-        .map_err(|error| error.to_string())?;
-        if directory.join("topology-result.json").exists() {
-            write_campaign_prefix_actions(&directory, prefix.actions)?;
+        )? {
+            schedule = candidate;
+        } else {
+            index += 1;
         }
-        let _ = result;
-        if property_fails_in_run(&property, &directory) {
+    }
+    let mut index = 0;
+    while index < schedule.faults.len() {
+        let candidate = campaign_without_fault(&schedule, index);
+        let directory = attempts.join(format!("{attempt:03}"));
+        attempt += 1;
+        if execute_campaign_minimization_attempt(
+            &topology,
+            &campaign,
+            &base,
+            &mut checkpoints,
+            &candidate,
+            &property,
+            output,
+            &directory,
+        )? {
             schedule = candidate;
         } else {
             index += 1;
@@ -1906,6 +1898,8 @@ fn execute_campaign_minimized(
             property: property.name.clone(),
             original_operations,
             minimized_operations,
+            original_faults,
+            minimized_faults: campaign_fault_names(&campaign, &schedule.faults),
             fault: (schedule.faults.len() == 1)
                 .then(|| campaign_fault_name(&campaign.faults[schedule.faults[0]])),
             faults: campaign_fault_names(&campaign, &schedule.faults),
@@ -1921,6 +1915,58 @@ fn execute_campaign_minimized(
     } else {
         Err("campaign counterexample did not reproduce during minimization".to_owned())
     }
+}
+
+/// Run one candidate from its longest reusable operation/action checkpoint.
+/// Keep the candidate's normal replay plan and action evidence even when the
+/// property does not survive the attempted reduction.
+fn execute_campaign_minimization_attempt(
+    topology: &TopologyPlan,
+    campaign: &CampaignPlan,
+    base: &[u8],
+    checkpoints: &mut CampaignCheckpointTree,
+    schedule: &CampaignSchedule,
+    property: &CampaignProperty,
+    output: &Path,
+    directory: &Path,
+) -> Result<bool, String> {
+    let prefix = checkpoints.checkpoint_for_schedule(topology, campaign, schedule, output)?;
+    let mut replay: TopologyPlan = serde_json::from_slice(base)
+        .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
+    apply_campaign_schedule(&mut replay, campaign, schedule)?;
+    let mut plan: TopologyPlan = serde_json::from_slice(
+        &serde_json::to_vec(&replay)
+            .map_err(|error| format!("cannot encode campaign replay plan: {error}"))?,
+    )
+    .map_err(|error| format!("cannot decode campaign tail plan: {error}"))?;
+    plan.services
+        .get_mut(&campaign.driver)
+        .expect("campaign driver remains in replay plan")
+        .run
+        .events
+        .clear();
+    let result = execute(
+        plan,
+        directory,
+        Some(&prefix.checkpoint),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    fs::write(
+        directory.join("replay-plan.json"),
+        serde_json::to_vec_pretty(&replay).expect("campaign replay plan serializes"),
+    )
+    .map_err(|error| error.to_string())?;
+    if directory.join("topology-result.json").exists() {
+        write_campaign_prefix_actions(directory, prefix.actions)?;
+    }
+    let _ = result;
+    Ok(property_fails_in_run(property, directory))
 }
 
 fn add_counterexample_check(
@@ -2048,6 +2094,18 @@ fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
 struct CampaignSchedule {
     operations: Vec<usize>,
     faults: Vec<usize>,
+}
+
+fn campaign_without_operation(schedule: &CampaignSchedule, index: usize) -> CampaignSchedule {
+    let mut candidate = schedule.clone();
+    candidate.operations.remove(index);
+    candidate
+}
+
+fn campaign_without_fault(schedule: &CampaignSchedule, index: usize) -> CampaignSchedule {
+    let mut candidate = schedule.clone();
+    candidate.faults.remove(index);
+    candidate
 }
 
 #[derive(Clone, Debug)]
@@ -4410,6 +4468,22 @@ mod tests {
         assert_eq!(action.drop_ppm, Some(1_000_000));
         assert_eq!(action.latency_rounds, Some(3));
         assert_eq!(action.tx_queue_frames, Some(2));
+    }
+
+    #[test]
+    fn campaign_fault_reduction_keeps_operation_and_fault_order() {
+        let schedule = CampaignSchedule {
+            operations: vec![3, 5],
+            faults: vec![2, 7, 11],
+        };
+
+        assert_eq!(campaign_without_fault(&schedule, 1).operations, vec![3, 5]);
+        assert_eq!(campaign_without_fault(&schedule, 1).faults, vec![2, 11]);
+        assert_eq!(campaign_without_operation(&schedule, 0).operations, vec![5]);
+        assert_eq!(
+            campaign_without_operation(&schedule, 0).faults,
+            vec![2, 7, 11]
+        );
     }
 
     #[test]
