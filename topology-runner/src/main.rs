@@ -228,7 +228,12 @@ struct SerialCorrelation {
 struct JsonCorrelationEndpoint {
     #[serde(default)]
     service: Option<String>,
-    pointer: String,
+    /// Read older replay plans that used one `pointer`; new plans use
+    /// `pointers` so a join can compare a composite key.
+    #[serde(default)]
+    pointer: Option<String>,
+    #[serde(default)]
+    pointers: Vec<String>,
     json: JsonPredicate,
 }
 
@@ -2530,10 +2535,9 @@ fn campaign_join_endpoint_values(
     driver: &str,
     endpoint: &JsonCorrelationEndpoint,
 ) -> Vec<serde_json::Value> {
-    serial_json_pointer_values(
+    serial_json_endpoint_values(
         &campaign_checkpoint_serial(checkpoint, endpoint.service.as_deref().unwrap_or(driver)),
-        &endpoint.json,
-        &endpoint.pointer,
+        endpoint,
     )
 }
 
@@ -3322,19 +3326,17 @@ fn serial_correlation_matches_property(
     let captures = capture_services
         .iter()
         .flat_map(|service| {
-            serial_json_pointer_values(
+            serial_json_endpoint_values(
                 &campaign_serial_contents(run, service),
-                &correlation.capture.json,
-                &correlation.capture.pointer,
+                &correlation.capture,
             )
         })
         .collect::<Vec<_>>();
     !captures.is_empty()
         && equals_services.iter().any(|service| {
-            serial_json_pointer_values(
+            serial_json_endpoint_values(
                 &campaign_serial_contents(run, service),
-                &correlation.equals.json,
-                &correlation.equals.pointer,
+                &correlation.equals,
             )
             .into_iter()
             .any(|value| captures.iter().any(|capture| capture == &value))
@@ -3371,26 +3373,35 @@ fn serial_join_endpoint_values(
     )
     .into_iter()
     .flat_map(|service| {
-        serial_json_pointer_values(
-            &campaign_serial_contents(run, &service),
-            &endpoint.json,
-            &endpoint.pointer,
-        )
+        serial_json_endpoint_values(&campaign_serial_contents(run, &service), endpoint)
     })
     .collect()
 }
 
-fn serial_json_pointer_values(
+fn serial_json_endpoint_values(
     serial: &[u8],
-    predicate: &JsonPredicate,
-    pointer: &str,
+    endpoint: &JsonCorrelationEndpoint,
 ) -> Vec<serde_json::Value> {
     serial
         .split_inclusive(|byte| *byte == b'\n')
         .filter_map(|line| serde_json::from_slice(line.strip_suffix(b"\n").unwrap_or(line)).ok())
-        .filter(|event| json_predicate_matches(event, predicate))
-        .filter_map(|event| event.pointer(pointer).cloned())
+        .filter(|event| json_predicate_matches(event, &endpoint.json))
+        .filter_map(|event| {
+            endpoint_pointers(endpoint)
+                .iter()
+                .map(|pointer| event.pointer(pointer).cloned())
+                .collect::<Option<Vec<_>>>()
+                .map(serde_json::Value::Array)
+        })
         .collect()
+}
+
+fn endpoint_pointers(endpoint: &JsonCorrelationEndpoint) -> Vec<&str> {
+    if endpoint.pointers.is_empty() {
+        endpoint.pointer.as_deref().into_iter().collect()
+    } else {
+        endpoint.pointers.iter().map(String::as_str).collect()
+    }
 }
 
 fn campaign_serial_contents(run: &Path, service: &str) -> Vec<u8> {
@@ -3849,13 +3860,13 @@ fn serial_correlation_description(correlation: &SerialCorrelation) -> String {
             .service
             .as_deref()
             .unwrap_or("property service"),
-        correlation.capture.pointer,
+        endpoint_pointer_description(&correlation.capture),
         correlation
             .equals
             .service
             .as_deref()
             .unwrap_or("property service"),
-        correlation.equals.pointer,
+        endpoint_pointer_description(&correlation.equals),
     )
 }
 
@@ -3866,11 +3877,15 @@ fn serial_join_description(join: &SerialJoin) -> String {
             format!(
                 "{} {}",
                 endpoint.service.as_deref().unwrap_or("property service"),
-                endpoint.pointer
+                endpoint_pointer_description(endpoint)
             )
         })
         .collect::<Vec<_>>()
         .join(" = ")
+}
+
+fn endpoint_pointer_description(endpoint: &JsonCorrelationEndpoint) -> String {
+    endpoint_pointers(endpoint).join(" + ")
 }
 
 fn serial_guard_description(guard: &OperationSerialGuard) -> String {
@@ -5629,12 +5644,12 @@ mod tests {
 
         fs::write(
             api.join("serial.log"),
-            "THES:ASSERT:write:pass\nTHES:M:written\nTHES:CHECKPOINT:write\n{\"event\":\"write\",\"request_id\":\"r-17\"}\n",
+            "THES:ASSERT:write:pass\nTHES:M:written\nTHES:CHECKPOINT:write\n{\"event\":\"write\",\"request_id\":\"r-17\",\"attempt\":1}\n",
         )
         .unwrap();
         fs::write(
             worker.join("serial.log"),
-            "THES:M:written\n{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n",
+            "THES:M:written\n{\"event\":\"replicated\",\"request_id\":\"r-17\",\"attempt\":1}\n",
         )
         .unwrap();
         joined.requires_serial_correlations = vec![serde_json::from_value(serde_json::json!({
@@ -5659,26 +5674,32 @@ mod tests {
         assert!(!property_matches_in_run(&joined, &run));
         fs::write(
             worker.join("serial.log"),
-            "THES:M:written\n{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n",
+            "THES:M:written\n{\"event\":\"replicated\",\"request_id\":\"r-17\",\"attempt\":1}\n",
         )
         .unwrap();
         fs::write(
             auditor.join("serial.log"),
-            "{\"event\":\"audit\",\"request_id\":\"r-18\"}\n",
+            "{\"event\":\"audit\",\"request_id\":\"r-18\",\"attempt\":1}\n",
         )
         .unwrap();
         joined.requires_serial_joins = vec![serde_json::from_value(serde_json::json!({
             "endpoints": [
-                {"service": "api", "pointer": "/request_id", "json": {"fields": {"/event": "write"}}},
-                {"service": "worker", "pointer": "/request_id", "json": {"fields": {"/event": "replicated"}}},
-                {"service": "auditor", "pointer": "/request_id", "json": {"fields": {"/event": "audit"}}}
+                {"service": "api", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "write"}}},
+                {"service": "worker", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "replicated"}}},
+                {"service": "auditor", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "audit"}}}
             ]
         }))
         .unwrap()];
         assert!(!property_matches_in_run(&joined, &run));
         fs::write(
             auditor.join("serial.log"),
-            "{\"event\":\"audit\",\"request_id\":\"r-17\"}\n",
+            "{\"event\":\"audit\",\"request_id\":\"r-17\",\"attempt\":2}\n",
+        )
+        .unwrap();
+        assert!(!property_matches_in_run(&joined, &run));
+        fs::write(
+            auditor.join("serial.log"),
+            "{\"event\":\"audit\",\"request_id\":\"r-17\",\"attempt\":1}\n",
         )
         .unwrap();
         assert!(property_matches_in_run(&joined, &run));

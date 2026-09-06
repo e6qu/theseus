@@ -84,19 +84,19 @@ x-theseus:
         # Prune retry until all three services have the same transaction ID.
         requires_serial_joins:
           - endpoints:
-              - pointer: /request_id
+              - pointers: [/request_id, /attempt]
                 json:
                   fields:
                     /event: operation
                     /name: write
               - service: replica
-                pointer: /request_id
+                pointers: [/request_id, /attempt]
                 json:
                   fields:
                     /event: replicated
                     /name: write
               - service: auditor
-                pointer: /request_id
+                pointers: [/request_id, /attempt]
                 json:
                   fields:
                     /event: audit
@@ -186,19 +186,19 @@ x-theseus:
                 /service: auditor
         requires_serial_joins:
           - endpoints:
-              - pointer: /request_id
+              - pointers: [/request_id, /attempt]
                 json:
                   fields:
                     /event: operation
                     /name: write
               - service: replica
-                pointer: /request_id
+                pointers: [/request_id, /attempt]
                 json:
                   fields:
                     /event: replicated
                     /name: write
               - service: auditor
-                pointer: /request_id
+                pointers: [/request_id, /attempt]
                 json:
                   fields:
                     /event: audit

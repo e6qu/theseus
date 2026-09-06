@@ -2,6 +2,6 @@
 mount -t proc proc /proc
 printf 'auditor ready\n'
 printf '%s\n' '{"event":"ready","service":"auditor","checks":[{"name":"serial","passed":true}]}'
-printf '%s\n' '{"event":"audit","name":"write_observed","request_id":"transaction-42"}'
+printf '%s\n' '{"event":"audit","name":"write_observed","request_id":"transaction-42","attempt":1}'
 sleep 2
 poweroff -f
