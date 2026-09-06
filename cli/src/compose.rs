@@ -233,7 +233,30 @@ struct ComposeSerialPredicate {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeJsonPredicate {
+    #[serde(default)]
     fields: BTreeMap<String, serde_json::Value>,
+    #[serde(default, rename = "where")]
+    where_: Vec<ComposeJsonCondition>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeJsonCondition {
+    pointer: String,
+    #[serde(default)]
+    equals: Option<serde_json::Value>,
+    #[serde(default)]
+    matches: Option<String>,
+    #[serde(default)]
+    greater_than: Option<f64>,
+    #[serde(default)]
+    greater_than_or_equal: Option<f64>,
+    #[serde(default)]
+    less_than: Option<f64>,
+    #[serde(default)]
+    less_than_or_equal: Option<f64>,
+    #[serde(default)]
+    exists: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -448,6 +471,27 @@ pub struct SerialPredicatePlan {
 #[derive(Debug, Clone, Serialize)]
 pub struct JsonPredicatePlan {
     pub fields: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "where")]
+    pub where_: Vec<JsonConditionPlan>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonConditionPlan {
+    pub pointer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equals: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matches: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub greater_than: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub greater_than_or_equal: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub less_than: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub less_than_or_equal: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exists: Option<bool>,
 }
 
 /// Load a Compose topology and lock every referenced service artifact into a
@@ -1338,7 +1382,7 @@ fn normalize_serial_predicate(
         })?;
     }
     if let Some(json) = &predicate.json {
-        if json.fields.is_empty() {
+        if json.fields.is_empty() && json.where_.is_empty() {
             return Err(ComposeError::Invalid(format!(
                 "campaign property {property_name:?} has an empty nested JSON predicate"
             )));
@@ -1349,6 +1393,9 @@ fn normalize_serial_predicate(
                     "campaign property {property_name:?} has invalid nested JSON pointer {pointer:?}"
                 )));
             }
+        }
+        for condition in &json.where_ {
+            validate_json_condition(condition, property_name)?;
         }
     }
     if predicate.contains.is_none()
@@ -1367,6 +1414,20 @@ fn normalize_serial_predicate(
         matches: predicate.matches,
         json: predicate.json.map(|json| JsonPredicatePlan {
             fields: json.fields,
+            where_: json
+                .where_
+                .into_iter()
+                .map(|condition| JsonConditionPlan {
+                    pointer: condition.pointer,
+                    equals: condition.equals,
+                    matches: condition.matches,
+                    greater_than: condition.greater_than,
+                    greater_than_or_equal: condition.greater_than_or_equal,
+                    less_than: condition.less_than,
+                    less_than_or_equal: condition.less_than_or_equal,
+                    exists: condition.exists,
+                })
+                .collect(),
         }),
         all: predicate
             .all
@@ -1384,6 +1445,56 @@ fn normalize_serial_predicate(
             .map(|child| normalize_serial_predicate(child, property_name))
             .collect::<Result<_, _>>()?,
     })
+}
+
+fn validate_json_condition(
+    condition: &ComposeJsonCondition,
+    property_name: &str,
+) -> Result<(), ComposeError> {
+    if !valid_json_pointer(&condition.pointer) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign property {property_name:?} has invalid nested JSON pointer {:?}",
+            condition.pointer
+        )));
+    }
+    let operators = usize::from(condition.equals.is_some())
+        + usize::from(condition.matches.is_some())
+        + usize::from(condition.greater_than.is_some())
+        + usize::from(condition.greater_than_or_equal.is_some())
+        + usize::from(condition.less_than.is_some())
+        + usize::from(condition.less_than_or_equal.is_some())
+        + usize::from(condition.exists.is_some());
+    if operators != 1 {
+        return Err(ComposeError::Invalid(format!(
+            "campaign property {property_name:?} JSON condition {:?} needs exactly one operator",
+            condition.pointer
+        )));
+    }
+    if let Some(expression) = &condition.matches {
+        if expression.is_empty() {
+            return Err(ComposeError::Invalid(format!(
+                "campaign property {property_name:?} has an empty nested JSON regex"
+            )));
+        }
+        Regex::new(expression).map_err(|error| {
+            ComposeError::Invalid(format!(
+                "campaign property {property_name:?} has invalid nested JSON regex {expression:?}: {error}"
+            ))
+        })?;
+    }
+    for value in [
+        condition.greater_than,
+        condition.greater_than_or_equal,
+        condition.less_than,
+        condition.less_than_or_equal,
+    ] {
+        if value.is_some_and(|value| !value.is_finite()) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign property {property_name:?} has a non-finite nested JSON number"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn valid_json_pointer(pointer: &str) -> bool {
@@ -1969,7 +2080,7 @@ mod tests {
     #[test]
     fn parses_nested_campaign_property_predicates() {
         let property: ComposeProperty = serde_yaml::from_str(
-            "name: durable_write\nkind: always\npredicate:\n  all:\n    - contains: THES:ASSERT:write:pass\n    - any:\n        - matches: THES:CHECKPOINT:write_[0-9]+\n        - json:\n            fields:\n              /event: checkpoint\n              /operation: write\n    - none:\n        - contains: THES:ASSERT:panic\n",
+            "name: durable_write\nkind: always\npredicate:\n  all:\n    - contains: THES:ASSERT:write:pass\n    - any:\n        - matches: THES:CHECKPOINT:write_[0-9]+\n        - json:\n            fields:\n              /event: checkpoint\n            where:\n              - pointer: /operation\n                matches: '^write_[0-9]+$'\n              - pointer: /attempt\n                greater_than_or_equal: 2\n    - none:\n        - contains: THES:ASSERT:panic\n",
         )
         .unwrap();
         let predicate =
@@ -1982,8 +2093,14 @@ mod tests {
             Some("THES:CHECKPOINT:write_[0-9]+")
         );
         assert_eq!(
-            predicate.all[1].any[1].json.as_ref().unwrap().fields["/operation"],
-            serde_json::Value::String("write".to_owned())
+            predicate.all[1].any[1].json.as_ref().unwrap().where_[0]
+                .matches
+                .as_deref(),
+            Some("^write_[0-9]+$")
+        );
+        assert_eq!(
+            predicate.all[1].any[1].json.as_ref().unwrap().where_[1].greater_than_or_equal,
+            Some(2.0)
         );
         assert_eq!(predicate.all[2].none.len(), 1);
     }
@@ -2017,6 +2134,7 @@ mod tests {
                         "event".to_owned(),
                         serde_json::Value::String("checkpoint".to_owned()),
                     )]),
+                    where_: Vec::new(),
                 }),
                 all: Vec::new(),
                 any: Vec::new(),
@@ -2027,6 +2145,36 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("invalid nested JSON pointer"));
+    }
+
+    #[test]
+    fn rejects_ambiguous_nested_campaign_json_conditions() {
+        let error = normalize_serial_predicate(
+            ComposeSerialPredicate {
+                contains: None,
+                matches: None,
+                json: Some(ComposeJsonPredicate {
+                    fields: BTreeMap::new(),
+                    where_: vec![ComposeJsonCondition {
+                        pointer: "/attempt".to_owned(),
+                        equals: None,
+                        matches: None,
+                        greater_than: Some(1.0),
+                        greater_than_or_equal: Some(2.0),
+                        less_than: None,
+                        less_than_or_equal: None,
+                        exists: None,
+                    }],
+                }),
+                all: Vec::new(),
+                any: Vec::new(),
+                none: Vec::new(),
+            },
+            "durable_write",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("exactly one operator"));
     }
 
     #[test]
