@@ -129,6 +129,11 @@ x-theseus:
                   /event: assertion
                   /name: consistent_read
                   /passed: false
+                where:
+                  - pointer: /attempt
+                    greater_than_or_equal: 2
+                  - pointer: /reason
+                    matches: "^stale$"
             - contains: "THES:M:stale"
             - any:
                 - matches: "THES:CHECKPOINT:read_(stale|fresh)"

@@ -206,7 +206,29 @@ struct SerialPredicate {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct JsonPredicate {
+    #[serde(default)]
     fields: BTreeMap<String, serde_json::Value>,
+    #[serde(default, rename = "where")]
+    where_: Vec<JsonCondition>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct JsonCondition {
+    pointer: String,
+    #[serde(default)]
+    equals: Option<serde_json::Value>,
+    #[serde(default)]
+    matches: Option<String>,
+    #[serde(default)]
+    greater_than: Option<f64>,
+    #[serde(default)]
+    greater_than_or_equal: Option<f64>,
+    #[serde(default)]
+    less_than: Option<f64>,
+    #[serde(default)]
+    less_than_or_equal: Option<f64>,
+    #[serde(default)]
+    exists: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -3156,8 +3178,46 @@ fn serial_matches_json_predicate(serial: &[u8], predicate: &JsonPredicate) -> bo
                     .fields
                     .iter()
                     .all(|(pointer, expected)| event.pointer(pointer) == Some(expected))
+                    && predicate
+                        .where_
+                        .iter()
+                        .all(|condition| json_condition_matches(&event, condition))
             })
     })
+}
+
+fn json_condition_matches(event: &serde_json::Value, condition: &JsonCondition) -> bool {
+    let actual = event.pointer(&condition.pointer);
+    if let Some(expected) = condition.exists {
+        return actual.is_some() == expected;
+    }
+    if let Some(expected) = &condition.equals {
+        return actual == Some(expected);
+    }
+    if let Some(expression) = &condition.matches {
+        return actual
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| {
+                Regex::new(expression)
+                    .map(|expression| expression.is_match(value.as_bytes()))
+                    .unwrap_or(false)
+            });
+    }
+    let Some(actual) = actual.and_then(serde_json::Value::as_f64) else {
+        return false;
+    };
+    if let Some(expected) = condition.greater_than {
+        return actual > expected;
+    }
+    if let Some(expected) = condition.greater_than_or_equal {
+        return actual >= expected;
+    }
+    if let Some(expected) = condition.less_than {
+        return actual < expected;
+    }
+    condition
+        .less_than_or_equal
+        .is_some_and(|expected| actual <= expected)
 }
 
 fn serial_contains(serial: &[u8], needle: &str) -> bool {
@@ -3204,6 +3264,9 @@ fn nested_predicate_description(predicate: &SerialPredicate) -> String {
     }
     if let Some(json) = &predicate.json {
         clauses.push(format!("JSON event has fields {:?}", json.fields));
+        for condition in &json.where_ {
+            clauses.push(json_condition_description(condition));
+        }
     }
     if !predicate.all.is_empty() {
         clauses.push(format!(
@@ -3239,6 +3302,36 @@ fn nested_predicate_description(predicate: &SerialPredicate) -> String {
         ));
     }
     clauses.join("; ")
+}
+
+fn json_condition_description(condition: &JsonCondition) -> String {
+    if let Some(value) = &condition.equals {
+        return format!("JSON {:?} equals {value}", condition.pointer);
+    }
+    if let Some(expression) = &condition.matches {
+        return format!("JSON {:?} matches {expression:?}", condition.pointer);
+    }
+    if let Some(value) = condition.greater_than {
+        return format!("JSON {:?} > {value}", condition.pointer);
+    }
+    if let Some(value) = condition.greater_than_or_equal {
+        return format!("JSON {:?} >= {value}", condition.pointer);
+    }
+    if let Some(value) = condition.less_than {
+        return format!("JSON {:?} < {value}", condition.pointer);
+    }
+    if let Some(value) = condition.less_than_or_equal {
+        return format!("JSON {:?} <= {value}", condition.pointer);
+    }
+    format!(
+        "JSON {:?} {}",
+        condition.pointer,
+        if condition.exists == Some(true) {
+            "exists"
+        } else {
+            "is absent"
+        }
+    )
 }
 
 fn execute(
@@ -4835,6 +4928,7 @@ mod tests {
                 ),
                 ("/passed".to_owned(), serde_json::Value::Bool(false)),
             ]),
+            where_: Vec::new(),
         };
 
         assert!(!serial_matches_json_predicate(
@@ -4846,6 +4940,70 @@ mod tests {
         assert!(serial_matches_json_predicate(
             br#"THES:M:read
 {"event":"assertion","passed":false}
+"#,
+            &predicate,
+        ));
+    }
+
+    #[test]
+    fn json_serial_predicate_conditions_match_one_complete_event() {
+        let predicate = JsonPredicate {
+            fields: BTreeMap::from([(
+                "/event".to_owned(),
+                serde_json::Value::String("assertion".to_owned()),
+            )]),
+            where_: vec![
+                JsonCondition {
+                    pointer: "/attempt".to_owned(),
+                    equals: None,
+                    matches: None,
+                    greater_than: None,
+                    greater_than_or_equal: Some(2.0),
+                    less_than: None,
+                    less_than_or_equal: None,
+                    exists: None,
+                },
+                JsonCondition {
+                    pointer: "/reason".to_owned(),
+                    equals: None,
+                    matches: Some("^(timeout|reset)$".to_owned()),
+                    greater_than: None,
+                    greater_than_or_equal: None,
+                    less_than: None,
+                    less_than_or_equal: None,
+                    exists: None,
+                },
+                JsonCondition {
+                    pointer: "/passed".to_owned(),
+                    equals: Some(serde_json::Value::Bool(false)),
+                    matches: None,
+                    greater_than: None,
+                    greater_than_or_equal: None,
+                    less_than: None,
+                    less_than_or_equal: None,
+                    exists: None,
+                },
+                JsonCondition {
+                    pointer: "/retryable".to_owned(),
+                    equals: None,
+                    matches: None,
+                    greater_than: None,
+                    greater_than_or_equal: None,
+                    less_than: None,
+                    less_than_or_equal: None,
+                    exists: Some(false),
+                },
+            ],
+        };
+
+        assert!(!serial_matches_json_predicate(
+            br#"{"event":"assertion","attempt":2,"reason":"other","passed":false}
+{"event":"assertion","attempt":1,"reason":"timeout","passed":false}
+"#,
+            &predicate,
+        ));
+        assert!(serial_matches_json_predicate(
+            br#"{"event":"assertion","attempt":2,"reason":"timeout","passed":false}
 "#,
             &predicate,
         ));

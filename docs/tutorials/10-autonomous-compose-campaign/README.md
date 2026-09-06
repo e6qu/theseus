@@ -54,6 +54,9 @@ Start with `compose.yaml`.
    groups. A leaf is `contains: <serial text>`, `matches: <Rust regex>`, or
    `json.fields`, a map of JSON Pointers to exact values. `json.fields` matches
    one complete JSON line, so its fields cannot come from separate events.
+   Add `json.where` for one condition per pointer: `equals`, `matches`,
+   `greater_than`, `greater_than_or_equal`, `less_than`, `less_than_or_equal`,
+   or `exists`. These conditions also match one complete JSON line.
 5. Set `max_operations_per_run` to explore every ordered operation history,
    including repeated operations such as retries. It defaults to 3 and is
    capped at 4. Set `max_faults_per_run` to explore candidate fault sequences;
@@ -140,7 +143,7 @@ Emit the serial protocol with plain shell:
 printf '%s\n' 'THES:ASSERT:consistent_read:pass'
 printf '%s\n' 'THES:M:written'
 printf '%s\n' 'THES:CHECKPOINT:write'
-printf '%s\n' '{"event":"assertion","name":"consistent_read","passed":true}'
+printf '%s\n' '{"event":"assertion","name":"consistent_read","passed":true,"attempt":2}'
 ```
 
 The optional SDK provides the same lines through `TtyChannel::assertion` and
