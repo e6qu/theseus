@@ -34,6 +34,9 @@ Start with `compose.yaml`.
    Set `service: <name>` inside that guard to read another service’s restored
    transcript instead; this joins deterministic evidence without a host-side
    coordinator.
+   Use `requires_serial_all` to require several guards at once, potentially
+   from different services. Use `excludes_serial_any` to block an operation
+   when any listed guard matches.
    Use `stages: [setup, workload, recovery]` and give every operation a
    `stage`. Histories may stay in a stage or move forward, never back. This is
    the compact way to express a workflow without pairwise exclusions.
