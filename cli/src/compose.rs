@@ -112,11 +112,43 @@ struct ComposeOperation {
     #[serde(default)]
     excludes_markers: Vec<String>,
     #[serde(default)]
-    requires_serial: Option<ComposeSerialPredicate>,
+    requires_serial: Option<ComposeOperationSerialGuard>,
     #[serde(default)]
-    excludes_serial: Option<ComposeSerialPredicate>,
+    excludes_serial: Option<ComposeOperationSerialGuard>,
     #[serde(default)]
     max_uses: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeOperationSerialGuard {
+    #[serde(default)]
+    service: Option<String>,
+    #[serde(default)]
+    contains: Option<String>,
+    #[serde(default)]
+    matches: Option<String>,
+    #[serde(default)]
+    json: Option<ComposeJsonPredicate>,
+    #[serde(default)]
+    all: Vec<ComposeSerialPredicate>,
+    #[serde(default)]
+    any: Vec<ComposeSerialPredicate>,
+    #[serde(default)]
+    none: Vec<ComposeSerialPredicate>,
+}
+
+impl ComposeOperationSerialGuard {
+    fn into_predicate(self) -> ComposeSerialPredicate {
+        ComposeSerialPredicate {
+            contains: self.contains,
+            matches: self.matches,
+            json: self.json,
+            all: self.all,
+            any: self.any,
+            none: self.none,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -380,11 +412,19 @@ pub struct OperationPlan {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excludes_markers: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub requires_serial: Option<SerialPredicatePlan>,
+    pub requires_serial: Option<OperationSerialGuardPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub excludes_serial: Option<SerialPredicatePlan>,
+    pub excludes_serial: Option<OperationSerialGuardPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_uses: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OperationSerialGuardPlan {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    #[serde(flatten)]
+    pub predicate: SerialPredicatePlan,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -675,11 +715,11 @@ fn campaign_plan(
         let context = format!("operation {:?}", operation.name);
         let requires_serial = operation
             .requires_serial
-            .map(|predicate| normalize_serial_predicate(predicate, &context))
+            .map(|guard| normalize_operation_serial_guard(guard, &context, services))
             .transpose()?;
         let excludes_serial = operation
             .excludes_serial
-            .map(|predicate| normalize_serial_predicate(predicate, &context))
+            .map(|guard| normalize_operation_serial_guard(guard, &context, services))
             .transpose()?;
         operations.push(OperationPlan {
             name: operation.name,
@@ -1381,6 +1421,24 @@ fn campaign_plan(
     }))
 }
 
+fn normalize_operation_serial_guard(
+    guard: ComposeOperationSerialGuard,
+    context: &str,
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<OperationSerialGuardPlan, ComposeError> {
+    if let Some(service) = &guard.service {
+        if !services.contains_key(service) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign {context} references unknown serial-guard service {service:?}"
+            )));
+        }
+    }
+    Ok(OperationSerialGuardPlan {
+        service: guard.service.clone(),
+        predicate: normalize_serial_predicate(guard.into_predicate(), context)?,
+    })
+}
+
 fn normalize_serial_predicate(
     predicate: ComposeSerialPredicate,
     context: &str,
@@ -2071,7 +2129,7 @@ mod tests {
     #[test]
     fn normalizes_a_serial_driven_topology_campaign() {
         let directory = fixture(
-            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 8\n    operations:\n      - name: put\n        input: \"put alpha\\n\"\n      - name: get\n        input: \"get alpha\\n\"\n    faults:\n      - service: worker\n        at_round: 2\n        kind: restart\n    properties:\n      - name: no_data_loss\n        kind: always\n        service: api\n        contains: 'THES:ASSERT:no_data_loss:pass'\n      - name: stale_read_is_reachable\n        kind: reachable\n        contains: 'THES:ASSERT:stale_read:fail'\n",
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 8\n    operations:\n      - name: put\n        input: \"put alpha\\n\"\n      - name: get\n        input: \"get alpha\\n\"\n        requires_serial:\n          service: worker\n          json:\n            fields:\n              /event: ready\n    faults:\n      - service: worker\n        at_round: 2\n        kind: restart\n    properties:\n      - name: no_data_loss\n        kind: always\n        service: api\n        contains: 'THES:ASSERT:no_data_loss:pass'\n      - name: stale_read_is_reachable\n        kind: reachable\n        contains: 'THES:ASSERT:stale_read:fail'\n",
         );
         let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
         let campaign = plan.campaign.expect("campaign is normalized");
@@ -2080,7 +2138,31 @@ mod tests {
         assert_eq!(campaign.faults[0].service.as_deref(), Some("worker"));
         assert_eq!(campaign.max_faults_per_run, 2);
         assert_eq!(campaign.max_operations_per_run, 3);
+        assert_eq!(
+            campaign.operations[1]
+                .requires_serial
+                .as_ref()
+                .unwrap()
+                .service
+                .as_deref(),
+            Some("worker")
+        );
         assert_eq!(campaign.properties.len(), 2);
+
+        let compose = directory.path().join("compose.yaml");
+        let input = fs::read_to_string(&compose).unwrap();
+        fs::write(
+            &compose,
+            input.replace(
+                "service: worker\n          json",
+                "service: missing\n          json",
+            ),
+        )
+        .unwrap();
+        let error = load_compose_plan(&compose).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unknown serial-guard service \"missing\""));
     }
 
     #[test]
@@ -2276,6 +2358,7 @@ x-theseus:
                 .requires_serial
                 .as_ref()
                 .unwrap()
+                .predicate
                 .json
                 .as_ref()
                 .unwrap()

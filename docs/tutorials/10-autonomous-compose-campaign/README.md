@@ -31,6 +31,9 @@ Start with `compose.yaml`.
    Use `requires_serial` or `excludes_serial` when the decision needs the
    full nested serial predicate. Theseus evaluates it against the driver's
    restored transcript, including one-line JSON event predicates.
+   Set `service: <name>` inside that guard to read another service’s restored
+   transcript instead; this joins deterministic evidence without a host-side
+   coordinator.
    Use `stages: [setup, workload, recovery]` and give every operation a
    `stage`. Histories may stay in a stage or move forward, never back. This is
    the compact way to express a workflow without pairwise exclusions.

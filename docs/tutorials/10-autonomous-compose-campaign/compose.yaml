@@ -40,6 +40,14 @@ x-theseus:
         input: "read_stale\n"
         stage: read
         requires_markers: [written]
+        # A guard without service reads the driver. Select another service to
+        # join its restored evidence into the operation decision.
+        requires_serial:
+          service: auditor
+          json:
+            fields:
+              /event: ready
+              /service: auditor
         max_uses: 1
       - name: retry
         input: "retry\n"
