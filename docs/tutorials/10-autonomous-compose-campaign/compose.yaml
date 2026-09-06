@@ -164,6 +164,20 @@ x-theseus:
               fields:
                 /event: ready
                 /service: auditor
+        requires_serial_correlations:
+          - capture:
+              pointer: /request_id
+              json:
+                fields:
+                  /event: operation
+                  /name: write
+            equals:
+              service: auditor
+              pointer: /request_id
+              json:
+                fields:
+                  /event: audit
+                  /name: write_observed
         predicate:
           all:
             - contains: "THES:ASSERT:consistent_read:fail"
