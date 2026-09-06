@@ -142,6 +142,8 @@ struct ComposeOperationSerialGuard {
     none: Vec<ComposeSerialPredicate>,
     #[serde(default)]
     sequence: Vec<ComposeSerialPredicate>,
+    #[serde(default)]
+    occurs: Option<ComposeSerialOccurrence>,
 }
 
 impl ComposeOperationSerialGuard {
@@ -154,6 +156,7 @@ impl ComposeOperationSerialGuard {
             any: self.any,
             none: self.none,
             sequence: self.sequence,
+            occurs: self.occurs,
         }
     }
 }
@@ -270,6 +273,20 @@ struct ComposeSerialPredicate {
     none: Vec<ComposeSerialPredicate>,
     #[serde(default)]
     sequence: Vec<ComposeSerialPredicate>,
+    #[serde(default)]
+    occurs: Option<ComposeSerialOccurrence>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeSerialOccurrence {
+    predicate: Box<ComposeSerialPredicate>,
+    #[serde(default)]
+    exactly: Option<u64>,
+    #[serde(default)]
+    at_least: Option<u64>,
+    #[serde(default)]
+    at_most: Option<u64>,
 }
 
 /// One JSON-lines event emitted on the serial console. Every pointer/value pair
@@ -529,6 +546,19 @@ pub struct SerialPredicatePlan {
     pub none: Vec<SerialPredicatePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sequence: Vec<SerialPredicatePlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occurs: Option<SerialOccurrencePlan>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SerialOccurrencePlan {
+    pub predicate: Box<SerialPredicatePlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exactly: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_least: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_most: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1493,7 +1523,13 @@ fn normalize_serial_predicate(
     context: &str,
 ) -> Result<SerialPredicatePlan, ComposeError> {
     let has_sequence = !predicate.sequence.is_empty();
-    if has_sequence
+    let has_occurs = predicate.occurs.is_some();
+    if has_sequence && has_occurs {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} cannot combine sequence with occurs"
+        )));
+    }
+    if (has_sequence || has_occurs)
         && (predicate.contains.is_some()
             || predicate.matches.is_some()
             || predicate.json.is_some()
@@ -1546,6 +1582,7 @@ fn normalize_serial_predicate(
         && predicate.any.is_empty()
         && predicate.none.is_empty()
         && predicate.sequence.is_empty()
+        && predicate.occurs.is_none()
     {
         return Err(ComposeError::Invalid(format!(
             "campaign {context} has an empty nested predicate"
@@ -1591,6 +1628,59 @@ fn normalize_serial_predicate(
             .into_iter()
             .map(|child| normalize_sequence_item(child, context))
             .collect::<Result<_, _>>()?,
+        occurs: predicate
+            .occurs
+            .map(|occurs| normalize_serial_occurrence(occurs, context))
+            .transpose()?,
+    })
+}
+
+fn normalize_serial_occurrence(
+    occurs: ComposeSerialOccurrence,
+    context: &str,
+) -> Result<SerialOccurrencePlan, ComposeError> {
+    let bounds = usize::from(occurs.exactly.is_some())
+        + usize::from(occurs.at_least.is_some())
+        + usize::from(occurs.at_most.is_some());
+    if bounds == 0 || (occurs.exactly.is_some() && bounds != 1) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} occurs needs exactly or at_least and/or at_most"
+        )));
+    }
+    if occurs.exactly == Some(0) || occurs.at_least == Some(0) || occurs.at_most == Some(0) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} occurs bounds must be at least one"
+        )));
+    }
+    if occurs
+        .at_least
+        .zip(occurs.at_most)
+        .is_some_and(|(at_least, at_most)| at_least > at_most)
+    {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} occurs at_least cannot exceed at_most"
+        )));
+    }
+    let predicate = normalize_serial_predicate(*occurs.predicate, context)?;
+    let leaves = usize::from(predicate.contains.is_some())
+        + usize::from(predicate.matches.is_some())
+        + usize::from(predicate.json.is_some());
+    if leaves != 1
+        || !predicate.all.is_empty()
+        || !predicate.any.is_empty()
+        || !predicate.none.is_empty()
+        || !predicate.sequence.is_empty()
+        || predicate.occurs.is_some()
+    {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} occurs predicate must contain exactly one of contains, matches, or json"
+        )));
+    }
+    Ok(SerialOccurrencePlan {
+        predicate: Box::new(predicate),
+        exactly: occurs.exactly,
+        at_least: occurs.at_least,
+        at_most: occurs.at_most,
     })
 }
 
@@ -2314,6 +2404,7 @@ mod tests {
                 any: Vec::new(),
                 none: Vec::new(),
                 sequence: Vec::new(),
+                occurs: None,
             },
             "durable_write",
         )
@@ -2339,6 +2430,7 @@ mod tests {
                 any: Vec::new(),
                 none: Vec::new(),
                 sequence: Vec::new(),
+                occurs: None,
             },
             "durable_write",
         )
@@ -2370,6 +2462,7 @@ mod tests {
                 any: Vec::new(),
                 none: Vec::new(),
                 sequence: Vec::new(),
+                occurs: None,
             },
             "durable_write",
         )
@@ -2407,6 +2500,33 @@ mod tests {
         assert!(error
             .to_string()
             .contains("sequence items must contain exactly one"));
+    }
+
+    #[test]
+    fn normalizes_counted_serial_predicates() {
+        let predicate: ComposeSerialPredicate = serde_yaml::from_str(
+            "occurs:\n  exactly: 2\n  predicate:\n    json:\n      fields:\n        /event: retry\n",
+        )
+        .unwrap();
+
+        let predicate = normalize_serial_predicate(predicate, "retried").unwrap();
+        let occurs = predicate.occurs.unwrap();
+        assert_eq!(occurs.exactly, Some(2));
+        assert_eq!(
+            occurs.predicate.json.as_ref().unwrap().fields["/event"],
+            serde_json::Value::String("retry".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_counted_serial_predicate_bounds() {
+        let predicate: ComposeSerialPredicate = serde_yaml::from_str(
+            "occurs:\n  exactly: 2\n  at_least: 1\n  predicate:\n    contains: retry\n",
+        )
+        .unwrap();
+
+        let error = normalize_serial_predicate(predicate, "retried").unwrap_err();
+        assert!(error.to_string().contains("occurs needs exactly"));
     }
 
     #[test]

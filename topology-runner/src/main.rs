@@ -220,6 +220,19 @@ struct SerialPredicate {
     none: Vec<SerialPredicate>,
     #[serde(default)]
     sequence: Vec<SerialPredicate>,
+    #[serde(default)]
+    occurs: Option<SerialOccurrence>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct SerialOccurrence {
+    predicate: Box<SerialPredicate>,
+    #[serde(default)]
+    exactly: Option<u64>,
+    #[serde(default)]
+    at_least: Option<u64>,
+    #[serde(default)]
+    at_most: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -3260,6 +3273,57 @@ fn serial_matches_nested_predicate(serial: &[u8], predicate: &SerialPredicate) -
             .iter()
             .all(|child| !serial_matches_nested_predicate(serial, child))
         && (predicate.sequence.is_empty() || serial_matches_sequence(serial, &predicate.sequence))
+        && predicate
+            .occurs
+            .as_ref()
+            .map(|occurs| serial_occurrence_matches(serial, occurs))
+            .unwrap_or(true)
+}
+
+fn serial_occurrence_matches(serial: &[u8], occurs: &SerialOccurrence) -> bool {
+    let count = serial_predicate_occurrences(serial, &occurs.predicate);
+    occurs.exactly.is_none_or(|exactly| count == exactly)
+        && occurs.at_least.is_none_or(|at_least| count >= at_least)
+        && occurs.at_most.is_none_or(|at_most| count <= at_most)
+}
+
+fn serial_predicate_occurrences(serial: &[u8], predicate: &SerialPredicate) -> u64 {
+    if let Some(needle) = &predicate.contains {
+        return serial_non_overlapping_count(serial, needle.as_bytes());
+    }
+    if let Some(expression) = &predicate.matches {
+        return Regex::new(expression)
+            .map(|expression| expression.find_iter(serial).count() as u64)
+            .unwrap_or(0);
+    }
+    predicate
+        .json
+        .as_ref()
+        .map(|predicate| {
+            serial
+                .split_inclusive(|byte| *byte == b'\n')
+                .filter(|line| {
+                    serial_json_event_matches(line.strip_suffix(b"\n").unwrap_or(line), predicate)
+                })
+                .count() as u64
+        })
+        .unwrap_or(0)
+}
+
+fn serial_non_overlapping_count(serial: &[u8], needle: &[u8]) -> u64 {
+    if needle.is_empty() {
+        return 0;
+    }
+    let mut count = 0;
+    let mut offset = 0;
+    while let Some(start) = serial[offset..]
+        .windows(needle.len())
+        .position(|window| window == needle)
+    {
+        count += 1;
+        offset += start + needle.len();
+    }
+    count
 }
 
 fn serial_matches_sequence(serial: &[u8], sequence: &[SerialPredicate]) -> bool {
@@ -3302,24 +3366,28 @@ fn serial_json_predicate_match_end(serial: &[u8], predicate: &JsonPredicate) -> 
     for line in serial.split_inclusive(|byte| *byte == b'\n') {
         let end = start + line.len();
         let line = line.strip_suffix(b"\n").unwrap_or(line);
-        let matches = serde_json::from_slice::<serde_json::Value>(line)
-            .ok()
-            .is_some_and(|event| {
-                predicate
-                    .fields
-                    .iter()
-                    .all(|(pointer, expected)| event.pointer(pointer) == Some(expected))
-                    && predicate
-                        .where_
-                        .iter()
-                        .all(|condition| json_condition_matches(&event, condition))
-            });
+        let matches = serial_json_event_matches(line, predicate);
         if matches {
             return Some(end);
         }
         start = end;
     }
     None
+}
+
+fn serial_json_event_matches(line: &[u8], predicate: &JsonPredicate) -> bool {
+    serde_json::from_slice::<serde_json::Value>(line)
+        .ok()
+        .is_some_and(|event| {
+            predicate
+                .fields
+                .iter()
+                .all(|(pointer, expected)| event.pointer(pointer) == Some(expected))
+                && predicate
+                    .where_
+                    .iter()
+                    .all(|condition| json_condition_matches(&event, condition))
+        })
 }
 
 fn json_condition_matches(event: &serde_json::Value, condition: &JsonCondition) -> bool {
@@ -3446,6 +3514,24 @@ fn nested_predicate_description(predicate: &SerialPredicate) -> String {
                 .map(nested_predicate_description)
                 .collect::<Vec<_>>()
                 .join(", ")
+        ));
+    }
+    if let Some(occurs) = &predicate.occurs {
+        let bounds = if let Some(exactly) = occurs.exactly {
+            format!("exactly {exactly}")
+        } else {
+            [
+                occurs.at_least.map(|value| format!("at least {value}")),
+                occurs.at_most.map(|value| format!("at most {value}")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" and ")
+        };
+        clauses.push(format!(
+            "occurs {bounds} times [{}]",
+            nested_predicate_description(&occurs.predicate)
         ));
     }
     clauses.join("; ")
@@ -5004,6 +5090,7 @@ mod tests {
                         any: Vec::new(),
                         none: Vec::new(),
                         sequence: Vec::new(),
+                        occurs: None,
                     },
                     SerialPredicate {
                         contains: Some("THES:M:written".to_owned()),
@@ -5013,6 +5100,7 @@ mod tests {
                         any: Vec::new(),
                         none: Vec::new(),
                         sequence: Vec::new(),
+                        occurs: None,
                     },
                 ],
                 any: vec![
@@ -5024,6 +5112,7 @@ mod tests {
                         any: Vec::new(),
                         none: Vec::new(),
                         sequence: Vec::new(),
+                        occurs: None,
                     },
                     SerialPredicate {
                         contains: None,
@@ -5033,6 +5122,7 @@ mod tests {
                         any: Vec::new(),
                         none: Vec::new(),
                         sequence: Vec::new(),
+                        occurs: None,
                     },
                 ],
                 none: vec![SerialPredicate {
@@ -5043,8 +5133,10 @@ mod tests {
                     any: Vec::new(),
                     none: Vec::new(),
                     sequence: Vec::new(),
+                    occurs: None,
                 }],
                 sequence: Vec::new(),
+                occurs: None,
             }),
             service: None,
         };
@@ -5116,6 +5208,37 @@ mod tests {
         assert!(!serial_matches_nested_predicate(
             b"THES:M:stale\n{\"event\":\"assertion\",\"passed\":false}\nTHES:CHECKPOINT:write\n",
             &predicate,
+        ));
+    }
+
+    #[test]
+    fn counted_serial_predicates_enforce_the_declared_bounds() {
+        let exactly_two: SerialPredicate = serde_json::from_value(serde_json::json!({
+            "occurs": {
+                "exactly": 2,
+                "predicate": {"json": {"fields": {"/event": "retry"}}}
+            }
+        }))
+        .unwrap();
+        let bounded: SerialPredicate = serde_json::from_value(serde_json::json!({
+            "occurs": {
+                "at_least": 2,
+                "at_most": 3,
+                "predicate": {"matches": "THES:M:retry"}
+            }
+        }))
+        .unwrap();
+
+        let serial = b"{\"event\":\"retry\"}\nTHES:M:retry\n{\"event\":\"retry\"}\nTHES:M:retry\n";
+        assert!(serial_matches_nested_predicate(serial, &exactly_two));
+        assert!(serial_matches_nested_predicate(serial, &bounded));
+        assert!(!serial_matches_nested_predicate(
+            b"{\"event\":\"retry\"}\nTHES:M:retry\n",
+            &exactly_two,
+        ));
+        assert!(!serial_matches_nested_predicate(
+            b"THES:M:retry\nTHES:M:retry\nTHES:M:retry\nTHES:M:retry\n",
+            &bounded,
         ));
     }
 
@@ -5285,6 +5408,7 @@ mod tests {
                 any: Vec::new(),
                 none: Vec::new(),
                 sequence: Vec::new(),
+                occurs: None,
             },
         });
         structured.operations[1].requires_serial_all = vec![
@@ -5298,6 +5422,7 @@ mod tests {
                     any: Vec::new(),
                     none: Vec::new(),
                     sequence: Vec::new(),
+                    occurs: None,
                 },
             },
             structured.operations[1].requires_serial.clone().unwrap(),
@@ -5312,6 +5437,7 @@ mod tests {
                 any: Vec::new(),
                 none: Vec::new(),
                 sequence: Vec::new(),
+                occurs: None,
             },
         }];
 
