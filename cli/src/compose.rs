@@ -259,7 +259,27 @@ struct ComposeProperty {
     #[serde(default)]
     excludes_serial_any: Option<Vec<ComposeOperationSerialGuard>>,
     #[serde(default)]
+    requires_serial_correlations: Option<Vec<ComposeSerialCorrelation>>,
+    #[serde(default)]
     service: Option<String>,
+}
+
+/// Require matching JSON Pointer values between two service transcripts.
+/// Endpoint services default to the property's service when omitted.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeSerialCorrelation {
+    capture: ComposeJsonCorrelationEndpoint,
+    equals: ComposeJsonCorrelationEndpoint,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeJsonCorrelationEndpoint {
+    #[serde(default)]
+    service: Option<String>,
+    pointer: String,
+    json: ComposeJsonPredicate,
 }
 
 #[derive(Debug, Deserialize)]
@@ -560,8 +580,24 @@ pub struct PropertyPlan {
     pub requires_serial_any: Vec<OperationSerialGuardPlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excludes_serial_any: Vec<OperationSerialGuardPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_serial_correlations: Vec<SerialCorrelationPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SerialCorrelationPlan {
+    pub capture: JsonCorrelationEndpointPlan,
+    pub equals: JsonCorrelationEndpointPlan,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonCorrelationEndpointPlan {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    pub pointer: String,
+    pub json: JsonPredicatePlan,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1474,6 +1510,7 @@ fn campaign_plan(
             && property.requires_serial_all.is_none()
             && property.requires_serial_any.is_none()
             && property.excludes_serial_any.is_none()
+            && property.requires_serial_correlations.is_none()
         {
             return Err(ComposeError::Invalid(format!(
                 "campaign property {:?} needs serial evidence",
@@ -1532,6 +1569,11 @@ fn campaign_plan(
             &context,
             services,
         )?;
+        let requires_serial_correlations = normalize_serial_correlations(
+            property.requires_serial_correlations,
+            &context,
+            services,
+        )?;
         properties.push(PropertyPlan {
             name: property.name,
             kind: property.kind,
@@ -1543,6 +1585,7 @@ fn campaign_plan(
             requires_serial_all,
             requires_serial_any,
             excludes_serial_any,
+            requires_serial_correlations,
             service: property.service,
         });
     }
@@ -1593,6 +1636,66 @@ fn normalize_operation_serial_guard(
     Ok(OperationSerialGuardPlan {
         service: guard.service.clone(),
         predicate: normalize_serial_predicate(guard.into_predicate(), context)?,
+    })
+}
+
+fn normalize_serial_correlations(
+    correlations: Option<Vec<ComposeSerialCorrelation>>,
+    context: &str,
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<Vec<SerialCorrelationPlan>, ComposeError> {
+    let Some(correlations) = correlations else {
+        return Ok(Vec::new());
+    };
+    if correlations.is_empty() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} has an empty requires_serial_correlations set"
+        )));
+    }
+    correlations
+        .into_iter()
+        .map(|correlation| {
+            Ok(SerialCorrelationPlan {
+                capture: normalize_json_correlation_endpoint(
+                    correlation.capture,
+                    "capture",
+                    context,
+                    services,
+                )?,
+                equals: normalize_json_correlation_endpoint(
+                    correlation.equals,
+                    "equals",
+                    context,
+                    services,
+                )?,
+            })
+        })
+        .collect()
+}
+
+fn normalize_json_correlation_endpoint(
+    endpoint: ComposeJsonCorrelationEndpoint,
+    role: &str,
+    context: &str,
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<JsonCorrelationEndpointPlan, ComposeError> {
+    if let Some(service) = &endpoint.service {
+        if !services.contains_key(service) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign {context} {role} correlation references unknown service {service:?}"
+            )));
+        }
+    }
+    if !valid_json_pointer(&endpoint.pointer) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} has invalid {role} correlation JSON pointer {:?}",
+            endpoint.pointer
+        )));
+    }
+    Ok(JsonCorrelationEndpointPlan {
+        service: endpoint.service,
+        pointer: endpoint.pointer,
+        json: normalize_json_predicate(endpoint.json, context, false)?,
     })
 }
 
@@ -2572,6 +2675,35 @@ mod tests {
             ["THES:CHECKPOINT:write", "THES:M:written"]
         );
         assert_eq!(property.contains_none, ["THES:ASSERT:panic"]);
+    }
+
+    #[test]
+    fn normalizes_cross_service_json_correlations() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: write\n        input: \"write\\n\"\n    faults: []\n    properties:\n      - name: replicated_write\n        kind: always\n        service: api\n        contains: THES:ASSERT:replicated_write:pass\n        requires_serial_correlations:\n          - capture:\n              pointer: /request_id\n              json:\n                fields:\n                  /event: write\n            equals:\n              service: worker\n              pointer: /request_id\n              json:\n                fields:\n                  /event: replicated\n",
+        );
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let correlation = &plan.campaign.unwrap().properties[0].requires_serial_correlations[0];
+        assert_eq!(correlation.capture.service, None);
+        assert_eq!(correlation.capture.pointer, "/request_id");
+        assert_eq!(correlation.equals.service.as_deref(), Some("worker"));
+        assert_eq!(
+            correlation.equals.json.fields["/event"],
+            serde_json::Value::String("replicated".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_cross_service_json_correlation_with_unknown_service() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: write\n        input: \"write\\n\"\n    faults: []\n    properties:\n      - name: replicated_write\n        kind: always\n        service: api\n        requires_serial_correlations:\n          - capture:\n              pointer: /request_id\n              json:\n                fields:\n                  /event: write\n            equals:\n              service: missing\n              pointer: /request_id\n              json:\n                fields:\n                  /event: replicated\n",
+        );
+
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("correlation references unknown service \"missing\""));
     }
 
     #[test]

@@ -75,6 +75,11 @@ Start with `compose.yaml`.
    `requires_serial_any` needs one listed guard; `excludes_serial_any` rejects
    a property when one matches. Each guard uses `service` and the same serial
    predicate syntax as an operation guard.
+   Use `requires_serial_correlations` when two services must report the same
+   JSON value. Each entry has `capture` and `equals` endpoints. Give each a
+   `json` event predicate and `pointer`; set `service` when it differs from
+   the property service. The tutorial matches the API write transaction to the
+   auditor's observation.
    Add `json.where` for one condition per pointer: `equals`, `matches`,
    `greater_than`, `greater_than_or_equal`, `less_than`, `less_than_or_equal`,
    or `exists`. These conditions also match one complete JSON line.

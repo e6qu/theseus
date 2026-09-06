@@ -207,7 +207,23 @@ struct CampaignProperty {
     #[serde(default)]
     excludes_serial_any: Vec<OperationSerialGuard>,
     #[serde(default)]
+    requires_serial_correlations: Vec<SerialCorrelation>,
+    #[serde(default)]
     service: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SerialCorrelation {
+    capture: JsonCorrelationEndpoint,
+    equals: JsonCorrelationEndpoint,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct JsonCorrelationEndpoint {
+    #[serde(default)]
+    service: Option<String>,
+    pointer: String,
+    json: JsonPredicate,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -2246,6 +2262,7 @@ fn add_counterexample_check(
     if !property.requires_serial_all.is_empty()
         || !property.requires_serial_any.is_empty()
         || !property.excludes_serial_any.is_empty()
+        || !property.requires_serial_correlations.is_empty()
     {
         return Ok(());
     }
@@ -2351,6 +2368,7 @@ fn campaign_counterexample(
                 requires_serial_all: property.requires_serial_all.clone(),
                 requires_serial_any: property.requires_serial_any.clone(),
                 excludes_serial_any: property.excludes_serial_any.clone(),
+                requires_serial_correlations: property.requires_serial_correlations.clone(),
                 service: property.service.clone(),
             },
             CampaignSchedule { operations, faults },
@@ -2386,6 +2404,10 @@ fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
             .excludes_serial_any
             .iter()
             .all(|guard| !campaign_serial_guard_matches_property(run, property, guard))
+        && property
+            .requires_serial_correlations
+            .iter()
+            .all(|correlation| serial_correlation_matches_property(run, property, correlation))
 }
 
 fn campaign_property_services(run: &Path, service: Option<&str>) -> Vec<String> {
@@ -3220,6 +3242,62 @@ fn campaign_serial_guard_matches_property(
     })
 }
 
+fn serial_correlation_matches_property(
+    run: &Path,
+    property: &CampaignProperty,
+    correlation: &SerialCorrelation,
+) -> bool {
+    let capture_services = campaign_property_services(
+        run,
+        correlation
+            .capture
+            .service
+            .as_deref()
+            .or(property.service.as_deref()),
+    );
+    let equals_services = campaign_property_services(
+        run,
+        correlation
+            .equals
+            .service
+            .as_deref()
+            .or(property.service.as_deref()),
+    );
+    let captures = capture_services
+        .iter()
+        .flat_map(|service| {
+            serial_json_pointer_values(
+                &campaign_serial_contents(run, service),
+                &correlation.capture.json,
+                &correlation.capture.pointer,
+            )
+        })
+        .collect::<Vec<_>>();
+    !captures.is_empty()
+        && equals_services.iter().any(|service| {
+            serial_json_pointer_values(
+                &campaign_serial_contents(run, service),
+                &correlation.equals.json,
+                &correlation.equals.pointer,
+            )
+            .into_iter()
+            .any(|value| captures.iter().any(|capture| capture == &value))
+        })
+}
+
+fn serial_json_pointer_values(
+    serial: &[u8],
+    predicate: &JsonPredicate,
+    pointer: &str,
+) -> Vec<serde_json::Value> {
+    serial
+        .split_inclusive(|byte| *byte == b'\n')
+        .filter_map(|line| serde_json::from_slice(line.strip_suffix(b"\n").unwrap_or(line)).ok())
+        .filter(|event| json_predicate_matches(event, predicate))
+        .filter_map(|event| event.pointer(pointer).cloned())
+        .collect()
+}
+
 fn campaign_serial_contents(run: &Path, service: &str) -> Vec<u8> {
     let mut logs = fs::read_dir(run.join("services").join(service))
         .into_iter()
@@ -3643,7 +3721,36 @@ fn campaign_property_description(property: &CampaignProperty) -> String {
                 .join(", ")
         ));
     }
+    if !property.requires_serial_correlations.is_empty() {
+        clauses.push(format!(
+            "also requires correlations [{}]",
+            property
+                .requires_serial_correlations
+                .iter()
+                .map(serial_correlation_description)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     clauses.join("; ")
+}
+
+fn serial_correlation_description(correlation: &SerialCorrelation) -> String {
+    format!(
+        "{} {} = {} {}",
+        correlation
+            .capture
+            .service
+            .as_deref()
+            .unwrap_or("property service"),
+        correlation.capture.pointer,
+        correlation
+            .equals
+            .service
+            .as_deref()
+            .unwrap_or("property service"),
+        correlation.equals.pointer,
+    )
 }
 
 fn serial_guard_description(guard: &OperationSerialGuard) -> String {
@@ -5339,6 +5446,7 @@ mod tests {
             requires_serial_all: Vec::new(),
             requires_serial_any: Vec::new(),
             excludes_serial_any: Vec::new(),
+            requires_serial_correlations: Vec::new(),
             service: None,
         };
 
@@ -5395,6 +5503,37 @@ mod tests {
         )
         .unwrap();
         assert!(!property_matches_in_run(&property, &run));
+
+        fs::write(
+            api.join("serial.log"),
+            "THES:ASSERT:write:pass\nTHES:M:written\nTHES:CHECKPOINT:write\n{\"event\":\"write\",\"request_id\":\"r-17\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            worker.join("serial.log"),
+            "THES:M:written\n{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n",
+        )
+        .unwrap();
+        joined.requires_serial_correlations = vec![serde_json::from_value(serde_json::json!({
+            "capture": {
+                "service": "api",
+                "pointer": "/request_id",
+                "json": {"fields": {"/event": "write"}}
+            },
+            "equals": {
+                "service": "worker",
+                "pointer": "/request_id",
+                "json": {"fields": {"/event": "replicated"}}
+            }
+        }))
+        .unwrap()];
+        assert!(property_matches_in_run(&joined, &run));
+        fs::write(
+            worker.join("serial.log"),
+            "THES:M:written\n{\"event\":\"replicated\",\"request_id\":\"r-18\"}\n",
+        )
+        .unwrap();
+        assert!(!property_matches_in_run(&joined, &run));
         fs::remove_dir_all(run).unwrap();
     }
 
