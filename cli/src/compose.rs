@@ -120,6 +120,10 @@ struct ComposeOperation {
     #[serde(default)]
     excludes_serial_any: Option<Vec<ComposeOperationSerialGuard>>,
     #[serde(default)]
+    requires_serial_joins: Option<Vec<ComposeSerialJoin>>,
+    #[serde(default)]
+    excludes_serial_joins: Option<Vec<ComposeSerialJoin>>,
+    #[serde(default)]
     max_uses: Option<u8>,
 }
 
@@ -502,6 +506,10 @@ pub struct OperationPlan {
     pub requires_serial_all: Vec<OperationSerialGuardPlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excludes_serial_any: Vec<OperationSerialGuardPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_serial_joins: Vec<SerialJoinPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excludes_serial_joins: Vec<SerialJoinPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_uses: Option<u8>,
 }
@@ -881,6 +889,10 @@ fn campaign_plan(
             &context,
             services,
         )?;
+        let requires_serial_joins =
+            normalize_serial_joins(operation.requires_serial_joins, &context, services)?;
+        let excludes_serial_joins =
+            normalize_serial_joins(operation.excludes_serial_joins, &context, services)?;
         operations.push(OperationPlan {
             name: operation.name,
             input_hex: hex(operation.input.as_bytes()),
@@ -893,6 +905,8 @@ fn campaign_plan(
             excludes_serial,
             requires_serial_all,
             excludes_serial_any,
+            requires_serial_joins,
+            excludes_serial_joins,
             max_uses: operation.max_uses,
         });
     }
@@ -2658,7 +2672,7 @@ mod tests {
     #[test]
     fn normalizes_a_serial_driven_topology_campaign() {
         let directory = fixture(
-            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 8\n    operations:\n      - name: put\n        input: \"put alpha\\n\"\n      - name: get\n        input: \"get alpha\\n\"\n        requires_serial:\n          service: worker\n          json:\n            fields:\n              /event: ready\n        requires_serial_all:\n          - contains: THES:M:ready\n          - service: worker\n            json:\n              fields:\n                /role: replica\n    faults:\n      - service: worker\n        at_round: 2\n        kind: restart\n    properties:\n      - name: no_data_loss\n        kind: always\n        service: api\n        contains: 'THES:ASSERT:no_data_loss:pass'\n      - name: stale_read_is_reachable\n        kind: reachable\n        contains: 'THES:ASSERT:stale_read:fail'\n",
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 8\n    operations:\n      - name: put\n        input: \"put alpha\\n\"\n      - name: get\n        input: \"get alpha\\n\"\n        requires_serial:\n          service: worker\n          json:\n            fields:\n              /event: ready\n        requires_serial_all:\n          - contains: THES:M:ready\n          - service: worker\n            json:\n              fields:\n                /role: replica\n        requires_serial_joins:\n          - endpoints:\n              - pointer: /request_id\n                json:\n                  fields:\n                    /event: write\n              - service: worker\n                pointer: /request_id\n                json:\n                  fields:\n                    /event: replicated\n        excludes_serial_joins:\n          - endpoints:\n              - pointer: /request_id\n                json:\n                  fields:\n                    /event: completed\n              - service: worker\n                pointer: /request_id\n                json:\n                  fields:\n                    /event: committed\n    faults:\n      - service: worker\n        at_round: 2\n        kind: restart\n    properties:\n      - name: no_data_loss\n        kind: always\n        service: api\n        contains: 'THES:ASSERT:no_data_loss:pass'\n      - name: stale_read_is_reachable\n        kind: reachable\n        contains: 'THES:ASSERT:stale_read:fail'\n",
         );
         let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
         let campaign = plan.campaign.expect("campaign is normalized");
@@ -2677,6 +2691,18 @@ mod tests {
             Some("worker")
         );
         assert_eq!(campaign.operations[1].requires_serial_all.len(), 2);
+        assert_eq!(
+            campaign.operations[1].requires_serial_joins[0]
+                .endpoints
+                .len(),
+            2
+        );
+        assert_eq!(
+            campaign.operations[1].excludes_serial_joins[0]
+                .endpoints
+                .len(),
+            2
+        );
         assert_eq!(
             campaign.operations[1].requires_serial_all[1]
                 .service
