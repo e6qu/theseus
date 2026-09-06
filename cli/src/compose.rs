@@ -305,6 +305,20 @@ struct ComposeJsonPredicate {
     fields: BTreeMap<String, serde_json::Value>,
     #[serde(default, rename = "where")]
     where_: Vec<ComposeJsonCondition>,
+    #[serde(default)]
+    arrays: Vec<ComposeJsonArrayPredicate>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeJsonArrayPredicate {
+    pointer: String,
+    #[serde(default)]
+    any: Option<Box<ComposeJsonPredicate>>,
+    #[serde(default)]
+    all: Option<Box<ComposeJsonPredicate>>,
+    #[serde(default)]
+    none: Option<Box<ComposeJsonPredicate>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -578,6 +592,19 @@ pub struct JsonPredicatePlan {
     pub fields: BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "where")]
     pub where_: Vec<JsonConditionPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arrays: Vec<JsonArrayPredicatePlan>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonArrayPredicatePlan {
+    pub pointer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub any: Option<Box<JsonPredicatePlan>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub all: Option<Box<JsonPredicatePlan>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub none: Option<Box<JsonPredicatePlan>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1597,23 +1624,6 @@ fn normalize_serial_predicate(
             ))
         })?;
     }
-    if let Some(json) = &predicate.json {
-        if json.fields.is_empty() && json.where_.is_empty() {
-            return Err(ComposeError::Invalid(format!(
-                "campaign {context} has an empty nested JSON predicate"
-            )));
-        }
-        for pointer in json.fields.keys() {
-            if !valid_json_pointer(pointer) {
-                return Err(ComposeError::Invalid(format!(
-                    "campaign {context} has invalid nested JSON pointer {pointer:?}"
-                )));
-            }
-        }
-        for condition in &json.where_ {
-            validate_json_condition(condition, context)?;
-        }
-    }
     if predicate.contains.is_none()
         && predicate.matches.is_none()
         && predicate.json.is_none()
@@ -1630,23 +1640,10 @@ fn normalize_serial_predicate(
     Ok(SerialPredicatePlan {
         contains: predicate.contains,
         matches: predicate.matches,
-        json: predicate.json.map(|json| JsonPredicatePlan {
-            fields: json.fields,
-            where_: json
-                .where_
-                .into_iter()
-                .map(|condition| JsonConditionPlan {
-                    pointer: condition.pointer,
-                    equals: condition.equals,
-                    matches: condition.matches,
-                    greater_than: condition.greater_than,
-                    greater_than_or_equal: condition.greater_than_or_equal,
-                    less_than: condition.less_than,
-                    less_than_or_equal: condition.less_than_or_equal,
-                    exists: condition.exists,
-                })
-                .collect(),
-        }),
+        json: predicate
+            .json
+            .map(|json| normalize_json_predicate(json, context))
+            .transpose()?,
         all: predicate
             .all
             .into_iter()
@@ -1670,6 +1667,86 @@ fn normalize_serial_predicate(
         occurs: predicate
             .occurs
             .map(|occurs| normalize_serial_occurrence(occurs, context))
+            .transpose()?,
+    })
+}
+
+fn normalize_json_predicate(
+    json: ComposeJsonPredicate,
+    context: &str,
+) -> Result<JsonPredicatePlan, ComposeError> {
+    if json.fields.is_empty() && json.where_.is_empty() && json.arrays.is_empty() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} has an empty nested JSON predicate"
+        )));
+    }
+    for pointer in json.fields.keys() {
+        if !valid_json_pointer(pointer) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign {context} has invalid nested JSON pointer {pointer:?}"
+            )));
+        }
+    }
+    for condition in &json.where_ {
+        validate_json_condition(condition, context)?;
+    }
+    let arrays = json
+        .arrays
+        .into_iter()
+        .map(|array| normalize_json_array_predicate(array, context))
+        .collect::<Result<_, _>>()?;
+    Ok(JsonPredicatePlan {
+        fields: json.fields,
+        where_: json
+            .where_
+            .into_iter()
+            .map(|condition| JsonConditionPlan {
+                pointer: condition.pointer,
+                equals: condition.equals,
+                matches: condition.matches,
+                greater_than: condition.greater_than,
+                greater_than_or_equal: condition.greater_than_or_equal,
+                less_than: condition.less_than,
+                less_than_or_equal: condition.less_than_or_equal,
+                exists: condition.exists,
+            })
+            .collect(),
+        arrays,
+    })
+}
+
+fn normalize_json_array_predicate(
+    array: ComposeJsonArrayPredicate,
+    context: &str,
+) -> Result<JsonArrayPredicatePlan, ComposeError> {
+    if !valid_json_pointer(&array.pointer) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} has invalid nested JSON array pointer {:?}",
+            array.pointer
+        )));
+    }
+    let modes = usize::from(array.any.is_some())
+        + usize::from(array.all.is_some())
+        + usize::from(array.none.is_some());
+    if modes != 1 {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} JSON array {:?} needs exactly one of any, all, or none",
+            array.pointer
+        )));
+    }
+    Ok(JsonArrayPredicatePlan {
+        pointer: array.pointer,
+        any: array
+            .any
+            .map(|predicate| normalize_json_predicate(*predicate, context).map(Box::new))
+            .transpose()?,
+        all: array
+            .all
+            .map(|predicate| normalize_json_predicate(*predicate, context).map(Box::new))
+            .transpose()?,
+        none: array
+            .none
+            .map(|predicate| normalize_json_predicate(*predicate, context).map(Box::new))
             .transpose()?,
     })
 }
@@ -2479,6 +2556,7 @@ mod tests {
                         serde_json::Value::String("checkpoint".to_owned()),
                     )]),
                     where_: Vec::new(),
+                    arrays: Vec::new(),
                 }),
                 all: Vec::new(),
                 any: Vec::new(),
@@ -2511,6 +2589,7 @@ mod tests {
                         less_than_or_equal: None,
                         exists: None,
                     }],
+                    arrays: Vec::new(),
                 }),
                 all: Vec::new(),
                 any: Vec::new(),
@@ -2523,6 +2602,19 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("exactly one operator"));
+    }
+
+    #[test]
+    fn normalizes_nested_campaign_json_array_predicates() {
+        let predicate: ComposeSerialPredicate = serde_yaml::from_str(
+            "json:\n  fields:\n    /event: ready\n  arrays:\n    - pointer: /checks\n      all:\n        where:\n          - pointer: /passed\n            equals: true\n    - pointer: /checks\n      any:\n        fields:\n          /name: serial\n",
+        )
+        .unwrap();
+
+        let predicate = normalize_serial_predicate(predicate, "ready").unwrap();
+        assert_eq!(predicate.json.as_ref().unwrap().arrays.len(), 2);
+        assert!(predicate.json.as_ref().unwrap().arrays[0].all.is_some());
+        assert!(predicate.json.as_ref().unwrap().arrays[1].any.is_some());
     }
 
     #[test]

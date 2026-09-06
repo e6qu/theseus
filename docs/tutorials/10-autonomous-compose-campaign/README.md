@@ -74,6 +74,9 @@ Start with `compose.yaml`.
    Add `json.where` for one condition per pointer: `equals`, `matches`,
    `greater_than`, `greater_than_or_equal`, `less_than`, `less_than_or_equal`,
    or `exists`. These conditions also match one complete JSON line.
+   Use `json.arrays` for records inside one JSON array. Give each entry a
+   pointer and exactly one of `any`, `all`, or `none`, then put another JSON
+   predicate under that selector.
 5. Set `max_operations_per_run` to explore every ordered operation history,
    including repeated operations such as retries. It defaults to 3 and is
    capped at 4. Set `max_faults_per_run` to explore candidate fault sequences;
