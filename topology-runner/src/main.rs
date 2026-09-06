@@ -247,6 +247,19 @@ struct JsonPredicate {
     fields: BTreeMap<String, serde_json::Value>,
     #[serde(default, rename = "where")]
     where_: Vec<JsonCondition>,
+    #[serde(default)]
+    arrays: Vec<JsonArrayPredicate>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct JsonArrayPredicate {
+    pointer: String,
+    #[serde(default)]
+    any: Option<Box<JsonPredicate>>,
+    #[serde(default)]
+    all: Option<Box<JsonPredicate>>,
+    #[serde(default)]
+    none: Option<Box<JsonPredicate>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -3406,15 +3419,38 @@ fn serial_json_predicate_match_end(serial: &[u8], predicate: &JsonPredicate) -> 
 fn serial_json_event_matches(line: &[u8], predicate: &JsonPredicate) -> bool {
     serde_json::from_slice::<serde_json::Value>(line)
         .ok()
-        .is_some_and(|event| {
-            predicate
-                .fields
-                .iter()
-                .all(|(pointer, expected)| event.pointer(pointer) == Some(expected))
-                && predicate
-                    .where_
+        .is_some_and(|event| json_predicate_matches(&event, predicate))
+}
+
+fn json_predicate_matches(event: &serde_json::Value, predicate: &JsonPredicate) -> bool {
+    predicate
+        .fields
+        .iter()
+        .all(|(pointer, expected)| event.pointer(pointer) == Some(expected))
+        && predicate
+            .where_
+            .iter()
+            .all(|condition| json_condition_matches(event, condition))
+        && predicate.arrays.iter().all(|array| {
+            let Some(values) = event
+                .pointer(&array.pointer)
+                .and_then(serde_json::Value::as_array)
+            else {
+                return false;
+            };
+            array.any.as_ref().is_none_or(|predicate| {
+                values
                     .iter()
-                    .all(|condition| json_condition_matches(&event, condition))
+                    .any(|value| json_predicate_matches(value, predicate))
+            }) && array.all.as_ref().is_none_or(|predicate| {
+                values
+                    .iter()
+                    .all(|value| json_predicate_matches(value, predicate))
+            }) && array.none.as_ref().is_none_or(|predicate| {
+                values
+                    .iter()
+                    .all(|value| !json_predicate_matches(value, predicate))
+            })
         })
 }
 
@@ -5281,6 +5317,7 @@ mod tests {
                 ("/passed".to_owned(), serde_json::Value::Bool(false)),
             ]),
             where_: Vec::new(),
+            arrays: Vec::new(),
         };
 
         assert!(!serial_matches_json_predicate(
@@ -5292,6 +5329,30 @@ mod tests {
         assert!(serial_matches_json_predicate(
             br#"THES:M:read
 {"event":"assertion","passed":false}
+"#,
+            &predicate,
+        ));
+    }
+
+    #[test]
+    fn json_serial_predicates_match_nested_array_records() {
+        let predicate: JsonPredicate = serde_json::from_value(serde_json::json!({
+            "fields": {"/event": "ready"},
+            "arrays": [
+                {"pointer": "/checks", "all": {"where": [{"pointer": "/passed", "equals": true}]}},
+                {"pointer": "/checks", "any": {"fields": {"/name": "serial"}}},
+                {"pointer": "/checks", "none": {"fields": {"/name": "network"}}}
+            ]
+        }))
+        .unwrap();
+
+        assert!(serial_matches_json_predicate(
+            br#"{"event":"ready","checks":[{"name":"serial","passed":true},{"name":"disk","passed":true}]}
+"#,
+            &predicate,
+        ));
+        assert!(!serial_matches_json_predicate(
+            br#"{"event":"ready","checks":[{"name":"serial","passed":false},{"name":"network","passed":true}]}
 "#,
             &predicate,
         ));
@@ -5398,6 +5459,7 @@ mod tests {
                     exists: Some(false),
                 },
             ],
+            arrays: Vec::new(),
         };
 
         assert!(!serial_matches_json_predicate(
@@ -5510,6 +5572,7 @@ mod tests {
                         less_than_or_equal: None,
                         exists: None,
                     }],
+                    arrays: Vec::new(),
                 }),
                 all: Vec::new(),
                 any: Vec::new(),

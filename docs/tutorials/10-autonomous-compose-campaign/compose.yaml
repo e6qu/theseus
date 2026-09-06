@@ -75,6 +75,12 @@ x-theseus:
               fields:
                 /event: ready
                 /service: auditor
+              arrays:
+                - pointer: /checks
+                  any:
+                    fields:
+                      /name: serial
+                      /passed: true
         max_uses: 1
     faults:
       # These run after the named operation emits its checkpoint. Every NIC

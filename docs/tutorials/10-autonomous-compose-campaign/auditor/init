@@ -1,6 +1,6 @@
 #!/bin/busybox sh
 mount -t proc proc /proc
 printf 'auditor ready\n'
-printf '%s\n' '{"event":"ready","service":"auditor"}'
+printf '%s\n' '{"event":"ready","service":"auditor","checks":[{"name":"serial","passed":true}]}'
 sleep 2
 poweroff -f
