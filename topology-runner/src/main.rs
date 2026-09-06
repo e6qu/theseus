@@ -94,6 +94,10 @@ struct CampaignOperation {
     #[serde(default)]
     excludes_markers: Vec<String>,
     #[serde(default)]
+    requires_serial: Option<SerialPredicate>,
+    #[serde(default)]
+    excludes_serial: Option<SerialPredicate>,
+    #[serde(default)]
     max_uses: Option<u8>,
 }
 
@@ -249,6 +253,7 @@ struct CampaignResult {
     checkpoint_reuses: usize,
     generated_candidates: usize,
     marker_guard_rejections: usize,
+    serial_guard_rejections: usize,
     unique_topology_states: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     replay_verification: Option<CampaignReplayVerification>,
@@ -716,6 +721,12 @@ struct CampaignCheckpoint {
 struct CampaignPrefixCheckpoint {
     checkpoint: CampaignCheckpoint,
     actions: Vec<AppliedCampaignAction>,
+}
+
+enum CampaignPrefixResult {
+    Ready(CampaignPrefixCheckpoint),
+    MarkerGuardRejected,
+    SerialGuardRejected,
 }
 
 /// Restore a checkpoint for each distinct operation/action prefix once, then
@@ -1300,7 +1311,7 @@ impl CampaignCheckpointTree {
         campaign: &CampaignPlan,
         schedule: &CampaignSchedule,
         directory: &Path,
-    ) -> Result<Option<CampaignPrefixCheckpoint>, String> {
+    ) -> Result<CampaignPrefixResult, String> {
         let events = campaign_schedule_events(campaign, schedule)?;
         let mut prefix = Vec::new();
         let mut parent = CampaignPrefixCheckpoint {
@@ -1315,7 +1326,11 @@ impl CampaignCheckpointTree {
                     *operation,
                 )
             {
-                return Ok(None);
+                return Ok(CampaignPrefixResult::MarkerGuardRejected);
+            }
+            if !campaign_operation_serial_guards_are_ready(campaign, &parent.checkpoint, *operation)
+            {
+                return Ok(CampaignPrefixResult::SerialGuardRejected);
             }
             prefix.push(event);
             let key = campaign_prefix_key(&prefix)?;
@@ -1339,7 +1354,7 @@ impl CampaignCheckpointTree {
             };
             self.prefixes.insert(key, parent.clone());
         }
-        Ok(Some(parent))
+        Ok(CampaignPrefixResult::Ready(parent))
     }
 
     fn nodes(&self) -> usize {
@@ -1588,6 +1603,7 @@ fn execute_campaign(
     let mut observations = Vec::new();
     let mut replay_mismatches = Vec::new();
     let mut marker_guard_rejections = 0_usize;
+    let mut serial_guard_rejections = 0_usize;
     while runs.len()
         < replay_schedules
             .as_ref()
@@ -1620,22 +1636,29 @@ fn execute_campaign(
         // Guards inspect each exact restored parent checkpoint. A fault after
         // an earlier operation is visible to the next operation's guard, just
         // as it is to the guest; impossible prefixes never become leaves.
-        let Some(prefix) =
-            checkpoints.checkpoint_for_guarded_schedule(&topology, &campaign, &schedule, output)?
-        else {
-            if expected.is_some() {
-                return Err(format!(
-                    "recorded campaign history no longer satisfies its marker guards: {}",
-                    schedule
-                        .operations
-                        .iter()
-                        .map(|operation| campaign.operations[*operation].name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" -> ")
-                ));
+        let prefix = match checkpoints
+            .checkpoint_for_guarded_schedule(&topology, &campaign, &schedule, output)?
+        {
+            CampaignPrefixResult::Ready(prefix) => prefix,
+            rejection => {
+                if expected.is_some() {
+                    return Err(format!(
+                        "recorded campaign history no longer satisfies its operation guards: {}",
+                        schedule
+                            .operations
+                            .iter()
+                            .map(|operation| campaign.operations[*operation].name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" -> ")
+                    ));
+                }
+                match rejection {
+                    CampaignPrefixResult::MarkerGuardRejected => marker_guard_rejections += 1,
+                    CampaignPrefixResult::SerialGuardRejected => serial_guard_rejections += 1,
+                    CampaignPrefixResult::Ready(_) => unreachable!("a campaign prefix is ready"),
+                }
+                continue;
             }
-            marker_guard_rejections += 1;
-            continue;
         };
         let mut replay: TopologyPlan = serde_json::from_slice(&base)
             .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
@@ -1759,6 +1782,7 @@ fn execute_campaign(
             checkpoint_reuses: checkpoints.reuses,
             generated_candidates: schedules.len(),
             marker_guard_rejections,
+            serial_guard_rejections,
             unique_topology_states: seen_topology_states.len(),
             replay_verification: recorded.map(|recorded| CampaignReplayVerification {
                 status: if replay_verified { "passed" } else { "failed" },
@@ -1983,11 +2007,16 @@ fn execute_campaign_minimized(
         )
     })?;
     schedule.faults = faults;
-    let prefix = checkpoints
+    let prefix = match checkpoints
         .checkpoint_for_guarded_schedule(&topology, &campaign, &schedule, output)?
-        .ok_or_else(|| {
-            "minimized campaign history no longer satisfies its marker guards".to_owned()
-        })?;
+    {
+        CampaignPrefixResult::Ready(prefix) => prefix,
+        CampaignPrefixResult::MarkerGuardRejected | CampaignPrefixResult::SerialGuardRejected => {
+            return Err(
+                "minimized campaign history no longer satisfies its operation guards".to_owned(),
+            );
+        }
+    };
     let mut replay: TopologyPlan = serde_json::from_slice(&base)
         .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
     apply_campaign_schedule(&mut replay, &campaign, &schedule)?;
@@ -2112,10 +2141,13 @@ fn execute_campaign_minimization_attempt(
     output: &Path,
     directory: &Path,
 ) -> Result<bool, String> {
-    let Some(prefix) =
-        checkpoints.checkpoint_for_guarded_schedule(topology, campaign, schedule, output)?
-    else {
-        return Ok(false);
+    let prefix = match checkpoints
+        .checkpoint_for_guarded_schedule(topology, campaign, schedule, output)?
+    {
+        CampaignPrefixResult::Ready(prefix) => prefix,
+        CampaignPrefixResult::MarkerGuardRejected | CampaignPrefixResult::SerialGuardRejected => {
+            return Ok(false);
+        }
     };
     let mut replay: TopologyPlan = serde_json::from_slice(base)
         .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
@@ -2316,6 +2348,36 @@ fn campaign_operation_marker_guards_are_ready(
             .excludes_markers
             .iter()
             .all(|marker| !markers.contains(marker))
+}
+
+fn campaign_operation_serial_guards_are_ready(
+    campaign: &CampaignPlan,
+    checkpoint: &CampaignCheckpoint,
+    operation: usize,
+) -> bool {
+    let serial = campaign_checkpoint_serial(checkpoint, &campaign.driver);
+    let candidate = &campaign.operations[operation];
+    candidate
+        .requires_serial
+        .as_ref()
+        .map(|predicate| serial_matches_nested_predicate(&serial, predicate))
+        .unwrap_or(true)
+        && candidate
+            .excludes_serial
+            .as_ref()
+            .map(|predicate| !serial_matches_nested_predicate(&serial, predicate))
+            .unwrap_or(true)
+}
+
+fn campaign_checkpoint_serial(checkpoint: &CampaignCheckpoint, driver: &str) -> Vec<u8> {
+    checkpoint
+        .scheduler
+        .get(driver)
+        .into_iter()
+        .flat_map(|service| service.serial_contents.iter())
+        .flatten()
+        .copied()
+        .collect()
 }
 
 fn campaign_checkpoint_markers(
@@ -5022,6 +5084,8 @@ mod tests {
                     excludes: Vec::new(),
                     requires_markers: Vec::new(),
                     excludes_markers: Vec::new(),
+                    requires_serial: None,
+                    excludes_serial: None,
                     max_uses: Some(1),
                 },
                 CampaignOperation {
@@ -5032,6 +5096,8 @@ mod tests {
                     excludes: Vec::new(),
                     requires_markers: vec!["written".to_owned()],
                     excludes_markers: vec!["closed".to_owned()],
+                    requires_serial: None,
+                    excludes_serial: None,
                     max_uses: Some(1),
                 },
             ],
@@ -5071,6 +5137,65 @@ mod tests {
             .extend_from_slice(b"THES:M:closed\n");
         assert!(!campaign_operation_marker_guards_are_ready(
             &campaign, &closed, 1
+        ));
+
+        let mut structured = campaign;
+        structured.operations[1].requires_markers.clear();
+        structured.operations[1].requires_serial = Some(SerialPredicate {
+            contains: None,
+            matches: None,
+            json: Some(JsonPredicate {
+                fields: BTreeMap::from([
+                    (
+                        "/event".to_owned(),
+                        serde_json::Value::String("assertion".to_owned()),
+                    ),
+                    ("/passed".to_owned(), serde_json::Value::Bool(false)),
+                ]),
+                where_: vec![JsonCondition {
+                    pointer: "/reason".to_owned(),
+                    equals: Some(serde_json::Value::String("stale".to_owned())),
+                    matches: None,
+                    greater_than: None,
+                    greater_than_or_equal: None,
+                    less_than: None,
+                    less_than_or_equal: None,
+                    exists: None,
+                }],
+            }),
+            all: Vec::new(),
+            any: Vec::new(),
+            none: Vec::new(),
+        });
+        structured.operations[1].excludes_serial = Some(SerialPredicate {
+            contains: Some("THES:ASSERT:recovered".to_owned()),
+            matches: None,
+            json: None,
+            all: Vec::new(),
+            any: Vec::new(),
+            none: Vec::new(),
+        });
+
+        assert!(!campaign_operation_serial_guards_are_ready(
+            &structured,
+            &checkpoint,
+            1
+        ));
+        let mut stale = checkpoint.clone();
+        stale.scheduler.get_mut("api").unwrap().serial_contents[0].extend_from_slice(
+            b"{\"event\":\"assertion\",\"passed\":false,\"reason\":\"stale\"}\n",
+        );
+        assert!(campaign_operation_serial_guards_are_ready(
+            &structured,
+            &stale,
+            1
+        ));
+        stale.scheduler.get_mut("api").unwrap().serial_contents[0]
+            .extend_from_slice(b"THES:ASSERT:recovered\n");
+        assert!(!campaign_operation_serial_guards_are_ready(
+            &structured,
+            &stale,
+            1
         ));
     }
 
