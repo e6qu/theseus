@@ -307,6 +307,14 @@ struct ComposeJsonPredicate {
     where_: Vec<ComposeJsonCondition>,
     #[serde(default)]
     arrays: Vec<ComposeJsonArrayPredicate>,
+    /// Bind a value from this JSON-lines event for a later item in the same
+    /// ordered serial sequence. Keys are capture names, values are pointers.
+    #[serde(default)]
+    capture: BTreeMap<String, String>,
+    /// Require values on this event to equal values captured by an earlier
+    /// JSON-lines item. Keys are pointers, values are capture names.
+    #[serde(default)]
+    equals_capture: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -594,6 +602,10 @@ pub struct JsonPredicatePlan {
     pub where_: Vec<JsonConditionPlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub arrays: Vec<JsonArrayPredicatePlan>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub capture: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub equals_capture: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1588,6 +1600,14 @@ fn normalize_serial_predicate(
     predicate: ComposeSerialPredicate,
     context: &str,
 ) -> Result<SerialPredicatePlan, ComposeError> {
+    normalize_serial_predicate_with_captures(predicate, context, false)
+}
+
+fn normalize_serial_predicate_with_captures(
+    predicate: ComposeSerialPredicate,
+    context: &str,
+    allow_captures: bool,
+) -> Result<SerialPredicatePlan, ComposeError> {
     let has_sequence = !predicate.sequence.is_empty();
     let has_occurs = predicate.occurs.is_some();
     if has_sequence && has_occurs {
@@ -1637,12 +1657,18 @@ fn normalize_serial_predicate(
             "campaign {context} has an empty nested predicate"
         )));
     }
+    let sequence = predicate
+        .sequence
+        .into_iter()
+        .map(|child| normalize_sequence_item(child, context))
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_sequence_captures(&sequence, context)?;
     Ok(SerialPredicatePlan {
         contains: predicate.contains,
         matches: predicate.matches,
         json: predicate
             .json
-            .map(|json| normalize_json_predicate(json, context))
+            .map(|json| normalize_json_predicate(json, context, allow_captures))
             .transpose()?,
         all: predicate
             .all
@@ -1659,11 +1685,7 @@ fn normalize_serial_predicate(
             .into_iter()
             .map(|child| normalize_serial_predicate(child, context))
             .collect::<Result<_, _>>()?,
-        sequence: predicate
-            .sequence
-            .into_iter()
-            .map(|child| normalize_sequence_item(child, context))
-            .collect::<Result<_, _>>()?,
+        sequence,
         occurs: predicate
             .occurs
             .map(|occurs| normalize_serial_occurrence(occurs, context))
@@ -1674,8 +1696,14 @@ fn normalize_serial_predicate(
 fn normalize_json_predicate(
     json: ComposeJsonPredicate,
     context: &str,
+    allow_captures: bool,
 ) -> Result<JsonPredicatePlan, ComposeError> {
-    if json.fields.is_empty() && json.where_.is_empty() && json.arrays.is_empty() {
+    if json.fields.is_empty()
+        && json.where_.is_empty()
+        && json.arrays.is_empty()
+        && json.capture.is_empty()
+        && json.equals_capture.is_empty()
+    {
         return Err(ComposeError::Invalid(format!(
             "campaign {context} has an empty nested JSON predicate"
         )));
@@ -1689,6 +1717,27 @@ fn normalize_json_predicate(
     }
     for condition in &json.where_ {
         validate_json_condition(condition, context)?;
+    }
+    if (!json.capture.is_empty() || !json.equals_capture.is_empty()) && !allow_captures {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} JSON captures are only allowed in sequence items"
+        )));
+    }
+    for (name, pointer) in &json.capture {
+        validate_name("JSON capture", name)?;
+        if !valid_json_pointer(pointer) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign {context} has invalid JSON capture pointer {pointer:?}"
+            )));
+        }
+    }
+    for (pointer, name) in &json.equals_capture {
+        if !valid_json_pointer(pointer) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign {context} has invalid JSON capture comparison pointer {pointer:?}"
+            )));
+        }
+        validate_name("JSON capture", name)?;
     }
     let arrays = json
         .arrays
@@ -1712,6 +1761,8 @@ fn normalize_json_predicate(
             })
             .collect(),
         arrays,
+        capture: json.capture,
+        equals_capture: json.equals_capture,
     })
 }
 
@@ -1738,15 +1789,15 @@ fn normalize_json_array_predicate(
         pointer: array.pointer,
         any: array
             .any
-            .map(|predicate| normalize_json_predicate(*predicate, context).map(Box::new))
+            .map(|predicate| normalize_json_predicate(*predicate, context, false).map(Box::new))
             .transpose()?,
         all: array
             .all
-            .map(|predicate| normalize_json_predicate(*predicate, context).map(Box::new))
+            .map(|predicate| normalize_json_predicate(*predicate, context, false).map(Box::new))
             .transpose()?,
         none: array
             .none
-            .map(|predicate| normalize_json_predicate(*predicate, context).map(Box::new))
+            .map(|predicate| normalize_json_predicate(*predicate, context, false).map(Box::new))
             .transpose()?,
     })
 }
@@ -1817,7 +1868,34 @@ fn normalize_sequence_item(
             "campaign {context} sequence items must contain exactly one of contains, matches, or json"
         )));
     }
-    normalize_serial_predicate(predicate, context)
+    normalize_serial_predicate_with_captures(predicate, context, true)
+}
+
+fn validate_sequence_captures(
+    sequence: &[SerialPredicatePlan],
+    context: &str,
+) -> Result<(), ComposeError> {
+    let mut captures = BTreeSet::new();
+    for predicate in sequence {
+        let Some(json) = &predicate.json else {
+            continue;
+        };
+        for name in json.equals_capture.values() {
+            if !captures.contains(name) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign {context} JSON capture {name:?} must be declared by an earlier sequence item"
+                )));
+            }
+        }
+        for name in json.capture.keys() {
+            if !captures.insert(name) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign {context} JSON capture {name:?} is declared more than once in a sequence"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_json_condition(
@@ -2557,6 +2635,8 @@ mod tests {
                     )]),
                     where_: Vec::new(),
                     arrays: Vec::new(),
+                    capture: BTreeMap::new(),
+                    equals_capture: BTreeMap::new(),
                 }),
                 all: Vec::new(),
                 any: Vec::new(),
@@ -2590,6 +2670,8 @@ mod tests {
                         exists: None,
                     }],
                     arrays: Vec::new(),
+                    capture: BTreeMap::new(),
+                    equals_capture: BTreeMap::new(),
                 }),
                 all: Vec::new(),
                 any: Vec::new(),
@@ -2635,6 +2717,48 @@ mod tests {
             predicate.sequence[2].json.as_ref().unwrap().fields["/event"],
             serde_json::Value::String("assertion".to_owned())
         );
+    }
+
+    #[test]
+    fn normalizes_ordered_json_capture_predicates() {
+        let predicate: ComposeSerialPredicate = serde_yaml::from_str(
+            "sequence:\n  - json:\n      fields:\n        /event: started\n      capture:\n        request: /request_id\n  - json:\n      fields:\n        /event: completed\n      equals_capture:\n        /request_id: request\n",
+        )
+        .unwrap();
+
+        let predicate = normalize_serial_predicate(predicate, "request_completed").unwrap();
+        assert_eq!(
+            predicate.sequence[0].json.as_ref().unwrap().capture["request"],
+            "/request_id"
+        );
+        assert_eq!(
+            predicate.sequence[1].json.as_ref().unwrap().equals_capture["/request_id"],
+            "request"
+        );
+    }
+
+    #[test]
+    fn rejects_json_capture_outside_an_ordered_sequence() {
+        let predicate: ComposeSerialPredicate =
+            serde_yaml::from_str("json:\n  capture:\n    request: /request_id\n").unwrap();
+
+        let error = normalize_serial_predicate(predicate, "request_completed").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("JSON captures are only allowed in sequence items"));
+    }
+
+    #[test]
+    fn rejects_unknown_ordered_json_capture() {
+        let predicate: ComposeSerialPredicate = serde_yaml::from_str(
+            "sequence:\n  - json:\n      fields:\n        /event: completed\n      equals_capture:\n        /request_id: request\n",
+        )
+        .unwrap();
+
+        let error = normalize_serial_predicate(predicate, "request_completed").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("must be declared by an earlier sequence item"));
     }
 
     #[test]

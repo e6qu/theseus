@@ -6,6 +6,7 @@ while IFS= read -r -t 1 command </dev/ttyS0; do
     case "$command" in
         write)
             printf 'THES:M:written\n'
+            printf '%s\n' '{"event":"operation","name":"write","request_id":"transaction-42"}'
             printf 'THES:CHECKPOINT:write\n'
             printf 'THES:ASSERT:consistent_read:pass\n'
             ;;
@@ -13,7 +14,7 @@ while IFS= read -r -t 1 command </dev/ttyS0; do
             printf 'THES:M:stale\n'
             printf 'THES:CHECKPOINT:read_stale\n'
             printf 'THES:ASSERT:consistent_read:fail\n'
-            printf '%s\n' '{"event":"assertion","name":"consistent_read","passed":false,"attempt":2,"reason":"stale"}'
+            printf '%s\n' '{"event":"assertion","name":"consistent_read","passed":false,"attempt":2,"reason":"stale","request_id":"transaction-42"}'
             ;;
         retry)
             printf 'THES:M:retried\n'

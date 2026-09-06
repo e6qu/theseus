@@ -109,6 +109,11 @@ the host-side random sources are seeded automatically from the run seed)
 - **Run on a Linux+KVM host** (on Apple Silicon, a privileged aarch64
   Docker container works).
 
+Compose campaign serial predicates can also match ordered JSON-lines events.
+Within a `sequence`, `capture` binds a JSON Pointer from one event and
+`equals_capture` requires a later event to carry that same value. Use this to
+prove that lifecycle events belong to the same request or transaction.
+
 ## Repository layout
 
 | Path | What it is |

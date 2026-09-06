@@ -249,6 +249,10 @@ struct JsonPredicate {
     where_: Vec<JsonCondition>,
     #[serde(default)]
     arrays: Vec<JsonArrayPredicate>,
+    #[serde(default)]
+    capture: BTreeMap<String, String>,
+    #[serde(default)]
+    equals_capture: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -3368,34 +3372,59 @@ fn serial_non_overlapping_count(serial: &[u8], needle: &[u8]) -> u64 {
 }
 
 fn serial_matches_sequence(serial: &[u8], sequence: &[SerialPredicate]) -> bool {
-    let mut offset = 0;
-    for predicate in sequence {
-        let Some(end) = serial_sequence_item_match_end(&serial[offset..], predicate) else {
-            return false;
-        };
-        offset += end;
-    }
-    true
+    serial_sequence_matches_from(serial, sequence, 0, 0, BTreeMap::new())
 }
 
-fn serial_sequence_item_match_end(serial: &[u8], predicate: &SerialPredicate) -> Option<usize> {
+fn serial_sequence_matches_from(
+    serial: &[u8],
+    sequence: &[SerialPredicate],
+    index: usize,
+    offset: usize,
+    captures: BTreeMap<String, serde_json::Value>,
+) -> bool {
+    let Some(predicate) = sequence.get(index) else {
+        return true;
+    };
+    serial_sequence_item_match_ends(&serial[offset..], predicate, &captures)
+        .into_iter()
+        .any(|(end, captures)| {
+            serial_sequence_matches_from(serial, sequence, index + 1, offset + end, captures)
+        })
+}
+
+fn serial_sequence_item_match_ends(
+    serial: &[u8],
+    predicate: &SerialPredicate,
+    captures: &BTreeMap<String, serde_json::Value>,
+) -> Vec<(usize, BTreeMap<String, serde_json::Value>)> {
     if let Some(needle) = &predicate.contains {
         let needle = needle.as_bytes();
         return serial
             .windows(needle.len())
-            .position(|window| window == needle)
-            .map(|start| start + needle.len());
+            .enumerate()
+            .filter_map(|(start, window)| {
+                (window == needle).then_some((start + needle.len(), captures.clone()))
+            })
+            .collect();
     }
     if let Some(expression) = &predicate.matches {
         return Regex::new(expression)
             .ok()
-            .and_then(|expression| expression.find(serial))
-            .map(|matched| matched.end());
+            .map(|expression| {
+                expression
+                    .find_iter(serial)
+                    .map(|matched| (matched.end(), captures.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
     }
     predicate
         .json
         .as_ref()
-        .and_then(|predicate| serial_json_predicate_match_end(serial, predicate))
+        .map(|predicate| {
+            serial_json_predicate_match_ends_with_captures(serial, predicate, captures)
+        })
+        .unwrap_or_default()
 }
 
 fn serial_matches_json_predicate(serial: &[u8], predicate: &JsonPredicate) -> bool {
@@ -3403,17 +3432,55 @@ fn serial_matches_json_predicate(serial: &[u8], predicate: &JsonPredicate) -> bo
 }
 
 fn serial_json_predicate_match_end(serial: &[u8], predicate: &JsonPredicate) -> Option<usize> {
+    serial_json_predicate_match_end_with_captures(serial, predicate, &mut BTreeMap::new())
+}
+
+fn serial_json_predicate_match_end_with_captures(
+    serial: &[u8],
+    predicate: &JsonPredicate,
+    captures: &mut BTreeMap<String, serde_json::Value>,
+) -> Option<usize> {
     let mut start = 0;
     for line in serial.split_inclusive(|byte| *byte == b'\n') {
         let end = start + line.len();
         let line = line.strip_suffix(b"\n").unwrap_or(line);
-        let matches = serial_json_event_matches(line, predicate);
+        let mut candidate_captures = captures.clone();
+        let matches = serde_json::from_slice::<serde_json::Value>(line)
+            .ok()
+            .is_some_and(|event| {
+                json_predicate_matches_with_captures(&event, predicate, &mut candidate_captures)
+            });
         if matches {
+            *captures = candidate_captures;
             return Some(end);
         }
         start = end;
     }
     None
+}
+
+fn serial_json_predicate_match_ends_with_captures(
+    serial: &[u8],
+    predicate: &JsonPredicate,
+    captures: &BTreeMap<String, serde_json::Value>,
+) -> Vec<(usize, BTreeMap<String, serde_json::Value>)> {
+    let mut matches = Vec::new();
+    let mut start = 0;
+    for line in serial.split_inclusive(|byte| *byte == b'\n') {
+        let end = start + line.len();
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        let mut candidate_captures = captures.clone();
+        if serde_json::from_slice::<serde_json::Value>(line)
+            .ok()
+            .is_some_and(|event| {
+                json_predicate_matches_with_captures(&event, predicate, &mut candidate_captures)
+            })
+        {
+            matches.push((end, candidate_captures));
+        }
+        start = end;
+    }
+    matches
 }
 
 fn serial_json_event_matches(line: &[u8], predicate: &JsonPredicate) -> bool {
@@ -3423,6 +3490,14 @@ fn serial_json_event_matches(line: &[u8], predicate: &JsonPredicate) -> bool {
 }
 
 fn json_predicate_matches(event: &serde_json::Value, predicate: &JsonPredicate) -> bool {
+    json_predicate_matches_with_captures(event, predicate, &mut BTreeMap::new())
+}
+
+fn json_predicate_matches_with_captures(
+    event: &serde_json::Value,
+    predicate: &JsonPredicate,
+    captures: &mut BTreeMap<String, serde_json::Value>,
+) -> bool {
     predicate
         .fields
         .iter()
@@ -3452,6 +3527,23 @@ fn json_predicate_matches(event: &serde_json::Value, predicate: &JsonPredicate) 
                     .all(|value| !json_predicate_matches(value, predicate))
             })
         })
+        && predicate
+            .equals_capture
+            .iter()
+            .all(|(pointer, name)| event.pointer(pointer) == captures.get(name))
+        && predicate
+            .capture
+            .values()
+            .all(|pointer| event.pointer(pointer).is_some())
+        && {
+            for (name, pointer) in &predicate.capture {
+                captures.insert(
+                    name.clone(),
+                    event.pointer(pointer).expect("validated above").clone(),
+                );
+            }
+            true
+        }
 }
 
 fn json_condition_matches(event: &serde_json::Value, condition: &JsonCondition) -> bool {
@@ -5318,6 +5410,8 @@ mod tests {
             ]),
             where_: Vec::new(),
             arrays: Vec::new(),
+            capture: BTreeMap::new(),
+            equals_capture: BTreeMap::new(),
         };
 
         assert!(!serial_matches_json_predicate(
@@ -5375,6 +5469,36 @@ mod tests {
         ));
         assert!(!serial_matches_nested_predicate(
             b"THES:M:stale\n{\"event\":\"assertion\",\"passed\":false}\nTHES:CHECKPOINT:write\n",
+            &predicate,
+        ));
+    }
+
+    #[test]
+    fn ordered_json_serial_predicates_correlate_captured_values() {
+        let predicate: SerialPredicate = serde_json::from_value(serde_json::json!({
+            "sequence": [
+                {"json": {
+                    "fields": {"/event": "started"},
+                    "capture": {"request": "/request_id"}
+                }},
+                {"json": {
+                    "fields": {"/event": "completed"},
+                    "equals_capture": {"/request_id": "request"}
+                }}
+            ]
+        }))
+        .unwrap();
+
+        assert!(serial_matches_nested_predicate(
+            b"{\"event\":\"started\",\"request_id\":\"r-17\"}\n{\"event\":\"completed\",\"request_id\":\"r-17\"}\n",
+            &predicate,
+        ));
+        assert!(!serial_matches_nested_predicate(
+            b"{\"event\":\"started\",\"request_id\":\"r-17\"}\n{\"event\":\"completed\",\"request_id\":\"r-18\"}\n",
+            &predicate,
+        ));
+        assert!(serial_matches_nested_predicate(
+            b"{\"event\":\"started\",\"request_id\":\"r-17\"}\n{\"event\":\"completed\",\"request_id\":\"r-18\"}\n{\"event\":\"started\",\"request_id\":\"r-18\"}\n{\"event\":\"completed\",\"request_id\":\"r-18\"}\n",
             &predicate,
         ));
     }
@@ -5460,6 +5584,8 @@ mod tests {
                 },
             ],
             arrays: Vec::new(),
+            capture: BTreeMap::new(),
+            equals_capture: BTreeMap::new(),
         };
 
         assert!(!serial_matches_json_predicate(
@@ -5573,6 +5699,8 @@ mod tests {
                         exists: None,
                     }],
                     arrays: Vec::new(),
+                    capture: BTreeMap::new(),
+                    equals_capture: BTreeMap::new(),
                 }),
                 all: Vec::new(),
                 any: Vec::new(),
