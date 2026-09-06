@@ -82,8 +82,9 @@ Start with `compose.yaml`.
    auditor's observation.
    Use `requires_serial_joins` when three or more endpoints must share one
    value. Put at least two endpoints under `endpoints`; Theseus looks for one
-   value common to every endpoint, not independent pairwise matches. The
-   tutorial joins the API, replica, and auditor transaction events.
+   value common to every endpoint, not independent pairwise matches. Use
+   `pointers: [/request_id, /attempt]` for a composite key. The tutorial joins
+   the API, replica, and auditor transaction events on both fields.
    Operations accept `requires_serial_joins` too. Theseus evaluates them at
    the restored parent checkpoint and skips an operation before it consumes a
    campaign run when the shared value is absent. Use `excludes_serial_joins`
@@ -180,7 +181,7 @@ Emit the serial protocol with plain shell:
 printf '%s\n' 'THES:ASSERT:consistent_read:pass'
 printf '%s\n' 'THES:M:written'
 printf '%s\n' 'THES:CHECKPOINT:write'
-printf '%s\n' '{"event":"operation","name":"write","request_id":"transaction-42"}'
+printf '%s\n' '{"event":"operation","name":"write","request_id":"transaction-42","attempt":1}'
 printf '%s\n' '{"event":"assertion","name":"consistent_read","passed":true,"attempt":2,"request_id":"transaction-42"}'
 ```
 

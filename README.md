@@ -120,6 +120,8 @@ Use `requires_serial_joins` when one value must be common to every endpoint
 across three or more services. Put the same guard on an operation to defer it
 until that evidence exists at its restored checkpoint, or use
 `excludes_serial_joins` to block it when the joined evidence is present.
+Use `pointers` instead of `pointer` to join on a composite key such as request
+ID plus attempt number.
 
 ## Repository layout
 

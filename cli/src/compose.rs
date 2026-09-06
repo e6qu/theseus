@@ -284,7 +284,10 @@ struct ComposeSerialCorrelation {
 struct ComposeJsonCorrelationEndpoint {
     #[serde(default)]
     service: Option<String>,
-    pointer: String,
+    #[serde(default)]
+    pointer: Option<String>,
+    #[serde(default)]
+    pointers: Vec<String>,
     json: ComposeJsonPredicate,
 }
 
@@ -615,7 +618,7 @@ pub struct SerialCorrelationPlan {
 pub struct JsonCorrelationEndpointPlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
-    pub pointer: String,
+    pub pointers: Vec<String>,
     pub json: JsonPredicatePlan,
 }
 
@@ -1720,15 +1723,37 @@ fn normalize_json_correlation_endpoint(
             )));
         }
     }
-    if !valid_json_pointer(&endpoint.pointer) {
+    if endpoint.pointer.is_some() && !endpoint.pointers.is_empty() {
         return Err(ComposeError::Invalid(format!(
-            "campaign {context} has invalid {role} correlation JSON pointer {:?}",
-            endpoint.pointer
+            "campaign {context} {role} correlation needs pointer or pointers, not both"
         )));
+    }
+    let pointers = endpoint
+        .pointer
+        .into_iter()
+        .chain(endpoint.pointers)
+        .collect::<Vec<_>>();
+    if pointers.is_empty() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} {role} correlation needs a JSON pointer"
+        )));
+    }
+    let mut unique_pointers = BTreeSet::new();
+    for pointer in &pointers {
+        if !valid_json_pointer(pointer) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign {context} has invalid {role} correlation JSON pointer {pointer:?}"
+            )));
+        }
+        if !unique_pointers.insert(pointer) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign {context} repeats {role} correlation JSON pointer {pointer:?}"
+            )));
+        }
     }
     Ok(JsonCorrelationEndpointPlan {
         service: endpoint.service,
-        pointer: endpoint.pointer,
+        pointers,
         json: normalize_json_predicate(endpoint.json, context, false)?,
     })
 }
@@ -2760,7 +2785,7 @@ mod tests {
     #[test]
     fn normalizes_cross_service_json_correlations() {
         let directory = fixture(
-            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: write\n        input: \"write\\n\"\n    faults: []\n    properties:\n      - name: replicated_write\n        kind: always\n        service: api\n        contains: THES:ASSERT:replicated_write:pass\n        requires_serial_correlations:\n          - capture:\n              pointer: /request_id\n              json:\n                fields:\n                  /event: write\n            equals:\n              service: worker\n              pointer: /request_id\n              json:\n                fields:\n                  /event: replicated\n        requires_serial_joins:\n          - endpoints:\n              - pointer: /request_id\n                json:\n                  fields:\n                    /event: write\n              - service: worker\n                pointer: /request_id\n                json:\n                  fields:\n                    /event: replicated\n",
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: write\n        input: \"write\\n\"\n    faults: []\n    properties:\n      - name: replicated_write\n        kind: always\n        service: api\n        contains: THES:ASSERT:replicated_write:pass\n        requires_serial_correlations:\n          - capture:\n              pointer: /request_id\n              json:\n                fields:\n                  /event: write\n            equals:\n              service: worker\n              pointer: /request_id\n              json:\n                fields:\n                  /event: replicated\n        requires_serial_joins:\n          - endpoints:\n              - pointers: [/request_id, /attempt]\n                json:\n                  fields:\n                    /event: write\n              - service: worker\n                pointers: [/request_id, /attempt]\n                json:\n                  fields:\n                    /event: replicated\n",
         );
 
         let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
@@ -2768,13 +2793,17 @@ mod tests {
         let property = &campaign.properties[0];
         let correlation = &property.requires_serial_correlations[0];
         assert_eq!(correlation.capture.service, None);
-        assert_eq!(correlation.capture.pointer, "/request_id");
+        assert_eq!(correlation.capture.pointers, ["/request_id"]);
         assert_eq!(correlation.equals.service.as_deref(), Some("worker"));
         assert_eq!(
             correlation.equals.json.fields["/event"],
             serde_json::Value::String("replicated".to_owned())
         );
         assert_eq!(property.requires_serial_joins[0].endpoints.len(), 2);
+        assert_eq!(
+            property.requires_serial_joins[0].endpoints[0].pointers,
+            ["/request_id", "/attempt"]
+        );
     }
 
     #[test]
@@ -2799,6 +2828,23 @@ mod tests {
         let error = normalize_serial_joins(Some(vec![join]), "replicated_write", &BTreeMap::new())
             .unwrap_err();
         assert!(error.to_string().contains("needs at least two endpoints"));
+    }
+
+    #[test]
+    fn rejects_ambiguous_composite_json_join_keys() {
+        let endpoint: ComposeJsonCorrelationEndpoint = serde_yaml::from_str(
+            "pointer: /request_id\npointers: [/request_id, /attempt]\njson:\n  fields:\n    /event: write\n",
+        )
+        .unwrap();
+
+        let error = normalize_json_correlation_endpoint(
+            endpoint,
+            "join",
+            "replicated_write",
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("pointer or pointers, not both"));
     }
 
     #[test]
