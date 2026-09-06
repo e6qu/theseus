@@ -56,15 +56,22 @@ x-theseus:
         # Unlike marker guards, this inspects one structured event from the
         # driver's restored serial transcript. Retry only an identified stale
         # assertion; ordinary output cannot satisfy these correlated fields.
-        requires_serial:
-          json:
-            fields:
-              /event: assertion
-              /name: consistent_read
-              /passed: false
-            where:
-              - pointer: /reason
-                equals: stale
+        requires_serial_all:
+          # Default service is the driver: retry only a stale API assertion.
+          - json:
+              fields:
+                /event: assertion
+                /name: consistent_read
+                /passed: false
+              where:
+                - pointer: /reason
+                  equals: stale
+          # Also require the independently restored auditor evidence.
+          - service: auditor
+            json:
+              fields:
+                /event: ready
+                /service: auditor
         max_uses: 1
     faults:
       # These run after the named operation emits its checkpoint. Every NIC

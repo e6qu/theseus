@@ -98,10 +98,14 @@ struct CampaignOperation {
     #[serde(default)]
     excludes_serial: Option<OperationSerialGuard>,
     #[serde(default)]
+    requires_serial_all: Vec<OperationSerialGuard>,
+    #[serde(default)]
+    excludes_serial_any: Vec<OperationSerialGuard>,
+    #[serde(default)]
     max_uses: Option<u8>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct OperationSerialGuard {
     #[serde(default)]
     service: Option<String>,
@@ -2370,10 +2374,18 @@ fn campaign_operation_serial_guards_are_ready(
         .map(|guard| campaign_serial_guard_matches(checkpoint, &campaign.driver, guard))
         .unwrap_or(true)
         && candidate
+            .requires_serial_all
+            .iter()
+            .all(|guard| campaign_serial_guard_matches(checkpoint, &campaign.driver, guard))
+        && candidate
             .excludes_serial
             .as_ref()
             .map(|guard| !campaign_serial_guard_matches(checkpoint, &campaign.driver, guard))
             .unwrap_or(true)
+        && candidate
+            .excludes_serial_any
+            .iter()
+            .all(|guard| !campaign_serial_guard_matches(checkpoint, &campaign.driver, guard))
 }
 
 fn campaign_serial_guard_matches(
@@ -5102,6 +5114,8 @@ mod tests {
                     excludes_markers: Vec::new(),
                     requires_serial: None,
                     excludes_serial: None,
+                    requires_serial_all: Vec::new(),
+                    excludes_serial_any: Vec::new(),
                     max_uses: Some(1),
                 },
                 CampaignOperation {
@@ -5114,6 +5128,8 @@ mod tests {
                     excludes_markers: vec!["closed".to_owned()],
                     requires_serial: None,
                     excludes_serial: None,
+                    requires_serial_all: Vec::new(),
+                    excludes_serial_any: Vec::new(),
                     max_uses: Some(1),
                 },
             ],
@@ -5186,7 +5202,21 @@ mod tests {
                 none: Vec::new(),
             },
         });
-        structured.operations[1].excludes_serial = Some(OperationSerialGuard {
+        structured.operations[1].requires_serial_all = vec![
+            OperationSerialGuard {
+                service: None,
+                predicate: SerialPredicate {
+                    contains: Some("THES:M:written".to_owned()),
+                    matches: None,
+                    json: None,
+                    all: Vec::new(),
+                    any: Vec::new(),
+                    none: Vec::new(),
+                },
+            },
+            structured.operations[1].requires_serial.clone().unwrap(),
+        ];
+        structured.operations[1].excludes_serial_any = vec![OperationSerialGuard {
             service: Some("auditor".to_owned()),
             predicate: SerialPredicate {
                 contains: Some("THES:ASSERT:recovered".to_owned()),
@@ -5196,7 +5226,7 @@ mod tests {
                 any: Vec::new(),
                 none: Vec::new(),
             },
-        });
+        }];
 
         assert!(!campaign_operation_serial_guards_are_ready(
             &structured,
