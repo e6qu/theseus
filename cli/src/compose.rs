@@ -218,11 +218,22 @@ struct ComposeSerialPredicate {
     #[serde(default)]
     matches: Option<String>,
     #[serde(default)]
+    json: Option<ComposeJsonPredicate>,
+    #[serde(default)]
     all: Vec<ComposeSerialPredicate>,
     #[serde(default)]
     any: Vec<ComposeSerialPredicate>,
     #[serde(default)]
     none: Vec<ComposeSerialPredicate>,
+}
+
+/// One JSON-lines event emitted on the serial console. Every pointer/value pair
+/// must match the same JSON object, so related fields cannot be satisfied by
+/// separate log lines.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeJsonPredicate {
+    fields: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -424,12 +435,19 @@ pub struct SerialPredicatePlan {
     pub contains: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matches: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub json: Option<JsonPredicatePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub all: Vec<SerialPredicatePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub any: Vec<SerialPredicatePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub none: Vec<SerialPredicatePlan>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonPredicatePlan {
+    pub fields: BTreeMap<String, serde_json::Value>,
 }
 
 /// Load a Compose topology and lock every referenced service artifact into a
@@ -1319,8 +1337,23 @@ fn normalize_serial_predicate(
             ))
         })?;
     }
+    if let Some(json) = &predicate.json {
+        if json.fields.is_empty() {
+            return Err(ComposeError::Invalid(format!(
+                "campaign property {property_name:?} has an empty nested JSON predicate"
+            )));
+        }
+        for pointer in json.fields.keys() {
+            if !valid_json_pointer(pointer) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign property {property_name:?} has invalid nested JSON pointer {pointer:?}"
+                )));
+            }
+        }
+    }
     if predicate.contains.is_none()
         && predicate.matches.is_none()
+        && predicate.json.is_none()
         && predicate.all.is_empty()
         && predicate.any.is_empty()
         && predicate.none.is_empty()
@@ -1332,6 +1365,9 @@ fn normalize_serial_predicate(
     Ok(SerialPredicatePlan {
         contains: predicate.contains,
         matches: predicate.matches,
+        json: predicate.json.map(|json| JsonPredicatePlan {
+            fields: json.fields,
+        }),
         all: predicate
             .all
             .into_iter()
@@ -1348,6 +1384,24 @@ fn normalize_serial_predicate(
             .map(|child| normalize_serial_predicate(child, property_name))
             .collect::<Result<_, _>>()?,
     })
+}
+
+fn valid_json_pointer(pointer: &str) -> bool {
+    let Some(rest) = pointer.strip_prefix('/') else {
+        return false;
+    };
+    let bytes = rest.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'~' {
+            if !matches!(bytes.get(index + 1), Some(b'0' | b'1')) {
+                return false;
+            }
+            index += 1;
+        }
+        index += 1;
+    }
+    true
 }
 
 fn validate_campaign_operation_rules(
@@ -1915,7 +1969,7 @@ mod tests {
     #[test]
     fn parses_nested_campaign_property_predicates() {
         let property: ComposeProperty = serde_yaml::from_str(
-            "name: durable_write\nkind: always\npredicate:\n  all:\n    - contains: THES:ASSERT:write:pass\n    - any:\n        - matches: THES:CHECKPOINT:write_[0-9]+\n        - contains: THES:M:write_complete\n    - none:\n        - contains: THES:ASSERT:panic\n",
+            "name: durable_write\nkind: always\npredicate:\n  all:\n    - contains: THES:ASSERT:write:pass\n    - any:\n        - matches: THES:CHECKPOINT:write_[0-9]+\n        - json:\n            fields:\n              /event: checkpoint\n              /operation: write\n    - none:\n        - contains: THES:ASSERT:panic\n",
         )
         .unwrap();
         let predicate =
@@ -1927,6 +1981,10 @@ mod tests {
             predicate.all[1].any[0].matches.as_deref(),
             Some("THES:CHECKPOINT:write_[0-9]+")
         );
+        assert_eq!(
+            predicate.all[1].any[1].json.as_ref().unwrap().fields["/operation"],
+            serde_json::Value::String("write".to_owned())
+        );
         assert_eq!(predicate.all[2].none.len(), 1);
     }
 
@@ -1936,6 +1994,7 @@ mod tests {
             ComposeSerialPredicate {
                 contains: None,
                 matches: Some("[".to_owned()),
+                json: None,
                 all: Vec::new(),
                 any: Vec::new(),
                 none: Vec::new(),
@@ -1945,6 +2004,29 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("invalid nested regex"));
+    }
+
+    #[test]
+    fn rejects_invalid_nested_campaign_json_pointers() {
+        let error = normalize_serial_predicate(
+            ComposeSerialPredicate {
+                contains: None,
+                matches: None,
+                json: Some(ComposeJsonPredicate {
+                    fields: BTreeMap::from([(
+                        "event".to_owned(),
+                        serde_json::Value::String("checkpoint".to_owned()),
+                    )]),
+                }),
+                all: Vec::new(),
+                any: Vec::new(),
+                none: Vec::new(),
+            },
+            "durable_write",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("invalid nested JSON pointer"));
     }
 
     #[test]

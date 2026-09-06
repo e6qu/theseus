@@ -195,11 +195,18 @@ struct SerialPredicate {
     #[serde(default)]
     matches: Option<String>,
     #[serde(default)]
+    json: Option<JsonPredicate>,
+    #[serde(default)]
     all: Vec<SerialPredicate>,
     #[serde(default)]
     any: Vec<SerialPredicate>,
     #[serde(default)]
     none: Vec<SerialPredicate>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct JsonPredicate {
+    fields: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -3121,6 +3128,11 @@ fn serial_matches_nested_predicate(serial: &[u8], predicate: &SerialPredicate) -
             })
             .unwrap_or(true)
         && predicate
+            .json
+            .as_ref()
+            .map(|predicate| serial_matches_json_predicate(serial, predicate))
+            .unwrap_or(true)
+        && predicate
             .all
             .iter()
             .all(|child| serial_matches_nested_predicate(serial, child))
@@ -3133,6 +3145,19 @@ fn serial_matches_nested_predicate(serial: &[u8], predicate: &SerialPredicate) -
             .none
             .iter()
             .all(|child| !serial_matches_nested_predicate(serial, child))
+}
+
+fn serial_matches_json_predicate(serial: &[u8], predicate: &JsonPredicate) -> bool {
+    serial.split(|byte| *byte == b'\n').any(|line| {
+        serde_json::from_slice::<serde_json::Value>(line)
+            .ok()
+            .is_some_and(|event| {
+                predicate
+                    .fields
+                    .iter()
+                    .all(|(pointer, expected)| event.pointer(pointer) == Some(expected))
+            })
+    })
 }
 
 fn serial_contains(serial: &[u8], needle: &str) -> bool {
@@ -3176,6 +3201,9 @@ fn nested_predicate_description(predicate: &SerialPredicate) -> String {
         .unwrap_or_default();
     if let Some(expression) = &predicate.matches {
         clauses.push(format!("matches {expression:?}"));
+    }
+    if let Some(json) = &predicate.json {
+        clauses.push(format!("JSON event has fields {:?}", json.fields));
     }
     if !predicate.all.is_empty() {
         clauses.push(format!(
@@ -4726,10 +4754,12 @@ mod tests {
             predicate: Some(SerialPredicate {
                 contains: None,
                 matches: None,
+                json: None,
                 all: vec![
                     SerialPredicate {
                         contains: Some("THES:ASSERT:write:pass".to_owned()),
                         matches: None,
+                        json: None,
                         all: Vec::new(),
                         any: Vec::new(),
                         none: Vec::new(),
@@ -4737,6 +4767,7 @@ mod tests {
                     SerialPredicate {
                         contains: Some("THES:M:written".to_owned()),
                         matches: None,
+                        json: None,
                         all: Vec::new(),
                         any: Vec::new(),
                         none: Vec::new(),
@@ -4746,6 +4777,7 @@ mod tests {
                     SerialPredicate {
                         contains: Some("THES:CHECKPOINT:write".to_owned()),
                         matches: None,
+                        json: None,
                         all: Vec::new(),
                         any: Vec::new(),
                         none: Vec::new(),
@@ -4753,6 +4785,7 @@ mod tests {
                     SerialPredicate {
                         contains: None,
                         matches: Some("THES:M:write_[a-z]+".to_owned()),
+                        json: None,
                         all: Vec::new(),
                         any: Vec::new(),
                         none: Vec::new(),
@@ -4761,6 +4794,7 @@ mod tests {
                 none: vec![SerialPredicate {
                     contains: Some("THES:ASSERT:panic".to_owned()),
                     matches: None,
+                    json: None,
                     all: Vec::new(),
                     any: Vec::new(),
                     none: Vec::new(),
@@ -4789,6 +4823,32 @@ mod tests {
         .unwrap();
         assert!(!property_matches_in_run(&property, &run));
         fs::remove_dir_all(run).unwrap();
+    }
+
+    #[test]
+    fn json_serial_predicates_match_one_complete_event() {
+        let predicate = JsonPredicate {
+            fields: BTreeMap::from([
+                (
+                    "/event".to_owned(),
+                    serde_json::Value::String("assertion".to_owned()),
+                ),
+                ("/passed".to_owned(), serde_json::Value::Bool(false)),
+            ]),
+        };
+
+        assert!(!serial_matches_json_predicate(
+            br#"{"event":"assertion"}
+{"passed":false}
+"#,
+            &predicate,
+        ));
+        assert!(serial_matches_json_predicate(
+            br#"THES:M:read
+{"event":"assertion","passed":false}
+"#,
+            &predicate,
+        ));
     }
 
     #[test]

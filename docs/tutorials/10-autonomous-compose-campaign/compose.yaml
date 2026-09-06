@@ -124,6 +124,11 @@ x-theseus:
         predicate:
           all:
             - contains: "THES:ASSERT:consistent_read:fail"
+            - json:
+                fields:
+                  /event: assertion
+                  /name: consistent_read
+                  /passed: false
             - contains: "THES:M:stale"
             - any:
                 - matches: "THES:CHECKPOINT:read_(stale|fresh)"
