@@ -51,7 +51,7 @@ Start with `compose.yaml`.
    `sometimes` and `reachable` need one witness. `unreachable` needs none.
    Use `contains_all`, `contains_any`, and `contains_none` for a flat
    predicate. Use `predicate` when you need nested `all`, `any`, or `none`
-   groups. Every leaf is `contains: <serial text>`.
+   groups. A leaf is `contains: <serial text>` or `matches: <Rust regex>`.
 5. Set `max_operations_per_run` to explore every ordered operation history,
    including repeated operations such as retries. It defaults to 3 and is
    capped at 4. Set `max_faults_per_run` to explore candidate fault sequences;
