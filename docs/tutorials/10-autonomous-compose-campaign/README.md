@@ -67,6 +67,10 @@ Start with `compose.yaml`.
    Each sequence item has exactly one of `contains`, `matches`, or `json`.
    Use `occurs` to require one leaf exactly, at least, or at most a number of
    times. Put that leaf under `occurs.predicate`.
+   Use `requires_serial_all` to join property evidence from named services.
+   `requires_serial_any` needs one listed guard; `excludes_serial_any` rejects
+   a property when one matches. Each guard uses `service` and the same serial
+   predicate syntax as an operation guard.
    Add `json.where` for one condition per pointer: `equals`, `matches`,
    `greater_than`, `greater_than_or_equal`, `less_than`, `less_than_or_equal`,
    or `exists`. These conditions also match one complete JSON line.
