@@ -112,6 +112,10 @@ struct ComposeOperation {
     #[serde(default)]
     excludes_markers: Vec<String>,
     #[serde(default)]
+    requires_serial: Option<ComposeSerialPredicate>,
+    #[serde(default)]
+    excludes_serial: Option<ComposeSerialPredicate>,
+    #[serde(default)]
     max_uses: Option<u8>,
 }
 
@@ -375,6 +379,10 @@ pub struct OperationPlan {
     pub requires_markers: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excludes_markers: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_serial: Option<SerialPredicatePlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excludes_serial: Option<SerialPredicatePlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_uses: Option<u8>,
 }
@@ -664,6 +672,15 @@ fn campaign_plan(
                 operation.name
             )));
         }
+        let context = format!("operation {:?}", operation.name);
+        let requires_serial = operation
+            .requires_serial
+            .map(|predicate| normalize_serial_predicate(predicate, &context))
+            .transpose()?;
+        let excludes_serial = operation
+            .excludes_serial
+            .map(|predicate| normalize_serial_predicate(predicate, &context))
+            .transpose()?;
         operations.push(OperationPlan {
             name: operation.name,
             input_hex: hex(operation.input.as_bytes()),
@@ -672,6 +689,8 @@ fn campaign_plan(
             excludes: operation.excludes,
             requires_markers: operation.requires_markers,
             excludes_markers: operation.excludes_markers,
+            requires_serial,
+            excludes_serial,
             max_uses: operation.max_uses,
         });
     }
@@ -1335,7 +1354,9 @@ fn campaign_plan(
         }
         let predicate = property
             .predicate
-            .map(|predicate| normalize_serial_predicate(predicate, &property.name))
+            .map(|predicate| {
+                normalize_serial_predicate(predicate, &format!("property {:?}", property.name))
+            })
             .transpose()?;
         properties.push(PropertyPlan {
             name: property.name,
@@ -1362,40 +1383,40 @@ fn campaign_plan(
 
 fn normalize_serial_predicate(
     predicate: ComposeSerialPredicate,
-    property_name: &str,
+    context: &str,
 ) -> Result<SerialPredicatePlan, ComposeError> {
     if predicate.contains.as_ref().is_some_and(String::is_empty) {
         return Err(ComposeError::Invalid(format!(
-            "campaign property {property_name:?} has an empty nested contains value"
+            "campaign {context} has an empty nested contains value"
         )));
     }
     if predicate.matches.as_ref().is_some_and(String::is_empty) {
         return Err(ComposeError::Invalid(format!(
-            "campaign property {property_name:?} has an empty nested matches value"
+            "campaign {context} has an empty nested matches value"
         )));
     }
     if let Some(expression) = &predicate.matches {
         Regex::new(expression).map_err(|error| {
             ComposeError::Invalid(format!(
-                "campaign property {property_name:?} has invalid nested regex {expression:?}: {error}"
+                "campaign {context} has invalid nested regex {expression:?}: {error}"
             ))
         })?;
     }
     if let Some(json) = &predicate.json {
         if json.fields.is_empty() && json.where_.is_empty() {
             return Err(ComposeError::Invalid(format!(
-                "campaign property {property_name:?} has an empty nested JSON predicate"
+                "campaign {context} has an empty nested JSON predicate"
             )));
         }
         for pointer in json.fields.keys() {
             if !valid_json_pointer(pointer) {
                 return Err(ComposeError::Invalid(format!(
-                    "campaign property {property_name:?} has invalid nested JSON pointer {pointer:?}"
+                    "campaign {context} has invalid nested JSON pointer {pointer:?}"
                 )));
             }
         }
         for condition in &json.where_ {
-            validate_json_condition(condition, property_name)?;
+            validate_json_condition(condition, context)?;
         }
     }
     if predicate.contains.is_none()
@@ -1406,7 +1427,7 @@ fn normalize_serial_predicate(
         && predicate.none.is_empty()
     {
         return Err(ComposeError::Invalid(format!(
-            "campaign property {property_name:?} has an empty nested predicate"
+            "campaign {context} has an empty nested predicate"
         )));
     }
     Ok(SerialPredicatePlan {
@@ -1432,28 +1453,28 @@ fn normalize_serial_predicate(
         all: predicate
             .all
             .into_iter()
-            .map(|child| normalize_serial_predicate(child, property_name))
+            .map(|child| normalize_serial_predicate(child, context))
             .collect::<Result<_, _>>()?,
         any: predicate
             .any
             .into_iter()
-            .map(|child| normalize_serial_predicate(child, property_name))
+            .map(|child| normalize_serial_predicate(child, context))
             .collect::<Result<_, _>>()?,
         none: predicate
             .none
             .into_iter()
-            .map(|child| normalize_serial_predicate(child, property_name))
+            .map(|child| normalize_serial_predicate(child, context))
             .collect::<Result<_, _>>()?,
     })
 }
 
 fn validate_json_condition(
     condition: &ComposeJsonCondition,
-    property_name: &str,
+    context: &str,
 ) -> Result<(), ComposeError> {
     if !valid_json_pointer(&condition.pointer) {
         return Err(ComposeError::Invalid(format!(
-            "campaign property {property_name:?} has invalid nested JSON pointer {:?}",
+            "campaign {context} has invalid nested JSON pointer {:?}",
             condition.pointer
         )));
     }
@@ -1466,19 +1487,19 @@ fn validate_json_condition(
         + usize::from(condition.exists.is_some());
     if operators != 1 {
         return Err(ComposeError::Invalid(format!(
-            "campaign property {property_name:?} JSON condition {:?} needs exactly one operator",
+            "campaign {context} JSON condition {:?} needs exactly one operator",
             condition.pointer
         )));
     }
     if let Some(expression) = &condition.matches {
         if expression.is_empty() {
             return Err(ComposeError::Invalid(format!(
-                "campaign property {property_name:?} has an empty nested JSON regex"
+                "campaign {context} has an empty nested JSON regex"
             )));
         }
         Regex::new(expression).map_err(|error| {
             ComposeError::Invalid(format!(
-                "campaign property {property_name:?} has invalid nested JSON regex {expression:?}: {error}"
+                "campaign {context} has invalid nested JSON regex {expression:?}: {error}"
             ))
         })?;
     }
@@ -1490,7 +1511,7 @@ fn validate_json_condition(
     ] {
         if value.is_some_and(|value| !value.is_finite()) {
             return Err(ComposeError::Invalid(format!(
-                "campaign property {property_name:?} has a non-finite nested JSON number"
+                "campaign {context} has a non-finite nested JSON number"
             )));
         }
     }
@@ -2226,6 +2247,14 @@ x-theseus:
       - name: close
         input: "close\n"
         requires: [write]
+        requires_serial:
+          json:
+            fields:
+              /event: assertion
+              /passed: false
+            where:
+              - pointer: /reason
+                equals: stale
         max_uses: 1
       - name: read
         input: "read\n"
@@ -2242,6 +2271,18 @@ x-theseus:
         assert_eq!(campaign.operations[0].requires_markers, vec!["booted"]);
         assert_eq!(campaign.operations[2].excludes, vec!["close"]);
         assert_eq!(campaign.operations[2].excludes_markers, vec!["closed"]);
+        assert_eq!(
+            campaign.operations[1]
+                .requires_serial
+                .as_ref()
+                .unwrap()
+                .json
+                .as_ref()
+                .unwrap()
+                .where_[0]
+                .equals,
+            Some(serde_json::Value::String("stale".to_owned()))
+        );
     }
 
     #[test]

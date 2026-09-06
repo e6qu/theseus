@@ -28,6 +28,9 @@ Start with `compose.yaml`.
    decision depends on what the guest actually reported. Theseus reads
    `THES:M:marker` lines from the restored parent checkpoint before extending
    it, so a blocked operation never consumes a campaign run.
+   Use `requires_serial` or `excludes_serial` when the decision needs the
+   full nested serial predicate. Theseus evaluates it against the driver's
+   restored transcript, including one-line JSON event predicates.
    Use `stages: [setup, workload, recovery]` and give every operation a
    `stage`. Histories may stay in a stage or move forward, never back. This is
    the compact way to express a workflow without pairwise exclusions.
@@ -75,8 +78,8 @@ A candidate pair is one timeline. For example, a `network_fault` after `write`
 and a `network_recover` after `retry` run together, in that operation order.
 Theseus explores operation histories breadth-first. It first tests one-step
 operations, then pairs such as `write → read_stale`. Here `read_stale` needs
-the `written` marker and `retry` rejects `stale`, so root reads and retries
-after a stale read are skipped from their restored parent states. Repeated
+the `written` marker and `retry` requires the stale structured assertion, so
+root reads and retries before a stale read are skipped from their restored parent states. Repeated
 operations are valid unless `max_uses` limits them.
 The recovery restores only packet conditions: a simultaneous partition or
 directed-link action remains in force. This lets you test recovery without a
@@ -117,7 +120,7 @@ execution details only: each run's `replay-plan.json` still contains the full
 operation history and replays independently.
 
 The report shows the operation model, including earlier-operation rules and
-observed-marker guards. It also counts marker-guard leaves skipped before a
+observed-marker and serial guards. It also counts both kinds of guard leaf skipped before a
 campaign run started.
 
 Theseus first runs every one-operation history without faults. It then gives
