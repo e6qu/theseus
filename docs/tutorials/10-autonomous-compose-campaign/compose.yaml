@@ -81,6 +81,26 @@ x-theseus:
                     fields:
                       /name: serial
                       /passed: true
+        # Prune retry until all three services have the same transaction ID.
+        requires_serial_joins:
+          - endpoints:
+              - pointer: /request_id
+                json:
+                  fields:
+                    /event: operation
+                    /name: write
+              - service: replica
+                pointer: /request_id
+                json:
+                  fields:
+                    /event: replicated
+                    /name: write
+              - service: auditor
+                pointer: /request_id
+                json:
+                  fields:
+                    /event: audit
+                    /name: write_observed
         max_uses: 1
     faults:
       # These run after the named operation emits its checkpoint. Every NIC

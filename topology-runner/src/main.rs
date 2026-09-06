@@ -102,6 +102,10 @@ struct CampaignOperation {
     #[serde(default)]
     excludes_serial_any: Vec<OperationSerialGuard>,
     #[serde(default)]
+    requires_serial_joins: Vec<SerialJoin>,
+    #[serde(default)]
+    excludes_serial_joins: Vec<SerialJoin>,
+    #[serde(default)]
     max_uses: Option<u8>,
 }
 
@@ -2483,6 +2487,14 @@ fn campaign_operation_serial_guards_are_ready(
             .excludes_serial_any
             .iter()
             .all(|guard| !campaign_serial_guard_matches(checkpoint, &campaign.driver, guard))
+        && candidate
+            .requires_serial_joins
+            .iter()
+            .all(|join| campaign_serial_join_matches(checkpoint, &campaign.driver, join))
+        && candidate
+            .excludes_serial_joins
+            .iter()
+            .all(|join| !campaign_serial_join_matches(checkpoint, &campaign.driver, join))
 }
 
 fn campaign_serial_guard_matches(
@@ -2492,6 +2504,37 @@ fn campaign_serial_guard_matches(
 ) -> bool {
     let serial = campaign_checkpoint_serial(checkpoint, guard.service.as_deref().unwrap_or(driver));
     serial_matches_nested_predicate(&serial, &guard.predicate)
+}
+
+fn campaign_serial_join_matches(
+    checkpoint: &CampaignCheckpoint,
+    driver: &str,
+    join: &SerialJoin,
+) -> bool {
+    let Some((first, rest)) = join.endpoints.split_first() else {
+        return false;
+    };
+    campaign_join_endpoint_values(checkpoint, driver, first)
+        .into_iter()
+        .any(|candidate| {
+            rest.iter().all(|endpoint| {
+                campaign_join_endpoint_values(checkpoint, driver, endpoint)
+                    .into_iter()
+                    .any(|value| value == candidate)
+            })
+        })
+}
+
+fn campaign_join_endpoint_values(
+    checkpoint: &CampaignCheckpoint,
+    driver: &str,
+    endpoint: &JsonCorrelationEndpoint,
+) -> Vec<serde_json::Value> {
+    serial_json_pointer_values(
+        &campaign_checkpoint_serial(checkpoint, endpoint.service.as_deref().unwrap_or(driver)),
+        &endpoint.json,
+        &endpoint.pointer,
+    )
 }
 
 fn campaign_checkpoint_serial(checkpoint: &CampaignCheckpoint, driver: &str) -> Vec<u8> {
@@ -5862,6 +5905,8 @@ mod tests {
                     excludes_serial: None,
                     requires_serial_all: Vec::new(),
                     excludes_serial_any: Vec::new(),
+                    requires_serial_joins: Vec::new(),
+                    excludes_serial_joins: Vec::new(),
                     max_uses: Some(1),
                 },
                 CampaignOperation {
@@ -5876,6 +5921,8 @@ mod tests {
                     excludes_serial: None,
                     requires_serial_all: Vec::new(),
                     excludes_serial_any: Vec::new(),
+                    requires_serial_joins: Vec::new(),
+                    excludes_serial_joins: Vec::new(),
                     max_uses: Some(1),
                 },
             ],
@@ -5982,6 +6029,15 @@ mod tests {
                 occurs: None,
             },
         }];
+        structured.operations[1].requires_serial_joins = vec![
+            serde_json::from_value(serde_json::json!({
+                "endpoints": [
+                    {"pointer": "/request_id", "json": {"fields": {"/event": "write"}}},
+                    {"service": "auditor", "pointer": "/request_id", "json": {"fields": {"/event": "audit"}}}
+                ]
+            }))
+            .unwrap(),
+        ];
 
         assert!(!campaign_operation_serial_guards_are_ready(
             &structured,
@@ -5989,11 +6045,13 @@ mod tests {
             1
         ));
         let mut stale = checkpoint.clone();
+        stale.scheduler.get_mut("api").unwrap().serial_contents[0]
+            .extend_from_slice(b"{\"event\":\"write\",\"request_id\":\"r-17\"}\n");
         stale.scheduler.insert(
             "auditor".to_owned(),
             ServiceSchedulerCheckpoint {
                 serial_contents: vec![
-                    b"{\"event\":\"assertion\",\"passed\":false,\"reason\":\"stale\"}\n".to_vec(),
+                    b"{\"event\":\"assertion\",\"passed\":false,\"reason\":\"stale\"}\n{\"event\":\"audit\",\"request_id\":\"r-17\"}\n".to_vec(),
                 ],
                 program_counters: Vec::new(),
                 next_fault: 0,
@@ -6008,6 +6066,14 @@ mod tests {
             &stale,
             1
         ));
+        structured.operations[1].excludes_serial_joins =
+            structured.operations[1].requires_serial_joins.clone();
+        assert!(!campaign_operation_serial_guards_are_ready(
+            &structured,
+            &stale,
+            1
+        ));
+        structured.operations[1].excludes_serial_joins.clear();
         stale.scheduler.get_mut("auditor").unwrap().serial_contents[0]
             .extend_from_slice(b"THES:ASSERT:recovered\n");
         assert!(!campaign_operation_serial_guards_are_ready(

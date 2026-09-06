@@ -117,7 +117,9 @@ Properties can extend that proof across services with
 `requires_serial_correlations`: match one JSON event and pointer in a source
 service to the same pointer value in an event from another service.
 Use `requires_serial_joins` when one value must be common to every endpoint
-across three or more services.
+across three or more services. Put the same guard on an operation to defer it
+until that evidence exists at its restored checkpoint, or use
+`excludes_serial_joins` to block it when the joined evidence is present.
 
 ## Repository layout
 
