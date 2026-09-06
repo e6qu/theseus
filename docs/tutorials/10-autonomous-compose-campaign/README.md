@@ -65,6 +65,8 @@ Start with `compose.yaml`.
    one complete JSON line, so its fields cannot come from separate events.
    Use `sequence` to require text, regex, or JSON leaves in transcript order.
    Each sequence item has exactly one of `contains`, `matches`, or `json`.
+   Use `occurs` to require one leaf exactly, at least, or at most a number of
+   times. Put that leaf under `occurs.predicate`.
    Add `json.where` for one condition per pointer: `equals`, `matches`,
    `greater_than`, `greater_than_or_equal`, `less_than`, `less_than_or_equal`,
    or `exists`. These conditions also match one complete JSON line.

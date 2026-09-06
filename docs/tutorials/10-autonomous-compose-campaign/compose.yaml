@@ -58,9 +58,10 @@ x-theseus:
         # assertion; ordinary output cannot satisfy these correlated fields.
         requires_serial_all:
           # Default service is the driver: retry only a stale API assertion.
-          - sequence:
-              - contains: "THES:CHECKPOINT:read_stale"
-              - json:
+          - occurs:
+              exactly: 1
+              predicate:
+                json:
                   fields:
                     /event: assertion
                     /name: consistent_read
@@ -164,6 +165,14 @@ x-theseus:
                         greater_than_or_equal: 2
                       - pointer: /reason
                         matches: "^stale$"
+            - occurs:
+                exactly: 1
+                predicate:
+                  json:
+                    fields:
+                      /event: assertion
+                      /name: consistent_read
+                      /passed: false
             - contains: "THES:M:stale"
             - any:
                 - matches: "THES:CHECKPOINT:read_(stale|fresh)"
