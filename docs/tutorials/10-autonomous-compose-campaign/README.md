@@ -65,6 +65,10 @@ Start with `compose.yaml`.
    one complete JSON line, so its fields cannot come from separate events.
    Use `sequence` to require text, regex, or JSON leaves in transcript order.
    Each sequence item has exactly one of `contains`, `matches`, or `json`.
+   In a JSON sequence item, use `capture: {name: /pointer}` to bind a value.
+   A later JSON item can require that value with
+   `equals_capture: {/pointer: name}`. The tutorial uses this to prove that
+   the stale assertion belongs to the earlier write transaction.
    Use `occurs` to require one leaf exactly, at least, or at most a number of
    times. Put that leaf under `occurs.predicate`.
    Use `requires_serial_all` to join property evidence from named services.
@@ -163,7 +167,8 @@ Emit the serial protocol with plain shell:
 printf '%s\n' 'THES:ASSERT:consistent_read:pass'
 printf '%s\n' 'THES:M:written'
 printf '%s\n' 'THES:CHECKPOINT:write'
-printf '%s\n' '{"event":"assertion","name":"consistent_read","passed":true,"attempt":2}'
+printf '%s\n' '{"event":"operation","name":"write","request_id":"transaction-42"}'
+printf '%s\n' '{"event":"assertion","name":"consistent_read","passed":true,"attempt":2,"request_id":"transaction-42"}'
 ```
 
 The optional SDK provides the same lines through `TtyChannel::assertion` and

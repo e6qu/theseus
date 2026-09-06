@@ -168,6 +168,12 @@ x-theseus:
           all:
             - contains: "THES:ASSERT:consistent_read:fail"
             - sequence:
+                - json:
+                    fields:
+                      /event: operation
+                      /name: write
+                    capture:
+                      transaction: /request_id
                 - contains: "THES:CHECKPOINT:read_stale"
                 - json:
                     fields:
@@ -179,6 +185,8 @@ x-theseus:
                         greater_than_or_equal: 2
                       - pointer: /reason
                         matches: "^stale$"
+                    equals_capture:
+                      /request_id: transaction
             - occurs:
                 exactly: 1
                 predicate:
