@@ -218,6 +218,8 @@ struct SerialPredicate {
     any: Vec<SerialPredicate>,
     #[serde(default)]
     none: Vec<SerialPredicate>,
+    #[serde(default)]
+    sequence: Vec<SerialPredicate>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -3257,11 +3259,50 @@ fn serial_matches_nested_predicate(serial: &[u8], predicate: &SerialPredicate) -
             .none
             .iter()
             .all(|child| !serial_matches_nested_predicate(serial, child))
+        && (predicate.sequence.is_empty() || serial_matches_sequence(serial, &predicate.sequence))
+}
+
+fn serial_matches_sequence(serial: &[u8], sequence: &[SerialPredicate]) -> bool {
+    let mut offset = 0;
+    for predicate in sequence {
+        let Some(end) = serial_sequence_item_match_end(&serial[offset..], predicate) else {
+            return false;
+        };
+        offset += end;
+    }
+    true
+}
+
+fn serial_sequence_item_match_end(serial: &[u8], predicate: &SerialPredicate) -> Option<usize> {
+    if let Some(needle) = &predicate.contains {
+        let needle = needle.as_bytes();
+        return serial
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .map(|start| start + needle.len());
+    }
+    if let Some(expression) = &predicate.matches {
+        return Regex::new(expression)
+            .ok()
+            .and_then(|expression| expression.find(serial))
+            .map(|matched| matched.end());
+    }
+    predicate
+        .json
+        .as_ref()
+        .and_then(|predicate| serial_json_predicate_match_end(serial, predicate))
 }
 
 fn serial_matches_json_predicate(serial: &[u8], predicate: &JsonPredicate) -> bool {
-    serial.split(|byte| *byte == b'\n').any(|line| {
-        serde_json::from_slice::<serde_json::Value>(line)
+    serial_json_predicate_match_end(serial, predicate).is_some()
+}
+
+fn serial_json_predicate_match_end(serial: &[u8], predicate: &JsonPredicate) -> Option<usize> {
+    let mut start = 0;
+    for line in serial.split_inclusive(|byte| *byte == b'\n') {
+        let end = start + line.len();
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        let matches = serde_json::from_slice::<serde_json::Value>(line)
             .ok()
             .is_some_and(|event| {
                 predicate
@@ -3272,8 +3313,13 @@ fn serial_matches_json_predicate(serial: &[u8], predicate: &JsonPredicate) -> bo
                         .where_
                         .iter()
                         .all(|condition| json_condition_matches(&event, condition))
-            })
-    })
+            });
+        if matches {
+            return Some(end);
+        }
+        start = end;
+    }
+    None
 }
 
 fn json_condition_matches(event: &serde_json::Value, condition: &JsonCondition) -> bool {
@@ -3385,6 +3431,17 @@ fn nested_predicate_description(predicate: &SerialPredicate) -> String {
             "none [{}]",
             predicate
                 .none
+                .iter()
+                .map(nested_predicate_description)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !predicate.sequence.is_empty() {
+        clauses.push(format!(
+            "sequence [{}]",
+            predicate
+                .sequence
                 .iter()
                 .map(nested_predicate_description)
                 .collect::<Vec<_>>()
@@ -4946,6 +5003,7 @@ mod tests {
                         all: Vec::new(),
                         any: Vec::new(),
                         none: Vec::new(),
+                        sequence: Vec::new(),
                     },
                     SerialPredicate {
                         contains: Some("THES:M:written".to_owned()),
@@ -4954,6 +5012,7 @@ mod tests {
                         all: Vec::new(),
                         any: Vec::new(),
                         none: Vec::new(),
+                        sequence: Vec::new(),
                     },
                 ],
                 any: vec![
@@ -4964,6 +5023,7 @@ mod tests {
                         all: Vec::new(),
                         any: Vec::new(),
                         none: Vec::new(),
+                        sequence: Vec::new(),
                     },
                     SerialPredicate {
                         contains: None,
@@ -4972,6 +5032,7 @@ mod tests {
                         all: Vec::new(),
                         any: Vec::new(),
                         none: Vec::new(),
+                        sequence: Vec::new(),
                     },
                 ],
                 none: vec![SerialPredicate {
@@ -4981,7 +5042,9 @@ mod tests {
                     all: Vec::new(),
                     any: Vec::new(),
                     none: Vec::new(),
+                    sequence: Vec::new(),
                 }],
+                sequence: Vec::new(),
             }),
             service: None,
         };
@@ -5031,6 +5094,27 @@ mod tests {
             br#"THES:M:read
 {"event":"assertion","passed":false}
 "#,
+            &predicate,
+        ));
+    }
+
+    #[test]
+    fn ordered_serial_predicates_require_each_event_in_order() {
+        let predicate: SerialPredicate = serde_json::from_value(serde_json::json!({
+            "sequence": [
+                {"contains": "THES:CHECKPOINT:write"},
+                {"json": {"fields": {"/event": "assertion", "/passed": false}}},
+                {"matches": "THES:M:stale"}
+            ]
+        }))
+        .unwrap();
+
+        assert!(serial_matches_nested_predicate(
+            b"THES:CHECKPOINT:write\n{\"event\":\"assertion\",\"passed\":false}\nTHES:M:stale\n",
+            &predicate,
+        ));
+        assert!(!serial_matches_nested_predicate(
+            b"THES:M:stale\n{\"event\":\"assertion\",\"passed\":false}\nTHES:CHECKPOINT:write\n",
             &predicate,
         ));
     }
@@ -5200,6 +5284,7 @@ mod tests {
                 all: Vec::new(),
                 any: Vec::new(),
                 none: Vec::new(),
+                sequence: Vec::new(),
             },
         });
         structured.operations[1].requires_serial_all = vec![
@@ -5212,6 +5297,7 @@ mod tests {
                     all: Vec::new(),
                     any: Vec::new(),
                     none: Vec::new(),
+                    sequence: Vec::new(),
                 },
             },
             structured.operations[1].requires_serial.clone().unwrap(),
@@ -5225,6 +5311,7 @@ mod tests {
                 all: Vec::new(),
                 any: Vec::new(),
                 none: Vec::new(),
+                sequence: Vec::new(),
             },
         }];
 

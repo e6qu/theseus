@@ -63,6 +63,8 @@ Start with `compose.yaml`.
    groups. A leaf is `contains: <serial text>`, `matches: <Rust regex>`, or
    `json.fields`, a map of JSON Pointers to exact values. `json.fields` matches
    one complete JSON line, so its fields cannot come from separate events.
+   Use `sequence` to require text, regex, or JSON leaves in transcript order.
+   Each sequence item has exactly one of `contains`, `matches`, or `json`.
    Add `json.where` for one condition per pointer: `equals`, `matches`,
    `greater_than`, `greater_than_or_equal`, `less_than`, `less_than_or_equal`,
    or `exists`. These conditions also match one complete JSON line.

@@ -140,6 +140,8 @@ struct ComposeOperationSerialGuard {
     any: Vec<ComposeSerialPredicate>,
     #[serde(default)]
     none: Vec<ComposeSerialPredicate>,
+    #[serde(default)]
+    sequence: Vec<ComposeSerialPredicate>,
 }
 
 impl ComposeOperationSerialGuard {
@@ -151,6 +153,7 @@ impl ComposeOperationSerialGuard {
             all: self.all,
             any: self.any,
             none: self.none,
+            sequence: self.sequence,
         }
     }
 }
@@ -265,6 +268,8 @@ struct ComposeSerialPredicate {
     any: Vec<ComposeSerialPredicate>,
     #[serde(default)]
     none: Vec<ComposeSerialPredicate>,
+    #[serde(default)]
+    sequence: Vec<ComposeSerialPredicate>,
 }
 
 /// One JSON-lines event emitted on the serial console. Every pointer/value pair
@@ -522,6 +527,8 @@ pub struct SerialPredicatePlan {
     pub any: Vec<SerialPredicatePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub none: Vec<SerialPredicatePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sequence: Vec<SerialPredicatePlan>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1485,6 +1492,19 @@ fn normalize_serial_predicate(
     predicate: ComposeSerialPredicate,
     context: &str,
 ) -> Result<SerialPredicatePlan, ComposeError> {
+    let has_sequence = !predicate.sequence.is_empty();
+    if has_sequence
+        && (predicate.contains.is_some()
+            || predicate.matches.is_some()
+            || predicate.json.is_some()
+            || !predicate.all.is_empty()
+            || !predicate.any.is_empty()
+            || !predicate.none.is_empty())
+    {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} cannot combine sequence with another nested predicate"
+        )));
+    }
     if predicate.contains.as_ref().is_some_and(String::is_empty) {
         return Err(ComposeError::Invalid(format!(
             "campaign {context} has an empty nested contains value"
@@ -1525,6 +1545,7 @@ fn normalize_serial_predicate(
         && predicate.all.is_empty()
         && predicate.any.is_empty()
         && predicate.none.is_empty()
+        && predicate.sequence.is_empty()
     {
         return Err(ComposeError::Invalid(format!(
             "campaign {context} has an empty nested predicate"
@@ -1565,7 +1586,32 @@ fn normalize_serial_predicate(
             .into_iter()
             .map(|child| normalize_serial_predicate(child, context))
             .collect::<Result<_, _>>()?,
+        sequence: predicate
+            .sequence
+            .into_iter()
+            .map(|child| normalize_sequence_item(child, context))
+            .collect::<Result<_, _>>()?,
     })
+}
+
+fn normalize_sequence_item(
+    predicate: ComposeSerialPredicate,
+    context: &str,
+) -> Result<SerialPredicatePlan, ComposeError> {
+    let leaves = usize::from(predicate.contains.is_some())
+        + usize::from(predicate.matches.is_some())
+        + usize::from(predicate.json.is_some());
+    if leaves != 1
+        || !predicate.all.is_empty()
+        || !predicate.any.is_empty()
+        || !predicate.none.is_empty()
+        || !predicate.sequence.is_empty()
+    {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} sequence items must contain exactly one of contains, matches, or json"
+        )));
+    }
+    normalize_serial_predicate(predicate, context)
 }
 
 fn validate_json_condition(
@@ -2267,6 +2313,7 @@ mod tests {
                 all: Vec::new(),
                 any: Vec::new(),
                 none: Vec::new(),
+                sequence: Vec::new(),
             },
             "durable_write",
         )
@@ -2291,6 +2338,7 @@ mod tests {
                 all: Vec::new(),
                 any: Vec::new(),
                 none: Vec::new(),
+                sequence: Vec::new(),
             },
             "durable_write",
         )
@@ -2321,12 +2369,44 @@ mod tests {
                 all: Vec::new(),
                 any: Vec::new(),
                 none: Vec::new(),
+                sequence: Vec::new(),
             },
             "durable_write",
         )
         .unwrap_err();
 
         assert!(error.to_string().contains("exactly one operator"));
+    }
+
+    #[test]
+    fn normalizes_ordered_serial_predicates() {
+        let predicate: ComposeSerialPredicate = serde_yaml::from_str(
+            "sequence:\n  - contains: booted\n  - matches: 'THES:CHECKPOINT:write'\n  - json:\n      fields:\n        /event: assertion\n        /passed: false\n",
+        )
+        .unwrap();
+
+        let predicate = normalize_serial_predicate(predicate, "stale_read").unwrap();
+        assert_eq!(predicate.sequence.len(), 3);
+        assert_eq!(predicate.sequence[0].contains.as_deref(), Some("booted"));
+        assert_eq!(
+            predicate.sequence[1].matches.as_deref(),
+            Some("THES:CHECKPOINT:write")
+        );
+        assert_eq!(
+            predicate.sequence[2].json.as_ref().unwrap().fields["/event"],
+            serde_json::Value::String("assertion".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_ordered_serial_predicates() {
+        let predicate: ComposeSerialPredicate =
+            serde_yaml::from_str("sequence:\n  - contains: booted\n    matches: ready\n").unwrap();
+
+        let error = normalize_serial_predicate(predicate, "stale_read").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("sequence items must contain exactly one"));
     }
 
     #[test]
