@@ -80,6 +80,10 @@ Start with `compose.yaml`.
    `json` event predicate and `pointer`; set `service` when it differs from
    the property service. The tutorial matches the API write transaction to the
    auditor's observation.
+   Use `requires_serial_joins` when three or more endpoints must share one
+   value. Put at least two endpoints under `endpoints`; Theseus looks for one
+   value common to every endpoint, not independent pairwise matches. The
+   tutorial joins the API, replica, and auditor transaction events.
    Add `json.where` for one condition per pointer: `equals`, `matches`,
    `greater_than`, `greater_than_or_equal`, `less_than`, `less_than_or_equal`,
    or `exists`. These conditions also match one complete JSON line.

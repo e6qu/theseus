@@ -209,6 +209,8 @@ struct CampaignProperty {
     #[serde(default)]
     requires_serial_correlations: Vec<SerialCorrelation>,
     #[serde(default)]
+    requires_serial_joins: Vec<SerialJoin>,
+    #[serde(default)]
     service: Option<String>,
 }
 
@@ -224,6 +226,11 @@ struct JsonCorrelationEndpoint {
     service: Option<String>,
     pointer: String,
     json: JsonPredicate,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SerialJoin {
+    endpoints: Vec<JsonCorrelationEndpoint>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -2263,6 +2270,7 @@ fn add_counterexample_check(
         || !property.requires_serial_any.is_empty()
         || !property.excludes_serial_any.is_empty()
         || !property.requires_serial_correlations.is_empty()
+        || !property.requires_serial_joins.is_empty()
     {
         return Ok(());
     }
@@ -2369,6 +2377,7 @@ fn campaign_counterexample(
                 requires_serial_any: property.requires_serial_any.clone(),
                 excludes_serial_any: property.excludes_serial_any.clone(),
                 requires_serial_correlations: property.requires_serial_correlations.clone(),
+                requires_serial_joins: property.requires_serial_joins.clone(),
                 service: property.service.clone(),
             },
             CampaignSchedule { operations, faults },
@@ -2408,6 +2417,10 @@ fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
             .requires_serial_correlations
             .iter()
             .all(|correlation| serial_correlation_matches_property(run, property, correlation))
+        && property
+            .requires_serial_joins
+            .iter()
+            .all(|join| serial_join_matches_property(run, property, join))
 }
 
 fn campaign_property_services(run: &Path, service: Option<&str>) -> Vec<String> {
@@ -3285,6 +3298,45 @@ fn serial_correlation_matches_property(
         })
 }
 
+fn serial_join_matches_property(
+    run: &Path,
+    property: &CampaignProperty,
+    join: &SerialJoin,
+) -> bool {
+    let Some((first, rest)) = join.endpoints.split_first() else {
+        return false;
+    };
+    serial_join_endpoint_values(run, property, first)
+        .into_iter()
+        .any(|candidate| {
+            rest.iter().all(|endpoint| {
+                serial_join_endpoint_values(run, property, endpoint)
+                    .into_iter()
+                    .any(|value| value == candidate)
+            })
+        })
+}
+
+fn serial_join_endpoint_values(
+    run: &Path,
+    property: &CampaignProperty,
+    endpoint: &JsonCorrelationEndpoint,
+) -> Vec<serde_json::Value> {
+    campaign_property_services(
+        run,
+        endpoint.service.as_deref().or(property.service.as_deref()),
+    )
+    .into_iter()
+    .flat_map(|service| {
+        serial_json_pointer_values(
+            &campaign_serial_contents(run, &service),
+            &endpoint.json,
+            &endpoint.pointer,
+        )
+    })
+    .collect()
+}
+
 fn serial_json_pointer_values(
     serial: &[u8],
     predicate: &JsonPredicate,
@@ -3732,6 +3784,17 @@ fn campaign_property_description(property: &CampaignProperty) -> String {
                 .join(", ")
         ));
     }
+    if !property.requires_serial_joins.is_empty() {
+        clauses.push(format!(
+            "also requires joins [{}]",
+            property
+                .requires_serial_joins
+                .iter()
+                .map(serial_join_description)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     clauses.join("; ")
 }
 
@@ -3751,6 +3814,20 @@ fn serial_correlation_description(correlation: &SerialCorrelation) -> String {
             .unwrap_or("property service"),
         correlation.equals.pointer,
     )
+}
+
+fn serial_join_description(join: &SerialJoin) -> String {
+    join.endpoints
+        .iter()
+        .map(|endpoint| {
+            format!(
+                "{} {}",
+                endpoint.service.as_deref().unwrap_or("property service"),
+                endpoint.pointer
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" = ")
 }
 
 fn serial_guard_description(guard: &OperationSerialGuard) -> String {
@@ -5371,8 +5448,10 @@ mod tests {
             std::env::temp_dir().join(format!("theseus-compound-property-{}", std::process::id()));
         let api = run.join("services/api");
         let worker = run.join("services/worker");
+        let auditor = run.join("services/auditor");
         fs::create_dir_all(&api).unwrap();
         fs::create_dir_all(&worker).unwrap();
+        fs::create_dir_all(&auditor).unwrap();
         fs::write(api.join("serial.log"), "THES:ASSERT:write:pass\n").unwrap();
         fs::write(worker.join("serial.log"), "THES:M:written\n").unwrap();
         let property = CampaignProperty {
@@ -5447,6 +5526,7 @@ mod tests {
             requires_serial_any: Vec::new(),
             excludes_serial_any: Vec::new(),
             requires_serial_correlations: Vec::new(),
+            requires_serial_joins: Vec::new(),
             service: None,
         };
 
@@ -5534,6 +5614,31 @@ mod tests {
         )
         .unwrap();
         assert!(!property_matches_in_run(&joined, &run));
+        fs::write(
+            worker.join("serial.log"),
+            "THES:M:written\n{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            auditor.join("serial.log"),
+            "{\"event\":\"audit\",\"request_id\":\"r-18\"}\n",
+        )
+        .unwrap();
+        joined.requires_serial_joins = vec![serde_json::from_value(serde_json::json!({
+            "endpoints": [
+                {"service": "api", "pointer": "/request_id", "json": {"fields": {"/event": "write"}}},
+                {"service": "worker", "pointer": "/request_id", "json": {"fields": {"/event": "replicated"}}},
+                {"service": "auditor", "pointer": "/request_id", "json": {"fields": {"/event": "audit"}}}
+            ]
+        }))
+        .unwrap()];
+        assert!(!property_matches_in_run(&joined, &run));
+        fs::write(
+            auditor.join("serial.log"),
+            "{\"event\":\"audit\",\"request_id\":\"r-17\"}\n",
+        )
+        .unwrap();
+        assert!(property_matches_in_run(&joined, &run));
         fs::remove_dir_all(run).unwrap();
     }
 

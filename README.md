@@ -116,6 +116,8 @@ prove that lifecycle events belong to the same request or transaction.
 Properties can extend that proof across services with
 `requires_serial_correlations`: match one JSON event and pointer in a source
 service to the same pointer value in an event from another service.
+Use `requires_serial_joins` when one value must be common to every endpoint
+across three or more services.
 
 ## Repository layout
 
