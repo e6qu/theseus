@@ -94,11 +94,19 @@ struct CampaignOperation {
     #[serde(default)]
     excludes_markers: Vec<String>,
     #[serde(default)]
-    requires_serial: Option<SerialPredicate>,
+    requires_serial: Option<OperationSerialGuard>,
     #[serde(default)]
-    excludes_serial: Option<SerialPredicate>,
+    excludes_serial: Option<OperationSerialGuard>,
     #[serde(default)]
     max_uses: Option<u8>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct OperationSerialGuard {
+    #[serde(default)]
+    service: Option<String>,
+    #[serde(flatten)]
+    predicate: SerialPredicate,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2355,18 +2363,26 @@ fn campaign_operation_serial_guards_are_ready(
     checkpoint: &CampaignCheckpoint,
     operation: usize,
 ) -> bool {
-    let serial = campaign_checkpoint_serial(checkpoint, &campaign.driver);
     let candidate = &campaign.operations[operation];
     candidate
         .requires_serial
         .as_ref()
-        .map(|predicate| serial_matches_nested_predicate(&serial, predicate))
+        .map(|guard| campaign_serial_guard_matches(checkpoint, &campaign.driver, guard))
         .unwrap_or(true)
         && candidate
             .excludes_serial
             .as_ref()
-            .map(|predicate| !serial_matches_nested_predicate(&serial, predicate))
+            .map(|guard| !campaign_serial_guard_matches(checkpoint, &campaign.driver, guard))
             .unwrap_or(true)
+}
+
+fn campaign_serial_guard_matches(
+    checkpoint: &CampaignCheckpoint,
+    driver: &str,
+    guard: &OperationSerialGuard,
+) -> bool {
+    let serial = campaign_checkpoint_serial(checkpoint, guard.service.as_deref().unwrap_or(driver));
+    serial_matches_nested_predicate(&serial, &guard.predicate)
 }
 
 fn campaign_checkpoint_serial(checkpoint: &CampaignCheckpoint, driver: &str) -> Vec<u8> {
@@ -5141,39 +5157,45 @@ mod tests {
 
         let mut structured = campaign;
         structured.operations[1].requires_markers.clear();
-        structured.operations[1].requires_serial = Some(SerialPredicate {
-            contains: None,
-            matches: None,
-            json: Some(JsonPredicate {
-                fields: BTreeMap::from([
-                    (
-                        "/event".to_owned(),
-                        serde_json::Value::String("assertion".to_owned()),
-                    ),
-                    ("/passed".to_owned(), serde_json::Value::Bool(false)),
-                ]),
-                where_: vec![JsonCondition {
-                    pointer: "/reason".to_owned(),
-                    equals: Some(serde_json::Value::String("stale".to_owned())),
-                    matches: None,
-                    greater_than: None,
-                    greater_than_or_equal: None,
-                    less_than: None,
-                    less_than_or_equal: None,
-                    exists: None,
-                }],
-            }),
-            all: Vec::new(),
-            any: Vec::new(),
-            none: Vec::new(),
+        structured.operations[1].requires_serial = Some(OperationSerialGuard {
+            service: Some("auditor".to_owned()),
+            predicate: SerialPredicate {
+                contains: None,
+                matches: None,
+                json: Some(JsonPredicate {
+                    fields: BTreeMap::from([
+                        (
+                            "/event".to_owned(),
+                            serde_json::Value::String("assertion".to_owned()),
+                        ),
+                        ("/passed".to_owned(), serde_json::Value::Bool(false)),
+                    ]),
+                    where_: vec![JsonCondition {
+                        pointer: "/reason".to_owned(),
+                        equals: Some(serde_json::Value::String("stale".to_owned())),
+                        matches: None,
+                        greater_than: None,
+                        greater_than_or_equal: None,
+                        less_than: None,
+                        less_than_or_equal: None,
+                        exists: None,
+                    }],
+                }),
+                all: Vec::new(),
+                any: Vec::new(),
+                none: Vec::new(),
+            },
         });
-        structured.operations[1].excludes_serial = Some(SerialPredicate {
-            contains: Some("THES:ASSERT:recovered".to_owned()),
-            matches: None,
-            json: None,
-            all: Vec::new(),
-            any: Vec::new(),
-            none: Vec::new(),
+        structured.operations[1].excludes_serial = Some(OperationSerialGuard {
+            service: Some("auditor".to_owned()),
+            predicate: SerialPredicate {
+                contains: Some("THES:ASSERT:recovered".to_owned()),
+                matches: None,
+                json: None,
+                all: Vec::new(),
+                any: Vec::new(),
+                none: Vec::new(),
+            },
         });
 
         assert!(!campaign_operation_serial_guards_are_ready(
@@ -5182,15 +5204,26 @@ mod tests {
             1
         ));
         let mut stale = checkpoint.clone();
-        stale.scheduler.get_mut("api").unwrap().serial_contents[0].extend_from_slice(
-            b"{\"event\":\"assertion\",\"passed\":false,\"reason\":\"stale\"}\n",
+        stale.scheduler.insert(
+            "auditor".to_owned(),
+            ServiceSchedulerCheckpoint {
+                serial_contents: vec![
+                    b"{\"event\":\"assertion\",\"passed\":false,\"reason\":\"stale\"}\n".to_vec(),
+                ],
+                program_counters: Vec::new(),
+                next_fault: 0,
+                paused_until: None,
+                faults: Vec::new(),
+                network_traffic: BTreeMap::new(),
+                network_trace: BTreeMap::new(),
+            },
         );
         assert!(campaign_operation_serial_guards_are_ready(
             &structured,
             &stale,
             1
         ));
-        stale.scheduler.get_mut("api").unwrap().serial_contents[0]
+        stale.scheduler.get_mut("auditor").unwrap().serial_contents[0]
             .extend_from_slice(b"THES:ASSERT:recovered\n");
         assert!(!campaign_operation_serial_guards_are_ready(
             &structured,
