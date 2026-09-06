@@ -150,6 +150,14 @@ x-theseus:
       - name: stale_read_is_reachable
         kind: reachable
         service: api
+        # A property can join serial evidence from named services. Keep the
+        # API assertion and independently require the auditor's startup event.
+        requires_serial_all:
+          - service: auditor
+            json:
+              fields:
+                /event: ready
+                /service: auditor
         predicate:
           all:
             - contains: "THES:ASSERT:consistent_read:fail"

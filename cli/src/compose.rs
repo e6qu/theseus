@@ -253,6 +253,12 @@ struct ComposeProperty {
     #[serde(default)]
     predicate: Option<ComposeSerialPredicate>,
     #[serde(default)]
+    requires_serial_all: Option<Vec<ComposeOperationSerialGuard>>,
+    #[serde(default)]
+    requires_serial_any: Option<Vec<ComposeOperationSerialGuard>>,
+    #[serde(default)]
+    excludes_serial_any: Option<Vec<ComposeOperationSerialGuard>>,
+    #[serde(default)]
     service: Option<String>,
 }
 
@@ -526,6 +532,12 @@ pub struct PropertyPlan {
     pub contains_none: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub predicate: Option<SerialPredicatePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_serial_all: Vec<OperationSerialGuardPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_serial_any: Vec<OperationSerialGuardPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excludes_serial_any: Vec<OperationSerialGuardPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
 }
@@ -1418,9 +1430,14 @@ fn campaign_plan(
                 property.name
             )));
         }
-        if property.contains.is_none() && property.predicate.is_none() {
+        if property.contains.is_none()
+            && property.predicate.is_none()
+            && property.requires_serial_all.is_none()
+            && property.requires_serial_any.is_none()
+            && property.excludes_serial_any.is_none()
+        {
             return Err(ComposeError::Invalid(format!(
-                "campaign property {:?} needs contains or predicate",
+                "campaign property {:?} needs serial evidence",
                 property.name
             )));
         }
@@ -1457,6 +1474,25 @@ fn campaign_plan(
                 normalize_serial_predicate(predicate, &format!("property {:?}", property.name))
             })
             .transpose()?;
+        let context = format!("property {:?}", property.name);
+        let requires_serial_all = normalize_operation_serial_guards(
+            property.requires_serial_all,
+            "requires_serial_all",
+            &context,
+            services,
+        )?;
+        let requires_serial_any = normalize_operation_serial_guards(
+            property.requires_serial_any,
+            "requires_serial_any",
+            &context,
+            services,
+        )?;
+        let excludes_serial_any = normalize_operation_serial_guards(
+            property.excludes_serial_any,
+            "excludes_serial_any",
+            &context,
+            services,
+        )?;
         properties.push(PropertyPlan {
             name: property.name,
             kind: property.kind,
@@ -1465,6 +1501,9 @@ fn campaign_plan(
             contains_any: property.contains_any,
             contains_none: property.contains_none,
             predicate,
+            requires_serial_all,
+            requires_serial_any,
+            excludes_serial_any,
             service: property.service,
         });
     }
@@ -2336,6 +2375,21 @@ mod tests {
 
         let compose = directory.path().join("compose.yaml");
         let input = fs::read_to_string(&compose).unwrap();
+        fs::write(
+            &compose,
+            input.replace(
+                "contains: 'THES:ASSERT:no_data_loss:pass'",
+                "requires_serial_all:\n          - service: worker\n            json:\n              fields:\n                /event: ready",
+            ),
+        )
+        .unwrap();
+        let joined = load_compose_plan(&compose).unwrap();
+        assert_eq!(
+            joined.campaign.unwrap().properties[0]
+                .requires_serial_all
+                .len(),
+            1
+        );
         fs::write(
             &compose,
             input.replace(

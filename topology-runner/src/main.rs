@@ -186,7 +186,7 @@ enum CampaignFaultKind {
     PacketRecover,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct CampaignProperty {
     name: String,
     kind: PropertyKind,
@@ -200,6 +200,12 @@ struct CampaignProperty {
     contains_none: Vec<String>,
     #[serde(default)]
     predicate: Option<SerialPredicate>,
+    #[serde(default)]
+    requires_serial_all: Vec<OperationSerialGuard>,
+    #[serde(default)]
+    requires_serial_any: Vec<OperationSerialGuard>,
+    #[serde(default)]
+    excludes_serial_any: Vec<OperationSerialGuard>,
     #[serde(default)]
     service: Option<String>,
 }
@@ -2220,6 +2226,12 @@ fn add_counterexample_check(
 ) -> Result<(), String> {
     // An unscoped property may have failed in any service. The locked bundle is
     // still re-evaluated below, but no one service check can prove it.
+    if !property.requires_serial_all.is_empty()
+        || !property.requires_serial_any.is_empty()
+        || !property.excludes_serial_any.is_empty()
+    {
+        return Ok(());
+    }
     let Some(service) = property.service.as_ref() else {
         return Ok(());
     };
@@ -2319,6 +2331,9 @@ fn campaign_counterexample(
                 contains_any: property.contains_any.clone(),
                 contains_none: property.contains_none.clone(),
                 predicate: property.predicate.clone(),
+                requires_serial_all: property.requires_serial_all.clone(),
+                requires_serial_any: property.requires_serial_any.clone(),
+                excludes_serial_any: property.excludes_serial_any.clone(),
                 service: property.service.clone(),
             },
             CampaignSchedule { operations, faults },
@@ -2337,10 +2352,28 @@ fn property_fails_in_run(property: &CampaignProperty, run: &Path) -> bool {
 }
 
 fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
-    let services = property
-        .service
-        .as_ref()
-        .map(|service| vec![service.clone()])
+    let primary_matches = campaign_property_services(run, property.service.as_deref())
+        .into_iter()
+        .any(|service| campaign_serial_matches_property(run, &service, property));
+    primary_matches
+        && property
+            .requires_serial_all
+            .iter()
+            .all(|guard| campaign_serial_guard_matches_property(run, property, guard))
+        && (property.requires_serial_any.is_empty()
+            || property
+                .requires_serial_any
+                .iter()
+                .any(|guard| campaign_serial_guard_matches_property(run, property, guard)))
+        && property
+            .excludes_serial_any
+            .iter()
+            .all(|guard| !campaign_serial_guard_matches_property(run, property, guard))
+}
+
+fn campaign_property_services(run: &Path, service: Option<&str>) -> Vec<String> {
+    service
+        .map(|service| vec![service.to_owned()])
         .unwrap_or_else(|| {
             fs::read_dir(run.join("services"))
                 .into_iter()
@@ -2348,10 +2381,7 @@ fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
                 .filter_map(Result::ok)
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
                 .collect()
-        });
-    services
-        .into_iter()
-        .any(|service| campaign_serial_matches_property(run, &service, property))
+        })
 }
 
 #[derive(Clone, Debug)]
@@ -3116,18 +3146,10 @@ fn evaluate_campaign_properties(
             let matches = runs
                 .iter()
                 .map(|run| {
-                    let services = property
-                        .service
-                        .as_ref()
-                        .map(|service| vec![service.clone()])
-                        .unwrap_or_else(|| campaign_services(output, run.index));
-                    services.into_iter().any(|service| {
-                        campaign_serial_matches_property(
-                            &output.join("runs").join(format!("{:03}", run.index)),
-                            &service,
-                            property,
-                        )
-                    })
+                    property_matches_in_run(
+                        property,
+                        &output.join("runs").join(format!("{:03}", run.index)),
+                    )
                 })
                 .collect::<Vec<_>>();
             let found = matches.iter().filter(|matched| **matched).count();
@@ -3157,25 +3179,31 @@ fn evaluate_campaign_properties(
         .collect()
 }
 
-fn campaign_services(output: &Path, run: usize) -> Vec<String> {
-    fs::read_dir(
-        output
-            .join("runs")
-            .join(format!("{run:03}"))
-            .join("services"),
-    )
-    .into_iter()
-    .flatten()
-    .filter_map(Result::ok)
-    .map(|entry| entry.file_name().to_string_lossy().into_owned())
-    .collect()
-}
-
 fn campaign_serial_matches_property(
     run: &Path,
     service: &str,
     property: &CampaignProperty,
 ) -> bool {
+    let serial = campaign_serial_contents(run, service);
+    serial_matches_property(&serial, property)
+}
+
+fn campaign_serial_guard_matches_property(
+    run: &Path,
+    property: &CampaignProperty,
+    guard: &OperationSerialGuard,
+) -> bool {
+    campaign_property_services(
+        run,
+        guard.service.as_deref().or(property.service.as_deref()),
+    )
+    .into_iter()
+    .any(|service| {
+        serial_matches_nested_predicate(&campaign_serial_contents(run, &service), &guard.predicate)
+    })
+}
+
+fn campaign_serial_contents(run: &Path, service: &str) -> Vec<u8> {
     let mut logs = fs::read_dir(run.join("services").join(service))
         .into_iter()
         .flatten()
@@ -3202,7 +3230,7 @@ fn campaign_serial_matches_property(
         .into_iter()
         .flat_map(|path| fs::read(path).unwrap_or_default())
         .collect::<Vec<_>>();
-    serial_matches_property(&serial, property)
+    serial
 }
 
 fn serial_matches_property(serial: &[u8], property: &CampaignProperty) -> bool {
@@ -3454,7 +3482,49 @@ fn campaign_property_description(property: &CampaignProperty) -> String {
             format!("also satisfies {description}")
         });
     }
+    if !property.requires_serial_all.is_empty() {
+        clauses.push(format!(
+            "also requires all [{}]",
+            property
+                .requires_serial_all
+                .iter()
+                .map(serial_guard_description)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !property.requires_serial_any.is_empty() {
+        clauses.push(format!(
+            "also requires any [{}]",
+            property
+                .requires_serial_any
+                .iter()
+                .map(serial_guard_description)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !property.excludes_serial_any.is_empty() {
+        clauses.push(format!(
+            "also excludes any [{}]",
+            property
+                .excludes_serial_any
+                .iter()
+                .map(serial_guard_description)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     clauses.join("; ")
+}
+
+fn serial_guard_description(guard: &OperationSerialGuard) -> String {
+    let predicate = nested_predicate_description(&guard.predicate);
+    guard
+        .service
+        .as_ref()
+        .map(|service| format!("{service}: {predicate}"))
+        .unwrap_or(predicate)
 }
 
 fn nested_predicate_description(predicate: &SerialPredicate) -> String {
@@ -5138,6 +5208,9 @@ mod tests {
                 sequence: Vec::new(),
                 occurs: None,
             }),
+            requires_serial_all: Vec::new(),
+            requires_serial_any: Vec::new(),
+            excludes_serial_any: Vec::new(),
             service: None,
         };
 
@@ -5148,6 +5221,40 @@ mod tests {
         )
         .unwrap();
         assert!(property_matches_in_run(&property, &run));
+        let mut joined = property.clone();
+        joined.requires_serial_all = vec![OperationSerialGuard {
+            service: Some("worker".to_owned()),
+            predicate: serde_json::from_value(serde_json::json!({
+                "contains": "THES:M:written"
+            }))
+            .unwrap(),
+        }];
+        assert!(property_matches_in_run(&joined, &run));
+        fs::write(worker.join("serial.log"), "THES:M:missing\n").unwrap();
+        assert!(!property_matches_in_run(&joined, &run));
+        fs::write(worker.join("serial.log"), "THES:M:written\n").unwrap();
+        joined.requires_serial_any = vec![OperationSerialGuard {
+            service: Some("worker".to_owned()),
+            predicate: serde_json::from_value(serde_json::json!({
+                "contains": "THES:M:written"
+            }))
+            .unwrap(),
+        }];
+        joined.excludes_serial_any = vec![OperationSerialGuard {
+            service: Some("worker".to_owned()),
+            predicate: serde_json::from_value(serde_json::json!({
+                "contains": "THES:ASSERT:panic"
+            }))
+            .unwrap(),
+        }];
+        assert!(property_matches_in_run(&joined, &run));
+        fs::write(
+            worker.join("serial.log"),
+            "THES:M:written\nTHES:ASSERT:panic\n",
+        )
+        .unwrap();
+        assert!(!property_matches_in_run(&joined, &run));
+        fs::write(worker.join("serial.log"), "THES:M:written\n").unwrap();
         fs::write(
             api.join("serial.log"),
             "THES:ASSERT:write:pass\nTHES:M:written\nTHES:M:write_complete\n",
