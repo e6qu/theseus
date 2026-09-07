@@ -7,6 +7,7 @@ while IFS= read -r -t 1 command </dev/ttyS0; do
         write\ *)
             value=${command#write }
             printf 'THES:M:written\n'
+            printf '%s\n' '{"event":"started","request_id":"transaction-42"}'
             printf '%s\n' "{\"event\":\"operation\",\"name\":\"write\",\"value\":\"$value\",\"request_id\":\"transaction-42\",\"attempt\":1}"
             printf 'THES:CHECKPOINT:write\n'
             printf 'THES:ASSERT:consistent_read:pass\n'

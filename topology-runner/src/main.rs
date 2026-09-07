@@ -162,7 +162,10 @@ struct CampaignOperationInputCapture {
     #[serde(default)]
     service: Option<String>,
     pointer: String,
-    json: JsonPredicate,
+    #[serde(default)]
+    json: Option<JsonPredicate>,
+    #[serde(default)]
+    sequence: Vec<SerialPredicate>,
     #[serde(default)]
     encoding: CampaignOperationInputEncoding,
     #[serde(default)]
@@ -3804,15 +3807,8 @@ fn campaign_operation_input_hex(
     for (name, capture) in &input.input_captures {
         let service = capture.service.as_deref().unwrap_or(&campaign.driver);
         let serial = campaign_checkpoint_serial(checkpoint, service);
-        let mut captured_values = serial
-            .split_inclusive(|byte| *byte == b'\n')
-            .filter_map(|line| {
-                let line = line.strip_suffix(b"\n").unwrap_or(line);
-                let event = serde_json::from_slice::<serde_json::Value>(line).ok()?;
-                json_predicate_matches(&event, &capture.json)
-                    .then(|| event.pointer(&capture.pointer).cloned())
-                    .flatten()
-            })
+        let mut captured_values = campaign_input_capture_values(&serial, capture)
+            .into_iter()
             .filter_map(|value| campaign_input_value(value, capture.encoding));
         let value = match capture.select {
             CampaignOperationInputSelect::First => captured_values.next(),
@@ -3845,6 +3841,25 @@ fn campaign_operation_input_hex(
     }
     rendered.push_str(&template[cursor..]);
     Ok(hex(rendered.as_bytes()))
+}
+
+fn campaign_input_capture_values(
+    serial: &[u8],
+    capture: &CampaignOperationInputCapture,
+) -> Vec<serde_json::Value> {
+    if let Some(predicate) = &capture.json {
+        return serial
+            .split_inclusive(|byte| *byte == b'\n')
+            .filter_map(|line| {
+                let line = line.strip_suffix(b"\n").unwrap_or(line);
+                let event = serde_json::from_slice::<serde_json::Value>(line).ok()?;
+                json_predicate_matches(&event, predicate)
+                    .then(|| event.pointer(&capture.pointer).cloned())
+                    .flatten()
+            })
+            .collect();
+    }
+    serial_sequence_capture_values(serial, &capture.sequence, &capture.pointer)
 }
 
 fn campaign_input_value(
@@ -4517,6 +4532,51 @@ fn serial_matches_sequence(serial: &[u8], sequence: &[SerialPredicate]) -> bool 
     serial_sequence_matches_from(serial, sequence, 0, 0, BTreeMap::new())
 }
 
+fn serial_sequence_capture_values(
+    serial: &[u8],
+    sequence: &[SerialPredicate],
+    pointer: &str,
+) -> Vec<serde_json::Value> {
+    serial_sequence_capture_values_from(serial, sequence, 0, 0, BTreeMap::new(), pointer)
+}
+
+fn serial_sequence_capture_values_from(
+    serial: &[u8],
+    sequence: &[SerialPredicate],
+    index: usize,
+    offset: usize,
+    captures: BTreeMap<String, serde_json::Value>,
+    pointer: &str,
+) -> Vec<serde_json::Value> {
+    let Some(predicate) = sequence.get(index) else {
+        return Vec::new();
+    };
+    if index + 1 == sequence.len() {
+        let Some(predicate) = &predicate.json else {
+            return Vec::new();
+        };
+        return serial_json_predicate_capture_values(
+            &serial[offset..],
+            predicate,
+            &captures,
+            pointer,
+        );
+    }
+    serial_sequence_item_match_ends(&serial[offset..], predicate, &captures)
+        .into_iter()
+        .flat_map(|(end, captures)| {
+            serial_sequence_capture_values_from(
+                serial,
+                sequence,
+                index + 1,
+                offset + end,
+                captures,
+                pointer,
+            )
+        })
+        .collect()
+}
+
 fn serial_sequence_matches_from(
     serial: &[u8],
     sequence: &[SerialPredicate],
@@ -4623,6 +4683,25 @@ fn serial_json_predicate_match_ends_with_captures(
         start = end;
     }
     matches
+}
+
+fn serial_json_predicate_capture_values(
+    serial: &[u8],
+    predicate: &JsonPredicate,
+    captures: &BTreeMap<String, serde_json::Value>,
+    pointer: &str,
+) -> Vec<serde_json::Value> {
+    serial
+        .split_inclusive(|byte| *byte == b'\n')
+        .filter_map(|line| {
+            let line = line.strip_suffix(b"\n").unwrap_or(line);
+            let event = serde_json::from_slice::<serde_json::Value>(line).ok()?;
+            let mut captures = captures.clone();
+            json_predicate_matches_with_captures(&event, predicate, &mut captures)
+                .then(|| event.pointer(pointer).cloned())
+                .flatten()
+        })
+        .collect()
 }
 
 fn serial_json_event_matches(line: &[u8], predicate: &JsonPredicate) -> bool {
@@ -7553,7 +7632,7 @@ mod tests {
                 "api".to_owned(),
                 ServiceSchedulerCheckpoint {
                     serial_contents: vec![
-                        b"{\"event\":\"write\",\"request_id\":\"first\"}\n{\"event\":\"write\",\"request_id\":\"latest\"}\n"
+                        b"{\"event\":\"started\",\"request_id\":\"first\"}\n{\"event\":\"write\",\"request_id\":\"first\"}\n{\"event\":\"started\",\"request_id\":\"latest\"}\n{\"event\":\"write\",\"request_id\":\"latest\"}\n"
                             .to_vec(),
                     ],
                     program_counters: Vec::new(),
@@ -7577,7 +7656,7 @@ mod tests {
                 CampaignOperationInputCapture {
                     service: None,
                     pointer: "/request_id".to_owned(),
-                    json: JsonPredicate {
+                    json: Some(JsonPredicate {
                         fields: BTreeMap::from([(
                             "/event".to_owned(),
                             serde_json::Value::String("write".to_owned()),
@@ -7589,7 +7668,8 @@ mod tests {
                         none: Vec::new(),
                         capture: BTreeMap::new(),
                         equals_capture: BTreeMap::new(),
-                    },
+                    }),
+                    sequence: Vec::new(),
                     encoding: CampaignOperationInputEncoding::Text,
                     select: CampaignOperationInputSelect::Latest,
                 },
@@ -7603,6 +7683,43 @@ mod tests {
         assert_eq!(
             campaign_operation_input_hex(&campaign, &captured_checkpoint, &captured_input).unwrap(),
             "7265747279206c61746573740a"
+        );
+        let mut sequenced_input: CampaignOperationInput =
+            serde_json::from_value(serde_json::json!({
+                "name": "default",
+                "input_hex": "",
+                "input_template": "retry {request}\n",
+                "input_captures": {
+                    "request": {
+                        "pointer": "/request_id",
+                        "sequence": [
+                            {"json": {
+                                "fields": {"/event": "started"},
+                                "capture": {"request": "/request_id"}
+                            }},
+                            {"json": {
+                                "fields": {"/event": "write"},
+                                "equals_capture": {"/request_id": "request"}
+                            }}
+                        ]
+                    }
+                }
+            }))
+            .unwrap();
+        assert_eq!(
+            campaign_operation_input_hex(&campaign, &captured_checkpoint, &sequenced_input)
+                .unwrap(),
+            "7265747279206c61746573740a"
+        );
+        sequenced_input
+            .input_captures
+            .get_mut("request")
+            .unwrap()
+            .select = CampaignOperationInputSelect::First;
+        assert_eq!(
+            campaign_operation_input_hex(&campaign, &captured_checkpoint, &sequenced_input)
+                .unwrap(),
+            "72657472792066697273740a"
         );
         let mut first_input = captured_input.clone();
         first_input

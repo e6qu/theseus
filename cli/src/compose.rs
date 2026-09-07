@@ -199,15 +199,18 @@ struct ComposeOperationInputRules {
     sets_state: BTreeMap<String, String>,
 }
 
-/// One value selected from a matching JSON-lines event in a restored campaign
-/// checkpoint.
+/// One value selected from a matching JSON-lines event or an ordered event
+/// sequence in a restored campaign checkpoint.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeOperationInputCapture {
     #[serde(default)]
     service: Option<String>,
     pointer: String,
-    json: ComposeJsonPredicate,
+    #[serde(default)]
+    json: Option<ComposeJsonPredicate>,
+    #[serde(default)]
+    sequence: Vec<ComposeSerialPredicate>,
     #[serde(default)]
     encoding: ComposeOperationInputEncoding,
     #[serde(default)]
@@ -811,7 +814,10 @@ pub struct OperationInputCapturePlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
     pub pointer: String,
-    pub json: JsonPredicatePlan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub json: Option<JsonPredicatePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sequence: Vec<SerialPredicatePlan>,
     pub encoding: ComposeOperationInputEncoding,
     pub select: ComposeOperationInputSelect,
 }
@@ -3818,23 +3824,54 @@ fn normalize_operation_input_captures(
                     )));
                 }
             }
-            let json = normalize_json_predicate(
-                capture.json,
-                &format!("operation {operation:?} input capture {name:?}"),
-                false,
-            )?;
+            let context = format!("operation {operation:?} input capture {name:?}");
+            let forms = usize::from(capture.json.is_some()) + usize::from(!capture.sequence.is_empty());
+            if forms != 1 {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign {context} needs exactly one of json or sequence"
+                )));
+            }
+            let json = capture
+                .json
+                .map(|json| normalize_json_predicate(json, &context, false))
+                .transpose()?;
+            let sequence = normalize_operation_input_capture_sequence(capture.sequence, &context)?;
             Ok((
                 name,
                 OperationInputCapturePlan {
                     service: capture.service,
                     pointer: capture.pointer,
                     json,
+                    sequence,
                     encoding: capture.encoding,
                     select: capture.select,
                 },
             ))
         })
         .collect()
+}
+
+fn normalize_operation_input_capture_sequence(
+    sequence: Vec<ComposeSerialPredicate>,
+    context: &str,
+) -> Result<Vec<SerialPredicatePlan>, ComposeError> {
+    if sequence.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sequence = sequence
+        .into_iter()
+        .map(|predicate| normalize_sequence_item(predicate, context))
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_sequence_captures(&sequence, context)?;
+    if sequence
+        .last()
+        .is_none_or(|predicate| predicate.json.is_none())
+    {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} input capture sequence must end with a JSON event"
+        )));
+    }
+    Ok(sequence)
 }
 
 fn operation_input_template_variables(
@@ -5026,12 +5063,58 @@ x-theseus:
             ComposeOperationInputSelect::Latest
         );
         assert_eq!(
-            input.input_captures["request"].json.all[0].fields["/event"],
+            input.input_captures["request"].json.as_ref().unwrap().all[0].fields["/event"],
             serde_json::Value::String("write".to_owned())
         );
         assert_eq!(
-            input.input_captures["request"].json.all[1].where_[0].greater_than_or_equal,
+            input.input_captures["request"].json.as_ref().unwrap().all[1].where_[0]
+                .greater_than_or_equal,
             Some(1.0)
+        );
+    }
+
+    #[test]
+    fn normalizes_campaign_sequenced_input_captures() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: retry
+        input_template: "retry {request}\\n"
+        input_captures:
+          request:
+            pointer: /request_id
+            sequence:
+              - json:
+                  fields:
+                    /event: started
+                  capture:
+                    request: /request_id
+              - json:
+                  fields:
+                    /event: write
+                  equals_capture:
+                    /request_id: request
+"#,
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        let capture = &campaign.operations[0].inputs[0].input_captures["request"];
+        assert!(capture.json.is_none());
+        assert_eq!(capture.sequence.len(), 2);
+        assert_eq!(
+            capture.sequence[1].json.as_ref().unwrap().equals_capture["/request_id"],
+            "request"
         );
     }
 
