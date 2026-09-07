@@ -186,7 +186,8 @@ x-theseus:
       # real topology change rather than a per-service flag.
       - kind: partition
         network: backplane
-        after: write
+        # This fault applies after only the beta payload case.
+        after: "write[beta]"
       - kind: heal
         network: backplane
         after: retry
