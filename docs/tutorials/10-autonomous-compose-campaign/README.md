@@ -49,6 +49,9 @@ Start with `compose.yaml`.
    when the guest protocol needs an unquoted scalar, a JSON literal, or
    hexadecimal text. JSON encoding also preserves a complete captured object
    or array; text and hex deliberately accept scalars only.
+   Compose a capture's JSON event predicate with `all`, `any`, and `none` when
+   it needs several alternative or forbidden conditions. Every branch tests the
+   same JSON event; use `sequence` when the evidence spans several events.
    These rules constrain the selected cases only; they compose with the
    operation-level state rules. Here `read_stale[after_beta]` can follow the
    `write[beta-async]` payload but not another write leaf.

@@ -580,6 +580,15 @@ struct ComposeJsonPredicate {
     where_: Vec<ComposeJsonCondition>,
     #[serde(default)]
     arrays: Vec<ComposeJsonArrayPredicate>,
+    /// Require every nested predicate to match this same JSON event.
+    #[serde(default)]
+    all: Vec<ComposeJsonPredicate>,
+    /// Require at least one nested predicate to match this same JSON event.
+    #[serde(default)]
+    any: Vec<ComposeJsonPredicate>,
+    /// Require no nested predicate to match this same JSON event.
+    #[serde(default)]
+    none: Vec<ComposeJsonPredicate>,
     /// Bind a value from this JSON-lines event for a later item in the same
     /// ordered serial sequence. Keys are capture names, values are pointers.
     #[serde(default)]
@@ -1044,6 +1053,12 @@ pub struct JsonPredicatePlan {
     pub where_: Vec<JsonConditionPlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub arrays: Vec<JsonArrayPredicatePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub all: Vec<JsonPredicatePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub any: Vec<JsonPredicatePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub none: Vec<JsonPredicatePlan>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub capture: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -2827,6 +2842,9 @@ fn normalize_json_predicate(
     if json.fields.is_empty()
         && json.where_.is_empty()
         && json.arrays.is_empty()
+        && json.all.is_empty()
+        && json.any.is_empty()
+        && json.none.is_empty()
         && json.capture.is_empty()
         && json.equals_capture.is_empty()
     {
@@ -2870,6 +2888,21 @@ fn normalize_json_predicate(
         .into_iter()
         .map(|array| normalize_json_array_predicate(array, context))
         .collect::<Result<_, _>>()?;
+    let all = json
+        .all
+        .into_iter()
+        .map(|predicate| normalize_json_predicate(predicate, context, false))
+        .collect::<Result<_, _>>()?;
+    let any = json
+        .any
+        .into_iter()
+        .map(|predicate| normalize_json_predicate(predicate, context, false))
+        .collect::<Result<_, _>>()?;
+    let none = json
+        .none
+        .into_iter()
+        .map(|predicate| normalize_json_predicate(predicate, context, false))
+        .collect::<Result<_, _>>()?;
     Ok(JsonPredicatePlan {
         fields: json.fields,
         where_: json
@@ -2887,6 +2920,9 @@ fn normalize_json_predicate(
             })
             .collect(),
         arrays,
+        all,
+        any,
+        none,
         capture: json.capture,
         equals_capture: json.equals_capture,
     })
@@ -4615,6 +4651,9 @@ mod tests {
                     )]),
                     where_: Vec::new(),
                     arrays: Vec::new(),
+                    all: Vec::new(),
+                    any: Vec::new(),
+                    none: Vec::new(),
                     capture: BTreeMap::new(),
                     equals_capture: BTreeMap::new(),
                 }),
@@ -4650,6 +4689,9 @@ mod tests {
                         exists: None,
                     }],
                     arrays: Vec::new(),
+                    all: Vec::new(),
+                    any: Vec::new(),
+                    none: Vec::new(),
                     capture: BTreeMap::new(),
                     equals_capture: BTreeMap::new(),
                 }),
@@ -4721,6 +4763,19 @@ mod tests {
     fn rejects_json_capture_outside_an_ordered_sequence() {
         let predicate: ComposeSerialPredicate =
             serde_yaml::from_str("json:\n  capture:\n    request: /request_id\n").unwrap();
+
+        let error = normalize_serial_predicate(predicate, "request_completed").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("JSON captures are only allowed in sequence items"));
+    }
+
+    #[test]
+    fn rejects_json_capture_inside_a_boolean_branch() {
+        let predicate: ComposeSerialPredicate = serde_yaml::from_str(
+            "sequence:\n  - json:\n      all:\n        - capture:\n            request: /request_id\n",
+        )
+        .unwrap();
 
         let error = normalize_serial_predicate(predicate, "request_completed").unwrap_err();
         assert!(error
@@ -4950,8 +5005,12 @@ x-theseus:
           request:
             pointer: /request_id
             json:
-              fields:
-                /event: write
+              all:
+                - fields:
+                    /event: write
+                - where:
+                    - pointer: /attempt
+                      greater_than_or_equal: 1
         requires: [write]
 "#,
         );
@@ -4967,8 +5026,12 @@ x-theseus:
             ComposeOperationInputSelect::Latest
         );
         assert_eq!(
-            input.input_captures["request"].json.fields["/event"],
+            input.input_captures["request"].json.all[0].fields["/event"],
             serde_json::Value::String("write".to_owned())
+        );
+        assert_eq!(
+            input.input_captures["request"].json.all[1].where_[0].greater_than_or_equal,
+            Some(1.0)
         );
     }
 
