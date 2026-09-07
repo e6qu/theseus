@@ -239,6 +239,8 @@ struct CampaignResult {
     status: String,
     driver: String,
     #[serde(default)]
+    guidance: String,
+    #[serde(default)]
     checkpoint_nodes: usize,
     #[serde(default)]
     checkpoint_reuses: usize,
@@ -606,6 +608,11 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         .campaign
         .map(|campaign| (campaign.state, campaign.operations))
         .unwrap_or_else(|| (BTreeMap::new(), Vec::new()));
+    let guidance = if result.guidance == "adaptive" {
+        "adaptive coverage and observed action-yield guidance"
+    } else {
+        "marker, instruction-location, and topology-state coverage"
+    };
     Ok(ReportModel {
         title: "Autonomous Compose campaign".to_owned(),
         kind: format!("deterministic topology search driven by {}", result.driver),
@@ -626,7 +633,7 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         coverage: Some(Coverage {
             label: "Campaign corpus".to_owned(),
             summary: format!(
-                "{} of {} deterministic candidates selected by marker, instruction-location, and topology-state coverage; {} marker-guard leaves and {} serial-guard leaves skipped; {} unique instruction locations; {} unique topology states; {} reusable checkpoint nodes, {} prefix reuses",
+                "{} of {} deterministic candidates selected by {guidance}; {} marker-guard leaves and {} serial-guard leaves skipped; {} unique instruction locations; {} unique topology states; {} reusable checkpoint nodes, {} prefix reuses",
                 result.runs.len(),
                 result.generated_candidates,
                 result.marker_guard_rejections,
@@ -840,7 +847,7 @@ mod tests {
         );
         write_json(
             &directory.path().join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"marker_guard_rejections":2,"serial_guard_rejections":1,"unique_topology_states":3,"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","program_counters":{"api":["0x8000"]},"state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","guidance":"adaptive","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"marker_guard_rejections":2,"serial_guard_rejections":1,"unique_topology_states":3,"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","program_counters":{"api":["0x8000"]},"state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
         );
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
@@ -854,7 +861,7 @@ mod tests {
         assert!(html.contains("consistent_read"));
         assert!(html.contains("4 reusable checkpoint nodes, 7 prefix reuses"));
         assert!(html.contains(
-            "1 of 12 deterministic candidates selected by marker, instruction-location, and topology-state coverage"
+            "1 of 12 deterministic candidates selected by adaptive coverage and observed action-yield guidance"
         ));
         assert!(html.contains("2 marker-guard leaves and 1 serial-guard leaves skipped"));
         assert!(html.contains("3 unique topology states"));

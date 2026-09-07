@@ -24,6 +24,8 @@ x-theseus:
     # variables. Each operation case below declares its legal transition.
     state: {phase: fresh}
     stages: [write, read, recovery]
+    # Learn from completed operation cases while retaining deterministic replay.
+    guidance: adaptive
     max_runs: 40
     # Explore every ordered operation history through this depth. Repetition is
     # intentional: it models retries and repeated reads without a host driver.
