@@ -344,6 +344,21 @@ struct ComposeSerialRelation {
     occurs: Option<ComposeSerialMatchCount>,
 }
 
+/// Require one or every key from the first JSON event to complete an ordered
+/// path through later events in one service transcript.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeSerialPath {
+    #[serde(default)]
+    service: Option<String>,
+    pointers: Vec<String>,
+    steps: Vec<ComposeJsonPredicate>,
+    #[serde(default)]
+    quantifier: ComposeSerialJoinQuantifier,
+    #[serde(default)]
+    occurs: Option<ComposeSerialMatchCount>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComposeSerialRelationOrder {
@@ -394,6 +409,8 @@ struct ComposeSerialEvidence {
     join: Option<ComposeSerialJoin>,
     #[serde(default)]
     relation: Option<ComposeSerialRelation>,
+    #[serde(default)]
+    path: Option<ComposeSerialPath>,
     #[serde(default, rename = "use")]
     use_: Option<String>,
 }
@@ -751,6 +768,17 @@ pub struct SerialRelationPlan {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct SerialPathPlan {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    pub pointers: Vec<String>,
+    pub steps: Vec<JsonPredicatePlan>,
+    pub quantifier: ComposeSerialJoinQuantifier,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occurs: Option<SerialMatchCountPlan>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SerialMatchCountPlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exactly: Option<u64>,
@@ -776,6 +804,8 @@ pub struct SerialEvidencePlan {
     pub join: Option<SerialJoinPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relation: Option<SerialRelationPlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<SerialPathPlan>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2091,11 +2121,12 @@ fn normalize_serial_evidence(
         evidence.correlation.is_some(),
         evidence.join.is_some(),
         evidence.relation.is_some(),
+        evidence.path.is_some(),
         evidence.use_.is_some(),
     ];
     if choices.into_iter().filter(|choice| *choice).count() != 1 {
         return Err(ComposeError::Invalid(format!(
-            "campaign {context} serial evidence needs exactly one of all, any, none, guard, correlation, join, relation, or use"
+            "campaign {context} serial evidence needs exactly one of all, any, none, guard, correlation, join, relation, path, or use"
         )));
     }
     let all = evidence
@@ -2141,6 +2172,10 @@ fn normalize_serial_evidence(
         .relation
         .map(|relation| normalize_serial_relation(relation, context, services))
         .transpose()?;
+    let path = evidence
+        .path
+        .map(|path| normalize_serial_path(path, context, services))
+        .transpose()?;
     if let Some(name) = evidence.use_ {
         return resolve_named_serial_evidence(&name, definitions, services, resolved, resolving);
     }
@@ -2152,6 +2187,7 @@ fn normalize_serial_evidence(
         correlation,
         join,
         relation,
+        path,
     })
 }
 
@@ -2190,6 +2226,57 @@ fn normalize_serial_relation(
         order: relation.order,
         quantifier: relation.quantifier,
         occurs: relation
+            .occurs
+            .map(|occurs| normalize_serial_match_count(occurs, context))
+            .transpose()?,
+    })
+}
+
+fn normalize_serial_path(
+    path: ComposeSerialPath,
+    context: &str,
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<SerialPathPlan, ComposeError> {
+    if let Some(service) = &path.service {
+        if !services.contains_key(service) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign {context} path references unknown service {service:?}"
+            )));
+        }
+    }
+    if path.pointers.is_empty() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} path needs at least one JSON pointer"
+        )));
+    }
+    if path.steps.len() < 2 {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} path needs at least two JSON event steps"
+        )));
+    }
+    let mut pointers = BTreeSet::new();
+    for pointer in &path.pointers {
+        if !valid_json_pointer(pointer) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign {context} path has invalid JSON pointer {pointer:?}"
+            )));
+        }
+        if !pointers.insert(pointer) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign {context} path repeats JSON pointer {pointer:?}"
+            )));
+        }
+    }
+    Ok(SerialPathPlan {
+        service: path.service,
+        pointers: path.pointers,
+        steps: path
+            .steps
+            .into_iter()
+            .map(|step| normalize_json_predicate(step, context, false))
+            .collect::<Result<_, _>>()?,
+        quantifier: path.quantifier,
+        occurs: path
             .occurs
             .map(|occurs| normalize_serial_match_count(occurs, context))
             .transpose()?,
@@ -3384,6 +3471,31 @@ mod tests {
 
         let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
         assert!(error.to_string().contains("same left and right service"));
+    }
+
+    #[test]
+    fn normalizes_keyed_json_event_paths() {
+        let path: ComposeSerialPath = serde_yaml::from_str(
+            "pointers: [/request_id, /attempt]\nquantifier: every\noccurs:\n  exactly: 1\nsteps:\n  - fields:\n      /event: write\n  - fields:\n      /event: replicated\n  - fields:\n      /event: committed\n",
+        )
+        .unwrap();
+
+        let plan = normalize_serial_path(path, "write", &BTreeMap::new()).unwrap();
+        assert_eq!(plan.pointers, ["/request_id", "/attempt"]);
+        assert_eq!(plan.steps.len(), 3);
+        assert_eq!(plan.quantifier, ComposeSerialJoinQuantifier::Every);
+        assert_eq!(plan.occurs.unwrap().exactly, Some(1));
+    }
+
+    #[test]
+    fn rejects_short_json_event_paths() {
+        let path: ComposeSerialPath = serde_yaml::from_str(
+            "pointers: [/request_id, /request_id]\nsteps:\n  - fields:\n      /event: write\n",
+        )
+        .unwrap();
+
+        let error = normalize_serial_path(path, "write", &BTreeMap::new()).unwrap_err();
+        assert!(error.to_string().contains("at least two JSON event steps"));
     }
 
     #[test]

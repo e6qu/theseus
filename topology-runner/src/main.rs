@@ -280,6 +280,18 @@ struct SerialRelation {
     occurs: Option<SerialMatchCount>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SerialPath {
+    #[serde(default)]
+    service: Option<String>,
+    pointers: Vec<String>,
+    steps: Vec<JsonPredicate>,
+    #[serde(default)]
+    quantifier: SerialJoinQuantifier,
+    #[serde(default)]
+    occurs: Option<SerialMatchCount>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum SerialRelationOrder {
@@ -324,6 +336,8 @@ struct SerialEvidence {
     join: Option<SerialJoin>,
     #[serde(default)]
     relation: Option<SerialRelation>,
+    #[serde(default)]
+    path: Option<SerialPath>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -2782,6 +2796,83 @@ fn serial_ordered_relation_values(
     (left.into_iter().map(|(value, _)| value).collect(), matches)
 }
 
+fn campaign_serial_path_matches(
+    checkpoint: &CampaignCheckpoint,
+    driver: &str,
+    path: &SerialPath,
+) -> bool {
+    let serial = campaign_checkpoint_serial(checkpoint, path.service.as_deref().unwrap_or(driver));
+    serial_path_matches(&serial, path)
+}
+
+fn serial_path_matches(serial: &[u8], path: &SerialPath) -> bool {
+    let (candidates, matches) = serial_path_values(serial, path);
+    serial_match_requirements_met(candidates, matches, path.quantifier, path.occurs.as_ref())
+}
+
+fn serial_path_values(
+    serial: &[u8],
+    path: &SerialPath,
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let step_values = path
+        .steps
+        .iter()
+        .map(|step| {
+            serial
+                .split_inclusive(|byte| *byte == b'\n')
+                .enumerate()
+                .filter_map(|(position, line)| {
+                    serde_json::from_slice(line.strip_suffix(b"\n").unwrap_or(line))
+                        .ok()
+                        .map(|event| (event, position))
+                })
+                .filter(|(event, _)| json_predicate_matches(event, step))
+                .filter_map(|(event, position)| {
+                    json_path_key(&event, &path.pointers).map(|key| (position, key))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let Some((first, later)) = step_values.split_first() else {
+        return (Vec::new(), Vec::new());
+    };
+    let candidates = first.iter().map(|(_, key)| key.clone()).collect::<Vec<_>>();
+    let matches = candidates
+        .iter()
+        .filter(|key| serial_path_key_matches(first, later, key))
+        .cloned()
+        .collect();
+    (candidates, matches)
+}
+
+fn serial_path_key_matches(
+    first: &[(usize, serde_json::Value)],
+    later: &[Vec<(usize, serde_json::Value)>],
+    key: &serde_json::Value,
+) -> bool {
+    first.iter().any(|(first_position, first_key)| {
+        if first_key != key {
+            return false;
+        }
+        later
+            .iter()
+            .try_fold(*first_position, |previous_position, step| {
+                step.iter()
+                    .find(|(position, value)| *position > previous_position && value == key)
+                    .map(|(position, _)| *position)
+            })
+            .is_some()
+    })
+}
+
+fn json_path_key(event: &serde_json::Value, pointers: &[String]) -> Option<serde_json::Value> {
+    pointers
+        .iter()
+        .map(|pointer| event.pointer(pointer).cloned())
+        .collect::<Option<Vec<_>>>()
+        .map(serde_json::Value::Array)
+}
+
 fn campaign_serial_evidence_matches(
     checkpoint: &CampaignCheckpoint,
     driver: &str,
@@ -2810,6 +2901,8 @@ fn campaign_serial_evidence_matches(
         campaign_serial_join_matches(checkpoint, driver, join)
     } else if let Some(relation) = &evidence.relation {
         campaign_serial_relation_matches(checkpoint, driver, relation)
+    } else if let Some(path) = &evidence.path {
+        campaign_serial_path_matches(checkpoint, driver, path)
     } else {
         false
     }
@@ -3695,6 +3788,24 @@ fn serial_relation_matches_property(
     serial_match_requirements_met(left, matches, relation.quantifier, relation.occurs.as_ref())
 }
 
+fn serial_path_matches_property(
+    run: &Path,
+    property: &CampaignProperty,
+    path: &SerialPath,
+) -> bool {
+    let mut candidates = Vec::new();
+    let mut matches = Vec::new();
+    for service in
+        campaign_property_services(run, path.service.as_deref().or(property.service.as_deref()))
+    {
+        let (service_candidates, service_matches) =
+            serial_path_values(&campaign_serial_contents(run, &service), path);
+        candidates.extend(service_candidates);
+        matches.extend(service_matches);
+    }
+    serial_match_requirements_met(candidates, matches, path.quantifier, path.occurs.as_ref())
+}
+
 fn serial_evidence_matches_property(
     run: &Path,
     property: &CampaignProperty,
@@ -3723,6 +3834,8 @@ fn serial_evidence_matches_property(
         serial_join_matches_property(run, property, join)
     } else if let Some(relation) = &evidence.relation {
         serial_relation_matches_property(run, property, relation)
+    } else if let Some(path) = &evidence.path {
+        serial_path_matches_property(run, property, path)
     } else {
         false
     }
@@ -4285,6 +4398,8 @@ fn serial_evidence_description(evidence: &SerialEvidence) -> String {
         serial_join_description(join)
     } else if let Some(relation) = &evidence.relation {
         serial_relation_description(relation)
+    } else if let Some(path) = &evidence.path {
+        serial_path_description(path)
     } else {
         "invalid expression".to_owned()
     }
@@ -4371,6 +4486,23 @@ fn serial_relation_description(relation: &SerialRelation) -> String {
     };
     relation
         .occurs
+        .as_ref()
+        .map(|occurs| format!("{description}; {}", serial_match_count_description(occurs)))
+        .unwrap_or(description)
+}
+
+fn serial_path_description(path: &SerialPath) -> String {
+    let description = format!(
+        "{} ordered JSON event steps in {} keyed by {}",
+        path.steps.len(),
+        path.service.as_deref().unwrap_or("property service"),
+        path.pointers.join(" + ")
+    );
+    let description = match path.quantifier {
+        SerialJoinQuantifier::Any => description,
+        SerialJoinQuantifier::Every => format!("every {description}"),
+    };
+    path.occurs
         .as_ref()
         .map(|occurs| format!("{description}; {}", serial_match_count_description(occurs)))
         .unwrap_or(description)
@@ -6123,6 +6255,90 @@ mod tests {
         fs::write(
             api.join("serial.log"),
             "{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n{\"event\":\"write\",\"request_id\":\"r-17\"}\n",
+        )
+        .unwrap();
+        assert!(!property_matches_in_run(&property, &run));
+        fs::remove_dir_all(run).unwrap();
+    }
+
+    #[test]
+    fn keyed_json_event_paths_require_a_complete_ordered_lifecycle() {
+        let path: SerialPath = serde_json::from_value(serde_json::json!({
+            "pointers": ["/request_id", "/attempt"],
+            "steps": [
+                {"fields": {"/event": "write"}},
+                {"fields": {"/event": "replicated"}},
+                {"fields": {"/event": "committed"}}
+            ],
+            "quantifier": "every",
+            "occurs": {"exactly": 1}
+        }))
+        .unwrap();
+        let complete = b"{\"event\":\"write\",\"request_id\":\"r-17\",\"attempt\":1}\n{\"event\":\"write\",\"request_id\":\"r-17\",\"attempt\":1}\n{\"event\":\"replicated\",\"request_id\":\"r-17\",\"attempt\":1}\n{\"event\":\"committed\",\"request_id\":\"r-17\",\"attempt\":1}\n";
+        assert!(serial_path_matches(complete, &path));
+        assert!(!serial_path_matches(
+            b"{\"event\":\"write\",\"request_id\":\"r-17\",\"attempt\":1}\n{\"event\":\"committed\",\"request_id\":\"r-17\",\"attempt\":1}\n{\"event\":\"replicated\",\"request_id\":\"r-17\",\"attempt\":1}\n",
+            &path,
+        ));
+        assert!(!serial_path_matches(
+            b"{\"event\":\"write\",\"request_id\":\"r-17\",\"attempt\":1}\n{\"event\":\"replicated\",\"request_id\":\"r-17\",\"attempt\":1}\n{\"event\":\"committed\",\"request_id\":\"r-17\",\"attempt\":1}\n{\"event\":\"write\",\"request_id\":\"r-18\",\"attempt\":1}\n{\"event\":\"replicated\",\"request_id\":\"r-18\",\"attempt\":1}\n{\"event\":\"committed\",\"request_id\":\"r-18\",\"attempt\":1}\n",
+            &path,
+        ));
+        let checkpoint = CampaignCheckpoint {
+            switches: BTreeMap::new(),
+            services: BTreeMap::new(),
+            scheduler: BTreeMap::from([(
+                "api".to_owned(),
+                ServiceSchedulerCheckpoint {
+                    serial_contents: vec![complete.to_vec()],
+                    program_counters: Vec::new(),
+                    next_fault: 0,
+                    paused_until: None,
+                    faults: Vec::new(),
+                    network_traffic: BTreeMap::new(),
+                    network_trace: BTreeMap::new(),
+                },
+            )]),
+            round: 0,
+        };
+        assert!(campaign_serial_path_matches(&checkpoint, "api", &path));
+        assert!(serial_path_description(&path).contains("3 ordered JSON event steps"));
+    }
+
+    #[test]
+    fn keyed_json_event_paths_apply_to_campaign_properties() {
+        let run = std::env::temp_dir().join(format!(
+            "theseus-keyed-path-property-{}",
+            std::process::id()
+        ));
+        let api = run.join("services/api");
+        fs::create_dir_all(&api).unwrap();
+        let property: CampaignProperty = serde_json::from_value(serde_json::json!({
+            "name": "complete_write",
+            "kind": "always",
+            "service": "api",
+            "requires_serial_evidence": {
+                "path": {
+                    "pointers": ["/request_id"],
+                    "steps": [
+                        {"fields": {"/event": "write"}},
+                        {"fields": {"/event": "committed"}}
+                    ],
+                    "quantifier": "every"
+                }
+            }
+        }))
+        .unwrap();
+
+        fs::write(
+            api.join("serial.log"),
+            "{\"event\":\"write\",\"request_id\":\"r-17\"}\n{\"event\":\"committed\",\"request_id\":\"r-17\"}\n",
+        )
+        .unwrap();
+        assert!(property_matches_in_run(&property, &run));
+        fs::write(
+            api.join("serial.log"),
+            "{\"event\":\"write\",\"request_id\":\"r-17\"}\n{\"event\":\"committed\",\"request_id\":\"r-18\"}\n",
         )
         .unwrap();
         assert!(!property_matches_in_run(&property, &run));
