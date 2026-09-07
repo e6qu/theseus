@@ -104,6 +104,11 @@ Start with `compose.yaml`.
    the three-service composite join in one `all` expression. The stale-read
    property also requires its assertion attempt to be greater than the write
    attempt.
+   Put reusable expressions under `campaign.evidence`, then use one anywhere
+   in an evidence tree with `use: name`. Definitions can use earlier or later
+   definitions, including inside `all`, `any`, and `none`; Theseus rejects
+   unknown names and cycles. The locked plan expands every use, so a replay
+   stays self-contained even if the source Compose file changes later.
    Add `json.where` for one condition per pointer: `equals`, `matches`,
    `greater_than`, `greater_than_or_equal`, `less_than`, `less_than_or_equal`,
    or `exists`. These conditions also match one complete JSON line.

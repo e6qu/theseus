@@ -28,6 +28,80 @@ x-theseus:
     # Explore one candidate and ordered pairs. The run cap still bounds the
     # complete corpus, even if this list grows.
     max_faults_per_run: 2
+    # Name evidence once, then compose or reuse it from operations and
+    # properties. Theseus expands every `use` into the locked replay plan.
+    evidence:
+      auditor_ready:
+        guard:
+          service: auditor
+          json:
+            fields:
+              /event: ready
+              /service: auditor
+            arrays:
+              - pointer: /checks
+                any:
+                  fields:
+                    /name: serial
+                    /passed: true
+      replicated_write:
+        join:
+          endpoints:
+            - pointers: [/request_id, /attempt]
+              json:
+                fields:
+                  /event: operation
+                  /name: write
+            - service: replica
+              pointers: [/request_id, /attempt]
+              json:
+                fields:
+                  /event: replicated
+                  /name: write
+            - service: auditor
+              pointers: [/request_id, /attempt]
+              json:
+                fields:
+                  /event: audit
+                  /name: write_observed
+      stale_assertion:
+        guard:
+          occurs:
+            exactly: 1
+            predicate:
+              json:
+                fields:
+                  /event: assertion
+                  /name: consistent_read
+                  /passed: false
+                where:
+                  - pointer: /reason
+                    equals: stale
+      retry_ready:
+        all:
+          - use: stale_assertion
+          - use: auditor_ready
+          - use: replicated_write
+      stale_read_evidence:
+        all:
+          - use: auditor_ready
+          - use: replicated_write
+          # The stale assertion is a later retry than the original write.
+          - relation:
+              left:
+                pointer: /attempt
+                json:
+                  fields:
+                    /event: assertion
+                    /name: consistent_read
+                    /passed: false
+              right:
+                pointer: /attempt
+                json:
+                  fields:
+                    /event: operation
+                    /name: write
+              operator: greater_than
     operations:
       - name: write
         input: "write\n"
@@ -56,55 +130,9 @@ x-theseus:
         # Unlike marker guards, this inspects one structured event from the
         # driver's restored serial transcript. Retry only an identified stale
         # assertion; ordinary output cannot satisfy these correlated fields.
-        # One expression mixes local evidence, a service guard, and a
-        # composite JSON join. Retry only when every branch holds.
+        # Retry only when the named composite definition holds.
         requires_serial_evidence:
-          all:
-            # Default service is the driver: exactly one stale API assertion.
-            - guard:
-                occurs:
-                  exactly: 1
-                  predicate:
-                    json:
-                      fields:
-                        /event: assertion
-                        /name: consistent_read
-                        /passed: false
-                      where:
-                        - pointer: /reason
-                          equals: stale
-            - guard:
-                service: auditor
-                json:
-                  fields:
-                    /event: ready
-                    /service: auditor
-                  arrays:
-                    - pointer: /checks
-                      any:
-                        fields:
-                          /name: serial
-                          /passed: true
-            # All three services must report the same request and attempt.
-            - join:
-                endpoints:
-                  - pointers: [/request_id, /attempt]
-                    json:
-                      fields:
-                        /event: operation
-                        /name: write
-                  - service: replica
-                    pointers: [/request_id, /attempt]
-                    json:
-                      fields:
-                        /event: replicated
-                        /name: write
-                  - service: auditor
-                    pointers: [/request_id, /attempt]
-                    json:
-                      fields:
-                        /event: audit
-                        /name: write_observed
+          use: retry_ready
         max_uses: 1
     faults:
       # These run after the named operation emits its checkpoint. Every NIC
@@ -181,48 +209,7 @@ x-theseus:
         kind: reachable
         service: api
         requires_serial_evidence:
-          all:
-            - guard:
-                service: auditor
-                json:
-                  fields:
-                    /event: ready
-                    /service: auditor
-            - join:
-                endpoints:
-                  - pointers: [/request_id, /attempt]
-                    json:
-                      fields:
-                        /event: operation
-                        /name: write
-                  - service: replica
-                    pointers: [/request_id, /attempt]
-                    json:
-                      fields:
-                        /event: replicated
-                        /name: write
-                  - service: auditor
-                    pointers: [/request_id, /attempt]
-                    json:
-                      fields:
-                        /event: audit
-                        /name: write_observed
-            # The stale assertion is a later retry than the original write.
-            - relation:
-                left:
-                  pointer: /attempt
-                  json:
-                    fields:
-                      /event: assertion
-                      /name: consistent_read
-                      /passed: false
-                right:
-                  pointer: /attempt
-                  json:
-                    fields:
-                      /event: operation
-                      /name: write
-                operator: greater_than
+          use: stale_read_evidence
         predicate:
           all:
             - contains: "THES:ASSERT:consistent_read:fail"

@@ -88,6 +88,10 @@ struct ComposeCampaign {
     faults: Vec<ComposeCampaignFault>,
     #[serde(default)]
     properties: Vec<ComposeProperty>,
+    /// Named recursive serial-evidence expressions. `use: name` expands one
+    /// definition anywhere an evidence expression is accepted.
+    #[serde(default)]
+    evidence: BTreeMap<String, ComposeSerialEvidence>,
     #[serde(default = "default_campaign_runs")]
     max_runs: u16,
     #[serde(default = "default_campaign_faults_per_run")]
@@ -131,7 +135,7 @@ struct ComposeOperation {
     max_uses: Option<u8>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeOperationSerialGuard {
     #[serde(default)]
@@ -280,14 +284,14 @@ struct ComposeProperty {
 
 /// Require matching JSON Pointer values between two service transcripts.
 /// Endpoint services default to the property's service when omitted.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeSerialCorrelation {
     capture: ComposeJsonCorrelationEndpoint,
     equals: ComposeJsonCorrelationEndpoint,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeJsonCorrelationEndpoint {
     #[serde(default)]
@@ -300,14 +304,14 @@ struct ComposeJsonCorrelationEndpoint {
 }
 
 /// Require one JSON value to occur in every listed endpoint.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeSerialJoin {
     endpoints: Vec<ComposeJsonCorrelationEndpoint>,
 }
 
 /// Require a pair of JSON endpoint values to satisfy one relation.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeSerialRelation {
     left: ComposeJsonCorrelationEndpoint,
@@ -329,7 +333,7 @@ pub enum ComposeJsonRelationOperator {
 /// A recursive boolean expression over service-scoped serial predicates,
 /// correlations, JSON joins, and value relations. Exactly one member is
 /// allowed at each node.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeSerialEvidence {
     #[serde(default)]
@@ -346,9 +350,11 @@ struct ComposeSerialEvidence {
     join: Option<ComposeSerialJoin>,
     #[serde(default)]
     relation: Option<ComposeSerialRelation>,
+    #[serde(default, rename = "use")]
+    use_: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeSerialPredicate {
     #[serde(default)]
@@ -369,7 +375,7 @@ struct ComposeSerialPredicate {
     occurs: Option<ComposeSerialOccurrence>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeSerialOccurrence {
     predicate: Box<ComposeSerialPredicate>,
@@ -384,7 +390,7 @@ struct ComposeSerialOccurrence {
 /// One JSON-lines event emitted on the serial console. Every pointer/value pair
 /// must match the same JSON object, so related fields cannot be satisfied by
 /// separate log lines.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeJsonPredicate {
     #[serde(default)]
@@ -403,7 +409,7 @@ struct ComposeJsonPredicate {
     equals_capture: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeJsonArrayPredicate {
     pointer: String,
@@ -415,7 +421,7 @@ struct ComposeJsonArrayPredicate {
     none: Option<Box<ComposeJsonPredicate>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeJsonCondition {
     pointer: String,
@@ -938,6 +944,9 @@ fn campaign_plan(
             "campaign max_operations_per_run must be between 1 and 4".to_owned(),
         ));
     }
+    let evidence_definitions = campaign.evidence;
+    let mut resolved_evidence =
+        normalize_serial_evidence_definitions(&evidence_definitions, services)?;
     let mut names = BTreeSet::new();
     let mut operations = Vec::with_capacity(campaign.operations.len());
     for operation in campaign.operations {
@@ -981,11 +990,27 @@ fn campaign_plan(
             normalize_serial_joins(operation.excludes_serial_joins, &context, services)?;
         let requires_serial_evidence = operation
             .requires_serial_evidence
-            .map(|evidence| normalize_serial_evidence(evidence, &context, services))
+            .map(|evidence| {
+                normalize_serial_evidence_root(
+                    evidence,
+                    &context,
+                    services,
+                    &evidence_definitions,
+                    &mut resolved_evidence,
+                )
+            })
             .transpose()?;
         let excludes_serial_evidence = operation
             .excludes_serial_evidence
-            .map(|evidence| normalize_serial_evidence(evidence, &context, services))
+            .map(|evidence| {
+                normalize_serial_evidence_root(
+                    evidence,
+                    &context,
+                    services,
+                    &evidence_definitions,
+                    &mut resolved_evidence,
+                )
+            })
             .transpose()?;
         operations.push(OperationPlan {
             name: operation.name,
@@ -1707,11 +1732,27 @@ fn campaign_plan(
             normalize_serial_joins(property.requires_serial_joins, &context, services)?;
         let requires_serial_evidence = property
             .requires_serial_evidence
-            .map(|evidence| normalize_serial_evidence(evidence, &context, services))
+            .map(|evidence| {
+                normalize_serial_evidence_root(
+                    evidence,
+                    &context,
+                    services,
+                    &evidence_definitions,
+                    &mut resolved_evidence,
+                )
+            })
             .transpose()?;
         let excludes_serial_evidence = property
             .excludes_serial_evidence
-            .map(|evidence| normalize_serial_evidence(evidence, &context, services))
+            .map(|evidence| {
+                normalize_serial_evidence_root(
+                    evidence,
+                    &context,
+                    services,
+                    &evidence_definitions,
+                    &mut resolved_evidence,
+                )
+            })
             .transpose()?;
         properties.push(PropertyPlan {
             name: property.name,
@@ -1897,10 +1938,83 @@ fn normalize_serial_joins(
         .collect()
 }
 
+fn normalize_serial_evidence_definitions(
+    definitions: &BTreeMap<String, ComposeSerialEvidence>,
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<BTreeMap<String, SerialEvidencePlan>, ComposeError> {
+    for name in definitions.keys() {
+        validate_name("campaign serial evidence", name)?;
+    }
+    let mut resolved = BTreeMap::new();
+    for name in definitions.keys() {
+        resolve_named_serial_evidence(
+            name,
+            definitions,
+            services,
+            &mut resolved,
+            &mut BTreeSet::new(),
+        )?;
+    }
+    Ok(resolved)
+}
+
+fn normalize_serial_evidence_root(
+    evidence: ComposeSerialEvidence,
+    context: &str,
+    services: &BTreeMap<String, ComposeServicePlan>,
+    definitions: &BTreeMap<String, ComposeSerialEvidence>,
+    resolved: &mut BTreeMap<String, SerialEvidencePlan>,
+) -> Result<SerialEvidencePlan, ComposeError> {
+    normalize_serial_evidence(
+        evidence,
+        context,
+        services,
+        definitions,
+        resolved,
+        &mut BTreeSet::new(),
+    )
+}
+
+fn resolve_named_serial_evidence(
+    name: &str,
+    definitions: &BTreeMap<String, ComposeSerialEvidence>,
+    services: &BTreeMap<String, ComposeServicePlan>,
+    resolved: &mut BTreeMap<String, SerialEvidencePlan>,
+    resolving: &mut BTreeSet<String>,
+) -> Result<SerialEvidencePlan, ComposeError> {
+    if let Some(evidence) = resolved.get(name) {
+        return Ok(evidence.clone());
+    }
+    if !resolving.insert(name.to_owned()) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign serial evidence {name:?} is cyclic"
+        )));
+    }
+    let evidence = definitions.get(name).cloned().ok_or_else(|| {
+        ComposeError::Invalid(format!(
+            "campaign references unknown serial evidence {name:?}"
+        ))
+    })?;
+    let normalized = normalize_serial_evidence(
+        evidence,
+        &format!("serial evidence {name:?}"),
+        services,
+        definitions,
+        resolved,
+        resolving,
+    )?;
+    resolving.remove(name);
+    resolved.insert(name.to_owned(), normalized.clone());
+    Ok(normalized)
+}
+
 fn normalize_serial_evidence(
     evidence: ComposeSerialEvidence,
     context: &str,
     services: &BTreeMap<String, ComposeServicePlan>,
+    definitions: &BTreeMap<String, ComposeSerialEvidence>,
+    resolved: &mut BTreeMap<String, SerialEvidencePlan>,
+    resolving: &mut BTreeSet<String>,
 ) -> Result<SerialEvidencePlan, ComposeError> {
     let choices = [
         !evidence.all.is_empty(),
@@ -1910,26 +2024,33 @@ fn normalize_serial_evidence(
         evidence.correlation.is_some(),
         evidence.join.is_some(),
         evidence.relation.is_some(),
+        evidence.use_.is_some(),
     ];
     if choices.into_iter().filter(|choice| *choice).count() != 1 {
         return Err(ComposeError::Invalid(format!(
-            "campaign {context} serial evidence needs exactly one of all, any, none, guard, correlation, join, or relation"
+            "campaign {context} serial evidence needs exactly one of all, any, none, guard, correlation, join, relation, or use"
         )));
     }
     let all = evidence
         .all
         .into_iter()
-        .map(|child| normalize_serial_evidence(child, context, services))
+        .map(|child| {
+            normalize_serial_evidence(child, context, services, definitions, resolved, resolving)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let any = evidence
         .any
         .into_iter()
-        .map(|child| normalize_serial_evidence(child, context, services))
+        .map(|child| {
+            normalize_serial_evidence(child, context, services, definitions, resolved, resolving)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let none = evidence
         .none
         .into_iter()
-        .map(|child| normalize_serial_evidence(child, context, services))
+        .map(|child| {
+            normalize_serial_evidence(child, context, services, definitions, resolved, resolving)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let guard = evidence
         .guard
@@ -1953,6 +2074,9 @@ fn normalize_serial_evidence(
         .relation
         .map(|relation| normalize_serial_relation(relation, context, services))
         .transpose()?;
+    if let Some(name) = evidence.use_ {
+        return resolve_named_serial_evidence(&name, definitions, services, resolved, resolving);
+    }
     Ok(SerialEvidencePlan {
         all,
         any,
@@ -3055,7 +3179,14 @@ mod tests {
             "all:\n  - guard:\n      json:\n        fields:\n          /event: replicated\n  - any:\n      - correlation:\n          capture:\n            pointer: /request_id\n            json:\n              fields:\n                /event: write\n          equals:\n            pointer: /request_id\n            json:\n              fields:\n                /event: replicated\n      - join:\n          endpoints:\n            - pointers: [/request_id, /attempt]\n              json:\n                fields:\n                  /event: write\n            - pointers: [/request_id, /attempt]\n              json:\n                fields:\n                  /event: replicated\n  - relation:\n      left:\n        pointer: /attempt\n        json:\n          fields:\n            /event: replicated\n      right:\n        pointer: /attempt\n        json:\n          fields:\n            /event: write\n      operator: greater_than_or_equal\n",
         )
         .unwrap();
-        let plan = normalize_serial_evidence(evidence, "write", &BTreeMap::new()).unwrap();
+        let plan = normalize_serial_evidence_root(
+            evidence,
+            "write",
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(plan.all.len(), 3);
         assert_eq!(plan.all[1].any.len(), 2);
         assert!(plan.all[1].any[0].correlation.is_some());
@@ -3073,7 +3204,14 @@ mod tests {
         )
         .unwrap();
 
-        let error = normalize_serial_evidence(evidence, "write", &BTreeMap::new()).unwrap_err();
+        let error = normalize_serial_evidence_root(
+            evidence,
+            "write",
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("exactly one of all, any, none"));
     }
 
@@ -3086,6 +3224,84 @@ mod tests {
 
         let error = normalize_serial_relation(relation, "write", &BTreeMap::new()).unwrap_err();
         assert!(error.to_string().contains("numeric relation needs one"));
+    }
+
+    #[test]
+    fn resolves_named_serial_evidence_across_campaign_rules() {
+        let definitions: BTreeMap<String, ComposeSerialEvidence> = serde_yaml::from_str(
+            "write_seen:\n  guard:\n    json:\n      fields:\n        /event: write\nreplicated_write:\n  all:\n    - use: write_seen\n    - join:\n        endpoints:\n          - pointers: [/request_id, /attempt]\n            json:\n              fields:\n                /event: write\n          - pointers: [/request_id, /attempt]\n            json:\n              fields:\n                /event: replicated\nready_for_retry:\n  all:\n    - use: replicated_write\n    - none:\n        - guard:\n            contains: THES:ASSERT:panic\n",
+        )
+        .unwrap();
+        let mut resolved =
+            normalize_serial_evidence_definitions(&definitions, &BTreeMap::new()).unwrap();
+        let evidence: ComposeSerialEvidence =
+            serde_yaml::from_str("use: ready_for_retry\n").unwrap();
+
+        let plan = normalize_serial_evidence_root(
+            evidence,
+            "retry",
+            &BTreeMap::new(),
+            &definitions,
+            &mut resolved,
+        )
+        .unwrap();
+        assert_eq!(plan.all.len(), 2);
+        assert_eq!(plan.all[0].all.len(), 2);
+        assert_eq!(plan.all[0].all[1].join.as_ref().unwrap().endpoints.len(), 2);
+        assert_eq!(plan.all[1].none.len(), 1);
+    }
+
+    #[test]
+    fn rejects_unknown_or_cyclic_named_serial_evidence() {
+        let definitions: BTreeMap<String, ComposeSerialEvidence> =
+            serde_yaml::from_str("first:\n  use: second\nsecond:\n  use: first\n").unwrap();
+        let error =
+            normalize_serial_evidence_definitions(&definitions, &BTreeMap::new()).unwrap_err();
+        assert!(error.to_string().contains("is cyclic"));
+
+        let evidence: ComposeSerialEvidence = serde_yaml::from_str("use: missing\n").unwrap();
+        let error = normalize_serial_evidence_root(
+            evidence,
+            "retry",
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unknown serial evidence \"missing\""));
+    }
+
+    #[test]
+    fn expands_named_serial_evidence_for_operations_and_properties() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    evidence:\n      write_seen:\n        guard:\n          json:\n            fields:\n              /event: write\n      safe_write:\n        all:\n          - use: write_seen\n          - none:\n              - guard:\n                  contains: THES:ASSERT:panic\n    operations:\n      - name: retry\n        input: \"retry\\n\"\n        requires_serial_evidence:\n          use: safe_write\n    faults: []\n    properties:\n      - name: safe_write\n        kind: always\n        requires_serial_evidence:\n          use: safe_write\n        excludes_serial_evidence:\n          guard:\n            contains: THES:ASSERT:panic\n",
+        );
+
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        assert_eq!(
+            campaign.operations[0]
+                .requires_serial_evidence
+                .as_ref()
+                .unwrap()
+                .all
+                .len(),
+            2
+        );
+        assert_eq!(
+            campaign.properties[0]
+                .requires_serial_evidence
+                .as_ref()
+                .unwrap()
+                .all
+                .len(),
+            2
+        );
+        assert!(campaign.properties[0].excludes_serial_evidence.is_some());
     }
 
     #[test]
