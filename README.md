@@ -130,6 +130,10 @@ matches.
 Evidence trees also accept `relation`: compare values selected by two JSON
 endpoints with equality or numeric ordering. This can assert that an observed
 retry generation advances the original request without guest-side test code.
+Define shared trees once under `campaign.evidence` and expand them with
+`use: name` in properties, operation guards, or other evidence trees. Theseus
+rejects undefined and cyclic definitions, then records the expanded form in
+the replay plan.
 
 ## Repository layout
 
