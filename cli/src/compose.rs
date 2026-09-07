@@ -311,6 +311,8 @@ struct ComposeSerialJoin {
     endpoints: Vec<ComposeJsonCorrelationEndpoint>,
     #[serde(default)]
     quantifier: ComposeSerialJoinQuantifier,
+    #[serde(default)]
+    occurs: Option<ComposeSerialMatchCount>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -333,6 +335,22 @@ struct ComposeSerialRelation {
     left: ComposeJsonCorrelationEndpoint,
     right: ComposeJsonCorrelationEndpoint,
     operator: ComposeJsonRelationOperator,
+    #[serde(default)]
+    quantifier: ComposeSerialJoinQuantifier,
+    #[serde(default)]
+    occurs: Option<ComposeSerialMatchCount>,
+}
+
+/// Bounds on the number of distinct left/source endpoint values that match.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeSerialMatchCount {
+    #[serde(default)]
+    exactly: Option<u64>,
+    #[serde(default)]
+    at_least: Option<u64>,
+    #[serde(default)]
+    at_most: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -706,6 +724,8 @@ pub struct JsonCorrelationEndpointPlan {
 pub struct SerialJoinPlan {
     pub endpoints: Vec<JsonCorrelationEndpointPlan>,
     pub quantifier: ComposeSerialJoinQuantifier,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occurs: Option<SerialMatchCountPlan>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -713,6 +733,19 @@ pub struct SerialRelationPlan {
     pub left: JsonCorrelationEndpointPlan,
     pub right: JsonCorrelationEndpointPlan,
     pub operator: ComposeJsonRelationOperator,
+    pub quantifier: ComposeSerialJoinQuantifier,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occurs: Option<SerialMatchCountPlan>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SerialMatchCountPlan {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exactly: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_least: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_most: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1951,6 +1984,10 @@ fn normalize_serial_joins(
                     })
                     .collect::<Result<_, _>>()?,
                 quantifier: join.quantifier,
+                occurs: join
+                    .occurs
+                    .map(|occurs| normalize_serial_match_count(occurs, context))
+                    .transpose()?,
             })
         })
         .collect()
@@ -2133,6 +2170,44 @@ fn normalize_serial_relation(
         left,
         right,
         operator: relation.operator,
+        quantifier: relation.quantifier,
+        occurs: relation
+            .occurs
+            .map(|occurs| normalize_serial_match_count(occurs, context))
+            .transpose()?,
+    })
+}
+
+fn normalize_serial_match_count(
+    occurs: ComposeSerialMatchCount,
+    context: &str,
+) -> Result<SerialMatchCountPlan, ComposeError> {
+    let bounds = usize::from(occurs.exactly.is_some())
+        + usize::from(occurs.at_least.is_some())
+        + usize::from(occurs.at_most.is_some());
+    if bounds == 0 || (occurs.exactly.is_some() && bounds != 1) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} match count needs exactly or at_least and/or at_most"
+        )));
+    }
+    if occurs.exactly == Some(0) || occurs.at_least == Some(0) || occurs.at_most == Some(0) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} match count bounds must be at least one"
+        )));
+    }
+    if occurs
+        .at_least
+        .zip(occurs.at_most)
+        .is_some_and(|(at_least, at_most)| at_least > at_most)
+    {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} match count at_least cannot exceed at_most"
+        )));
+    }
+    Ok(SerialMatchCountPlan {
+        exactly: occurs.exactly,
+        at_least: occurs.at_least,
+        at_most: occurs.at_most,
     })
 }
 
@@ -3177,13 +3252,27 @@ mod tests {
     #[test]
     fn normalizes_universal_json_joins() {
         let join: ComposeSerialJoin = serde_yaml::from_str(
-            "quantifier: every\nendpoints:\n  - pointer: /request_id\n    json:\n      fields:\n        /event: write\n  - pointer: /request_id\n    json:\n      fields:\n        /event: replicated\n",
+            "quantifier: every\noccurs:\n  at_least: 1\n  at_most: 2\nendpoints:\n  - pointer: /request_id\n    json:\n      fields:\n        /event: write\n  - pointer: /request_id\n    json:\n      fields:\n        /event: replicated\n",
         )
         .unwrap();
 
         let plan =
             normalize_serial_joins(Some(vec![join]), "replicated_write", &BTreeMap::new()).unwrap();
         assert_eq!(plan[0].quantifier, ComposeSerialJoinQuantifier::Every);
+        assert_eq!(plan[0].occurs.as_ref().unwrap().at_least, Some(1));
+        assert_eq!(plan[0].occurs.as_ref().unwrap().at_most, Some(2));
+    }
+
+    #[test]
+    fn rejects_invalid_json_join_match_counts() {
+        let join: ComposeSerialJoin = serde_yaml::from_str(
+            "occurs:\n  exactly: 1\n  at_least: 1\nendpoints:\n  - pointer: /request_id\n    json:\n      fields:\n        /event: write\n  - pointer: /request_id\n    json:\n      fields:\n        /event: replicated\n",
+        )
+        .unwrap();
+
+        let error = normalize_serial_joins(Some(vec![join]), "replicated_write", &BTreeMap::new())
+            .unwrap_err();
+        assert!(error.to_string().contains("match count needs exactly"));
     }
 
     #[test]
@@ -3254,6 +3343,18 @@ mod tests {
 
         let error = normalize_serial_relation(relation, "write", &BTreeMap::new()).unwrap_err();
         assert!(error.to_string().contains("numeric relation needs one"));
+    }
+
+    #[test]
+    fn normalizes_quantified_json_relations() {
+        let relation: ComposeSerialRelation = serde_yaml::from_str(
+            "quantifier: every\noccurs:\n  exactly: 1\nleft:\n  pointer: /attempt\n  json:\n    fields:\n      /event: replicated\nright:\n  pointer: /attempt\n  json:\n    fields:\n      /event: write\noperator: greater_than_or_equal\n",
+        )
+        .unwrap();
+
+        let plan = normalize_serial_relation(relation, "write", &BTreeMap::new()).unwrap();
+        assert_eq!(plan.quantifier, ComposeSerialJoinQuantifier::Every);
+        assert_eq!(plan.occurs.unwrap().exactly, Some(1));
     }
 
     #[test]

@@ -49,6 +49,10 @@ x-theseus:
           # Do not accept one replicated transaction while another write is
           # missing. Every API request/attempt must appear at both peers.
           quantifier: every
+          # Count distinct API request/attempt keys, not duplicate log lines.
+          # This compact scenario emits exactly one write transaction.
+          occurs:
+            exactly: 1
           endpoints:
             - pointers: [/request_id, /attempt]
               json:
@@ -91,6 +95,10 @@ x-theseus:
           - use: replicated_write
           # The stale assertion is a later retry than the original write.
           - relation:
+              # The one stale assertion must advance the one write attempt.
+              quantifier: every
+              occurs:
+                exactly: 1
               left:
                 pointer: /attempt
                 json:
