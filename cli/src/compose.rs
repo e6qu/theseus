@@ -124,6 +124,10 @@ struct ComposeOperation {
     #[serde(default)]
     excludes_serial_joins: Option<Vec<ComposeSerialJoin>>,
     #[serde(default)]
+    requires_serial_evidence: Option<ComposeSerialEvidence>,
+    #[serde(default)]
+    excludes_serial_evidence: Option<ComposeSerialEvidence>,
+    #[serde(default)]
     max_uses: Option<u8>,
 }
 
@@ -267,6 +271,10 @@ struct ComposeProperty {
     #[serde(default)]
     requires_serial_joins: Option<Vec<ComposeSerialJoin>>,
     #[serde(default)]
+    requires_serial_evidence: Option<ComposeSerialEvidence>,
+    #[serde(default)]
+    excludes_serial_evidence: Option<ComposeSerialEvidence>,
+    #[serde(default)]
     service: Option<String>,
 }
 
@@ -296,6 +304,25 @@ struct ComposeJsonCorrelationEndpoint {
 #[serde(deny_unknown_fields)]
 struct ComposeSerialJoin {
     endpoints: Vec<ComposeJsonCorrelationEndpoint>,
+}
+
+/// A recursive boolean expression over service-scoped serial predicates,
+/// correlations, and JSON joins. Exactly one member is allowed at each node.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeSerialEvidence {
+    #[serde(default)]
+    all: Vec<ComposeSerialEvidence>,
+    #[serde(default)]
+    any: Vec<ComposeSerialEvidence>,
+    #[serde(default)]
+    none: Vec<ComposeSerialEvidence>,
+    #[serde(default)]
+    guard: Option<ComposeOperationSerialGuard>,
+    #[serde(default)]
+    correlation: Option<ComposeSerialCorrelation>,
+    #[serde(default)]
+    join: Option<ComposeSerialJoin>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -514,6 +541,10 @@ pub struct OperationPlan {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excludes_serial_joins: Vec<SerialJoinPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_serial_evidence: Option<SerialEvidencePlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excludes_serial_evidence: Option<SerialEvidencePlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_uses: Option<u8>,
 }
 
@@ -605,6 +636,10 @@ pub struct PropertyPlan {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires_serial_joins: Vec<SerialJoinPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_serial_evidence: Option<SerialEvidencePlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excludes_serial_evidence: Option<SerialEvidencePlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
 }
 
@@ -625,6 +660,22 @@ pub struct JsonCorrelationEndpointPlan {
 #[derive(Debug, Clone, Serialize)]
 pub struct SerialJoinPlan {
     pub endpoints: Vec<JsonCorrelationEndpointPlan>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SerialEvidencePlan {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub all: Vec<SerialEvidencePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub any: Vec<SerialEvidencePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub none: Vec<SerialEvidencePlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guard: Option<OperationSerialGuardPlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<SerialCorrelationPlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub join: Option<SerialJoinPlan>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -896,6 +947,14 @@ fn campaign_plan(
             normalize_serial_joins(operation.requires_serial_joins, &context, services)?;
         let excludes_serial_joins =
             normalize_serial_joins(operation.excludes_serial_joins, &context, services)?;
+        let requires_serial_evidence = operation
+            .requires_serial_evidence
+            .map(|evidence| normalize_serial_evidence(evidence, &context, services))
+            .transpose()?;
+        let excludes_serial_evidence = operation
+            .excludes_serial_evidence
+            .map(|evidence| normalize_serial_evidence(evidence, &context, services))
+            .transpose()?;
         operations.push(OperationPlan {
             name: operation.name,
             input_hex: hex(operation.input.as_bytes()),
@@ -910,6 +969,8 @@ fn campaign_plan(
             excludes_serial_any,
             requires_serial_joins,
             excludes_serial_joins,
+            requires_serial_evidence,
+            excludes_serial_evidence,
             max_uses: operation.max_uses,
         });
     }
@@ -1545,6 +1606,8 @@ fn campaign_plan(
             && property.excludes_serial_any.is_none()
             && property.requires_serial_correlations.is_none()
             && property.requires_serial_joins.is_none()
+            && property.requires_serial_evidence.is_none()
+            && property.excludes_serial_evidence.is_none()
         {
             return Err(ComposeError::Invalid(format!(
                 "campaign property {:?} needs serial evidence",
@@ -1610,6 +1673,14 @@ fn campaign_plan(
         )?;
         let requires_serial_joins =
             normalize_serial_joins(property.requires_serial_joins, &context, services)?;
+        let requires_serial_evidence = property
+            .requires_serial_evidence
+            .map(|evidence| normalize_serial_evidence(evidence, &context, services))
+            .transpose()?;
+        let excludes_serial_evidence = property
+            .excludes_serial_evidence
+            .map(|evidence| normalize_serial_evidence(evidence, &context, services))
+            .transpose()?;
         properties.push(PropertyPlan {
             name: property.name,
             kind: property.kind,
@@ -1623,6 +1694,8 @@ fn campaign_plan(
             excludes_serial_any,
             requires_serial_correlations,
             requires_serial_joins,
+            requires_serial_evidence,
+            excludes_serial_evidence,
             service: property.service,
         });
     }
@@ -1790,6 +1863,67 @@ fn normalize_serial_joins(
             })
         })
         .collect()
+}
+
+fn normalize_serial_evidence(
+    evidence: ComposeSerialEvidence,
+    context: &str,
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<SerialEvidencePlan, ComposeError> {
+    let choices = [
+        !evidence.all.is_empty(),
+        !evidence.any.is_empty(),
+        !evidence.none.is_empty(),
+        evidence.guard.is_some(),
+        evidence.correlation.is_some(),
+        evidence.join.is_some(),
+    ];
+    if choices.into_iter().filter(|choice| *choice).count() != 1 {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} serial evidence needs exactly one of all, any, none, guard, correlation, or join"
+        )));
+    }
+    let all = evidence
+        .all
+        .into_iter()
+        .map(|child| normalize_serial_evidence(child, context, services))
+        .collect::<Result<Vec<_>, _>>()?;
+    let any = evidence
+        .any
+        .into_iter()
+        .map(|child| normalize_serial_evidence(child, context, services))
+        .collect::<Result<Vec<_>, _>>()?;
+    let none = evidence
+        .none
+        .into_iter()
+        .map(|child| normalize_serial_evidence(child, context, services))
+        .collect::<Result<Vec<_>, _>>()?;
+    let guard = evidence
+        .guard
+        .map(|guard| normalize_operation_serial_guard(guard, context, services))
+        .transpose()?;
+    let correlation = evidence
+        .correlation
+        .map(|correlation| {
+            normalize_serial_correlations(Some(vec![correlation]), context, services)
+                .map(|mut correlations| correlations.remove(0))
+        })
+        .transpose()?;
+    let join = evidence
+        .join
+        .map(|join| {
+            normalize_serial_joins(Some(vec![join]), context, services)
+                .map(|mut joins| joins.remove(0))
+        })
+        .transpose()?;
+    Ok(SerialEvidencePlan {
+        all,
+        any,
+        none,
+        guard,
+        correlation,
+        join,
+    })
 }
 
 fn normalize_serial_predicate(
@@ -2845,6 +2979,30 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("pointer or pointers, not both"));
+    }
+
+    #[test]
+    fn normalizes_recursive_serial_evidence() {
+        let evidence: ComposeSerialEvidence = serde_yaml::from_str(
+            "all:\n  - guard:\n      json:\n        fields:\n          /event: replicated\n  - any:\n      - correlation:\n          capture:\n            pointer: /request_id\n            json:\n              fields:\n                /event: write\n          equals:\n            pointer: /request_id\n            json:\n              fields:\n                /event: replicated\n      - join:\n          endpoints:\n            - pointers: [/request_id, /attempt]\n              json:\n                fields:\n                  /event: write\n            - pointers: [/request_id, /attempt]\n              json:\n                fields:\n                  /event: replicated\n",
+        )
+        .unwrap();
+        let plan = normalize_serial_evidence(evidence, "write", &BTreeMap::new()).unwrap();
+        assert_eq!(plan.all.len(), 2);
+        assert_eq!(plan.all[1].any.len(), 2);
+        assert!(plan.all[1].any[0].correlation.is_some());
+        assert!(plan.all[1].any[1].join.is_some());
+    }
+
+    #[test]
+    fn rejects_ambiguous_serial_evidence_expressions() {
+        let evidence: ComposeSerialEvidence = serde_yaml::from_str(
+            "all:\n  - guard:\n      contains: THES:M:written\nguard:\n  contains: THES:M:written\n",
+        )
+        .unwrap();
+
+        let error = normalize_serial_evidence(evidence, "write", &BTreeMap::new()).unwrap_err();
+        assert!(error.to_string().contains("exactly one of all, any, none"));
     }
 
     #[test]

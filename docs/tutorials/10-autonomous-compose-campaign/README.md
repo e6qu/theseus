@@ -89,6 +89,15 @@ Start with `compose.yaml`.
    the restored parent checkpoint and skips an operation before it consumes a
    campaign run when the shared value is absent. Use `excludes_serial_joins`
    to skip it when a completed or forbidden transaction is already present.
+   Use `requires_serial_evidence` when a rule combines these evidence types.
+   Each node has exactly one of `all`, `any`, `none`, `guard`, `correlation`,
+   or `join`. A `guard` has `service` and the normal serial predicate;
+   `correlation` and `join` use the endpoint forms above. Theseus evaluates
+   the whole tree against the restored checkpoint before starting an operation.
+   Properties also accept `requires_serial_evidence` and
+   `excludes_serial_evidence`; the latter rejects a property when its tree
+   matches. The retry rule combines an API assertion, auditor readiness, and
+   the three-service composite join in one `all` expression.
    Add `json.where` for one condition per pointer: `equals`, `matches`,
    `greater_than`, `greater_than_or_equal`, `less_than`, `less_than_or_equal`,
    or `exists`. These conditions also match one complete JSON line.

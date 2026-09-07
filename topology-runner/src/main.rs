@@ -106,6 +106,10 @@ struct CampaignOperation {
     #[serde(default)]
     excludes_serial_joins: Vec<SerialJoin>,
     #[serde(default)]
+    requires_serial_evidence: Option<SerialEvidence>,
+    #[serde(default)]
+    excludes_serial_evidence: Option<SerialEvidence>,
+    #[serde(default)]
     max_uses: Option<u8>,
 }
 
@@ -215,6 +219,10 @@ struct CampaignProperty {
     #[serde(default)]
     requires_serial_joins: Vec<SerialJoin>,
     #[serde(default)]
+    requires_serial_evidence: Option<SerialEvidence>,
+    #[serde(default)]
+    excludes_serial_evidence: Option<SerialEvidence>,
+    #[serde(default)]
     service: Option<String>,
 }
 
@@ -240,6 +248,22 @@ struct JsonCorrelationEndpoint {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct SerialJoin {
     endpoints: Vec<JsonCorrelationEndpoint>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SerialEvidence {
+    #[serde(default)]
+    all: Vec<SerialEvidence>,
+    #[serde(default)]
+    any: Vec<SerialEvidence>,
+    #[serde(default)]
+    none: Vec<SerialEvidence>,
+    #[serde(default)]
+    guard: Option<OperationSerialGuard>,
+    #[serde(default)]
+    correlation: Option<SerialCorrelation>,
+    #[serde(default)]
+    join: Option<SerialJoin>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -2280,6 +2304,8 @@ fn add_counterexample_check(
         || !property.excludes_serial_any.is_empty()
         || !property.requires_serial_correlations.is_empty()
         || !property.requires_serial_joins.is_empty()
+        || property.requires_serial_evidence.is_some()
+        || property.excludes_serial_evidence.is_some()
     {
         return Ok(());
     }
@@ -2387,6 +2413,8 @@ fn campaign_counterexample(
                 excludes_serial_any: property.excludes_serial_any.clone(),
                 requires_serial_correlations: property.requires_serial_correlations.clone(),
                 requires_serial_joins: property.requires_serial_joins.clone(),
+                requires_serial_evidence: property.requires_serial_evidence.clone(),
+                excludes_serial_evidence: property.excludes_serial_evidence.clone(),
                 service: property.service.clone(),
             },
             CampaignSchedule { operations, faults },
@@ -2430,6 +2458,16 @@ fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
             .requires_serial_joins
             .iter()
             .all(|join| serial_join_matches_property(run, property, join))
+        && property
+            .requires_serial_evidence
+            .as_ref()
+            .map(|evidence| serial_evidence_matches_property(run, property, evidence))
+            .unwrap_or(true)
+        && property
+            .excludes_serial_evidence
+            .as_ref()
+            .map(|evidence| !serial_evidence_matches_property(run, property, evidence))
+            .unwrap_or(true)
 }
 
 fn campaign_property_services(run: &Path, service: Option<&str>) -> Vec<String> {
@@ -2500,6 +2538,20 @@ fn campaign_operation_serial_guards_are_ready(
             .excludes_serial_joins
             .iter()
             .all(|join| !campaign_serial_join_matches(checkpoint, &campaign.driver, join))
+        && candidate
+            .requires_serial_evidence
+            .as_ref()
+            .map(|evidence| {
+                campaign_serial_evidence_matches(checkpoint, &campaign.driver, evidence)
+            })
+            .unwrap_or(true)
+        && candidate
+            .excludes_serial_evidence
+            .as_ref()
+            .map(|evidence| {
+                !campaign_serial_evidence_matches(checkpoint, &campaign.driver, evidence)
+            })
+            .unwrap_or(true)
 }
 
 fn campaign_serial_guard_matches(
@@ -2528,6 +2580,49 @@ fn campaign_serial_join_matches(
                     .any(|value| value == candidate)
             })
         })
+}
+
+fn campaign_serial_correlation_matches(
+    checkpoint: &CampaignCheckpoint,
+    driver: &str,
+    correlation: &SerialCorrelation,
+) -> bool {
+    let captures = campaign_join_endpoint_values(checkpoint, driver, &correlation.capture);
+    !captures.is_empty()
+        && campaign_join_endpoint_values(checkpoint, driver, &correlation.equals)
+            .into_iter()
+            .any(|value| captures.iter().any(|capture| capture == &value))
+}
+
+fn campaign_serial_evidence_matches(
+    checkpoint: &CampaignCheckpoint,
+    driver: &str,
+    evidence: &SerialEvidence,
+) -> bool {
+    if !evidence.all.is_empty() {
+        evidence
+            .all
+            .iter()
+            .all(|child| campaign_serial_evidence_matches(checkpoint, driver, child))
+    } else if !evidence.any.is_empty() {
+        evidence
+            .any
+            .iter()
+            .any(|child| campaign_serial_evidence_matches(checkpoint, driver, child))
+    } else if !evidence.none.is_empty() {
+        evidence
+            .none
+            .iter()
+            .all(|child| !campaign_serial_evidence_matches(checkpoint, driver, child))
+    } else if let Some(guard) = &evidence.guard {
+        campaign_serial_guard_matches(checkpoint, driver, guard)
+    } else if let Some(correlation) = &evidence.correlation {
+        campaign_serial_correlation_matches(checkpoint, driver, correlation)
+    } else if let Some(join) = &evidence.join {
+        campaign_serial_join_matches(checkpoint, driver, join)
+    } else {
+        false
+    }
 }
 
 fn campaign_join_endpoint_values(
@@ -3362,6 +3457,37 @@ fn serial_join_matches_property(
         })
 }
 
+fn serial_evidence_matches_property(
+    run: &Path,
+    property: &CampaignProperty,
+    evidence: &SerialEvidence,
+) -> bool {
+    if !evidence.all.is_empty() {
+        evidence
+            .all
+            .iter()
+            .all(|child| serial_evidence_matches_property(run, property, child))
+    } else if !evidence.any.is_empty() {
+        evidence
+            .any
+            .iter()
+            .any(|child| serial_evidence_matches_property(run, property, child))
+    } else if !evidence.none.is_empty() {
+        evidence
+            .none
+            .iter()
+            .all(|child| !serial_evidence_matches_property(run, property, child))
+    } else if let Some(guard) = &evidence.guard {
+        campaign_serial_guard_matches_property(run, property, guard)
+    } else if let Some(correlation) = &evidence.correlation {
+        serial_correlation_matches_property(run, property, correlation)
+    } else if let Some(join) = &evidence.join {
+        serial_join_matches_property(run, property, join)
+    } else {
+        false
+    }
+}
+
 fn serial_join_endpoint_values(
     run: &Path,
     property: &CampaignProperty,
@@ -3849,7 +3975,61 @@ fn campaign_property_description(property: &CampaignProperty) -> String {
                 .join(", ")
         ));
     }
+    if let Some(evidence) = &property.requires_serial_evidence {
+        clauses.push(format!(
+            "also requires serial evidence {}",
+            serial_evidence_description(evidence)
+        ));
+    }
+    if let Some(evidence) = &property.excludes_serial_evidence {
+        clauses.push(format!(
+            "also excludes serial evidence {}",
+            serial_evidence_description(evidence)
+        ));
+    }
     clauses.join("; ")
+}
+
+fn serial_evidence_description(evidence: &SerialEvidence) -> String {
+    if !evidence.all.is_empty() {
+        format!(
+            "all [{}]",
+            evidence
+                .all
+                .iter()
+                .map(serial_evidence_description)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else if !evidence.any.is_empty() {
+        format!(
+            "any [{}]",
+            evidence
+                .any
+                .iter()
+                .map(serial_evidence_description)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else if !evidence.none.is_empty() {
+        format!(
+            "none [{}]",
+            evidence
+                .none
+                .iter()
+                .map(serial_evidence_description)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else if let Some(guard) = &evidence.guard {
+        serial_guard_description(guard)
+    } else if let Some(correlation) = &evidence.correlation {
+        serial_correlation_description(correlation)
+    } else if let Some(join) = &evidence.join {
+        serial_join_description(join)
+    } else {
+        "invalid expression".to_owned()
+    }
 }
 
 fn serial_correlation_description(correlation: &SerialCorrelation) -> String {
@@ -5585,6 +5765,8 @@ mod tests {
             excludes_serial_any: Vec::new(),
             requires_serial_correlations: Vec::new(),
             requires_serial_joins: Vec::new(),
+            requires_serial_evidence: None,
+            excludes_serial_evidence: None,
             service: None,
         };
 
@@ -5703,6 +5885,34 @@ mod tests {
         )
         .unwrap();
         assert!(property_matches_in_run(&joined, &run));
+        joined.requires_serial_evidence = Some(
+            serde_json::from_value(serde_json::json!({
+                "all": [
+                    {"guard": {"contains": "THES:ASSERT:write:pass"}},
+                    {"any": [
+                        {"correlation": {
+                            "capture": {"service": "api", "pointer": "/request_id", "json": {"fields": {"/event": "write"}}},
+                            "equals": {"service": "worker", "pointer": "/request_id", "json": {"fields": {"/event": "replicated"}}}
+                        }},
+                        {"guard": {"service": "auditor", "contains": "THES:M:audited"}}
+                    ]},
+                    {"join": {"endpoints": [
+                        {"service": "api", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "write"}}},
+                        {"service": "worker", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "replicated"}}},
+                        {"service": "auditor", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "audit"}}}
+                    ]}}
+                ]
+            }))
+            .unwrap(),
+        );
+        assert!(property_matches_in_run(&joined, &run));
+        joined.excludes_serial_evidence = Some(
+            serde_json::from_value(serde_json::json!({
+                "guard": {"service": "auditor", "json": {"fields": {"/event": "audit"}}}
+            }))
+            .unwrap(),
+        );
+        assert!(!property_matches_in_run(&joined, &run));
         fs::remove_dir_all(run).unwrap();
     }
 
@@ -5928,6 +6138,8 @@ mod tests {
                     excludes_serial_any: Vec::new(),
                     requires_serial_joins: Vec::new(),
                     excludes_serial_joins: Vec::new(),
+                    requires_serial_evidence: None,
+                    excludes_serial_evidence: None,
                     max_uses: Some(1),
                 },
                 CampaignOperation {
@@ -5944,6 +6156,8 @@ mod tests {
                     excludes_serial_any: Vec::new(),
                     requires_serial_joins: Vec::new(),
                     excludes_serial_joins: Vec::new(),
+                    requires_serial_evidence: None,
+                    excludes_serial_evidence: None,
                     max_uses: Some(1),
                 },
             ],
@@ -6095,6 +6309,40 @@ mod tests {
             1
         ));
         structured.operations[1].excludes_serial_joins.clear();
+        structured.operations[1].requires_serial = None;
+        structured.operations[1].requires_serial_all.clear();
+        structured.operations[1].excludes_serial_any.clear();
+        structured.operations[1].requires_serial_joins.clear();
+        structured.operations[1].requires_serial_evidence = Some(
+            serde_json::from_value(serde_json::json!({
+                "all": [
+                    {"guard": {"contains": "THES:M:written"}},
+                    {"join": {"endpoints": [
+                        {"pointer": "/request_id", "json": {"fields": {"/event": "write"}}},
+                        {"service": "auditor", "pointer": "/request_id", "json": {"fields": {"/event": "audit"}}}
+                    ]}},
+                    {"any": [
+                        {"correlation": {
+                            "capture": {"pointer": "/request_id", "json": {"fields": {"/event": "write"}}},
+                            "equals": {"service": "auditor", "pointer": "/request_id", "json": {"fields": {"/event": "audit"}}}
+                        }},
+                        {"guard": {"service": "auditor", "contains": "THES:M:audited"}}
+                    ]}
+                ]
+            }))
+            .unwrap(),
+        );
+        structured.operations[1].excludes_serial_evidence = Some(
+            serde_json::from_value(serde_json::json!({
+                "guard": {"service": "auditor", "contains": "THES:ASSERT:recovered"}
+            }))
+            .unwrap(),
+        );
+        assert!(campaign_operation_serial_guards_are_ready(
+            &structured,
+            &stale,
+            1
+        ));
         stale.scheduler.get_mut("auditor").unwrap().serial_contents[0]
             .extend_from_slice(b"THES:ASSERT:recovered\n");
         assert!(!campaign_operation_serial_guards_are_ready(
