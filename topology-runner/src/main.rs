@@ -305,6 +305,8 @@ struct SerialWorkflow {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct SerialWorkflowStage {
     service: String,
+    #[serde(default)]
+    pointers: Vec<String>,
     steps: Vec<JsonPredicate>,
 }
 
@@ -2900,7 +2902,11 @@ fn serial_workflow_stage_values(
         serial,
         &SerialPath {
             service: None,
-            pointers: workflow.pointers.clone(),
+            pointers: if stage.pointers.is_empty() {
+                workflow.pointers.clone()
+            } else {
+                stage.pointers.clone()
+            },
             steps: stage.steps.clone(),
             quantifier: SerialJoinQuantifier::Any,
             occurs: None,
@@ -4614,7 +4620,18 @@ fn serial_workflow_description(workflow: &SerialWorkflow) -> String {
     let stages = workflow
         .stages
         .iter()
-        .map(|stage| format!("{} ({} steps)", stage.service, stage.steps.len()))
+        .map(|stage| {
+            let pointers = if stage.pointers.is_empty() {
+                workflow.pointers.join(" + ")
+            } else {
+                stage.pointers.join(" + ")
+            };
+            format!(
+                "{} ({} steps; {pointers})",
+                stage.service,
+                stage.steps.len()
+            )
+        })
         .collect::<Vec<_>>()
         .join(" -> ");
     let description = format!(
@@ -6481,14 +6498,14 @@ mod tests {
                 {"service": "worker", "steps": [
                     {"fields": {"/event": "replicated"}},
                     {"fields": {"/event": "committed"}}
-                ]}
+                ], "pointers": ["/source_request_id"]}
             ],
             "quantifier": "every",
             "occurs": {"exactly": 1}
         }))
         .unwrap();
         let api = b"{\"event\":\"write\",\"request_id\":\"r-17\"}\n{\"event\":\"accepted\",\"request_id\":\"r-17\"}\n";
-        let worker = b"{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n{\"event\":\"committed\",\"request_id\":\"r-17\"}\n";
+        let worker = b"{\"event\":\"replicated\",\"source_request_id\":\"r-17\"}\n{\"event\":\"committed\",\"source_request_id\":\"r-17\"}\n";
         let values = workflow
             .stages
             .iter()
@@ -6497,7 +6514,7 @@ mod tests {
             .collect();
         assert!(serial_workflow_matches(&workflow, values));
         let incomplete = serial_workflow_stage_values(
-            b"{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n",
+            b"{\"event\":\"replicated\",\"source_request_id\":\"r-17\"}\n",
             &workflow,
             &workflow.stages[1],
         );
@@ -6539,7 +6556,7 @@ mod tests {
         };
         assert!(campaign_serial_workflow_matches(&checkpoint, &workflow));
         assert!(
-            serial_workflow_description(&workflow).contains("api (2 steps) -> worker (2 steps)")
+            serial_workflow_description(&workflow).contains("worker (2 steps; /source_request_id)")
         );
     }
 

@@ -376,6 +376,8 @@ struct ComposeSerialWorkflow {
 #[serde(deny_unknown_fields)]
 struct ComposeSerialWorkflowStage {
     service: String,
+    #[serde(default)]
+    pointers: Vec<String>,
     steps: Vec<ComposeJsonPredicate>,
 }
 
@@ -812,6 +814,7 @@ pub struct SerialWorkflowPlan {
 #[derive(Debug, Clone, Serialize)]
 pub struct SerialWorkflowStagePlan {
     pub service: String,
+    pub pointers: Vec<String>,
     pub steps: Vec<JsonPredicatePlan>,
 }
 
@@ -2379,8 +2382,36 @@ fn normalize_serial_workflow(
                     stage.service
                 )));
             }
+            let stage_pointers = if stage.pointers.is_empty() {
+                workflow.pointers.clone()
+            } else {
+                stage.pointers
+            };
+            if stage_pointers.len() != workflow.pointers.len() {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign {context} workflow stage {:?} needs {} key pointers",
+                    stage.service,
+                    workflow.pointers.len()
+                )));
+            }
+            let mut unique_pointers = BTreeSet::new();
+            for pointer in &stage_pointers {
+                if !valid_json_pointer(pointer) {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign {context} workflow stage {:?} has invalid JSON pointer {pointer:?}",
+                        stage.service
+                    )));
+                }
+                if !unique_pointers.insert(pointer) {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign {context} workflow stage {:?} repeats JSON pointer {pointer:?}",
+                        stage.service
+                    )));
+                }
+            }
             Ok(SerialWorkflowStagePlan {
                 service: stage.service,
+                pointers: stage_pointers,
                 steps: stage
                     .steps
                     .into_iter()
@@ -3618,7 +3649,7 @@ mod tests {
     #[test]
     fn normalizes_cross_service_json_workflows() {
         let directory = fixture(
-            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: write\n        input: \"write\\n\"\n    faults: []\n    properties:\n      - name: replicated_write\n        kind: always\n        requires_serial_evidence:\n          workflow:\n            pointers: [/request_id]\n            quantifier: every\n            occurs:\n              exactly: 1\n            stages:\n              - service: api\n                steps:\n                  - fields:\n                      /event: write\n                  - fields:\n                      /event: accepted\n              - service: worker\n                steps:\n                  - fields:\n                      /event: replicated\n",
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: write\n        input: \"write\\n\"\n    faults: []\n    properties:\n      - name: replicated_write\n        kind: always\n        requires_serial_evidence:\n          workflow:\n            pointers: [/request_id]\n            quantifier: every\n            occurs:\n              exactly: 1\n            stages:\n              - service: api\n                steps:\n                  - fields:\n                      /event: write\n                  - fields:\n                      /event: accepted\n              - service: worker\n                pointers: [/source_request_id]\n                steps:\n                  - fields:\n                      /event: replicated\n",
         )
         ;
         let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
@@ -3633,6 +3664,7 @@ mod tests {
         assert_eq!(plan.stages.len(), 2);
         assert_eq!(plan.stages[0].service, "api");
         assert_eq!(plan.stages[0].steps.len(), 2);
+        assert_eq!(plan.stages[1].pointers, ["/source_request_id"]);
         assert_eq!(plan.occurs.as_ref().unwrap().exactly, Some(1));
     }
 
