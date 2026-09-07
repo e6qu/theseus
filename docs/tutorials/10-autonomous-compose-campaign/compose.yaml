@@ -200,6 +200,7 @@ x-theseus:
             mode: {normal: normal, force: force}
           input_captures:
             request:
+              select: latest
               pointer: /request_id
               json:
                 fields:

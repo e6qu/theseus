@@ -35,9 +35,10 @@ Start with `compose.yaml`.
    Use `input_template` when the next UART command needs a value the guest
    already emitted. Put each `{placeholder}` under `input_captures` with a
    JSON event predicate and pointer; set `service` to read another service,
-   or omit it for the driver. Theseus selects the latest matching scalar from
-   the restored parent transcript. The template placeholders and capture names
-   must match exactly. This tutorial turns the write request ID into
+   or omit it for the driver. Set `select` to `first` or `latest` (the default)
+   to choose a matching event from the restored parent transcript. The template
+   placeholders and capture names must match exactly. This tutorial turns the
+   write request ID into
    `retry transaction-42`. Theseus stores the rendered bytes in each run's
    replay plan, so that plan replays without re-reading a source Compose file.
    An `input_grammar` can use captures too: its choices still make stable case
