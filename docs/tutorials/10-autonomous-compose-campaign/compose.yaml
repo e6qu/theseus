@@ -60,11 +60,15 @@ x-theseus:
                     /event: operation
                     /name: write
             - service: replica
+              # Replica keeps the same transaction key under its own field.
+              pointers: [/source_request_id, /source_attempt]
               steps:
                 - fields:
                     /event: replicated
                     /name: write
             - service: auditor
+              # Audit records use a third schema for that same key.
+              pointers: [/write_request_id, /write_attempt]
               steps:
                 - fields:
                     /event: audit

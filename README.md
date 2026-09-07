@@ -147,7 +147,9 @@ steps in strict order within one service transcript. Paths support composite
 `pointers`, optional `service`, `quantifier`, and distinct-key `occurs` bounds.
 For several independent service transcripts, use `workflow`: named stages each
 contain a local ordered path for the same key. This asserts distributed
-progress without claiming an unverifiable global serial-event order.
+progress without claiming an unverifiable global serial-event order. A stage
+may override `pointers` to map that key from its own JSON schema; all stages
+must retain the same key-tuple width.
 Define shared trees once under `campaign.evidence` and expand them with
 `use: name` in properties, operation guards, or other evidence trees. Theseus
 rejects undefined and cyclic definitions, then records the expanded form in

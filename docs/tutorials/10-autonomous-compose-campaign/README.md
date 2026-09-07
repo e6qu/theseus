@@ -117,6 +117,9 @@ Start with `compose.yaml`.
    Its first stage supplies the keys; every later stage must complete its own
    ordered steps for the same key. The replica and auditor streams have no
    shared clock, so the tutorial uses a workflow for their service-local stages.
+   A stage can override `pointers` when its service stores the same key under
+   different JSON field names; every stage must still provide the same tuple
+   width. The replica and auditor demonstrate that mapping here.
    Properties also accept `requires_serial_evidence` and
    `excludes_serial_evidence`; the latter rejects a property when its tree
    matches. The retry rule combines an API assertion, auditor readiness, and
