@@ -207,6 +207,22 @@ x-theseus:
                       fields:
                         /event: audit
                         /name: write_observed
+            # The stale assertion is a later retry than the original write.
+            - relation:
+                left:
+                  pointer: /attempt
+                  json:
+                    fields:
+                      /event: assertion
+                      /name: consistent_read
+                      /passed: false
+                right:
+                  pointer: /attempt
+                  json:
+                    fields:
+                      /event: operation
+                      /name: write
+                operator: greater_than
         predicate:
           all:
             - contains: "THES:ASSERT:consistent_read:fail"

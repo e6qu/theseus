@@ -251,6 +251,24 @@ struct SerialJoin {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+struct SerialRelation {
+    left: JsonCorrelationEndpoint,
+    right: JsonCorrelationEndpoint,
+    operator: JsonRelationOperator,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum JsonRelationOperator {
+    Equals,
+    NotEquals,
+    GreaterThan,
+    GreaterThanOrEqual,
+    LessThan,
+    LessThanOrEqual,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct SerialEvidence {
     #[serde(default)]
     all: Vec<SerialEvidence>,
@@ -264,6 +282,8 @@ struct SerialEvidence {
     correlation: Option<SerialCorrelation>,
     #[serde(default)]
     join: Option<SerialJoin>,
+    #[serde(default)]
+    relation: Option<SerialRelation>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -2594,6 +2614,52 @@ fn campaign_serial_correlation_matches(
             .any(|value| captures.iter().any(|capture| capture == &value))
 }
 
+fn json_relation_matches(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+    operator: JsonRelationOperator,
+) -> bool {
+    match operator {
+        JsonRelationOperator::Equals => left == right,
+        JsonRelationOperator::NotEquals => left != right,
+        JsonRelationOperator::GreaterThan
+        | JsonRelationOperator::GreaterThanOrEqual
+        | JsonRelationOperator::LessThan
+        | JsonRelationOperator::LessThanOrEqual => {
+            let number = |value: &serde_json::Value| {
+                value.as_array().and_then(|values| match values.as_slice() {
+                    [value] => value.as_f64(),
+                    _ => None,
+                })
+            };
+            let Some((left, right)) = number(left).zip(number(right)) else {
+                return false;
+            };
+            match operator {
+                JsonRelationOperator::GreaterThan => left > right,
+                JsonRelationOperator::GreaterThanOrEqual => left >= right,
+                JsonRelationOperator::LessThan => left < right,
+                JsonRelationOperator::LessThanOrEqual => left <= right,
+                JsonRelationOperator::Equals | JsonRelationOperator::NotEquals => unreachable!(),
+            }
+        }
+    }
+}
+
+fn campaign_serial_relation_matches(
+    checkpoint: &CampaignCheckpoint,
+    driver: &str,
+    relation: &SerialRelation,
+) -> bool {
+    campaign_join_endpoint_values(checkpoint, driver, &relation.left)
+        .iter()
+        .any(|left| {
+            campaign_join_endpoint_values(checkpoint, driver, &relation.right)
+                .iter()
+                .any(|right| json_relation_matches(left, right, relation.operator))
+        })
+}
+
 fn campaign_serial_evidence_matches(
     checkpoint: &CampaignCheckpoint,
     driver: &str,
@@ -2620,6 +2686,8 @@ fn campaign_serial_evidence_matches(
         campaign_serial_correlation_matches(checkpoint, driver, correlation)
     } else if let Some(join) = &evidence.join {
         campaign_serial_join_matches(checkpoint, driver, join)
+    } else if let Some(relation) = &evidence.relation {
+        campaign_serial_relation_matches(checkpoint, driver, relation)
     } else {
         false
     }
@@ -3457,6 +3525,20 @@ fn serial_join_matches_property(
         })
 }
 
+fn serial_relation_matches_property(
+    run: &Path,
+    property: &CampaignProperty,
+    relation: &SerialRelation,
+) -> bool {
+    serial_join_endpoint_values(run, property, &relation.left)
+        .iter()
+        .any(|left| {
+            serial_join_endpoint_values(run, property, &relation.right)
+                .iter()
+                .any(|right| json_relation_matches(left, right, relation.operator))
+        })
+}
+
 fn serial_evidence_matches_property(
     run: &Path,
     property: &CampaignProperty,
@@ -3483,6 +3565,8 @@ fn serial_evidence_matches_property(
         serial_correlation_matches_property(run, property, correlation)
     } else if let Some(join) = &evidence.join {
         serial_join_matches_property(run, property, join)
+    } else if let Some(relation) = &evidence.relation {
+        serial_relation_matches_property(run, property, relation)
     } else {
         false
     }
@@ -4027,6 +4111,8 @@ fn serial_evidence_description(evidence: &SerialEvidence) -> String {
         serial_correlation_description(correlation)
     } else if let Some(join) = &evidence.join {
         serial_join_description(join)
+    } else if let Some(relation) = &evidence.relation {
+        serial_relation_description(relation)
     } else {
         "invalid expression".to_owned()
     }
@@ -4062,6 +4148,33 @@ fn serial_join_description(join: &SerialJoin) -> String {
         })
         .collect::<Vec<_>>()
         .join(" = ")
+}
+
+fn serial_relation_description(relation: &SerialRelation) -> String {
+    let operator = match relation.operator {
+        JsonRelationOperator::Equals => "=",
+        JsonRelationOperator::NotEquals => "!=",
+        JsonRelationOperator::GreaterThan => ">",
+        JsonRelationOperator::GreaterThanOrEqual => ">=",
+        JsonRelationOperator::LessThan => "<",
+        JsonRelationOperator::LessThanOrEqual => "<=",
+    };
+    format!(
+        "{} {} {} {} {}",
+        relation
+            .left
+            .service
+            .as_deref()
+            .unwrap_or("property service"),
+        endpoint_pointer_description(&relation.left),
+        operator,
+        relation
+            .right
+            .service
+            .as_deref()
+            .unwrap_or("property service"),
+        endpoint_pointer_description(&relation.right)
+    )
 }
 
 fn endpoint_pointer_description(endpoint: &JsonCorrelationEndpoint) -> String {
@@ -5681,6 +5794,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn json_relations_compare_one_or_composite_endpoint_values() {
+        let one = serde_json::json!([2]);
+        let two = serde_json::json!([3]);
+        let tuple = serde_json::json!(["r-17", 2]);
+
+        assert!(json_relation_matches(
+            &two,
+            &one,
+            JsonRelationOperator::GreaterThan
+        ));
+        assert!(json_relation_matches(
+            &one,
+            &two,
+            JsonRelationOperator::LessThanOrEqual
+        ));
+        assert!(!json_relation_matches(
+            &tuple,
+            &one,
+            JsonRelationOperator::GreaterThan
+        ));
+        assert!(json_relation_matches(
+            &tuple,
+            &tuple,
+            JsonRelationOperator::Equals
+        ));
+        assert!(json_relation_matches(
+            &tuple,
+            &one,
+            JsonRelationOperator::NotEquals
+        ));
+    }
+
+    #[test]
     fn nested_serial_properties_require_one_transcript() {
         let run =
             std::env::temp_dir().join(format!("theseus-compound-property-{}", std::process::id()));
@@ -5900,12 +6046,18 @@ mod tests {
                         {"service": "api", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "write"}}},
                         {"service": "worker", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "replicated"}}},
                         {"service": "auditor", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "audit"}}}
-                    ]}}
+                    ]}},
+                    {"relation": {
+                        "left": {"service": "worker", "pointer": "/attempt", "json": {"fields": {"/event": "replicated"}}},
+                        "right": {"service": "api", "pointer": "/attempt", "json": {"fields": {"/event": "write"}}},
+                        "operator": "greater_than_or_equal"
+                    }}
                 ]
             }))
             .unwrap(),
         );
         assert!(property_matches_in_run(&joined, &run));
+        assert!(campaign_property_description(&joined).contains("worker /attempt >= api /attempt"));
         joined.excludes_serial_evidence = Some(
             serde_json::from_value(serde_json::json!({
                 "guard": {"service": "auditor", "json": {"fields": {"/event": "audit"}}}
@@ -6281,12 +6433,12 @@ mod tests {
         ));
         let mut stale = checkpoint.clone();
         stale.scheduler.get_mut("api").unwrap().serial_contents[0]
-            .extend_from_slice(b"{\"event\":\"write\",\"request_id\":\"r-17\"}\n");
+            .extend_from_slice(b"{\"event\":\"write\",\"request_id\":\"r-17\",\"attempt\":1}\n");
         stale.scheduler.insert(
             "auditor".to_owned(),
             ServiceSchedulerCheckpoint {
                 serial_contents: vec![
-                    b"{\"event\":\"assertion\",\"passed\":false,\"reason\":\"stale\"}\n{\"event\":\"audit\",\"request_id\":\"r-17\"}\n".to_vec(),
+                    b"{\"event\":\"assertion\",\"passed\":false,\"reason\":\"stale\"}\n{\"event\":\"audit\",\"request_id\":\"r-17\",\"attempt\":2}\n".to_vec(),
                 ],
                 program_counters: Vec::new(),
                 next_fault: 0,
@@ -6327,7 +6479,12 @@ mod tests {
                             "equals": {"service": "auditor", "pointer": "/request_id", "json": {"fields": {"/event": "audit"}}}
                         }},
                         {"guard": {"service": "auditor", "contains": "THES:M:audited"}}
-                    ]}
+                    ]},
+                    {"relation": {
+                        "left": {"service": "auditor", "pointer": "/attempt", "json": {"fields": {"/event": "audit"}}},
+                        "right": {"pointer": "/attempt", "json": {"fields": {"/event": "write"}}},
+                        "operator": "greater_than"
+                    }}
                 ]
             }))
             .unwrap(),
