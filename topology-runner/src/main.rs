@@ -58,6 +58,11 @@ struct TopologyPlan {
 #[derive(Debug, Deserialize, Serialize)]
 struct CampaignPlan {
     driver: String,
+    /// The deterministic policy used to order an otherwise fixed campaign
+    /// corpus. The locked replay plan retains this choice for inspection;
+    /// replay itself executes the recorded schedule order.
+    #[serde(default)]
+    guidance: CampaignGuidance,
     #[serde(default)]
     state: BTreeMap<String, String>,
     operations: Vec<CampaignOperation>,
@@ -80,6 +85,17 @@ fn default_campaign_faults_per_run() -> u8 {
 
 fn default_campaign_operations_per_run() -> u8 {
     3
+}
+
+/// Campaign selection remains deterministic for a fixed plan and seed. The
+/// adaptive policy adds observed action yield to the existing coverage signal;
+/// it is an empirical scheduler, not a nondeterministic ML service.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CampaignGuidance {
+    #[default]
+    Coverage,
+    Adaptive,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -545,6 +561,7 @@ struct CampaignResult {
     format: &'static str,
     status: &'static str,
     driver: String,
+    guidance: CampaignGuidance,
     checkpoint_nodes: usize,
     checkpoint_reuses: usize,
     generated_candidates: usize,
@@ -595,6 +612,8 @@ struct CampaignReplayVerification {
 
 #[derive(Debug, Deserialize)]
 struct RecordedCampaignResult {
+    #[serde(default)]
+    guidance: Option<CampaignGuidance>,
     #[serde(default)]
     generated_candidates: usize,
     runs: Vec<RecordedCampaignRun>,
@@ -1893,6 +1912,9 @@ fn execute_campaign(
         .campaign
         .take()
         .expect("campaign execution requires a campaign");
+    if let Some(recorded) = recorded {
+        verify_recorded_campaign_guidance(campaign.guidance, recorded)?;
+    }
     let checkpoint =
         boot_campaign_checkpoint(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
     let base = serde_json::to_vec(&topology)
@@ -1937,7 +1959,7 @@ fn execute_campaign(
             )
         } else {
             let (pending_index, selection) =
-                select_campaign_schedule(&schedules, &pending, &observations);
+                select_campaign_schedule(&schedules, &pending, &observations, campaign.guidance);
             (
                 schedules[pending.remove(pending_index)].clone(),
                 selection,
@@ -2074,6 +2096,7 @@ fn execute_campaign(
             .map_err(|error| format!("cannot read {}: {error}", first_plan.display()))?,
     )
     .map_err(|error| format!("cannot parse {}: {error}", first_plan.display()))?;
+    let guidance = campaign.guidance;
     replay.campaign = Some(campaign);
     fs::write(
         output.join("replay-plan.json"),
@@ -2095,6 +2118,7 @@ fn execute_campaign(
                 .expect("campaign remains in replay plan")
                 .driver
                 .clone(),
+            guidance,
             checkpoint_nodes: checkpoints.nodes(),
             checkpoint_reuses: checkpoints.reuses,
             generated_candidates: schedules.len(),
@@ -2269,6 +2293,7 @@ fn execute_campaign_minimized(
             .map_err(|error| format!("cannot read campaign result: {error}"))?,
     )
     .map_err(|error| format!("cannot parse campaign result: {error}"))?;
+    verify_recorded_campaign_guidance(campaign.guidance, &recorded)?;
     let checkpoint =
         boot_campaign_checkpoint(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
     let base = serde_json::to_vec(&topology)
@@ -3644,6 +3669,23 @@ fn recorded_campaign_schedules(
         .collect()
 }
 
+/// Older bundles did not record a policy and remain replayable. New bundles
+/// reject a plan whose declared policy differs from the policy that chose the
+/// recorded corpus, rather than silently treating adaptive ordering as plain
+/// coverage ordering.
+fn verify_recorded_campaign_guidance(
+    guidance: CampaignGuidance,
+    recorded: &RecordedCampaignResult,
+) -> Result<(), String> {
+    if recorded
+        .guidance
+        .is_some_and(|recorded_guidance| recorded_guidance != guidance)
+    {
+        return Err("recorded campaign guidance differs from replay plan".to_owned());
+    }
+    Ok(())
+}
+
 fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignRun) -> Vec<String> {
     let mut mismatches = Vec::new();
     if expected.operations != actual.operations {
@@ -3687,15 +3729,17 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     mismatches
 }
 
-/// Choose the next leaf from observed marker, paused-PC, and topology-state coverage
-/// after first seeding every one-operation history without faults. An
-/// observation only guides schedules that extend the exact operation history
-/// which produced it; fault variants remain separate leaves and all ties fall
-/// back to the stable breadth-first candidate order.
+/// Choose the next leaf from observed marker, paused-PC, and topology-state
+/// coverage after first seeding every one-operation history without faults.
+/// An observation only guides schedules that extend the exact operation
+/// history which produced it; adaptive guidance additionally ranks a final
+/// operation by its observed yield across prior contexts. Fault variants
+/// remain separate leaves and all ties fall back to stable corpus order.
 fn select_campaign_schedule(
     schedules: &[CampaignSchedule],
     pending: &[usize],
     observations: &[CampaignGuidanceObservation],
+    guidance: CampaignGuidance,
 ) -> (usize, String) {
     if let Some((pending_index, _)) = pending.iter().enumerate().find(|(_, schedule_index)| {
         let candidate = &schedules[**schedule_index];
@@ -3715,8 +3759,8 @@ fn select_campaign_schedule(
     let mut selected_reason = "canonical breadth-first seed".to_owned();
     for (pending_index, schedule_index) in pending.iter().enumerate() {
         let candidate = &schedules[*schedule_index];
-        let mut score = 0_usize;
-        let mut reason = None;
+        let mut coverage_score = 0_usize;
+        let mut coverage_reason = None;
         for observation in observations {
             if !candidate.operations.starts_with(&observation.operations) {
                 continue;
@@ -3724,24 +3768,78 @@ fn select_campaign_schedule(
             // Markers are user-visible coverage; paused program counters add
             // guest execution locations without requiring guest SDK calls.
             // The final drive/network/clock state catches topology divergence.
-            let signal = observation.novel_markers.saturating_mul(1_000)
-                + observation.novel_instructions.saturating_mul(500)
-                + usize::from(observation.novel_state).saturating_mul(250)
-                + usize::from(observation.failed).saturating_mul(100);
+            let signal = campaign_guidance_signal(observation);
             let candidate_score = signal.saturating_mul(256) + observation.operations.len();
-            if candidate_score > score {
-                score = candidate_score;
-                reason = Some(observation);
+            if candidate_score > coverage_score {
+                coverage_score = candidate_score;
+                coverage_reason = Some(observation);
             }
         }
+        let (score, reason) = match guidance {
+            CampaignGuidance::Coverage => (
+                coverage_score,
+                coverage_reason
+                    .map(campaign_guidance_reason)
+                    .unwrap_or_else(|| "canonical breadth-first seed".to_owned()),
+            ),
+            CampaignGuidance::Adaptive => {
+                let choice = *candidate
+                    .operations
+                    .last()
+                    .expect("campaign schedules always contain an operation");
+                let (mean_reward, observations, exploration_bonus) =
+                    campaign_adaptive_action_reward(choice, observations);
+                let adaptive_score = mean_reward
+                    .saturating_mul(64)
+                    .saturating_add(exploration_bonus);
+                let base_reason = coverage_reason
+                    .filter(|observation| campaign_guidance_signal(observation) > 0)
+                    .map(campaign_guidance_reason)
+                    .unwrap_or_else(|| "canonical breadth-first seed".to_owned());
+                (
+                    coverage_score.saturating_add(adaptive_score),
+                    format!(
+                        "{base_reason}; adaptive action reward {mean_reward} from {observations} observed run(s), exploration bonus {exploration_bonus}"
+                    ),
+                )
+            }
+        };
         if score > selected_score {
             selected = pending_index;
             selected_score = score;
-            selected_reason =
-                campaign_guidance_reason(reason.expect("nonzero guidance has a reason"));
+            selected_reason = reason;
         }
     }
     (selected, selected_reason)
+}
+
+fn campaign_guidance_signal(observation: &CampaignGuidanceObservation) -> usize {
+    observation.novel_markers.saturating_mul(1_000)
+        + observation.novel_instructions.saturating_mul(500)
+        + usize::from(observation.novel_state).saturating_mul(250)
+        + usize::from(observation.failed).saturating_mul(100)
+}
+
+/// Return a deterministic empirical action reward and an uncertainty bonus.
+/// The bonus declines with observations, so bounded campaigns still sample a
+/// little-used operation instead of permanently repeating an early winner.
+fn campaign_adaptive_action_reward(
+    choice: CampaignOperationChoice,
+    observations: &[CampaignGuidanceObservation],
+) -> (usize, usize, usize) {
+    let matching = observations
+        .iter()
+        .filter(|observation| observation.operations.last() == Some(&choice))
+        .collect::<Vec<_>>();
+    let count = matching.len();
+    let reward = matching
+        .into_iter()
+        .map(campaign_guidance_signal)
+        .sum::<usize>();
+    let mean_reward = reward / count.max(1);
+    let exploration_bonus =
+        observations.len().saturating_add(1).saturating_mul(250) / count.saturating_add(1);
+    (mean_reward, count, exploration_bonus)
 }
 
 fn campaign_guidance_reason(observation: &CampaignGuidanceObservation) -> String {
@@ -7719,6 +7817,7 @@ mod tests {
     fn campaign_marker_guards_use_the_restored_parent_transcript() {
         let campaign = CampaignPlan {
             driver: "api".to_owned(),
+            guidance: CampaignGuidance::Coverage,
             state: BTreeMap::from([("phase".to_owned(), "idle".to_owned())]),
             operations: vec![
                 CampaignOperation {
@@ -8347,6 +8446,7 @@ mod tests {
                 novel_state: false,
                 failed: false,
             }],
+            CampaignGuidance::Coverage,
         );
 
         assert_eq!(selected, 0);
@@ -8379,6 +8479,7 @@ mod tests {
                 novel_state: true,
                 failed: false,
             }],
+            CampaignGuidance::Coverage,
         );
 
         assert_eq!(selected, 0);
@@ -8407,6 +8508,7 @@ mod tests {
                 novel_state: false,
                 failed: false,
             }],
+            CampaignGuidance::Coverage,
         );
 
         assert_eq!(selected, 0);
@@ -8435,6 +8537,74 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_guidance_prefers_an_action_with_observed_yield() {
+        let schedules = vec![
+            CampaignSchedule {
+                operations: vec![choice(2), choice(1)],
+                faults: Vec::new(),
+            },
+            CampaignSchedule {
+                operations: vec![choice(2), choice(0)],
+                faults: Vec::new(),
+            },
+        ];
+        let observations = vec![
+            CampaignGuidanceObservation {
+                operations: vec![choice(0)],
+                novel_markers: 2,
+                novel_instructions: 0,
+                novel_state: false,
+                failed: false,
+            },
+            CampaignGuidanceObservation {
+                operations: vec![choice(1)],
+                novel_markers: 0,
+                novel_instructions: 0,
+                novel_state: false,
+                failed: false,
+            },
+            CampaignGuidanceObservation {
+                operations: vec![choice(2)],
+                novel_markers: 0,
+                novel_instructions: 0,
+                novel_state: false,
+                failed: false,
+            },
+        ];
+
+        let (selected, reason) = select_campaign_schedule(
+            &schedules,
+            &[0, 1],
+            &observations,
+            CampaignGuidance::Adaptive,
+        );
+
+        assert_eq!(selected, 1);
+        assert_eq!(
+            reason,
+            "canonical breadth-first seed; adaptive action reward 2000 from 1 observed run(s), exploration bonus 500"
+        );
+    }
+
+    #[test]
+    fn replay_rejects_a_changed_recorded_guidance_policy() {
+        let recorded = RecordedCampaignResult {
+            guidance: Some(CampaignGuidance::Adaptive),
+            generated_candidates: 0,
+            runs: Vec::new(),
+        };
+
+        assert_eq!(
+            verify_recorded_campaign_guidance(CampaignGuidance::Coverage, &recorded),
+            Err("recorded campaign guidance differs from replay plan".to_owned())
+        );
+        assert_eq!(
+            verify_recorded_campaign_guidance(CampaignGuidance::Adaptive, &recorded),
+            Ok(())
+        );
+    }
+
+    #[test]
     fn campaign_selection_keeps_canonical_order_without_a_signal() {
         let schedules = vec![
             CampaignSchedule {
@@ -8446,7 +8616,8 @@ mod tests {
                 faults: Vec::new(),
             },
         ];
-        let (selected, reason) = select_campaign_schedule(&schedules, &[0, 1], &[]);
+        let (selected, reason) =
+            select_campaign_schedule(&schedules, &[0, 1], &[], CampaignGuidance::Coverage);
 
         assert_eq!(selected, 0);
         assert_eq!(reason, "canonical breadth-first operation seed");

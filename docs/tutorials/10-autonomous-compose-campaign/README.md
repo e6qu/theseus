@@ -272,6 +272,12 @@ The report shows each service's paused PCs; they are checkpoint samples, not a
 full instruction trace. Ordinary serial output and declared fault names are
 not state coverage, so they cannot create artificial novelty.
 
+Set `guidance: adaptive` to also rank a candidate's final operation by the
+marker, instruction-location, topology-state, and failure yield from earlier
+completed runs. Theseus adds a declining exploration bonus for operations with
+less evidence. The policy is deterministic: its recorded selection reasons
+are replay-checked; it never calls a remote model or makes random choices.
+
 When you replay a campaign bundle, Theseus does not search again. It restores
 and runs the recorded operation and fault corpus in the recorded order, then
 checks the selection reasons, marker novelty, topology-state signatures, and

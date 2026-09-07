@@ -83,6 +83,8 @@ struct ComposeTheseus {
 struct ComposeCampaign {
     driver: String,
     #[serde(default)]
+    guidance: CampaignGuidance,
+    #[serde(default)]
     state: BTreeMap<String, String>,
     operations: Vec<ComposeOperation>,
     #[serde(default)]
@@ -730,9 +732,19 @@ pub struct ComposeServicePlan {
 /// A deterministic, serial-driven topology campaign.  Operations are UTF-8
 /// UART input for the designated workload service.  The same line protocol is
 /// usable from a shell or C program; an SDK is optional.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CampaignGuidance {
+    #[default]
+    Coverage,
+    Adaptive,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CampaignPlan {
     pub driver: String,
+    #[serde(default)]
+    pub guidance: CampaignGuidance,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub state: BTreeMap<String, String>,
     pub operations: Vec<OperationPlan>,
@@ -2197,6 +2209,7 @@ fn campaign_plan(
     }
     Ok(Some(CampaignPlan {
         driver: campaign.driver,
+        guidance: campaign.guidance,
         state: initial_state,
         operations,
         stages: campaign.stages,
@@ -4355,6 +4368,18 @@ mod tests {
         assert!(error
             .to_string()
             .contains("unknown serial-guard service \"missing\""));
+    }
+
+    #[test]
+    fn normalizes_adaptive_campaign_guidance() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    guidance: adaptive\n    max_runs: 1\n    operations:\n      - name: probe\n        input: \"probe\\n\"\n",
+        );
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(
+            plan.campaign.expect("campaign is normalized").guidance,
+            CampaignGuidance::Adaptive
+        );
     }
 
     #[test]
