@@ -78,7 +78,10 @@ jobs:
           chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/theseus"
           chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-topology"
           chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-explorer"
-          sha256sum "theseus-${TAG}-linux-${{ matrix.arch }}"/* > "theseus-${TAG}-linux-${{ matrix.arch }}/SHA256SUMS"
+          (
+            cd "theseus-${TAG}-linux-${{ matrix.arch }}"
+            sha256sum ./* > SHA256SUMS
+          )
           tar -czf "theseus-${TAG}-linux-${{ matrix.arch }}.tar.gz" "theseus-${TAG}-linux-${{ matrix.arch }}"
           tar -tzf "theseus-${TAG}-linux-${{ matrix.arch }}.tar.gz" | grep -Fx \
             "theseus-${TAG}-linux-${{ matrix.arch }}/firecracker"
@@ -114,7 +117,10 @@ jobs:
           cargo build --manifest-path cli/Cargo.toml --release --locked
           mkdir "theseus-${TAG}-darwin-arm64"
           cp cli/target/release/theseus "theseus-${TAG}-darwin-arm64/theseus"
-          shasum -a 256 "theseus-${TAG}-darwin-arm64/theseus" > "theseus-${TAG}-darwin-arm64/SHA256SUMS"
+          (
+            cd "theseus-${TAG}-darwin-arm64"
+            shasum -a 256 theseus > SHA256SUMS
+          )
           tar -czf "theseus-${TAG}-darwin-arm64.tar.gz" "theseus-${TAG}-darwin-arm64"
 
       - uses: actions/upload-artifact@v4
