@@ -133,6 +133,8 @@ struct CampaignOperationInputGrammar {
     template: String,
     name_template: String,
     choices: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default)]
+    input_captures: BTreeMap<String, CampaignOperationInputCapture>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

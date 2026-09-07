@@ -40,6 +40,10 @@ Start with `compose.yaml`.
    must match exactly. This tutorial turns the write request ID into
    `retry transaction-42`. Theseus stores the rendered bytes in each run's
    replay plan, so that plan replays without re-reading a source Compose file.
+   An `input_grammar` can use captures too: its choices still make stable case
+   names while captures fill the shared fields at the restored checkpoint.
+   Here the retry grammar explores `normal` and `force` modes with the same
+   captured request ID.
    These rules constrain the selected cases only; they compose with the
    operation-level state rules. Here `read_stale[after_beta]` can follow the
    `write[beta-async]` payload but not another write leaf.

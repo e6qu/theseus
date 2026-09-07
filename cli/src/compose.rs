@@ -177,6 +177,8 @@ struct ComposeOperationInputGrammar {
     name_template: Option<String>,
     choices: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default)]
+    input_captures: BTreeMap<String, ComposeOperationInputCapture>,
+    #[serde(default)]
     cases: BTreeMap<String, ComposeOperationInputRules>,
 }
 
@@ -750,6 +752,8 @@ pub struct OperationInputGrammarPlan {
     pub template: String,
     pub name_template: String,
     pub choices: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub input_captures: BTreeMap<String, OperationInputCapturePlan>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1234,7 +1238,7 @@ fn campaign_plan(
         let grammar = operation.input_grammar;
         let input_grammar = grammar
             .as_ref()
-            .map(|grammar| normalize_operation_input_grammar(grammar, &operation.name))
+            .map(|grammar| normalize_operation_input_grammar(grammar, &operation.name, services))
             .transpose()?;
         let has_input_captures = !operation.input_captures.is_empty();
         let captures = operation.input_captures;
@@ -3553,6 +3557,7 @@ struct NormalizedOperationInputGrammar {
 fn normalize_operation_input_grammar(
     grammar: &ComposeOperationInputGrammar,
     operation: &str,
+    services: &BTreeMap<String, ComposeServicePlan>,
 ) -> Result<NormalizedOperationInputGrammar, ComposeError> {
     let variables = operation_input_template_variables(&grammar.template, operation, "template")?;
     if variables.is_empty() {
@@ -3566,7 +3571,25 @@ fn normalize_operation_input_grammar(
             unique_variables.push(variable);
         }
     }
-    for variable in &unique_variables {
+    let captures =
+        normalize_operation_input_captures(grammar.input_captures.clone(), operation, services)?;
+    let capture_names = captures.keys().cloned().collect::<BTreeSet<_>>();
+    if !capture_names.is_subset(&unique_variables.iter().cloned().collect()) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign operation {operation:?} input_grammar input_captures must name template placeholders"
+        )));
+    }
+    let choice_variables = unique_variables
+        .iter()
+        .filter(|variable| !capture_names.contains(*variable))
+        .cloned()
+        .collect::<Vec<_>>();
+    if choice_variables.is_empty() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign operation {operation:?} input_grammar needs at least one choice placeholder"
+        )));
+    }
+    for variable in &choice_variables {
         let Some(variants) = grammar.choices.get(variable) else {
             return Err(ComposeError::Invalid(format!(
                 "campaign operation {operation:?} input_grammar has no choices for {variable:?}"
@@ -3583,7 +3606,7 @@ fn normalize_operation_input_grammar(
     }
     for variable in grammar.choices.keys() {
         validate_name("campaign operation grammar variable", variable)?;
-        if !unique_variables.contains(variable) {
+        if !choice_variables.contains(variable) {
             return Err(ComposeError::Invalid(format!(
                 "campaign operation {operation:?} input_grammar declares unused choices for {variable:?}"
             )));
@@ -3591,15 +3614,24 @@ fn normalize_operation_input_grammar(
     }
 
     let name_template = grammar.name_template.clone().unwrap_or_else(|| {
-        unique_variables
+        choice_variables
             .iter()
             .map(|variable| format!("{variable}-{{{variable}}}"))
             .collect::<Vec<_>>()
             .join("--")
     });
-    operation_input_template_variables(&name_template, operation, "name_template")?;
+    let name_variables =
+        operation_input_template_variables(&name_template, operation, "name_template")?;
+    if name_variables
+        .iter()
+        .any(|variable| !choice_variables.contains(variable))
+    {
+        return Err(ComposeError::Invalid(format!(
+            "campaign operation {operation:?} input_grammar name_template may reference only choices"
+        )));
+    }
     let mut combinations = vec![BTreeMap::<String, (String, String)>::new()];
-    for variable in &unique_variables {
+    for variable in &choice_variables {
         let variants = &grammar.choices[variable];
         let mut next = Vec::with_capacity(combinations.len() * variants.len());
         for bindings in combinations {
@@ -3619,7 +3651,10 @@ fn normalize_operation_input_grammar(
 
     let mut generated = BTreeSet::new();
     let mut inputs = Vec::with_capacity(combinations.len());
-    for bindings in combinations {
+    for mut bindings in combinations {
+        for name in &capture_names {
+            bindings.insert(name.clone(), (name.clone(), format!("{{{name}}}")));
+        }
         let input = render_operation_input_template(
             &grammar.template,
             &bindings,
@@ -3648,9 +3683,12 @@ fn normalize_operation_input_grammar(
         let rules = grammar.cases.get(&name).cloned().unwrap_or_default();
         inputs.push(OperationInputPlan {
             name,
-            input_hex: hex(input.as_bytes()),
-            input_template: None,
-            input_captures: BTreeMap::new(),
+            input_hex: captures
+                .is_empty()
+                .then(|| hex(input.as_bytes()))
+                .unwrap_or_default(),
+            input_template: (!captures.is_empty()).then_some(input),
+            input_captures: captures.clone(),
             requires: normalize_operation_input_references(rules.requires, "requires", operation)?,
             excludes: normalize_operation_input_references(rules.excludes, "excludes", operation)?,
             max_uses: rules.max_uses,
@@ -3671,6 +3709,7 @@ fn normalize_operation_input_grammar(
             template: grammar.template.clone(),
             name_template,
             choices: grammar.choices.clone(),
+            input_captures: captures,
         },
         inputs,
     })
@@ -3694,7 +3733,16 @@ fn normalize_operation_input_template(
             "campaign operation {operation:?} input_template placeholders must exactly match input_captures"
         )));
     }
-    let captures = captures
+    let captures = normalize_operation_input_captures(captures, operation, services)?;
+    Ok((template, captures))
+}
+
+fn normalize_operation_input_captures(
+    captures: BTreeMap<String, ComposeOperationInputCapture>,
+    operation: &str,
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<BTreeMap<String, OperationInputCapturePlan>, ComposeError> {
+    captures
         .into_iter()
         .map(|(name, capture)| {
             validate_name("campaign operation input capture", &name)?;
@@ -3725,8 +3773,7 @@ fn normalize_operation_input_template(
                 },
             ))
         })
-        .collect::<Result<BTreeMap<_, _>, ComposeError>>()?;
-    Ok((template, captures))
+        .collect()
 }
 
 fn operation_input_template_variables(
@@ -4893,6 +4940,58 @@ x-theseus:
         assert_eq!(
             input.input_captures["request"].json.fields["/event"],
             serde_json::Value::String("write".to_owned())
+        );
+    }
+
+    #[test]
+    fn combines_campaign_grammar_choices_with_checkpoint_captures() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: retry
+        input_grammar:
+          template: "retry {request} {mode}\n"
+          name_template: "{mode}"
+          choices:
+            mode: {normal: normal, force: force}
+          input_captures:
+            request:
+              pointer: /request_id
+              json:
+                fields:
+                  /event: write
+"#,
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        let operation = &campaign.operations[0];
+        assert_eq!(
+            operation
+                .inputs
+                .iter()
+                .map(|input| input.name.as_str())
+                .collect::<Vec<_>>(),
+            ["force", "normal"]
+        );
+        assert_eq!(
+            operation.inputs[0].input_template.as_deref(),
+            Some("retry {request} force\n")
+        );
+        assert_eq!(operation.inputs[0].input_hex, "");
+        assert_eq!(
+            operation.input_grammar.as_ref().unwrap().input_captures["request"].pointer,
+            "/request_id"
         );
     }
 
