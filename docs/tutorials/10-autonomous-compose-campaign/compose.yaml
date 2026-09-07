@@ -20,6 +20,9 @@ networks:
 x-theseus:
   campaign:
     driver: api
+    # These values are Theseus's deterministic workload model, not guest
+    # variables. Each operation case below declares its legal transition.
+    state: {phase: fresh}
     stages: [write, read, recovery]
     max_runs: 40
     # Explore every ordered operation history through this depth. Repetition is
@@ -144,13 +147,17 @@ x-theseus:
         inputs:
           - name: alpha
             input: "write alpha\n"
+            requires_state: {phase: fresh}
+            sets_state: {phase: prepared}
           - name: beta
             input: "write beta\n"
+            requires_state: {phase: prepared}
+            sets_state: {phase: written}
         stage: write
         # The driver announces this boot marker before Theseus snapshots the
         # campaign root. Marker guards read the restored serial transcript.
         requires_markers: ["42"]
-        max_uses: 1
+        max_uses: 2
       - name: read_stale
         inputs:
           - name: after_beta
@@ -158,6 +165,8 @@ x-theseus:
             # This case follows one exact write payload, rather than any
             # logical write. The fault barriers still target `write`.
             requires: ["write[beta]"]
+            requires_state: {phase: written}
+            sets_state: {phase: stale}
         stage: read
         requires_markers: [written]
         # A guard without service reads the driver. Select another service to
@@ -172,6 +181,8 @@ x-theseus:
       - name: retry
         input: "retry\n"
         stage: recovery
+        requires_state: {phase: stale}
+        sets_state: {phase: recovered}
         requires_markers: [written]
         # Unlike marker guards, this inspects one structured event from the
         # driver's restored serial transcript. Retry only an identified stale

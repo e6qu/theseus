@@ -81,6 +81,8 @@ struct ComposeTheseus {
 #[serde(deny_unknown_fields)]
 struct ComposeCampaign {
     driver: String,
+    #[serde(default)]
+    state: BTreeMap<String, String>,
     operations: Vec<ComposeOperation>,
     #[serde(default)]
     stages: Vec<String>,
@@ -136,6 +138,10 @@ struct ComposeOperation {
     excludes_serial_evidence: Option<ComposeSerialEvidence>,
     #[serde(default)]
     max_uses: Option<u8>,
+    #[serde(default)]
+    requires_state: BTreeMap<String, String>,
+    #[serde(default)]
+    sets_state: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,6 +155,10 @@ struct ComposeOperationInput {
     excludes: Vec<String>,
     #[serde(default)]
     max_uses: Option<u8>,
+    #[serde(default)]
+    requires_state: BTreeMap<String, String>,
+    #[serde(default)]
+    sets_state: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -634,6 +644,8 @@ pub struct ComposeServicePlan {
 #[derive(Debug, Clone, Serialize)]
 pub struct CampaignPlan {
     pub driver: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub state: BTreeMap<String, String>,
     pub operations: Vec<OperationPlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<String>,
@@ -676,6 +688,10 @@ pub struct OperationPlan {
     pub excludes_serial_evidence: Option<SerialEvidencePlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_uses: Option<u8>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub requires_state: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sets_state: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -688,6 +704,10 @@ pub struct OperationInputPlan {
     pub excludes: Vec<OperationInputReferencePlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_uses: Option<u8>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub requires_state: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sets_state: BTreeMap<String, String>,
 }
 
 /// A case transition can name any logical operation (`write`) or one exact
@@ -1117,6 +1137,7 @@ fn campaign_plan(
             "campaign max_operations_per_run must be between 1 and 4".to_owned(),
         ));
     }
+    let initial_state = campaign.state;
     let evidence_definitions = campaign.evidence;
     let mut resolved_evidence =
         normalize_serial_evidence_definitions(&evidence_definitions, services)?;
@@ -1149,6 +1170,8 @@ fn campaign_plan(
                 requires: Vec::new(),
                 excludes: Vec::new(),
                 max_uses: None,
+                requires_state: BTreeMap::new(),
+                sets_state: BTreeMap::new(),
             }],
             None if operation.inputs.is_empty() => {
                 return Err(ComposeError::Invalid(format!(
@@ -1189,6 +1212,8 @@ fn campaign_plan(
                                 &operation.name,
                             )?,
                             max_uses: input.max_uses,
+                            requires_state: input.requires_state,
+                            sets_state: input.sets_state,
                         })
                     })
                     .collect::<Result<Vec<_>, ComposeError>>()?
@@ -1260,9 +1285,11 @@ fn campaign_plan(
             requires_serial_evidence,
             excludes_serial_evidence,
             max_uses: operation.max_uses,
+            requires_state: operation.requires_state,
+            sets_state: operation.sets_state,
         });
     }
-    validate_campaign_operation_rules(&operations, &campaign.stages)?;
+    validate_campaign_operation_rules(&operations, &campaign.stages, &initial_state)?;
     let mut faults = Vec::with_capacity(campaign.faults.len());
     for candidate in campaign.faults {
         let has_network_conditions = candidate.drop_ppm.is_some()
@@ -1989,6 +2016,7 @@ fn campaign_plan(
     }
     Ok(Some(CampaignPlan {
         driver: campaign.driver,
+        state: initial_state,
         operations,
         stages: campaign.stages,
         faults,
@@ -2918,7 +2946,12 @@ fn valid_json_pointer(pointer: &str) -> bool {
 fn validate_campaign_operation_rules(
     operations: &[OperationPlan],
     stages: &[String],
+    initial_state: &BTreeMap<String, String>,
 ) -> Result<(), ComposeError> {
+    for (name, value) in initial_state {
+        validate_name("campaign state", name)?;
+        validate_name("campaign state value", value)?;
+    }
     let mut stage_names = BTreeSet::new();
     for stage in stages {
         validate_name("campaign stage", stage)?;
@@ -3032,6 +3065,18 @@ fn validate_campaign_operation_rules(
                 operation.name
             )));
         }
+        validate_campaign_state_rule(
+            &operation.requires_state,
+            "requires_state",
+            &format!("campaign operation {:?}", operation.name),
+            initial_state,
+        )?;
+        validate_campaign_state_rule(
+            &operation.sets_state,
+            "sets_state",
+            &format!("campaign operation {:?}", operation.name),
+            initial_state,
+        )?;
         for input in &operation.inputs {
             let context = format!(
                 "campaign operation {:?} input {:?}",
@@ -3070,6 +3115,13 @@ fn validate_campaign_operation_rules(
                     "{context} max_uses must be between 1 and 4"
                 )));
             }
+            validate_campaign_state_rule(
+                &input.requires_state,
+                "requires_state",
+                &context,
+                initial_state,
+            )?;
+            validate_campaign_state_rule(&input.sets_state, "sets_state", &context, initial_state)?;
         }
     }
     let mut reachable = BTreeSet::new();
@@ -3173,6 +3225,24 @@ fn validate_operation_input_reference(
             return Err(ComposeError::Invalid(format!(
                 "{context} {rule} unknown input {:?}",
                 operation_input_reference_name(reference)
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_campaign_state_rule(
+    rule: &BTreeMap<String, String>,
+    name: &str,
+    context: &str,
+    initial_state: &BTreeMap<String, String>,
+) -> Result<(), ComposeError> {
+    for (key, value) in rule {
+        validate_name("campaign state", key)?;
+        validate_name("campaign state value", value)?;
+        if !initial_state.contains_key(key) {
+            return Err(ComposeError::Invalid(format!(
+                "{context} {name} references undeclared state {key:?}"
             )));
         }
     }
@@ -4294,14 +4364,18 @@ networks:
 x-theseus:
   campaign:
     driver: api
+    state: {phase: idle}
     operations:
       - name: write
         inputs:
           - name: alpha
             input: "write alpha\n"
+            requires_state: {phase: idle}
+            sets_state: {phase: written}
           - name: beta
             input: "write beta\n"
             requires: ["write[alpha]"]
+            requires_state: {phase: written}
             max_uses: 1
 "#,
         );
@@ -4324,6 +4398,15 @@ x-theseus:
             }
         );
         assert_eq!(campaign.operations[0].inputs[1].max_uses, Some(1));
+        assert_eq!(campaign.state["phase"], "idle");
+        assert_eq!(
+            campaign.operations[0].inputs[0].sets_state["phase"],
+            "written"
+        );
+        assert_eq!(
+            campaign.operations[0].inputs[1].requires_state["phase"],
+            "written"
+        );
     }
 
     #[test]
@@ -4354,6 +4437,32 @@ x-theseus:
         assert!(error
             .to_string()
             .contains("input requirements cannot reach: write[alpha], write[beta]"));
+    }
+
+    #[test]
+    fn rejects_campaign_state_transitions_for_undeclared_state() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    state: {phase: fresh}
+    operations:
+      - name: write
+        input: "write\n"
+        sets_state: {missing: value}
+"#,
+        );
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("sets_state references undeclared state \"missing\""));
     }
 
     #[test]
