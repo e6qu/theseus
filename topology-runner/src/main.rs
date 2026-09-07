@@ -165,6 +165,8 @@ struct CampaignOperationInputCapture {
     json: JsonPredicate,
     #[serde(default)]
     encoding: CampaignOperationInputEncoding,
+    #[serde(default)]
+    select: CampaignOperationInputSelect,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -174,6 +176,14 @@ enum CampaignOperationInputEncoding {
     Text,
     Json,
     Hex,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CampaignOperationInputSelect {
+    First,
+    #[default]
+    Latest,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3788,7 +3798,7 @@ fn campaign_operation_input_hex(
     for (name, capture) in &input.input_captures {
         let service = capture.service.as_deref().unwrap_or(&campaign.driver);
         let serial = campaign_checkpoint_serial(checkpoint, service);
-        let value = serial
+        let mut captured_values = serial
             .split_inclusive(|byte| *byte == b'\n')
             .filter_map(|line| {
                 let line = line.strip_suffix(b"\n").unwrap_or(line);
@@ -3797,8 +3807,11 @@ fn campaign_operation_input_hex(
                     .then(|| event.pointer(&capture.pointer).cloned())
                     .flatten()
             })
-            .filter_map(|value| campaign_input_value(value, capture.encoding))
-            .last()
+            .filter_map(|value| campaign_input_value(value, capture.encoding));
+        let value = match capture.select {
+            CampaignOperationInputSelect::First => captured_values.next(),
+            CampaignOperationInputSelect::Latest => captured_values.last(),
+        }
             .ok_or_else(|| {
                 format!(
                     "campaign input capture {name:?} found no usable value at {:?} in service {service:?}",
@@ -7518,6 +7531,7 @@ mod tests {
                         equals_capture: BTreeMap::new(),
                     },
                     encoding: CampaignOperationInputEncoding::Text,
+                    select: CampaignOperationInputSelect::Latest,
                 },
             )]),
             requires: Vec::new(),
@@ -7529,6 +7543,16 @@ mod tests {
         assert_eq!(
             campaign_operation_input_hex(&campaign, &captured_checkpoint, &captured_input).unwrap(),
             "7265747279206c61746573740a"
+        );
+        let mut first_input = captured_input.clone();
+        first_input
+            .input_captures
+            .get_mut("request")
+            .unwrap()
+            .select = CampaignOperationInputSelect::First;
+        assert_eq!(
+            campaign_operation_input_hex(&campaign, &captured_checkpoint, &first_input).unwrap(),
+            "72657472792066697273740a"
         );
         let mut encoded_input = captured_input.clone();
         encoded_input.input_template = Some("retry {request}\n".to_owned());

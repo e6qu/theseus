@@ -199,8 +199,8 @@ struct ComposeOperationInputRules {
     sets_state: BTreeMap<String, String>,
 }
 
-/// One scalar value selected from the latest matching JSON-lines event in a
-/// restored campaign checkpoint.
+/// One value selected from a matching JSON-lines event in a restored campaign
+/// checkpoint.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeOperationInputCapture {
@@ -210,6 +210,8 @@ struct ComposeOperationInputCapture {
     json: ComposeJsonPredicate,
     #[serde(default)]
     encoding: ComposeOperationInputEncoding,
+    #[serde(default)]
+    select: ComposeOperationInputSelect,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default)]
@@ -219,6 +221,14 @@ pub enum ComposeOperationInputEncoding {
     Text,
     Json,
     Hex,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposeOperationInputSelect {
+    First,
+    #[default]
+    Latest,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -794,6 +804,7 @@ pub struct OperationInputCapturePlan {
     pub pointer: String,
     pub json: JsonPredicatePlan,
     pub encoding: ComposeOperationInputEncoding,
+    pub select: ComposeOperationInputSelect,
 }
 
 /// A case transition can name any logical operation (`write`) or one exact
@@ -3783,6 +3794,7 @@ fn normalize_operation_input_captures(
                     pointer: capture.pointer,
                     json,
                     encoding: capture.encoding,
+                    select: capture.select,
                 },
             ))
         })
@@ -4951,6 +4963,10 @@ x-theseus:
         assert_eq!(input.input_template.as_deref(), Some("retry {request}\n"));
         assert_eq!(input.input_captures["request"].pointer, "/request_id");
         assert_eq!(
+            input.input_captures["request"].select,
+            ComposeOperationInputSelect::Latest
+        );
+        assert_eq!(
             input.input_captures["request"].json.fields["/event"],
             serde_json::Value::String("write".to_owned())
         );
@@ -4978,6 +4994,7 @@ x-theseus:
             mode: {normal: normal, force: force}
           input_captures:
             request:
+              select: first
               pointer: /request_id
               json:
                 fields:
@@ -5005,6 +5022,10 @@ x-theseus:
         assert_eq!(
             operation.input_grammar.as_ref().unwrap().input_captures["request"].pointer,
             "/request_id"
+        );
+        assert_eq!(
+            operation.input_grammar.as_ref().unwrap().input_captures["request"].select,
+            ComposeOperationInputSelect::First
         );
     }
 
