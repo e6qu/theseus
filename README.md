@@ -110,6 +110,9 @@ the host-side random sources are seeded automatically from the run seed)
   Docker container works).
 
 Compose campaign serial predicates can also match ordered JSON-lines events.
+Use `query` inside a JSON predicate for an RFC 9535 JSONPath expression; it
+matches when the expression selects a node from that same event. This handles
+filtered nested arrays without a host-side parser.
 Within a `sequence`, `capture` binds a JSON Pointer from one event and
 `equals_capture` requires a later event to carry that same value. Use this to
 prove that lifecycle events belong to the same request or transaction.

@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use regex::bytes::Regex;
 use serde::{Deserialize, Serialize};
+use serde_json_path::JsonPath;
 use sha2::{Digest, Sha256};
 use theseus_engine::simnet::{SharedSimSwitch, SimSwitch, SimSwitchState};
 use vmm::builder::build_microvm_for_boot;
@@ -480,6 +481,8 @@ struct SerialOccurrence {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct JsonPredicate {
+    #[serde(default)]
+    query: Option<String>,
     #[serde(default)]
     fields: BTreeMap<String, serde_json::Value>,
     #[serde(default, rename = "where")]
@@ -4841,7 +4844,11 @@ fn json_predicate_matches_with_captures(
     predicate: &JsonPredicate,
     captures: &mut BTreeMap<String, serde_json::Value>,
 ) -> bool {
-    predicate
+    predicate.query.as_ref().is_none_or(|query| {
+        JsonPath::parse(query)
+            .map(|query| !query.query(event).all().is_empty())
+            .unwrap_or(false)
+    }) && predicate
         .fields
         .iter()
         .all(|(pointer, expected)| event.pointer(pointer) == Some(expected))
@@ -5257,7 +5264,12 @@ fn nested_predicate_description(predicate: &SerialPredicate) -> String {
         clauses.push(format!("matches {expression:?}"));
     }
     if let Some(json) = &predicate.json {
-        clauses.push(format!("JSON event has fields {:?}", json.fields));
+        if !json.fields.is_empty() {
+            clauses.push(format!("JSON event has fields {:?}", json.fields));
+        }
+        if let Some(query) = &json.query {
+            clauses.push(format!("JSONPath {query:?} selects a node"));
+        }
         for condition in &json.where_ {
             clauses.push(json_condition_description(condition));
         }
@@ -7401,6 +7413,7 @@ mod tests {
     #[test]
     fn json_serial_predicates_match_one_complete_event() {
         let predicate = JsonPredicate {
+            query: None,
             fields: BTreeMap::from([
                 (
                     "/event".to_owned(),
@@ -7453,6 +7466,30 @@ mod tests {
 "#,
             &predicate,
         ));
+    }
+
+    #[test]
+    fn json_serial_predicates_evaluate_rfc9535_jsonpath_queries() {
+        let predicate: JsonPredicate = serde_json::from_value(serde_json::json!({
+            "query": "$.checks[?@.name == \"serial\" && @.passed == true]"
+        }))
+        .unwrap();
+
+        assert!(serial_matches_json_predicate(
+            br#"{"event":"ready","checks":[{"name":"serial","passed":true}]}
+"#,
+            &predicate,
+        ));
+        assert!(!serial_matches_json_predicate(
+            br#"{"event":"ready","checks":[{"name":"serial","passed":false}]}
+"#,
+            &predicate,
+        ));
+        let serial: SerialPredicate = serde_json::from_value(serde_json::json!({
+            "json": {"query": "$.checks[?@.name == \"serial\" && @.passed == true]"}
+        }))
+        .unwrap();
+        assert!(nested_predicate_description(&serial).contains("JSONPath"));
     }
 
     #[test]
@@ -7572,6 +7609,7 @@ mod tests {
     #[test]
     fn json_serial_predicate_conditions_match_one_complete_event() {
         let predicate = JsonPredicate {
+            query: None,
             fields: BTreeMap::from([(
                 "/event".to_owned(),
                 serde_json::Value::String("assertion".to_owned()),
@@ -7796,6 +7834,7 @@ mod tests {
                     service: None,
                     pointer: "/request_id".to_owned(),
                     json: Some(JsonPredicate {
+                        query: None,
                         fields: BTreeMap::from([(
                             "/event".to_owned(),
                             serde_json::Value::String("write".to_owned()),
@@ -8029,6 +8068,7 @@ mod tests {
                 contains: None,
                 matches: None,
                 json: Some(JsonPredicate {
+                    query: None,
                     fields: BTreeMap::from([
                         (
                             "/event".to_owned(),
