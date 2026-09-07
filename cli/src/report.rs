@@ -204,6 +204,8 @@ struct CampaignOperationInputCapture {
     service: Option<String>,
     pointer: String,
     json: serde_json::Value,
+    #[serde(default)]
+    encoding: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
