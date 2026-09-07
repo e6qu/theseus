@@ -273,9 +273,18 @@ struct SerialRelation {
     right: JsonCorrelationEndpoint,
     operator: JsonRelationOperator,
     #[serde(default)]
+    order: Option<SerialRelationOrder>,
+    #[serde(default)]
     quantifier: SerialJoinQuantifier,
     #[serde(default)]
     occurs: Option<SerialMatchCount>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SerialRelationOrder {
+    Before,
+    After,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2722,6 +2731,13 @@ fn campaign_serial_relation_matches(
     driver: &str,
     relation: &SerialRelation,
 ) -> bool {
+    if relation.order.is_some() {
+        let serial = campaign_checkpoint_serial(
+            checkpoint,
+            relation.left.service.as_deref().unwrap_or(driver),
+        );
+        return serial_ordered_relation_matches(&serial, relation);
+    }
     let left = campaign_join_endpoint_values(checkpoint, driver, &relation.left);
     let right = campaign_join_endpoint_values(checkpoint, driver, &relation.right);
     let matches = left
@@ -2734,6 +2750,36 @@ fn campaign_serial_relation_matches(
         .cloned()
         .collect();
     serial_match_requirements_met(left, matches, relation.quantifier, relation.occurs.as_ref())
+}
+
+fn serial_ordered_relation_matches(serial: &[u8], relation: &SerialRelation) -> bool {
+    let (left, matches) = serial_ordered_relation_values(serial, relation);
+    serial_match_requirements_met(left, matches, relation.quantifier, relation.occurs.as_ref())
+}
+
+fn serial_ordered_relation_values(
+    serial: &[u8],
+    relation: &SerialRelation,
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let Some(order) = relation.order else {
+        return (Vec::new(), Vec::new());
+    };
+    let left = serial_json_endpoint_values_with_positions(serial, &relation.left);
+    let right = serial_json_endpoint_values_with_positions(serial, &relation.right);
+    let matches = left
+        .iter()
+        .filter(|(candidate, candidate_position)| {
+            right.iter().any(|(value, value_position)| {
+                json_relation_matches(candidate, value, relation.operator)
+                    && match order {
+                        SerialRelationOrder::Before => candidate_position < value_position,
+                        SerialRelationOrder::After => candidate_position > value_position,
+                    }
+            })
+        })
+        .map(|(value, _)| value.clone())
+        .collect();
+    (left.into_iter().map(|(value, _)| value).collect(), matches)
 }
 
 fn campaign_serial_evidence_matches(
@@ -3612,6 +3658,29 @@ fn serial_relation_matches_property(
     property: &CampaignProperty,
     relation: &SerialRelation,
 ) -> bool {
+    if relation.order.is_some() {
+        let mut left = Vec::new();
+        let mut matches = Vec::new();
+        for service in campaign_property_services(
+            run,
+            relation
+                .left
+                .service
+                .as_deref()
+                .or(property.service.as_deref()),
+        ) {
+            let (service_left, service_matches) =
+                serial_ordered_relation_values(&campaign_serial_contents(run, &service), relation);
+            left.extend(service_left);
+            matches.extend(service_matches);
+        }
+        return serial_match_requirements_met(
+            left,
+            matches,
+            relation.quantifier,
+            relation.occurs.as_ref(),
+        );
+    }
     let left = serial_join_endpoint_values(run, property, &relation.left);
     let right = serial_join_endpoint_values(run, property, &relation.right);
     let matches = left
@@ -3679,16 +3748,32 @@ fn serial_json_endpoint_values(
     serial: &[u8],
     endpoint: &JsonCorrelationEndpoint,
 ) -> Vec<serde_json::Value> {
+    serial_json_endpoint_values_with_positions(serial, endpoint)
+        .into_iter()
+        .map(|(value, _)| value)
+        .collect()
+}
+
+fn serial_json_endpoint_values_with_positions(
+    serial: &[u8],
+    endpoint: &JsonCorrelationEndpoint,
+) -> Vec<(serde_json::Value, usize)> {
     serial
         .split_inclusive(|byte| *byte == b'\n')
-        .filter_map(|line| serde_json::from_slice(line.strip_suffix(b"\n").unwrap_or(line)).ok())
-        .filter(|event| json_predicate_matches(event, &endpoint.json))
-        .filter_map(|event| {
+        .enumerate()
+        .filter_map(|(position, line)| {
+            serde_json::from_slice(line.strip_suffix(b"\n").unwrap_or(line))
+                .ok()
+                .map(|event| (event, position))
+        })
+        .filter(|(event, _)| json_predicate_matches(event, &endpoint.json))
+        .filter_map(|(event, position)| {
             endpoint_pointers(endpoint)
                 .iter()
                 .map(|pointer| event.pointer(pointer).cloned())
                 .collect::<Option<Vec<_>>>()
                 .map(serde_json::Value::Array)
+                .map(|value| (value, position))
         })
         .collect()
 }
@@ -4271,6 +4356,15 @@ fn serial_relation_description(relation: &SerialRelation) -> String {
             .unwrap_or("property service"),
         endpoint_pointer_description(&relation.right)
     );
+    let description = match relation.order {
+        None => description,
+        Some(SerialRelationOrder::Before) => {
+            format!("{description}; left event before right event")
+        }
+        Some(SerialRelationOrder::After) => {
+            format!("{description}; left event after right event")
+        }
+    };
     let description = match relation.quantifier {
         SerialJoinQuantifier::Any => description,
         SerialJoinQuantifier::Every => format!("every {description}"),
@@ -5943,6 +6037,96 @@ mod tests {
             &one,
             JsonRelationOperator::NotEquals
         ));
+    }
+
+    #[test]
+    fn ordered_json_relations_match_distinct_values_in_one_transcript() {
+        let relation: SerialRelation = serde_json::from_value(serde_json::json!({
+            "left": {"pointer": "/request_id", "json": {"fields": {"/event": "write"}}},
+            "right": {"pointer": "/request_id", "json": {"fields": {"/event": "replicated"}}},
+            "operator": "equals",
+            "order": "before",
+            "quantifier": "every",
+            "occurs": {"exactly": 1}
+        }))
+        .unwrap();
+
+        assert!(serial_ordered_relation_matches(
+            b"{\"event\":\"write\",\"request_id\":\"r-17\"}\n{\"event\":\"write\",\"request_id\":\"r-17\"}\n{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n",
+            &relation,
+        ));
+        assert!(!serial_ordered_relation_matches(
+            b"{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n{\"event\":\"write\",\"request_id\":\"r-17\"}\n",
+            &relation,
+        ));
+        assert!(!serial_ordered_relation_matches(
+            b"{\"event\":\"write\",\"request_id\":\"r-17\"}\n{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n{\"event\":\"write\",\"request_id\":\"r-18\"}\n{\"event\":\"replicated\",\"request_id\":\"r-18\"}\n",
+            &relation,
+        ));
+        let checkpoint = CampaignCheckpoint {
+            switches: BTreeMap::new(),
+            services: BTreeMap::new(),
+            scheduler: BTreeMap::from([(
+                "api".to_owned(),
+                ServiceSchedulerCheckpoint {
+                    serial_contents: vec![
+                        b"{\"event\":\"write\",\"request_id\":\"r-17\"}\n{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n"
+                            .to_vec(),
+                    ],
+                    program_counters: Vec::new(),
+                    next_fault: 0,
+                    paused_until: None,
+                    faults: Vec::new(),
+                    network_traffic: BTreeMap::new(),
+                    network_trace: BTreeMap::new(),
+                },
+            )]),
+            round: 0,
+        };
+        assert!(campaign_serial_relation_matches(
+            &checkpoint,
+            "api",
+            &relation
+        ));
+        assert!(serial_relation_description(&relation).contains("left event before right event"));
+    }
+
+    #[test]
+    fn ordered_json_relations_apply_to_campaign_properties() {
+        let run = std::env::temp_dir().join(format!(
+            "theseus-ordered-relation-property-{}",
+            std::process::id()
+        ));
+        let api = run.join("services/api");
+        fs::create_dir_all(&api).unwrap();
+        let property: CampaignProperty = serde_json::from_value(serde_json::json!({
+            "name": "ordered_replication",
+            "kind": "always",
+            "service": "api",
+            "requires_serial_evidence": {
+                "relation": {
+                    "left": {"pointer": "/request_id", "json": {"fields": {"/event": "write"}}},
+                    "right": {"pointer": "/request_id", "json": {"fields": {"/event": "replicated"}}},
+                    "operator": "equals",
+                    "order": "before"
+                }
+            }
+        }))
+        .unwrap();
+
+        fs::write(
+            api.join("serial.log"),
+            "{\"event\":\"write\",\"request_id\":\"r-17\"}\n{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n",
+        )
+        .unwrap();
+        assert!(property_matches_in_run(&property, &run));
+        fs::write(
+            api.join("serial.log"),
+            "{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n{\"event\":\"write\",\"request_id\":\"r-17\"}\n",
+        )
+        .unwrap();
+        assert!(!property_matches_in_run(&property, &run));
+        fs::remove_dir_all(run).unwrap();
     }
 
     #[test]

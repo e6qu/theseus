@@ -136,6 +136,10 @@ matches.
 Evidence trees also accept `relation`: compare values selected by two JSON
 endpoints with equality or numeric ordering. This can assert that an observed
 retry generation advances the original request without guest-side test code.
+For events in one service transcript, add `order: before` or `order: after` to
+require that the left matching event occurs strictly before or after the right
+matching event. Ordered relations deliberately require both endpoints to name
+the same service (or both use the same default transcript).
 Define shared trees once under `campaign.evidence` and expand them with
 `use: name` in properties, operation guards, or other evidence trees. Theseus
 rejects undefined and cyclic definitions, then records the expanded form in

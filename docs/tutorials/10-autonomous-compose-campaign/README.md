@@ -106,6 +106,9 @@ Start with `compose.yaml`.
    the whole tree against the restored checkpoint before starting an operation.
    Relations also accept `quantifier: every` and `occurs` with the same
    distinct-left-value counting rule as joins.
+   Add `order: before` or `order: after` when both endpoints select the same
+   service transcript. This requires strict event order as well as the value
+   relation; the stale assertion follows the write in this tutorial.
    Properties also accept `requires_serial_evidence` and
    `excludes_serial_evidence`; the latter rejects a property when its tree
    matches. The retry rule combines an API assertion, auditor readiness, and
