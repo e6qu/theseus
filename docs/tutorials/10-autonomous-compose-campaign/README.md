@@ -32,6 +32,14 @@ Start with `compose.yaml`.
    `write[beta-async]`.
    Quote an exact reference in a YAML flow list:
    `requires: ["write[beta-async]"]`.
+   Use `input_template` when the next UART command needs a value the guest
+   already emitted. Put each `{placeholder}` under `input_captures` with a
+   JSON event predicate and pointer; set `service` to read another service,
+   or omit it for the driver. Theseus selects the latest matching scalar from
+   the restored parent transcript. The template placeholders and capture names
+   must match exactly. This tutorial turns the write request ID into
+   `retry transaction-42`. Theseus stores the rendered bytes in each run's
+   replay plan, so that plan replays without re-reading a source Compose file.
    These rules constrain the selected cases only; they compose with the
    operation-level state rules. Here `read_stale[after_beta]` can follow the
    `write[beta-async]` payload but not another write leaf.
