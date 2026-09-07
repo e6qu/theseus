@@ -250,6 +250,8 @@ struct SerialJoin {
     endpoints: Vec<JsonCorrelationEndpoint>,
     #[serde(default)]
     quantifier: SerialJoinQuantifier,
+    #[serde(default)]
+    occurs: Option<SerialMatchCount>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -270,6 +272,20 @@ struct SerialRelation {
     left: JsonCorrelationEndpoint,
     right: JsonCorrelationEndpoint,
     operator: JsonRelationOperator,
+    #[serde(default)]
+    quantifier: SerialJoinQuantifier,
+    #[serde(default)]
+    occurs: Option<SerialMatchCount>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SerialMatchCount {
+    #[serde(default)]
+    exactly: Option<u64>,
+    #[serde(default)]
+    at_least: Option<u64>,
+    #[serde(default)]
+    at_most: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -2607,23 +2623,54 @@ fn campaign_serial_join_matches(
         return false;
     };
     let candidates = campaign_join_endpoint_values(checkpoint, driver, first);
-    !candidates.is_empty()
-        && match join.quantifier {
-            SerialJoinQuantifier::Any => candidates.into_iter().any(|candidate| {
-                rest.iter().all(|endpoint| {
-                    campaign_join_endpoint_values(checkpoint, driver, endpoint)
-                        .into_iter()
-                        .any(|value| value == candidate)
-                })
-            }),
-            SerialJoinQuantifier::Every => candidates.into_iter().all(|candidate| {
-                rest.iter().all(|endpoint| {
-                    campaign_join_endpoint_values(checkpoint, driver, endpoint)
-                        .into_iter()
-                        .any(|value| value == candidate)
-                })
-            }),
+    let peer_values = rest
+        .iter()
+        .map(|endpoint| campaign_join_endpoint_values(checkpoint, driver, endpoint))
+        .collect::<Vec<_>>();
+    let matches = candidates
+        .iter()
+        .filter(|candidate| {
+            peer_values
+                .iter()
+                .all(|values| values.iter().any(|value| value == *candidate))
+        })
+        .cloned()
+        .collect();
+    serial_match_requirements_met(candidates, matches, join.quantifier, join.occurs.as_ref())
+}
+
+fn distinct_json_values(values: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let mut distinct = Vec::new();
+    for value in values {
+        if !distinct.iter().any(|existing| existing == &value) {
+            distinct.push(value);
         }
+    }
+    distinct
+}
+
+fn serial_match_requirements_met(
+    candidates: Vec<serde_json::Value>,
+    matches: Vec<serde_json::Value>,
+    quantifier: SerialJoinQuantifier,
+    occurs: Option<&SerialMatchCount>,
+) -> bool {
+    let candidates = distinct_json_values(candidates);
+    let matches = distinct_json_values(matches);
+    if candidates.is_empty() {
+        return false;
+    }
+    let quantified = match quantifier {
+        SerialJoinQuantifier::Any => !matches.is_empty(),
+        SerialJoinQuantifier::Every => matches.len() == candidates.len(),
+    };
+    let count_matches = occurs.is_none_or(|count| {
+        let matches = matches.len() as u64;
+        count.exactly.is_none_or(|exactly| matches == exactly)
+            && count.at_least.is_none_or(|at_least| matches >= at_least)
+            && count.at_most.is_none_or(|at_most| matches <= at_most)
+    });
+    quantified && count_matches
 }
 
 fn campaign_serial_correlation_matches(
@@ -2675,13 +2722,18 @@ fn campaign_serial_relation_matches(
     driver: &str,
     relation: &SerialRelation,
 ) -> bool {
-    campaign_join_endpoint_values(checkpoint, driver, &relation.left)
+    let left = campaign_join_endpoint_values(checkpoint, driver, &relation.left);
+    let right = campaign_join_endpoint_values(checkpoint, driver, &relation.right);
+    let matches = left
         .iter()
-        .any(|left| {
-            campaign_join_endpoint_values(checkpoint, driver, &relation.right)
+        .filter(|candidate| {
+            right
                 .iter()
-                .any(|right| json_relation_matches(left, right, relation.operator))
+                .any(|value| json_relation_matches(candidate, value, relation.operator))
         })
+        .cloned()
+        .collect();
+    serial_match_requirements_met(left, matches, relation.quantifier, relation.occurs.as_ref())
 }
 
 fn campaign_serial_evidence_matches(
@@ -3539,23 +3591,20 @@ fn serial_join_matches_property(
         return false;
     };
     let candidates = serial_join_endpoint_values(run, property, first);
-    !candidates.is_empty()
-        && match join.quantifier {
-            SerialJoinQuantifier::Any => candidates.into_iter().any(|candidate| {
-                rest.iter().all(|endpoint| {
-                    serial_join_endpoint_values(run, property, endpoint)
-                        .into_iter()
-                        .any(|value| value == candidate)
-                })
-            }),
-            SerialJoinQuantifier::Every => candidates.into_iter().all(|candidate| {
-                rest.iter().all(|endpoint| {
-                    serial_join_endpoint_values(run, property, endpoint)
-                        .into_iter()
-                        .any(|value| value == candidate)
-                })
-            }),
-        }
+    let peer_values = rest
+        .iter()
+        .map(|endpoint| serial_join_endpoint_values(run, property, endpoint))
+        .collect::<Vec<_>>();
+    let matches = candidates
+        .iter()
+        .filter(|candidate| {
+            peer_values
+                .iter()
+                .all(|values| values.iter().any(|value| value == *candidate))
+        })
+        .cloned()
+        .collect();
+    serial_match_requirements_met(candidates, matches, join.quantifier, join.occurs.as_ref())
 }
 
 fn serial_relation_matches_property(
@@ -3563,13 +3612,18 @@ fn serial_relation_matches_property(
     property: &CampaignProperty,
     relation: &SerialRelation,
 ) -> bool {
-    serial_join_endpoint_values(run, property, &relation.left)
+    let left = serial_join_endpoint_values(run, property, &relation.left);
+    let right = serial_join_endpoint_values(run, property, &relation.right);
+    let matches = left
         .iter()
-        .any(|left| {
-            serial_join_endpoint_values(run, property, &relation.right)
+        .filter(|candidate| {
+            right
                 .iter()
-                .any(|right| json_relation_matches(left, right, relation.operator))
+                .any(|value| json_relation_matches(candidate, value, relation.operator))
         })
+        .cloned()
+        .collect();
+    serial_match_requirements_met(left, matches, relation.quantifier, relation.occurs.as_ref())
 }
 
 fn serial_evidence_matches_property(
@@ -4182,10 +4236,14 @@ fn serial_join_description(join: &SerialJoin) -> String {
         })
         .collect::<Vec<_>>()
         .join(" = ");
-    match join.quantifier {
+    let description = match join.quantifier {
         SerialJoinQuantifier::Any => endpoints,
         SerialJoinQuantifier::Every => format!("every {endpoints}"),
-    }
+    };
+    join.occurs
+        .as_ref()
+        .map(|occurs| format!("{description}; {}", serial_match_count_description(occurs)))
+        .unwrap_or(description)
 }
 
 fn serial_relation_description(relation: &SerialRelation) -> String {
@@ -4197,7 +4255,7 @@ fn serial_relation_description(relation: &SerialRelation) -> String {
         JsonRelationOperator::LessThan => "<",
         JsonRelationOperator::LessThanOrEqual => "<=",
     };
-    format!(
+    let description = format!(
         "{} {} {} {} {}",
         relation
             .left
@@ -4212,7 +4270,30 @@ fn serial_relation_description(relation: &SerialRelation) -> String {
             .as_deref()
             .unwrap_or("property service"),
         endpoint_pointer_description(&relation.right)
-    )
+    );
+    let description = match relation.quantifier {
+        SerialJoinQuantifier::Any => description,
+        SerialJoinQuantifier::Every => format!("every {description}"),
+    };
+    relation
+        .occurs
+        .as_ref()
+        .map(|occurs| format!("{description}; {}", serial_match_count_description(occurs)))
+        .unwrap_or(description)
+}
+
+fn serial_match_count_description(occurs: &SerialMatchCount) -> String {
+    let mut bounds = Vec::new();
+    if let Some(exactly) = occurs.exactly {
+        bounds.push(format!("exactly {exactly}"));
+    }
+    if let Some(at_least) = occurs.at_least {
+        bounds.push(format!("at least {at_least}"));
+    }
+    if let Some(at_most) = occurs.at_most {
+        bounds.push(format!("at most {at_most}"));
+    }
+    format!("{} distinct source keys", bounds.join(" and "))
 }
 
 fn endpoint_pointer_description(endpoint: &JsonCorrelationEndpoint) -> String {
@@ -6084,11 +6165,11 @@ mod tests {
                         {"service": "api", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "write"}}},
                         {"service": "worker", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "replicated"}}},
                         {"service": "auditor", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "audit"}}}
-                    ], "quantifier": "every"}},
+                    ], "quantifier": "every", "occurs": {"exactly": 1}}},
                     {"relation": {
                         "left": {"service": "worker", "pointer": "/attempt", "json": {"fields": {"/event": "replicated"}}},
                         "right": {"service": "api", "pointer": "/attempt", "json": {"fields": {"/event": "write"}}},
-                        "operator": "greater_than_or_equal"
+                        "operator": "greater_than_or_equal", "quantifier": "every", "occurs": {"exactly": 1}
                     }}
                 ]
             }))
@@ -6096,9 +6177,21 @@ mod tests {
         );
         assert!(property_matches_in_run(&joined, &run));
         assert!(campaign_property_description(&joined).contains("worker /attempt >= api /attempt"));
+        assert!(campaign_property_description(&joined).contains("exactly 1 distinct source keys"));
         fs::write(
             api.join("serial.log"),
             "THES:ASSERT:write:pass\nTHES:M:written\nTHES:CHECKPOINT:write\n{\"event\":\"write\",\"request_id\":\"r-17\",\"attempt\":1}\n{\"event\":\"write\",\"request_id\":\"r-18\",\"attempt\":1}\n",
+        )
+        .unwrap();
+        assert!(!property_matches_in_run(&joined, &run));
+        fs::write(
+            worker.join("serial.log"),
+            "THES:M:written\n{\"event\":\"replicated\",\"request_id\":\"r-17\",\"attempt\":1}\n{\"event\":\"replicated\",\"request_id\":\"r-18\",\"attempt\":1}\n",
+        )
+        .unwrap();
+        fs::write(
+            auditor.join("serial.log"),
+            "{\"event\":\"audit\",\"request_id\":\"r-17\",\"attempt\":1}\n{\"event\":\"audit\",\"request_id\":\"r-18\",\"attempt\":1}\n",
         )
         .unwrap();
         assert!(!property_matches_in_run(&joined, &run));
@@ -6516,7 +6609,7 @@ mod tests {
                     {"join": {"endpoints": [
                         {"pointer": "/request_id", "json": {"fields": {"/event": "write"}}},
                         {"service": "auditor", "pointer": "/request_id", "json": {"fields": {"/event": "audit"}}}
-                    ], "quantifier": "every"}},
+                    ], "quantifier": "every", "occurs": {"exactly": 1}}},
                     {"any": [
                         {"correlation": {
                             "capture": {"pointer": "/request_id", "json": {"fields": {"/event": "write"}}},
@@ -6527,7 +6620,7 @@ mod tests {
                     {"relation": {
                         "left": {"service": "auditor", "pointer": "/attempt", "json": {"fields": {"/event": "audit"}}},
                         "right": {"pointer": "/attempt", "json": {"fields": {"/event": "write"}}},
-                        "operator": "greater_than"
+                        "operator": "greater_than", "quantifier": "every", "occurs": {"exactly": 1}
                     }}
                 ]
             }))
@@ -6546,6 +6639,13 @@ mod tests {
         ));
         stale.scheduler.get_mut("api").unwrap().serial_contents[0]
             .extend_from_slice(b"{\"event\":\"write\",\"request_id\":\"r-18\",\"attempt\":1}\n");
+        assert!(!campaign_operation_serial_guards_are_ready(
+            &structured,
+            &stale,
+            1
+        ));
+        stale.scheduler.get_mut("auditor").unwrap().serial_contents[0]
+            .extend_from_slice(b"{\"event\":\"audit\",\"request_id\":\"r-18\",\"attempt\":2}\n");
         assert!(!campaign_operation_serial_guards_are_ready(
             &structured,
             &stale,

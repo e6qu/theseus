@@ -89,6 +89,8 @@ Start with `compose.yaml`.
    `quantifier: every` to require every key selected by the first endpoint to
    appear at every later endpoint. Use this to assert complete replication,
    not just one successful request.
+   Add `occurs: {exactly: N}`, `at_least`, or `at_most` to bound matching
+   distinct first-endpoint keys. Repeated JSON lines do not raise this count.
    Operations accept `requires_serial_joins` too. Theseus evaluates them at
    the restored parent checkpoint and skips an operation before it consumes a
    campaign run when the shared value is absent. Use `excludes_serial_joins`
@@ -102,6 +104,8 @@ Start with `compose.yaml`.
    `less_than_or_equal`. Numeric operators compare one pointer on each side;
    equality operators can compare same-sized composite keys. Theseus evaluates
    the whole tree against the restored checkpoint before starting an operation.
+   Relations also accept `quantifier: every` and `occurs` with the same
+   distinct-left-value counting rule as joins.
    Properties also accept `requires_serial_evidence` and
    `excludes_serial_evidence`; the latter rejects a property when its tree
    matches. The retry rule combines an API assertion, auditor readiness, and
