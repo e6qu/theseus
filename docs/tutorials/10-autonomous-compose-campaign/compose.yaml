@@ -152,7 +152,12 @@ x-theseus:
         requires_markers: ["42"]
         max_uses: 1
       - name: read_stale
-        input: "read_stale\n"
+        inputs:
+          - name: after_beta
+            input: "read_stale\n"
+            # This case follows one exact write payload, rather than any
+            # logical write. The fault barriers still target `write`.
+            requires: ["write[beta]"]
         stage: read
         requires_markers: [written]
         # A guard without service reads the driver. Select another service to

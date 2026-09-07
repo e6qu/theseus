@@ -118,10 +118,23 @@ struct CampaignOperation {
     max_uses: Option<u8>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct CampaignOperationInput {
     name: String,
     input_hex: String,
+    #[serde(default)]
+    requires: Vec<CampaignOperationInputReference>,
+    #[serde(default)]
+    excludes: Vec<CampaignOperationInputReference>,
+    #[serde(default)]
+    max_uses: Option<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CampaignOperationInputReference {
+    operation: String,
+    #[serde(default)]
+    input: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2605,18 +2618,14 @@ fn campaign_operation_inputs(operation: &CampaignOperation) -> Vec<CampaignOpera
             .map(|input_hex| CampaignOperationInput {
                 name: "default".to_owned(),
                 input_hex: input_hex.clone(),
+                requires: Vec::new(),
+                excludes: Vec::new(),
+                max_uses: None,
             })
             .into_iter()
             .collect();
     }
-    operation
-        .inputs
-        .iter()
-        .map(|input| CampaignOperationInput {
-            name: input.name.clone(),
-            input_hex: input.input_hex.clone(),
-        })
-        .collect()
+    operation.inputs.clone()
 }
 
 fn campaign_operation_choices(campaign: &CampaignPlan) -> Vec<CampaignOperationChoice> {
@@ -2643,16 +2652,29 @@ fn campaign_operation_input(
     })?;
     campaign_operation_inputs(operation)
         .get(choice.input)
-        .map(|input| CampaignOperationInput {
-            name: input.name.clone(),
-            input_hex: input.input_hex.clone(),
-        })
+        .cloned()
         .ok_or_else(|| {
             format!(
                 "campaign operation {:?} input index {} is not declared",
                 operation.name, choice.input
             )
         })
+}
+
+fn campaign_input_reference_matches(
+    campaign: &CampaignPlan,
+    history: &[CampaignOperationChoice],
+    reference: &CampaignOperationInputReference,
+) -> bool {
+    history.iter().any(|choice| {
+        let operation = &campaign.operations[choice.operation];
+        operation.name == reference.operation
+            && reference.input.as_ref().is_none_or(|expected| {
+                campaign_operation_input(campaign, *choice)
+                    .map(|input| input.name == *expected)
+                    .unwrap_or(false)
+            })
+    })
 }
 
 fn campaign_operation_choice_name(
@@ -3219,6 +3241,8 @@ fn campaign_operation_is_ready(
     choice: CampaignOperationChoice,
 ) -> bool {
     let candidate = &campaign.operations[choice.operation];
+    let input = campaign_operation_input(campaign, choice)
+        .expect("generated campaign operation choice has a declared input");
     let candidate_stage = candidate.stage.as_ref().and_then(|stage| {
         campaign
             .stages
@@ -3253,6 +3277,21 @@ fn campaign_operation_is_ready(
             history
                 .iter()
                 .filter(|prior| prior.operation == choice.operation)
+                .count()
+                < usize::from(maximum)
+        })
+        && input
+            .requires
+            .iter()
+            .all(|reference| campaign_input_reference_matches(campaign, history, reference))
+        && input
+            .excludes
+            .iter()
+            .all(|reference| !campaign_input_reference_matches(campaign, history, reference))
+        && input.max_uses.map_or(true, |maximum| {
+            history
+                .iter()
+                .filter(|prior| prior.operation == choice.operation && prior.input == choice.input)
                 .count()
                 < usize::from(maximum)
         })
@@ -7152,10 +7191,19 @@ mod tests {
                         CampaignOperationInput {
                             name: "alpha".to_owned(),
                             input_hex: "777269746520616c7068610a".to_owned(),
+                            requires: Vec::new(),
+                            excludes: Vec::new(),
+                            max_uses: None,
                         },
                         CampaignOperationInput {
                             name: "beta".to_owned(),
                             input_hex: "777269746520626574610a".to_owned(),
+                            requires: vec![CampaignOperationInputReference {
+                                operation: "write".to_owned(),
+                                input: Some("alpha".to_owned()),
+                            }],
+                            excludes: Vec::new(),
+                            max_uses: Some(1),
                         },
                     ],
                     stage: None,
@@ -7171,7 +7219,7 @@ mod tests {
                     excludes_serial_joins: Vec::new(),
                     requires_serial_evidence: None,
                     excludes_serial_evidence: None,
-                    max_uses: Some(1),
+                    max_uses: Some(2),
                 },
                 CampaignOperation {
                     name: "read".to_owned(),
@@ -7234,8 +7282,17 @@ mod tests {
                 .filter(|history| history.len() == 1)
                 .map(|history| campaign_operation_choice_name(&campaign, history[0]))
                 .collect::<Vec<_>>(),
-            vec!["write[alpha]", "write[beta]"]
+            vec!["write[alpha]"]
         );
+        assert!(campaign_operation_histories(&campaign)
+            .iter()
+            .any(|history| {
+                history
+                    .iter()
+                    .map(|choice| campaign_operation_choice_name(&campaign, *choice))
+                    .collect::<Vec<_>>()
+                    == ["write[alpha]", "write[beta]"]
+            }));
         assert_eq!(
             campaign_schedule_events(
                 &campaign,

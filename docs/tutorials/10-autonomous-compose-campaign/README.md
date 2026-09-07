@@ -23,6 +23,12 @@ Start with `compose.yaml`.
    `operation[case]`, and still applies `requires`, `max_uses`, stages, and
    faults to the logical operation name. This tutorial's `write` operation
    explores `write alpha` and `write beta` without duplicating its fault rules.
+   A case can also use `requires`, `excludes`, and `max_uses`. Reference any
+   logical operation as `write`, or one exact payload as `write[beta]`.
+   Quote an exact reference in a YAML flow list: `requires: ["write[beta]"]`.
+   These rules constrain the selected cases only; they compose with the
+   operation-level state rules. Here `read_stale[after_beta]` can follow the
+   `write[beta]` payload but not `write[alpha]`.
    Add `requires: [operation-name]` when an operation needs one or more earlier
    operations. Theseus generates only histories where every requirement has
    already occurred; unknown, duplicate, and cyclic requirements are rejected.
@@ -228,7 +234,7 @@ Emit the serial protocol with plain shell:
 printf '%s\n' 'THES:ASSERT:consistent_read:pass'
 printf '%s\n' 'THES:M:written'
 printf '%s\n' 'THES:CHECKPOINT:write'
-printf '%s\n' '{"event":"operation","name":"write","request_id":"transaction-42","attempt":1}'
+printf '%s\n' '{"event":"operation","name":"write","value":"beta","request_id":"transaction-42","attempt":1}'
 printf '%s\n' '{"event":"assertion","name":"consistent_read","passed":true,"attempt":2,"request_id":"transaction-42"}'
 ```
 

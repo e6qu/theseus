@@ -143,6 +143,12 @@ struct ComposeOperation {
 struct ComposeOperationInput {
     name: String,
     input: String,
+    #[serde(default)]
+    requires: Vec<String>,
+    #[serde(default)]
+    excludes: Vec<String>,
+    #[serde(default)]
+    max_uses: Option<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -676,6 +682,21 @@ pub struct OperationPlan {
 pub struct OperationInputPlan {
     pub name: String,
     pub input_hex: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<OperationInputReferencePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excludes: Vec<OperationInputReferencePlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_uses: Option<u8>,
+}
+
+/// A case transition can name any logical operation (`write`) or one exact
+/// payload case (`write[retry]`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OperationInputReferencePlan {
+    pub operation: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1123,6 +1144,9 @@ fn campaign_plan(
             Some(input) => vec![OperationInputPlan {
                 name: "default".to_owned(),
                 input_hex: hex(input.as_bytes()),
+                requires: Vec::new(),
+                excludes: Vec::new(),
+                max_uses: None,
             }],
             None if operation.inputs.is_empty() => {
                 return Err(ComposeError::Invalid(format!(
@@ -1152,6 +1176,17 @@ fn campaign_plan(
                         Ok(OperationInputPlan {
                             name: input.name,
                             input_hex: hex(input.input.as_bytes()),
+                            requires: normalize_operation_input_references(
+                                input.requires,
+                                "requires",
+                                &operation.name,
+                            )?,
+                            excludes: normalize_operation_input_references(
+                                input.excludes,
+                                "excludes",
+                                &operation.name,
+                            )?,
+                            max_uses: input.max_uses,
                         })
                     })
                     .collect::<Result<Vec<_>, ComposeError>>()?
@@ -2911,6 +2946,19 @@ fn validate_campaign_operation_rules(
         .iter()
         .map(|operation| operation.name.as_str())
         .collect::<BTreeSet<_>>();
+    let input_names = operations
+        .iter()
+        .map(|operation| {
+            (
+                operation.name.as_str(),
+                operation
+                    .inputs
+                    .iter()
+                    .map(|input| input.name.as_str())
+                    .collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     for operation in operations {
         if let Some(stage) = &operation.stage {
             if !stage_names.contains(stage) {
@@ -2998,6 +3046,45 @@ fn validate_campaign_operation_rules(
                 operation.name
             )));
         }
+        for input in &operation.inputs {
+            let context = format!(
+                "campaign operation {:?} input {:?}",
+                operation.name, input.name
+            );
+            let mut requirements = BTreeSet::new();
+            for reference in &input.requires {
+                validate_operation_input_reference(reference, &context, "requires", &input_names)?;
+                let key = operation_input_reference_name(reference);
+                if !requirements.insert(key.clone()) {
+                    return Err(ComposeError::Invalid(format!(
+                        "{context} requires {key:?} more than once"
+                    )));
+                }
+            }
+            let mut exclusions = BTreeSet::new();
+            for reference in &input.excludes {
+                validate_operation_input_reference(reference, &context, "excludes", &input_names)?;
+                let key = operation_input_reference_name(reference);
+                if !exclusions.insert(key.clone()) {
+                    return Err(ComposeError::Invalid(format!(
+                        "{context} excludes {key:?} more than once"
+                    )));
+                }
+                if requirements.contains(&key) {
+                    return Err(ComposeError::Invalid(format!(
+                        "{context} both requires and excludes {key:?}"
+                    )));
+                }
+            }
+            if input
+                .max_uses
+                .is_some_and(|maximum| maximum == 0 || maximum > 4)
+            {
+                return Err(ComposeError::Invalid(format!(
+                    "{context} max_uses must be between 1 and 4"
+                )));
+            }
+        }
     }
     let mut reachable = BTreeSet::new();
     loop {
@@ -3016,7 +3103,53 @@ fn validate_campaign_operation_rules(
         }
     }
     if reachable.len() == operations.len() {
-        return Ok(());
+        let mut reachable_inputs = BTreeSet::new();
+        loop {
+            let before = reachable_inputs.len();
+            for operation in operations {
+                if !operation.requires.iter().all(|requirement| {
+                    reachable_inputs
+                        .iter()
+                        .any(|(prior_operation, _)| prior_operation == requirement)
+                }) {
+                    continue;
+                }
+                for input in &operation.inputs {
+                    if input.requires.iter().all(|reference| {
+                        reachable_inputs
+                            .iter()
+                            .any(|(prior_operation, prior_input)| {
+                                prior_operation == &reference.operation
+                                    && reference
+                                        .input
+                                        .as_ref()
+                                        .is_none_or(|expected| prior_input == expected)
+                            })
+                    }) {
+                        reachable_inputs.insert((operation.name.as_str(), input.name.as_str()));
+                    }
+                }
+            }
+            if reachable_inputs.len() == before {
+                break;
+            }
+        }
+        let blocked = operations
+            .iter()
+            .flat_map(|operation| {
+                operation.inputs.iter().filter_map(|input| {
+                    (!reachable_inputs.contains(&(operation.name.as_str(), input.name.as_str())))
+                        .then(|| format!("{}[{}]", operation.name, input.name))
+                })
+            })
+            .collect::<Vec<_>>();
+        if blocked.is_empty() {
+            return Ok(());
+        }
+        return Err(ComposeError::Invalid(format!(
+            "campaign operation input requirements cannot reach: {}",
+            blocked.join(", ")
+        )));
     }
     let blocked = operations
         .iter()
@@ -3027,6 +3160,37 @@ fn validate_campaign_operation_rules(
     Err(ComposeError::Invalid(format!(
         "campaign operation requirements cannot reach: {blocked}"
     )))
+}
+
+fn operation_input_reference_name(reference: &OperationInputReferencePlan) -> String {
+    reference
+        .input
+        .as_ref()
+        .map(|input| format!("{}[{input}]", reference.operation))
+        .unwrap_or_else(|| reference.operation.clone())
+}
+
+fn validate_operation_input_reference(
+    reference: &OperationInputReferencePlan,
+    context: &str,
+    rule: &str,
+    input_names: &BTreeMap<&str, BTreeSet<&str>>,
+) -> Result<(), ComposeError> {
+    let Some(inputs) = input_names.get(reference.operation.as_str()) else {
+        return Err(ComposeError::Invalid(format!(
+            "{context} {rule} unknown operation {:?}",
+            reference.operation
+        )));
+    };
+    if let Some(input) = &reference.input {
+        if !inputs.contains(input.as_str()) {
+            return Err(ComposeError::Invalid(format!(
+                "{context} {rule} unknown input {:?}",
+                operation_input_reference_name(reference)
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -3129,6 +3293,44 @@ fn validate_name(kind: &str, value: &str) -> Result<(), ComposeError> {
         )));
     }
     Ok(())
+}
+
+fn normalize_operation_input_references(
+    references: Vec<String>,
+    rule: &str,
+    operation: &str,
+) -> Result<Vec<OperationInputReferencePlan>, ComposeError> {
+    references
+        .into_iter()
+        .map(|reference| {
+            let parsed = if let Some((name, input)) = reference.split_once('[') {
+                let Some(input) = input.strip_suffix(']') else {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign operation {operation:?} input {rule} reference {reference:?} must end with ']'")
+                    ));
+                };
+                if input.contains('[') || input.contains(']') {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign operation {operation:?} input {rule} reference {reference:?} is malformed"
+                    )));
+                }
+                OperationInputReferencePlan {
+                    operation: name.to_owned(),
+                    input: Some(input.to_owned()),
+                }
+            } else {
+                OperationInputReferencePlan {
+                    operation: reference.clone(),
+                    input: None,
+                }
+            };
+            validate_name("campaign operation input reference", &parsed.operation)?;
+            if let Some(input) = &parsed.input {
+                validate_name("campaign operation input reference", input)?;
+            }
+            Ok(parsed)
+        })
+        .collect()
 }
 
 /// Execute a locked plan with the Linux-only runner shipped beside `theseus`
@@ -4082,6 +4284,8 @@ x-theseus:
             input: "write alpha\n"
           - name: beta
             input: "write beta\n"
+            requires: ["write[alpha]"]
+            max_uses: 1
 "#,
         );
         let campaign = load_compose_plan(directory.path().join("compose.yaml"))
@@ -4095,6 +4299,44 @@ x-theseus:
             "777269746520616c7068610a"
         );
         assert_eq!(campaign.operations[0].inputs[1].name, "beta");
+        assert_eq!(
+            campaign.operations[0].inputs[1].requires[0],
+            OperationInputReferencePlan {
+                operation: "write".to_owned(),
+                input: Some("alpha".to_owned()),
+            }
+        );
+        assert_eq!(campaign.operations[0].inputs[1].max_uses, Some(1));
+    }
+
+    #[test]
+    fn rejects_unreachable_campaign_input_case_requirements() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        inputs:
+          - name: alpha
+            input: "write alpha\n"
+            requires: ["write[beta]"]
+          - name: beta
+            input: "write beta\n"
+            requires: ["write[alpha]"]
+"#,
+        );
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("input requirements cannot reach: write[alpha], write[beta]"));
     }
 
     #[test]
