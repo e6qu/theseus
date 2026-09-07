@@ -97,7 +97,7 @@ Start with `compose.yaml`.
    to skip it when a completed or forbidden transaction is already present.
    Use `requires_serial_evidence` when a rule combines these evidence types.
    Each node has exactly one of `all`, `any`, `none`, `guard`, `correlation`,
-   `join`, `relation`, or `path`. A `guard` has `service` and the normal serial
+   `join`, `relation`, `path`, or `workflow`. A `guard` has `service` and the normal serial
    predicate; `correlation` and `join` use the endpoint forms above. A
    `relation` has `left`, `right`, and an `operator`: `equals`, `not_equals`,
    `greater_than`, `greater_than_or_equal`, `less_than`, or
@@ -113,6 +113,10 @@ Start with `compose.yaml`.
    transcript. Give it `pointers`, ordered `steps`, and optional `service`,
    `quantifier`, and `occurs`. Each later step must carry the first step's key;
    the tutorial follows its request ID from write to stale-read assertion.
+   A `workflow` applies keyed paths to two or more explicitly named services.
+   Its first stage supplies the keys; every later stage must complete its own
+   ordered steps for the same key. The replica and auditor streams have no
+   shared clock, so the tutorial uses a workflow for their service-local stages.
    Properties also accept `requires_serial_evidence` and
    `excludes_serial_evidence`; the latter rejects a property when its tree
    matches. The retry rule combines an API assertion, auditor readiness, and

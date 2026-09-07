@@ -45,32 +45,30 @@ x-theseus:
                     /name: serial
                     /passed: true
       replicated_write:
-        join:
-          # Do not accept one replicated transaction while another write is
-          # missing. Every API request/attempt must appear at both peers.
+        workflow:
+          # Each API request/attempt must reach both peer services. The
+          # service streams are independent, so this proves a keyed stage at
+          # each service instead of inventing a global event order.
+          pointers: [/request_id, /attempt]
           quantifier: every
-          # Count distinct API request/attempt keys, not duplicate log lines.
-          # This compact scenario emits exactly one write transaction.
           occurs:
             exactly: 1
-          endpoints:
-            - pointers: [/request_id, /attempt]
-              json:
-                fields:
-                  /event: operation
-                  /name: write
+          stages:
+            - service: api
+              steps:
+                - fields:
+                    /event: operation
+                    /name: write
             - service: replica
-              pointers: [/request_id, /attempt]
-              json:
-                fields:
-                  /event: replicated
-                  /name: write
+              steps:
+                - fields:
+                    /event: replicated
+                    /name: write
             - service: auditor
-              pointers: [/request_id, /attempt]
-              json:
-                fields:
-                  /event: audit
-                  /name: write_observed
+              steps:
+                - fields:
+                    /event: audit
+                    /name: write_observed
       stale_assertion:
         guard:
           occurs:
