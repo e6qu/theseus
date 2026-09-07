@@ -167,6 +167,8 @@ struct CampaignOperationInputCapture {
     #[serde(default)]
     sequence: Vec<SerialPredicate>,
     #[serde(default)]
+    workflow: Option<SerialWorkflow>,
+    #[serde(default)]
     encoding: CampaignOperationInputEncoding,
     #[serde(default)]
     select: CampaignOperationInputSelect,
@@ -3124,6 +3126,67 @@ fn serial_path_values(
     (candidates, matches)
 }
 
+fn serial_path_terminal_events(
+    serial: &[u8],
+    pointers: &[String],
+    steps: &[JsonPredicate],
+) -> Vec<(serde_json::Value, usize, serde_json::Value)> {
+    let step_events = steps
+        .iter()
+        .map(|step| {
+            serial
+                .split_inclusive(|byte| *byte == b'\n')
+                .enumerate()
+                .filter_map(|(position, line)| {
+                    serde_json::from_slice(line.strip_suffix(b"\n").unwrap_or(line))
+                        .ok()
+                        .map(|event| (event, position))
+                })
+                .filter(|(event, _)| json_predicate_matches(event, step))
+                .filter_map(|(event, position)| {
+                    json_path_key(&event, pointers).map(|key| (position, key, event))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let Some((first, later)) = step_events.split_first() else {
+        return Vec::new();
+    };
+    first
+        .iter()
+        .flat_map(|(position, key, event)| {
+            if later.is_empty() {
+                vec![(key.clone(), *position, event.clone())]
+            } else {
+                serial_path_terminal_events_from(later, *position, key)
+                    .into_iter()
+                    .map(|(position, event)| (key.clone(), position, event))
+                    .collect()
+            }
+        })
+        .collect()
+}
+
+fn serial_path_terminal_events_from(
+    steps: &[Vec<(usize, serde_json::Value, serde_json::Value)>],
+    previous_position: usize,
+    key: &serde_json::Value,
+) -> Vec<(usize, serde_json::Value)> {
+    let Some((step, later)) = steps.split_first() else {
+        return Vec::new();
+    };
+    step.iter()
+        .filter(|(position, value, _)| *position > previous_position && value == key)
+        .flat_map(|(position, _, event)| {
+            if later.is_empty() {
+                vec![(*position, event.clone())]
+            } else {
+                serial_path_terminal_events_from(later, *position, key)
+            }
+        })
+        .collect()
+}
+
 fn serial_path_key_matches(
     first: &[(usize, serde_json::Value)],
     later: &[Vec<(usize, serde_json::Value)>],
@@ -3215,6 +3278,61 @@ fn campaign_serial_workflow_matches(
             })
             .collect(),
     )
+}
+
+fn campaign_workflow_capture_values(
+    checkpoint: &CampaignCheckpoint,
+    workflow: &SerialWorkflow,
+    pointer: &str,
+) -> Vec<serde_json::Value> {
+    let stage_values = workflow
+        .stages
+        .iter()
+        .map(|stage| {
+            serial_workflow_stage_values(
+                &campaign_checkpoint_serial(checkpoint, &stage.service),
+                workflow,
+                stage,
+            )
+        })
+        .collect::<Vec<_>>();
+    let Some((candidates, _)) = stage_values.first() else {
+        return Vec::new();
+    };
+    let matches = candidates
+        .iter()
+        .filter(|key| {
+            stage_values
+                .iter()
+                .all(|(_, matched)| matched.iter().any(|value| value == *key))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if !serial_match_requirements_met(
+        candidates.clone(),
+        matches.clone(),
+        workflow.quantifier,
+        workflow.occurs.as_ref(),
+    ) {
+        return Vec::new();
+    }
+    let Some(stage) = workflow.stages.last() else {
+        return Vec::new();
+    };
+    let stage_pointers = if stage.pointers.is_empty() {
+        &workflow.pointers
+    } else {
+        &stage.pointers
+    };
+    serial_path_terminal_events(
+        &campaign_checkpoint_serial(checkpoint, &stage.service),
+        stage_pointers,
+        &stage.steps,
+    )
+    .into_iter()
+    .filter(|(key, _, _)| matches.iter().any(|candidate| candidate == key))
+    .filter_map(|(_, _, event)| event.pointer(pointer).cloned())
+    .collect()
 }
 
 fn campaign_serial_evidence_matches(
@@ -3807,7 +3925,7 @@ fn campaign_operation_input_hex(
     for (name, capture) in &input.input_captures {
         let service = capture.service.as_deref().unwrap_or(&campaign.driver);
         let serial = campaign_checkpoint_serial(checkpoint, service);
-        let mut captured_values = campaign_input_capture_values(&serial, capture)
+        let mut captured_values = campaign_input_capture_values(checkpoint, &serial, capture)
             .into_iter()
             .filter_map(|value| campaign_input_value(value, capture.encoding));
         let value = match capture.select {
@@ -3844,6 +3962,7 @@ fn campaign_operation_input_hex(
 }
 
 fn campaign_input_capture_values(
+    checkpoint: &CampaignCheckpoint,
     serial: &[u8],
     capture: &CampaignOperationInputCapture,
 ) -> Vec<serde_json::Value> {
@@ -3858,6 +3977,9 @@ fn campaign_input_capture_values(
                     .flatten()
             })
             .collect();
+    }
+    if let Some(workflow) = &capture.workflow {
+        return campaign_workflow_capture_values(checkpoint, workflow, &capture.pointer);
     }
     serial_sequence_capture_values(serial, &capture.sequence, &capture.pointer)
 }
@@ -7628,9 +7750,10 @@ mod tests {
             round: 0,
         };
         let captured_checkpoint = CampaignCheckpoint {
-            scheduler: BTreeMap::from([(
-                "api".to_owned(),
-                ServiceSchedulerCheckpoint {
+            scheduler: BTreeMap::from([
+                (
+                    "api".to_owned(),
+                    ServiceSchedulerCheckpoint {
                     serial_contents: vec![
                         b"{\"event\":\"started\",\"request_id\":\"first\"}\n{\"event\":\"write\",\"request_id\":\"first\"}\n{\"event\":\"started\",\"request_id\":\"latest\"}\n{\"event\":\"write\",\"request_id\":\"latest\"}\n"
                             .to_vec(),
@@ -7641,8 +7764,24 @@ mod tests {
                     faults: Vec::new(),
                     network_traffic: BTreeMap::new(),
                     network_trace: BTreeMap::new(),
-                },
-            )]),
+                    },
+                ),
+                (
+                    "auditor".to_owned(),
+                    ServiceSchedulerCheckpoint {
+                        serial_contents: vec![
+                            b"{\"event\":\"audit\",\"write_request_id\":\"first\"}\n{\"event\":\"audit\",\"write_request_id\":\"latest\"}\n"
+                                .to_vec(),
+                        ],
+                        program_counters: Vec::new(),
+                        next_fault: 0,
+                        paused_until: None,
+                        faults: Vec::new(),
+                        network_traffic: BTreeMap::new(),
+                        network_trace: BTreeMap::new(),
+                    },
+                ),
+            ]),
             switches: BTreeMap::new(),
             services: BTreeMap::new(),
             round: 0,
@@ -7670,6 +7809,7 @@ mod tests {
                         equals_capture: BTreeMap::new(),
                     }),
                     sequence: Vec::new(),
+                    workflow: None,
                     encoding: CampaignOperationInputEncoding::Text,
                     select: CampaignOperationInputSelect::Latest,
                 },
@@ -7720,6 +7860,33 @@ mod tests {
             campaign_operation_input_hex(&campaign, &captured_checkpoint, &sequenced_input)
                 .unwrap(),
             "72657472792066697273740a"
+        );
+        let workflow_input: CampaignOperationInput = serde_json::from_value(serde_json::json!({
+            "name": "default",
+            "input_hex": "",
+            "input_template": "retry {request}\n",
+            "input_captures": {
+                "request": {
+                    "pointer": "/write_request_id",
+                    "workflow": {
+                        "pointers": ["/request_id"],
+                        "stages": [
+                            {"service": "api", "steps": [
+                                {"fields": {"/event": "started"}},
+                                {"fields": {"/event": "write"}}
+                            ]},
+                            {"service": "auditor", "pointers": ["/write_request_id"], "steps": [
+                                {"fields": {"/event": "audit"}}
+                            ]}
+                        ]
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            campaign_operation_input_hex(&campaign, &captured_checkpoint, &workflow_input).unwrap(),
+            "7265747279206c61746573740a"
         );
         let mut first_input = captured_input.clone();
         first_input
