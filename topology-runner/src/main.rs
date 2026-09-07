@@ -140,6 +140,10 @@ struct CampaignOperationInput {
     name: String,
     input_hex: String,
     #[serde(default)]
+    input_template: Option<String>,
+    #[serde(default)]
+    input_captures: BTreeMap<String, CampaignOperationInputCapture>,
+    #[serde(default)]
     requires: Vec<CampaignOperationInputReference>,
     #[serde(default)]
     excludes: Vec<CampaignOperationInputReference>,
@@ -149,6 +153,14 @@ struct CampaignOperationInput {
     requires_state: BTreeMap<String, String>,
     #[serde(default)]
     sets_state: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CampaignOperationInputCapture {
+    #[serde(default)]
+    service: Option<String>,
+    pointer: String,
+    json: JsonPredicate,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -968,6 +980,7 @@ struct CampaignCheckpoint {
 struct CampaignPrefixCheckpoint {
     checkpoint: CampaignCheckpoint,
     actions: Vec<AppliedCampaignAction>,
+    events: Vec<EventPlan>,
 }
 
 enum CampaignPrefixResult {
@@ -1559,13 +1572,13 @@ impl CampaignCheckpointTree {
         schedule: &CampaignSchedule,
         directory: &Path,
     ) -> Result<CampaignPrefixResult, String> {
-        let events = campaign_schedule_events(campaign, schedule)?;
         let mut prefix = Vec::new();
         let mut parent = CampaignPrefixCheckpoint {
             checkpoint: self.root.clone(),
             actions: Vec::new(),
+            events: Vec::new(),
         };
-        for (index, (operation, event)) in schedule.operations.iter().zip(events).enumerate() {
+        for (index, operation) in schedule.operations.iter().enumerate() {
             if !campaign_operation_is_ready(campaign, &schedule.operations[..index], *operation)
                 || !campaign_operation_marker_guards_are_ready(
                     campaign,
@@ -1579,6 +1592,13 @@ impl CampaignCheckpointTree {
             {
                 return Ok(CampaignPrefixResult::SerialGuardRejected);
             }
+            let event = match campaign_schedule_event(campaign, schedule, index, &parent.checkpoint)
+            {
+                Ok(event) => event,
+                // A template capture is a dynamic serial precondition. A
+                // history without its value is simply not an executable leaf.
+                Err(_) => return Ok(CampaignPrefixResult::SerialGuardRejected),
+            };
             prefix.push(event);
             let key = campaign_prefix_key(&prefix)?;
             if let Some(existing) = self.prefixes.get(&key) {
@@ -1598,6 +1618,7 @@ impl CampaignCheckpointTree {
             parent = CampaignPrefixCheckpoint {
                 checkpoint,
                 actions,
+                events: prefix.clone(),
             };
             self.prefixes.insert(key, parent.clone());
         }
@@ -1909,7 +1930,7 @@ fn execute_campaign(
         };
         let mut replay: TopologyPlan = serde_json::from_slice(&base)
             .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
-        apply_campaign_schedule(&mut replay, &campaign, &schedule)?;
+        apply_campaign_schedule(&mut replay, &campaign, &schedule, &prefix.events)?;
         let mut run: TopologyPlan = serde_json::from_slice(
             &serde_json::to_vec(&replay)
                 .map_err(|error| format!("cannot encode campaign replay plan: {error}"))?,
@@ -2266,7 +2287,7 @@ fn execute_campaign_minimized(
     };
     let mut replay: TopologyPlan = serde_json::from_slice(&base)
         .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
-    apply_campaign_schedule(&mut replay, &campaign, &schedule)?;
+    apply_campaign_schedule(&mut replay, &campaign, &schedule, &prefix.events)?;
     add_counterexample_check(&mut replay, &property)?;
     let mut final_plan: TopologyPlan = serde_json::from_slice(
         &serde_json::to_vec(&replay)
@@ -2399,7 +2420,7 @@ fn execute_campaign_minimization_attempt(
     };
     let mut replay: TopologyPlan = serde_json::from_slice(base)
         .map_err(|error| format!("cannot decode campaign base plan: {error}"))?;
-    apply_campaign_schedule(&mut replay, campaign, schedule)?;
+    apply_campaign_schedule(&mut replay, campaign, schedule, &prefix.events)?;
     let mut plan: TopologyPlan = serde_json::from_slice(
         &serde_json::to_vec(&replay)
             .map_err(|error| format!("cannot encode campaign replay plan: {error}"))?,
@@ -2641,6 +2662,8 @@ fn campaign_operation_inputs(operation: &CampaignOperation) -> Vec<CampaignOpera
             .map(|input_hex| CampaignOperationInput {
                 name: "default".to_owned(),
                 input_hex: input_hex.clone(),
+                input_template: None,
+                input_captures: BTreeMap::new(),
                 requires: Vec::new(),
                 excludes: Vec::new(),
                 max_uses: None,
@@ -3667,8 +3690,8 @@ fn apply_campaign_schedule(
     topology: &mut TopologyPlan,
     campaign: &CampaignPlan,
     schedule: &CampaignSchedule,
+    events: &[EventPlan],
 ) -> Result<(), String> {
-    let events = campaign_schedule_events(campaign, schedule)?;
     let selected = schedule
         .faults
         .iter()
@@ -3678,7 +3701,7 @@ fn apply_campaign_schedule(
         .services
         .get_mut(&campaign.driver)
         .ok_or_else(|| format!("campaign driver disappeared: {}", campaign.driver))?;
-    driver.run.events = events;
+    driver.run.events = events.to_vec();
     for candidate in selected {
         if matches!(
             candidate.kind,
@@ -3711,35 +3734,96 @@ fn apply_campaign_schedule(
     Ok(())
 }
 
-fn campaign_schedule_events(
+fn campaign_schedule_event(
     campaign: &CampaignPlan,
     schedule: &CampaignSchedule,
-) -> Result<Vec<EventPlan>, String> {
+    index: usize,
+    checkpoint: &CampaignCheckpoint,
+) -> Result<EventPlan, String> {
     let selected = schedule
         .faults
         .iter()
         .map(|index| &campaign.faults[*index])
         .collect::<Vec<_>>();
-    schedule
+    let operation = *schedule
         .operations
+        .get(index)
+        .ok_or_else(|| format!("campaign schedule has no operation at index {index}"))?;
+    let definition = &campaign.operations[operation.operation];
+    let input = campaign_operation_input(campaign, operation)?;
+    let actions = selected
         .iter()
-        .map(|operation| {
-            let definition = &campaign.operations[operation.operation];
-            let input = campaign_operation_input(campaign, *operation)?;
-            let actions = selected
-                .iter()
-                .filter(|candidate| {
-                    campaign_fault_matches_operation(campaign, candidate, *operation)
-                })
-                .map(|candidate| campaign_action(candidate))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(EventPlan {
-                data_hex: input.input_hex,
-                checkpoint: Some(format!("THES:CHECKPOINT:{}", definition.name)),
-                actions,
+        .filter(|candidate| campaign_fault_matches_operation(campaign, candidate, operation))
+        .map(|candidate| campaign_action(candidate))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(EventPlan {
+        data_hex: campaign_operation_input_hex(campaign, checkpoint, &input)?,
+        checkpoint: Some(format!("THES:CHECKPOINT:{}", definition.name)),
+        actions,
+    })
+}
+
+fn campaign_operation_input_hex(
+    campaign: &CampaignPlan,
+    checkpoint: &CampaignCheckpoint,
+    input: &CampaignOperationInput,
+) -> Result<String, String> {
+    let Some(template) = &input.input_template else {
+        return Ok(input.input_hex.clone());
+    };
+    let mut values = BTreeMap::new();
+    for (name, capture) in &input.input_captures {
+        let service = capture.service.as_deref().unwrap_or(&campaign.driver);
+        let serial = campaign_checkpoint_serial(checkpoint, service);
+        let value = serial
+            .split_inclusive(|byte| *byte == b'\n')
+            .filter_map(|line| {
+                let line = line.strip_suffix(b"\n").unwrap_or(line);
+                let event = serde_json::from_slice::<serde_json::Value>(line).ok()?;
+                json_predicate_matches(&event, &capture.json)
+                    .then(|| event.pointer(&capture.pointer).cloned())
+                    .flatten()
             })
-        })
-        .collect()
+            .filter_map(campaign_input_scalar)
+            .last()
+            .ok_or_else(|| {
+                format!(
+                    "campaign input capture {name:?} found no scalar value at {:?} in service {service:?}",
+                    capture.pointer
+                )
+            })?;
+        values.insert(name.as_str(), value);
+    }
+    let mut rendered = String::new();
+    let mut cursor = 0;
+    while let Some(relative_start) = template[cursor..].find('{') {
+        let start = cursor + relative_start;
+        rendered.push_str(&template[cursor..start]);
+        let value_start = start + 1;
+        let end = value_start
+            + template[value_start..]
+                .find('}')
+                .ok_or_else(|| "campaign input template was not normalized".to_owned())?;
+        let variable = &template[value_start..end];
+        let value = values.get(variable).ok_or_else(|| {
+            format!("campaign input template has no captured value for {variable:?}")
+        })?;
+        rendered.push_str(value);
+        cursor = end + 1;
+    }
+    rendered.push_str(&template[cursor..]);
+    Ok(hex(rendered.as_bytes()))
+}
+
+fn campaign_input_scalar(value: serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(value) => Some(value),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        serde_json::Value::Bool(value) => Some(value.to_string()),
+        serde_json::Value::Null | serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            None
+        }
+    }
 }
 
 fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
@@ -7273,6 +7357,8 @@ mod tests {
                         CampaignOperationInput {
                             name: "alpha".to_owned(),
                             input_hex: "777269746520616c7068610a".to_owned(),
+                            input_template: None,
+                            input_captures: BTreeMap::new(),
                             requires: Vec::new(),
                             excludes: Vec::new(),
                             max_uses: None,
@@ -7288,6 +7374,8 @@ mod tests {
                         CampaignOperationInput {
                             name: "beta".to_owned(),
                             input_hex: "777269746520626574610a".to_owned(),
+                            input_template: None,
+                            input_captures: BTreeMap::new(),
                             requires: vec![CampaignOperationInputReference {
                                 operation: "write".to_owned(),
                                 input: Some("alpha".to_owned()),
@@ -7366,6 +7454,57 @@ mod tests {
             )]),
             round: 0,
         };
+        let captured_checkpoint = CampaignCheckpoint {
+            scheduler: BTreeMap::from([(
+                "api".to_owned(),
+                ServiceSchedulerCheckpoint {
+                    serial_contents: vec![
+                        b"{\"event\":\"write\",\"request_id\":\"first\"}\n{\"event\":\"write\",\"request_id\":\"latest\"}\n"
+                            .to_vec(),
+                    ],
+                    program_counters: Vec::new(),
+                    next_fault: 0,
+                    paused_until: None,
+                    faults: Vec::new(),
+                    network_traffic: BTreeMap::new(),
+                    network_trace: BTreeMap::new(),
+                },
+            )]),
+            switches: BTreeMap::new(),
+            services: BTreeMap::new(),
+            round: 0,
+        };
+        let captured_input = CampaignOperationInput {
+            name: "default".to_owned(),
+            input_hex: String::new(),
+            input_template: Some("retry {request}\n".to_owned()),
+            input_captures: BTreeMap::from([(
+                "request".to_owned(),
+                CampaignOperationInputCapture {
+                    service: None,
+                    pointer: "/request_id".to_owned(),
+                    json: JsonPredicate {
+                        fields: BTreeMap::from([(
+                            "/event".to_owned(),
+                            serde_json::Value::String("write".to_owned()),
+                        )]),
+                        where_: Vec::new(),
+                        arrays: Vec::new(),
+                        capture: BTreeMap::new(),
+                        equals_capture: BTreeMap::new(),
+                    },
+                },
+            )]),
+            requires: Vec::new(),
+            excludes: Vec::new(),
+            max_uses: None,
+            requires_state: BTreeMap::new(),
+            sets_state: BTreeMap::new(),
+        };
+        assert_eq!(
+            campaign_operation_input_hex(&campaign, &captured_checkpoint, &captured_input).unwrap(),
+            "7265747279206c61746573740a"
+        );
 
         assert_eq!(
             campaign_operation_choice_name(
@@ -7439,7 +7578,7 @@ mod tests {
             "write[beta]"
         );
         assert_eq!(
-            campaign_schedule_events(
+            campaign_schedule_event(
                 &campaign,
                 &CampaignSchedule {
                     operations: vec![CampaignOperationChoice {
@@ -7448,9 +7587,11 @@ mod tests {
                     }],
                     faults: Vec::new(),
                 },
+                0,
+                &checkpoint,
             )
-            .unwrap()[0]
-                .data_hex,
+            .unwrap()
+            .data_hex,
             "777269746520626574610a"
         );
 

@@ -109,6 +109,10 @@ struct ComposeOperation {
     #[serde(default)]
     input: Option<String>,
     #[serde(default)]
+    input_template: Option<String>,
+    #[serde(default)]
+    input_captures: BTreeMap<String, ComposeOperationInputCapture>,
+    #[serde(default)]
     inputs: Vec<ComposeOperationInput>,
     #[serde(default)]
     input_grammar: Option<ComposeOperationInputGrammar>,
@@ -191,6 +195,17 @@ struct ComposeOperationInputRules {
     requires_state: BTreeMap<String, String>,
     #[serde(default)]
     sets_state: BTreeMap<String, String>,
+}
+
+/// One scalar value selected from the latest matching JSON-lines event in a
+/// restored campaign checkpoint.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeOperationInputCapture {
+    #[serde(default)]
+    service: Option<String>,
+    pointer: String,
+    json: ComposeJsonPredicate,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -741,6 +756,10 @@ pub struct OperationInputGrammarPlan {
 pub struct OperationInputPlan {
     pub name: String,
     pub input_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_template: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub input_captures: BTreeMap<String, OperationInputCapturePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<OperationInputReferencePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -751,6 +770,14 @@ pub struct OperationInputPlan {
     pub requires_state: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sets_state: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OperationInputCapturePlan {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    pub pointer: String,
+    pub json: JsonPredicatePlan,
 }
 
 /// A case transition can name any logical operation (`write`) or one exact
@@ -1195,11 +1222,12 @@ fn campaign_plan(
             )));
         }
         let input_forms = usize::from(operation.input.is_some())
+            + usize::from(operation.input_template.is_some())
             + usize::from(!operation.inputs.is_empty())
             + usize::from(operation.input_grammar.is_some());
         if input_forms > 1 {
             return Err(ComposeError::Invalid(format!(
-                "campaign operation {:?} must use exactly one of input, inputs, or input_grammar",
+                "campaign operation {:?} must use exactly one of input, input_template, inputs, or input_grammar",
                 operation.name
             )));
         }
@@ -1208,6 +1236,20 @@ fn campaign_plan(
             .as_ref()
             .map(|grammar| normalize_operation_input_grammar(grammar, &operation.name))
             .transpose()?;
+        let has_input_captures = !operation.input_captures.is_empty();
+        let captures = operation.input_captures;
+        let input_template = operation
+            .input_template
+            .map(|template| {
+                normalize_operation_input_template(template, captures, &operation.name, services)
+            })
+            .transpose()?;
+        if input_template.is_none() && has_input_captures {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {:?} input_captures require input_template",
+                operation.name
+            )));
+        }
         let inputs = match operation.input {
             Some(input) if input.is_empty() => {
                 return Err(ComposeError::Invalid(format!(
@@ -1223,12 +1265,33 @@ fn campaign_plan(
                 max_uses: None,
                 requires_state: BTreeMap::new(),
                 sets_state: BTreeMap::new(),
+                input_template: None,
+                input_captures: BTreeMap::new(),
             }],
-            None if operation.inputs.is_empty() && input_grammar.is_none() => {
+            None if operation.inputs.is_empty()
+                && input_grammar.is_none()
+                && input_template.is_none() =>
+            {
                 return Err(ComposeError::Invalid(format!(
-                    "campaign operation {:?} needs input, inputs, or input_grammar",
+                    "campaign operation {:?} needs input, input_template, inputs, or input_grammar",
                     operation.name
                 )));
+            }
+            None if input_template.is_some() => {
+                let (template, captures) = input_template
+                    .as_ref()
+                    .expect("input template was normalized");
+                vec![OperationInputPlan {
+                    name: "default".to_owned(),
+                    input_hex: String::new(),
+                    input_template: Some(template.clone()),
+                    input_captures: captures.clone(),
+                    requires: Vec::new(),
+                    excludes: Vec::new(),
+                    max_uses: None,
+                    requires_state: BTreeMap::new(),
+                    sets_state: BTreeMap::new(),
+                }]
             }
             None if input_grammar.is_some() => input_grammar
                 .as_ref()
@@ -1257,6 +1320,8 @@ fn campaign_plan(
                         Ok(OperationInputPlan {
                             name: input.name,
                             input_hex: hex(input.input.as_bytes()),
+                            input_template: None,
+                            input_captures: BTreeMap::new(),
                             requires: normalize_operation_input_references(
                                 input.requires,
                                 "requires",
@@ -3584,6 +3649,8 @@ fn normalize_operation_input_grammar(
         inputs.push(OperationInputPlan {
             name,
             input_hex: hex(input.as_bytes()),
+            input_template: None,
+            input_captures: BTreeMap::new(),
             requires: normalize_operation_input_references(rules.requires, "requires", operation)?,
             excludes: normalize_operation_input_references(rules.excludes, "excludes", operation)?,
             max_uses: rules.max_uses,
@@ -3607,6 +3674,59 @@ fn normalize_operation_input_grammar(
         },
         inputs,
     })
+}
+
+fn normalize_operation_input_template(
+    template: String,
+    captures: BTreeMap<String, ComposeOperationInputCapture>,
+    operation: &str,
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<(String, BTreeMap<String, OperationInputCapturePlan>), ComposeError> {
+    if template.is_empty() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign operation {operation:?} input_template must not be empty"
+        )));
+    }
+    let variables = operation_input_template_variables(&template, operation, "input_template")?;
+    let variables = variables.into_iter().collect::<BTreeSet<_>>();
+    if variables != captures.keys().cloned().collect() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign operation {operation:?} input_template placeholders must exactly match input_captures"
+        )));
+    }
+    let captures = captures
+        .into_iter()
+        .map(|(name, capture)| {
+            validate_name("campaign operation input capture", &name)?;
+            if !valid_json_pointer(&capture.pointer) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {operation:?} input capture {name:?} has invalid JSON pointer {:?}",
+                    capture.pointer
+                )));
+            }
+            if let Some(service) = &capture.service {
+                if !services.contains_key(service) {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign operation {operation:?} input capture {name:?} names unknown service {service:?}"
+                    )));
+                }
+            }
+            let json = normalize_json_predicate(
+                capture.json,
+                &format!("operation {operation:?} input capture {name:?}"),
+                false,
+            )?;
+            Ok((
+                name,
+                OperationInputCapturePlan {
+                    service: capture.service,
+                    pointer: capture.pointer,
+                    json,
+                },
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, ComposeError>>()?;
+    Ok((template, captures))
 }
 
 fn operation_input_template_variables(
@@ -4737,6 +4857,76 @@ x-theseus:
     }
 
     #[test]
+    fn normalizes_campaign_input_template_captures() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input: "write\n"
+      - name: retry
+        input_template: "retry {request}\n"
+        input_captures:
+          request:
+            pointer: /request_id
+            json:
+              fields:
+                /event: write
+        requires: [write]
+"#,
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        let input = &campaign.operations[1].inputs[0];
+        assert_eq!(input.input_template.as_deref(), Some("retry {request}\n"));
+        assert_eq!(input.input_captures["request"].pointer, "/request_id");
+        assert_eq!(
+            input.input_captures["request"].json.fields["/event"],
+            serde_json::Value::String("write".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_campaign_input_template_with_unbound_placeholder() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: retry
+        input_template: "retry {missing}\n"
+        input_captures:
+          request:
+            pointer: /request_id
+            json:
+              fields:
+                /event: write
+"#,
+        );
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("input_template placeholders must exactly match input_captures"));
+    }
+
+    #[test]
     fn rejects_invalid_campaign_operation_input_grammar() {
         let directory = fixture(
             r#"services:
@@ -4843,7 +5033,7 @@ x-theseus:
         let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
         assert!(error
             .to_string()
-            .contains("exactly one of input, inputs, or input_grammar"));
+            .contains("exactly one of input, input_template, inputs, or input_grammar"));
     }
 
     #[test]
