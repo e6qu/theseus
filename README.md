@@ -122,6 +122,8 @@ until that evidence exists at its restored checkpoint, or use
 `excludes_serial_joins` to block it when the joined evidence is present.
 Use `pointers` instead of `pointer` to join on a composite key such as request
 ID plus attempt number.
+JSON joins default to `quantifier: any`; use `quantifier: every` to require
+every key emitted by the first endpoint to occur at every peer endpoint.
 When one operation or property needs a mixed rule, use
 `requires_serial_evidence`: a recursive `all`, `any`, or `none` tree whose
 leaves are service `guard`s, JSON `correlation`s, or JSON `join`s.

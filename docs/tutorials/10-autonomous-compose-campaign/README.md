@@ -85,6 +85,10 @@ Start with `compose.yaml`.
    value common to every endpoint, not independent pairwise matches. Use
    `pointers: [/request_id, /attempt]` for a composite key. The tutorial joins
    the API, replica, and auditor transaction events on both fields.
+   A join defaults to `quantifier: any`: one shared key is enough. Set
+   `quantifier: every` to require every key selected by the first endpoint to
+   appear at every later endpoint. Use this to assert complete replication,
+   not just one successful request.
    Operations accept `requires_serial_joins` too. Theseus evaluates them at
    the restored parent checkpoint and skips an operation before it consumes a
    campaign run when the shared value is absent. Use `excludes_serial_joins`
