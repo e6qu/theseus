@@ -251,6 +251,8 @@ struct CampaignResult {
     #[serde(default)]
     unique_topology_states: usize,
     #[serde(default)]
+    unique_instruction_locations: usize,
+    #[serde(default)]
     replay_verification: Option<ReplayVerification>,
     #[serde(default)]
     runs: Vec<CampaignRun>,
@@ -272,6 +274,8 @@ struct CampaignRun {
     selection: String,
     #[serde(default)]
     program_counters: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    instruction_novelty: Vec<String>,
     #[serde(default)]
     state_novel: bool,
     status: String,
@@ -622,11 +626,12 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         coverage: Some(Coverage {
             label: "Campaign corpus".to_owned(),
             summary: format!(
-                "{} of {} deterministic candidates selected by marker and topology-state coverage; {} marker-guard leaves and {} serial-guard leaves skipped; {} unique topology states; {} reusable checkpoint nodes, {} prefix reuses",
+                "{} of {} deterministic candidates selected by marker, instruction-location, and topology-state coverage; {} marker-guard leaves and {} serial-guard leaves skipped; {} unique instruction locations; {} unique topology states; {} reusable checkpoint nodes, {} prefix reuses",
                 result.runs.len(),
                 result.generated_candidates,
                 result.marker_guard_rejections,
                 result.serial_guard_rejections,
+                result.unique_instruction_locations,
                 result.unique_topology_states,
                 result.checkpoint_nodes,
                 result.checkpoint_reuses,
@@ -849,7 +854,7 @@ mod tests {
         assert!(html.contains("consistent_read"));
         assert!(html.contains("4 reusable checkpoint nodes, 7 prefix reuses"));
         assert!(html.contains(
-            "1 of 12 deterministic candidates selected by marker and topology-state coverage"
+            "1 of 12 deterministic candidates selected by marker, instruction-location, and topology-state coverage"
         ));
         assert!(html.contains("2 marker-guard leaves and 1 serial-guard leaves skipped"));
         assert!(html.contains("3 unique topology states"));

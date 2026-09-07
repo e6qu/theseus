@@ -551,6 +551,7 @@ struct CampaignResult {
     marker_guard_rejections: usize,
     serial_guard_rejections: usize,
     unique_topology_states: usize,
+    unique_instruction_locations: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     replay_verification: Option<CampaignReplayVerification>,
     runs: Vec<CampaignRun>,
@@ -570,6 +571,8 @@ struct CampaignRun {
     selection: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     program_counters: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    instruction_novelty: Vec<String>,
     state_sha256: String,
     state_novel: bool,
     status: &'static str,
@@ -610,6 +613,8 @@ struct RecordedCampaignRun {
     selection: String,
     #[serde(default)]
     program_counters: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    instruction_novelty: Vec<String>,
     #[serde(default)]
     novelty: Vec<String>,
     #[serde(default)]
@@ -1904,6 +1909,7 @@ fn execute_campaign(
     let mut runs = Vec::new();
     let mut seen_markers = std::collections::BTreeSet::new();
     let mut seen_topology_states = std::collections::BTreeSet::new();
+    let mut seen_instruction_locations = std::collections::BTreeSet::new();
     let mut pending = (0..schedules.len()).collect::<Vec<_>>();
     let mut observations = Vec::new();
     let mut replay_mismatches = Vec::new();
@@ -2003,6 +2009,10 @@ fn execute_campaign(
         let markers = campaign_markers(&run_dir)?;
         let actions = campaign_actions(&run_dir)?;
         let program_counters = campaign_checkpoint_program_counters(&prefix.checkpoint);
+        let instruction_novelty = campaign_instruction_locations(&program_counters)
+            .into_iter()
+            .filter(|location| seen_instruction_locations.insert(location.clone()))
+            .collect::<Vec<_>>();
         let state_sha256 = campaign_topology_state_sha256(&run_dir, &program_counters)?;
         let state_novel = seen_topology_states.insert(state_sha256.clone());
         let novelty = markers
@@ -2013,6 +2023,7 @@ fn execute_campaign(
         observations.push(CampaignGuidanceObservation {
             operations: schedule.operations.clone(),
             novel_markers: novelty.len(),
+            novel_instructions: instruction_novelty.len(),
             novel_state: state_novel,
             failed,
         });
@@ -2029,6 +2040,7 @@ fn execute_campaign(
             actions,
             selection,
             program_counters,
+            instruction_novelty,
             state_sha256,
             state_novel,
             status: if failed { "failed" } else { "passed" },
@@ -2089,6 +2101,7 @@ fn execute_campaign(
             marker_guard_rejections,
             serial_guard_rejections,
             unique_topology_states: seen_topology_states.len(),
+            unique_instruction_locations: seen_instruction_locations.len(),
             replay_verification: recorded.map(|recorded| CampaignReplayVerification {
                 status: if replay_verified { "passed" } else { "failed" },
                 detail: if replay_verified {
@@ -3417,6 +3430,7 @@ fn campaign_checkpoint_markers(
 struct CampaignGuidanceObservation {
     operations: Vec<CampaignOperationChoice>,
     novel_markers: usize,
+    novel_instructions: usize,
     novel_state: bool,
     failed: bool,
 }
@@ -3656,6 +3670,11 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     if !expected.novelty.is_empty() && expected.novelty != actual.novelty {
         mismatches.push("marker coverage".to_owned());
     }
+    if !expected.instruction_novelty.is_empty()
+        && expected.instruction_novelty != actual.instruction_novelty
+    {
+        mismatches.push("instruction-location coverage".to_owned());
+    }
     if !expected.state_sha256.is_empty()
         && (expected.state_sha256 != actual.state_sha256
             || expected.state_novel != actual.state_novel)
@@ -3668,7 +3687,7 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     mismatches
 }
 
-/// Choose the next leaf from observed marker and topology-state coverage
+/// Choose the next leaf from observed marker, paused-PC, and topology-state coverage
 /// after first seeding every one-operation history without faults. An
 /// observation only guides schedules that extend the exact operation history
 /// which produced it; fault variants remain separate leaves and all ties fall
@@ -3702,11 +3721,11 @@ fn select_campaign_schedule(
             if !candidate.operations.starts_with(&observation.operations) {
                 continue;
             }
-            // Markers are the campaign's user-visible coverage signal. The
-            // final drive/network/clock state catches meaningful divergence
-            // even when the guest emits the same markers. A failed leaf is
-            // also valuable, but neither signal is proof on its own.
+            // Markers are user-visible coverage; paused program counters add
+            // guest execution locations without requiring guest SDK calls.
+            // The final drive/network/clock state catches topology divergence.
             let signal = observation.novel_markers.saturating_mul(1_000)
+                + observation.novel_instructions.saturating_mul(500)
                 + usize::from(observation.novel_state).saturating_mul(250)
                 + usize::from(observation.failed).saturating_mul(100);
             let candidate_score = signal.saturating_mul(256) + observation.operations.len();
@@ -3729,6 +3748,12 @@ fn campaign_guidance_reason(observation: &CampaignGuidanceObservation) -> String
     let mut signals = Vec::new();
     if observation.novel_markers > 0 {
         signals.push(format!("{} new marker(s)", observation.novel_markers));
+    }
+    if observation.novel_instructions > 0 {
+        signals.push(format!(
+            "{} new instruction location(s)",
+            observation.novel_instructions
+        ));
     }
     if observation.novel_state {
         signals.push("new topology state".to_owned());
@@ -4170,6 +4195,19 @@ fn campaign_checkpoint_program_counters(
                     .map(|pc| format!("{pc:#x}"))
                     .collect(),
             )
+        })
+        .collect()
+}
+
+/// A paused vCPU PC is a deterministic instruction-location sample. The
+/// service name keeps identical guest addresses in distinct VM images apart.
+fn campaign_instruction_locations(program_counters: &BTreeMap<String, Vec<String>>) -> Vec<String> {
+    program_counters
+        .iter()
+        .flat_map(|(service, counters)| {
+            counters
+                .iter()
+                .map(move |counter| format!("{service}:{counter}"))
         })
         .collect()
 }
@@ -8305,6 +8343,7 @@ mod tests {
             &[CampaignGuidanceObservation {
                 operations: vec![choice(0)],
                 novel_markers: 2,
+                novel_instructions: 0,
                 novel_state: false,
                 failed: false,
             }],
@@ -8336,6 +8375,7 @@ mod tests {
             &[CampaignGuidanceObservation {
                 operations: vec![choice(0)],
                 novel_markers: 0,
+                novel_instructions: 0,
                 novel_state: true,
                 failed: false,
             }],
@@ -8343,6 +8383,55 @@ mod tests {
 
         assert_eq!(selected, 0);
         assert_eq!(reason, "extends 1-operation prefix with new topology state");
+    }
+
+    #[test]
+    fn campaign_selection_extends_a_new_instruction_location_prefix() {
+        let schedules = vec![
+            CampaignSchedule {
+                operations: vec![choice(0)],
+                faults: Vec::new(),
+            },
+            CampaignSchedule {
+                operations: vec![choice(0), choice(1)],
+                faults: Vec::new(),
+            },
+        ];
+        let (selected, reason) = select_campaign_schedule(
+            &schedules,
+            &[1],
+            &[CampaignGuidanceObservation {
+                operations: vec![choice(0)],
+                novel_markers: 0,
+                novel_instructions: 2,
+                novel_state: false,
+                failed: false,
+            }],
+        );
+
+        assert_eq!(selected, 0);
+        assert_eq!(
+            reason,
+            "extends 1-operation prefix with 2 new instruction location(s)"
+        );
+    }
+
+    #[test]
+    fn instruction_locations_keep_service_identity() {
+        assert_eq!(
+            campaign_instruction_locations(&BTreeMap::from([
+                (
+                    "api".to_owned(),
+                    vec!["0x8000".to_owned(), "0x9000".to_owned()]
+                ),
+                ("auditor".to_owned(), vec!["0x8000".to_owned()]),
+            ])),
+            vec![
+                "api:0x8000".to_owned(),
+                "api:0x9000".to_owned(),
+                "auditor:0x8000".to_owned(),
+            ]
+        );
     }
 
     #[test]
@@ -8373,6 +8462,7 @@ mod tests {
             actions: Vec::new(),
             selection: "extends 1-operation prefix with new topology state".to_owned(),
             program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
+            instruction_novelty: Vec::new(),
             state_sha256: "state".to_owned(),
             state_novel: true,
             status: "passed",
@@ -8385,6 +8475,7 @@ mod tests {
             actions: Vec::new(),
             selection: actual.selection.clone(),
             program_counters: actual.program_counters.clone(),
+            instruction_novelty: actual.instruction_novelty.clone(),
             novelty: actual.novelty.clone(),
             state_sha256: actual.state_sha256.clone(),
             state_novel: true,
