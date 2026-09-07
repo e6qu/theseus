@@ -139,7 +139,13 @@ x-theseus:
               operator: greater_than
     operations:
       - name: write
-        input: "write\n"
+        # Keep one logical operation for its guards, use bound, and faults,
+        # but explore each named UART payload as a separate deterministic leaf.
+        inputs:
+          - name: alpha
+            input: "write alpha\n"
+          - name: beta
+            input: "write beta\n"
         stage: write
         # The driver announces this boot marker before Theseus snapshots the
         # campaign root. Marker guards read the restored serial transcript.

@@ -104,7 +104,10 @@ struct ComposeCampaign {
 #[serde(deny_unknown_fields)]
 struct ComposeOperation {
     name: String,
-    input: String,
+    #[serde(default)]
+    input: Option<String>,
+    #[serde(default)]
+    inputs: Vec<ComposeOperationInput>,
     #[serde(default)]
     stage: Option<String>,
     #[serde(default)]
@@ -133,6 +136,13 @@ struct ComposeOperation {
     excludes_serial_evidence: Option<ComposeSerialEvidence>,
     #[serde(default)]
     max_uses: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeOperationInput {
+    name: String,
+    input: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -631,7 +641,7 @@ pub struct CampaignPlan {
 #[derive(Debug, Clone, Serialize)]
 pub struct OperationPlan {
     pub name: String,
-    pub input_hex: String,
+    pub inputs: Vec<OperationInputPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -660,6 +670,12 @@ pub struct OperationPlan {
     pub excludes_serial_evidence: Option<SerialEvidencePlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_uses: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OperationInputPlan {
+    pub name: String,
+    pub input_hex: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1091,12 +1107,56 @@ fn campaign_plan(
                 operation.name
             )));
         }
-        if operation.input.is_empty() {
+        if operation.input.is_some() && !operation.inputs.is_empty() {
             return Err(ComposeError::Invalid(format!(
-                "campaign operation {:?} has empty input",
+                "campaign operation {:?} must use either input or inputs, not both",
                 operation.name
             )));
         }
+        let inputs = match operation.input {
+            Some(input) if input.is_empty() => {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} has empty input",
+                    operation.name
+                )));
+            }
+            Some(input) => vec![OperationInputPlan {
+                name: "default".to_owned(),
+                input_hex: hex(input.as_bytes()),
+            }],
+            None if operation.inputs.is_empty() => {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} needs input or inputs",
+                    operation.name
+                )));
+            }
+            None => {
+                let mut input_names = BTreeSet::new();
+                operation
+                    .inputs
+                    .into_iter()
+                    .map(|input| {
+                        validate_name("campaign operation input", &input.name)?;
+                        if !input_names.insert(input.name.clone()) {
+                            return Err(ComposeError::Invalid(format!(
+                                "campaign operation {:?} declares input {:?} more than once",
+                                operation.name, input.name
+                            )));
+                        }
+                        if input.input.is_empty() {
+                            return Err(ComposeError::Invalid(format!(
+                                "campaign operation {:?} input {:?} is empty",
+                                operation.name, input.name
+                            )));
+                        }
+                        Ok(OperationInputPlan {
+                            name: input.name,
+                            input_hex: hex(input.input.as_bytes()),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ComposeError>>()?
+            }
+        };
         let context = format!("operation {:?}", operation.name);
         let requires_serial = operation
             .requires_serial
@@ -1148,7 +1208,7 @@ fn campaign_plan(
             .transpose()?;
         operations.push(OperationPlan {
             name: operation.name,
-            input_hex: hex(operation.input.as_bytes()),
+            inputs,
             stage: operation.stage,
             requires: operation.requires,
             excludes: operation.excludes,
@@ -3374,7 +3434,10 @@ mod tests {
         let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
         let campaign = plan.campaign.expect("campaign is normalized");
         assert_eq!(campaign.driver, "api");
-        assert_eq!(campaign.operations[0].input_hex, "70757420616c7068610a");
+        assert_eq!(
+            campaign.operations[0].inputs[0].input_hex,
+            "70757420616c7068610a"
+        );
         assert_eq!(campaign.faults[0].service.as_deref(), Some("worker"));
         assert_eq!(campaign.max_faults_per_run, 2);
         assert_eq!(campaign.max_operations_per_run, 3);
@@ -3997,6 +4060,66 @@ x-theseus:
             .campaign
             .unwrap();
         assert_eq!(campaign.operations[1].requires, vec!["write"]);
+    }
+
+    #[test]
+    fn normalizes_named_campaign_operation_inputs() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        inputs:
+          - name: alpha
+            input: "write alpha\n"
+          - name: beta
+            input: "write beta\n"
+"#,
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        assert_eq!(campaign.operations[0].inputs.len(), 2);
+        assert_eq!(campaign.operations[0].inputs[0].name, "alpha");
+        assert_eq!(
+            campaign.operations[0].inputs[0].input_hex,
+            "777269746520616c7068610a"
+        );
+        assert_eq!(campaign.operations[0].inputs[1].name, "beta");
+    }
+
+    #[test]
+    fn rejects_ambiguous_campaign_operation_input_forms() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input: "write\n"
+        inputs:
+          - name: retry
+            input: "retry\n"
+"#,
+        );
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error.to_string().contains("either input or inputs"));
     }
 
     #[test]
