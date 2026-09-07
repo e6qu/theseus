@@ -15,10 +15,17 @@ RUN apt-get update -qq \
 WORKDIR /src
 COPY . .
 
+# Each manifest writes to its own target directory. Fail in the build stage
+# with a precise error instead of discovering a missing runtime binary only
+# when the final image tries to copy it.
 RUN cargo build --manifest-path firecracker/Cargo.toml --release -p firecracker \
     && cargo build --manifest-path cli/Cargo.toml --release --locked \
     && cargo build --manifest-path topology-runner/Cargo.toml --release --locked \
-    && cargo build --manifest-path explorer-runner/Cargo.toml --release --locked
+    && cargo build --manifest-path explorer-runner/Cargo.toml --release --locked \
+    && test -x firecracker/target/release/firecracker \
+    && test -x cli/target/release/theseus \
+    && test -x topology-runner/target/release/theseus-topology \
+    && test -x explorer-runner/target/release/theseus-explorer
 
 # rebuild.sh normally installs its CI-machine dependencies itself.  The image
 # above already has the smaller, fixed set needed to produce the tutorial
@@ -37,7 +44,7 @@ RUN apt-get update -qq \
         busybox-static cpio curl gcc libseccomp2 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /src/firecracker/build/cargo_target/release/firecracker /usr/local/bin/firecracker
+COPY --from=build /src/firecracker/target/release/firecracker /usr/local/bin/firecracker
 COPY --from=build /src/cli/target/release/theseus /usr/local/bin/theseus
 COPY --from=build /src/topology-runner/target/release/theseus-topology /usr/local/bin/theseus-topology
 COPY --from=build /src/explorer-runner/target/release/theseus-explorer /usr/local/bin/theseus-explorer
