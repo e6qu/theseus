@@ -45,6 +45,21 @@ jobs:
           push: true
           tags: ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}-${{ matrix.arch }}
 
+      - name: Smoke-test the published runtime image
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          docker pull "${IMAGE}:${TAG}-${{ matrix.arch }}"
+          docker run --rm --entrypoint /bin/sh "${IMAGE}:${TAG}-${{ matrix.arch }}" -ec '
+            test -x /usr/local/bin/firecracker
+            test -x /usr/local/bin/theseus
+            test -x /usr/local/bin/theseus-topology
+            test -x /usr/local/bin/theseus-explorer
+            test -s /opt/theseus/vmlinux
+            /usr/local/bin/firecracker --version
+            /usr/local/bin/theseus --help >/dev/null
+          '
+
       - name: Package the matching runtime bundle
         env:
           TAG: ${{ steps.tag.outputs.value }}
@@ -65,6 +80,14 @@ jobs:
           chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-explorer"
           sha256sum "theseus-${TAG}-linux-${{ matrix.arch }}"/* > "theseus-${TAG}-linux-${{ matrix.arch }}/SHA256SUMS"
           tar -czf "theseus-${TAG}-linux-${{ matrix.arch }}.tar.gz" "theseus-${TAG}-linux-${{ matrix.arch }}"
+          tar -tzf "theseus-${TAG}-linux-${{ matrix.arch }}.tar.gz" | grep -Fx \
+            "theseus-${TAG}-linux-${{ matrix.arch }}/firecracker"
+          mkdir extracted
+          tar -xzf "theseus-${TAG}-linux-${{ matrix.arch }}.tar.gz" -C extracted
+          (
+            cd "extracted/theseus-${TAG}-linux-${{ matrix.arch }}"
+            sha256sum -c SHA256SUMS
+          )
 
       - uses: actions/upload-artifact@v4
         with:
