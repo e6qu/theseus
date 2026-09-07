@@ -208,6 +208,17 @@ struct ComposeOperationInputCapture {
     service: Option<String>,
     pointer: String,
     json: ComposeJsonPredicate,
+    #[serde(default)]
+    encoding: ComposeOperationInputEncoding,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposeOperationInputEncoding {
+    #[default]
+    Text,
+    Json,
+    Hex,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -782,6 +793,7 @@ pub struct OperationInputCapturePlan {
     pub service: Option<String>,
     pub pointer: String,
     pub json: JsonPredicatePlan,
+    pub encoding: ComposeOperationInputEncoding,
 }
 
 /// A case transition can name any logical operation (`write`) or one exact
@@ -3770,6 +3782,7 @@ fn normalize_operation_input_captures(
                     service: capture.service,
                     pointer: capture.pointer,
                     json,
+                    encoding: capture.encoding,
                 },
             ))
         })

@@ -163,6 +163,17 @@ struct CampaignOperationInputCapture {
     service: Option<String>,
     pointer: String,
     json: JsonPredicate,
+    #[serde(default)]
+    encoding: CampaignOperationInputEncoding,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CampaignOperationInputEncoding {
+    #[default]
+    Text,
+    Json,
+    Hex,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3786,7 +3797,7 @@ fn campaign_operation_input_hex(
                     .then(|| event.pointer(&capture.pointer).cloned())
                     .flatten()
             })
-            .filter_map(campaign_input_scalar)
+            .filter_map(|value| campaign_input_scalar(value, capture.encoding))
             .last()
             .ok_or_else(|| {
                 format!(
@@ -3817,15 +3828,33 @@ fn campaign_operation_input_hex(
     Ok(hex(rendered.as_bytes()))
 }
 
-fn campaign_input_scalar(value: serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::String(value) => Some(value),
-        serde_json::Value::Number(value) => Some(value.to_string()),
-        serde_json::Value::Bool(value) => Some(value.to_string()),
-        serde_json::Value::Null | serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-            None
-        }
+fn campaign_input_scalar(
+    value: serde_json::Value,
+    encoding: CampaignOperationInputEncoding,
+) -> Option<String> {
+    if matches!(encoding, CampaignOperationInputEncoding::Json) {
+        return match value {
+            serde_json::Value::String(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::Bool(_) => serde_json::to_string(&value).ok(),
+            serde_json::Value::Null
+            | serde_json::Value::Array(_)
+            | serde_json::Value::Object(_) => None,
+        };
     }
+    let text = match value {
+        serde_json::Value::String(value) => value,
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Null | serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            return None;
+        }
+    };
+    Some(match encoding {
+        CampaignOperationInputEncoding::Text => text,
+        CampaignOperationInputEncoding::Hex => hex(text.as_bytes()),
+        CampaignOperationInputEncoding::Json => unreachable!(),
+    })
 }
 
 fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
@@ -7495,6 +7524,7 @@ mod tests {
                         capture: BTreeMap::new(),
                         equals_capture: BTreeMap::new(),
                     },
+                    encoding: CampaignOperationInputEncoding::Text,
                 },
             )]),
             requires: Vec::new(),
@@ -7506,6 +7536,17 @@ mod tests {
         assert_eq!(
             campaign_operation_input_hex(&campaign, &captured_checkpoint, &captured_input).unwrap(),
             "7265747279206c61746573740a"
+        );
+        let mut encoded_input = captured_input.clone();
+        encoded_input.input_template = Some("retry {request}\n".to_owned());
+        encoded_input
+            .input_captures
+            .get_mut("request")
+            .unwrap()
+            .encoding = CampaignOperationInputEncoding::Hex;
+        assert_eq!(
+            campaign_operation_input_hex(&campaign, &captured_checkpoint, &encoded_input).unwrap(),
+            "7265747279203663363137343635373337340a"
         );
 
         assert_eq!(

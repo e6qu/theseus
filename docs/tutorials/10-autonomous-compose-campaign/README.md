@@ -44,6 +44,9 @@ Start with `compose.yaml`.
    names while captures fill the shared fields at the restored checkpoint.
    Here the retry grammar explores `normal` and `force` modes with the same
    captured request ID.
+   Set a capture's `encoding` to `text` (the default), `json`, or `hex`
+   when the guest protocol needs an unquoted scalar, a JSON literal, or
+   hexadecimal text.
    These rules constrain the selected cases only; they compose with the
    operation-level state rules. Here `read_stale[after_beta]` can follow the
    `write[beta-async]` payload but not another write leaf.
