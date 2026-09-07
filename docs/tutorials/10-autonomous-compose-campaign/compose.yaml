@@ -38,15 +38,11 @@ x-theseus:
         guard:
           service: auditor
           json:
+            # RFC 9535 JSONPath can inspect nested event data directly.
+            query: '$.checks[?@.name == "serial" && @.passed == true]'
             fields:
               /event: ready
               /service: auditor
-            arrays:
-              - pointer: /checks
-                any:
-                  fields:
-                    /name: serial
-                    /passed: true
       replicated_write:
         workflow:
           # Each API request/attempt must reach both peer services. The

@@ -60,6 +60,10 @@ Start with `compose.yaml`.
    Compose a capture's JSON event predicate with `all`, `any`, and `none` when
    it needs several alternative or forbidden conditions. Every branch tests the
    same JSON event; use `sequence` when the evidence spans several events.
+   Use `query` for an RFC 9535 JSONPath expression when nested arrays or
+   filtered descendants are clearer than several pointer predicates. A query
+   matches when it selects at least one node from the same JSON event. This
+   tutorial uses it to find the passing `serial` auditor check.
    These rules constrain the selected cases only; they compose with the
    operation-level state rules. Here `read_stale[after_beta]` can follow the
    `write[beta-async]` payload but not another write leaf.

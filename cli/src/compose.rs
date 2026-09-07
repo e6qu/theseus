@@ -15,6 +15,7 @@ use std::process::Command;
 
 use regex::bytes::Regex;
 use serde::{Deserialize, Serialize};
+use serde_json_path::JsonPath;
 use sha2::{Digest, Sha256};
 
 use crate::{load_plan, ArtifactPlan, LoadError, RunPlan};
@@ -579,6 +580,10 @@ struct ComposeSerialOccurrence {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeJsonPredicate {
+    /// An RFC 9535 JSONPath query that must select at least one node from this
+    /// same JSON-lines event.
+    #[serde(default)]
+    query: Option<String>,
     #[serde(default)]
     fields: BTreeMap<String, serde_json::Value>,
     #[serde(default, rename = "where")]
@@ -1058,6 +1063,8 @@ pub struct SerialOccurrencePlan {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct JsonPredicatePlan {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
     pub fields: BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "where")]
     pub where_: Vec<JsonConditionPlan>,
@@ -2849,7 +2856,8 @@ fn normalize_json_predicate(
     context: &str,
     allow_captures: bool,
 ) -> Result<JsonPredicatePlan, ComposeError> {
-    if json.fields.is_empty()
+    if json.query.is_none()
+        && json.fields.is_empty()
         && json.where_.is_empty()
         && json.arrays.is_empty()
         && json.all.is_empty()
@@ -2861,6 +2869,18 @@ fn normalize_json_predicate(
         return Err(ComposeError::Invalid(format!(
             "campaign {context} has an empty nested JSON predicate"
         )));
+    }
+    if let Some(query) = &json.query {
+        if query.is_empty() {
+            return Err(ComposeError::Invalid(format!(
+                "campaign {context} has an empty JSONPath query"
+            )));
+        }
+        JsonPath::parse(query).map_err(|error| {
+            ComposeError::Invalid(format!(
+                "campaign {context} has invalid JSONPath query {query:?}: {error}"
+            ))
+        })?;
     }
     for pointer in json.fields.keys() {
         if !valid_json_pointer(pointer) {
@@ -2914,6 +2934,7 @@ fn normalize_json_predicate(
         .map(|predicate| normalize_json_predicate(predicate, context, false))
         .collect::<Result<_, _>>()?;
     Ok(JsonPredicatePlan {
+        query: json.query,
         fields: json.fields,
         where_: json
             .where_
@@ -4698,6 +4719,7 @@ mod tests {
                 contains: None,
                 matches: None,
                 json: Some(ComposeJsonPredicate {
+                    query: None,
                     fields: BTreeMap::from([(
                         "event".to_owned(),
                         serde_json::Value::String("checkpoint".to_owned()),
@@ -4730,6 +4752,7 @@ mod tests {
                 contains: None,
                 matches: None,
                 json: Some(ComposeJsonPredicate {
+                    query: None,
                     fields: BTreeMap::new(),
                     where_: vec![ComposeJsonCondition {
                         pointer: "/attempt".to_owned(),
@@ -4772,6 +4795,26 @@ mod tests {
         assert_eq!(predicate.json.as_ref().unwrap().arrays.len(), 2);
         assert!(predicate.json.as_ref().unwrap().arrays[0].all.is_some());
         assert!(predicate.json.as_ref().unwrap().arrays[1].any.is_some());
+    }
+
+    #[test]
+    fn normalizes_rfc9535_jsonpath_event_queries() {
+        let predicate: ComposeSerialPredicate = serde_yaml::from_str(
+            r#"json:
+  query: '$.checks[?@.name == "serial" && @.passed == true]'
+"#,
+        )
+        .unwrap();
+        let predicate = normalize_serial_predicate(predicate, "auditor_ready").unwrap();
+        assert_eq!(
+            predicate.json.as_ref().unwrap().query.as_deref(),
+            Some("$.checks[?@.name == \"serial\" && @.passed == true]")
+        );
+
+        let invalid: ComposeSerialPredicate =
+            serde_yaml::from_str("json:\n  query: '$.checks['\n").unwrap();
+        let error = normalize_serial_predicate(invalid, "auditor_ready").unwrap_err();
+        assert!(error.to_string().contains("invalid JSONPath query"));
     }
 
     #[test]
