@@ -46,7 +46,8 @@ Start with `compose.yaml`.
    captured request ID.
    Set a capture's `encoding` to `text` (the default), `json`, or `hex`
    when the guest protocol needs an unquoted scalar, a JSON literal, or
-   hexadecimal text.
+   hexadecimal text. JSON encoding also preserves a complete captured object
+   or array; text and hex deliberately accept scalars only.
    These rules constrain the selected cases only; they compose with the
    operation-level state rules. Here `read_stale[after_beta]` can follow the
    `write[beta-async]` payload but not another write leaf.

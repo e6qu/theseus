@@ -3797,11 +3797,11 @@ fn campaign_operation_input_hex(
                     .then(|| event.pointer(&capture.pointer).cloned())
                     .flatten()
             })
-            .filter_map(|value| campaign_input_scalar(value, capture.encoding))
+            .filter_map(|value| campaign_input_value(value, capture.encoding))
             .last()
             .ok_or_else(|| {
                 format!(
-                    "campaign input capture {name:?} found no scalar value at {:?} in service {service:?}",
+                    "campaign input capture {name:?} found no usable value at {:?} in service {service:?}",
                     capture.pointer
                 )
             })?;
@@ -3828,19 +3828,12 @@ fn campaign_operation_input_hex(
     Ok(hex(rendered.as_bytes()))
 }
 
-fn campaign_input_scalar(
+fn campaign_input_value(
     value: serde_json::Value,
     encoding: CampaignOperationInputEncoding,
 ) -> Option<String> {
     if matches!(encoding, CampaignOperationInputEncoding::Json) {
-        return match value {
-            serde_json::Value::String(_)
-            | serde_json::Value::Number(_)
-            | serde_json::Value::Bool(_) => serde_json::to_string(&value).ok(),
-            serde_json::Value::Null
-            | serde_json::Value::Array(_)
-            | serde_json::Value::Object(_) => None,
-        };
+        return serde_json::to_string(&value).ok();
     }
     let text = match value {
         serde_json::Value::String(value) => value,
@@ -7547,6 +7540,13 @@ mod tests {
         assert_eq!(
             campaign_operation_input_hex(&campaign, &captured_checkpoint, &encoded_input).unwrap(),
             "7265747279203663363137343635373337340a"
+        );
+        assert_eq!(
+            campaign_input_value(
+                serde_json::json!({"retry": true, "modes": ["normal", "force"]}),
+                CampaignOperationInputEncoding::Json,
+            ),
+            Some("{\"modes\":[\"normal\",\"force\"],\"retry\":true}".to_owned())
         );
 
         assert_eq!(
