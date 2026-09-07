@@ -64,7 +64,10 @@ Start with `compose.yaml`.
    for IPv4 or IPv6 TCP or UDP headers. Add `from` and `to` to limit the rule to one directed service
    path. `packet_recover` removes that one matching rule. Give these actions
    `after: <operation>`; Theseus applies them immediately after that operation
-   reports its checkpoint.
+   reports its checkpoint. To fault only one payload variant, quote its case
+   reference instead: `after: "write[beta]"`. The tutorial partitions the
+   network after the beta write, while the logical `write` remains the
+   checkpoint name.
    `link_partition` and `link_heal` are narrower: give them `network`, `from`,
    and `to` to block or restore only that directed service-to-service path.
 4. Add properties. `always` needs every timeline to contain the assertion.

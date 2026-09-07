@@ -161,6 +161,8 @@ struct CampaignFault {
     #[serde(default)]
     after: Option<String>,
     #[serde(default)]
+    after_input: Option<CampaignOperationInputReference>,
+    #[serde(default)]
     at_round: Option<u64>,
     #[serde(default)]
     duration_rounds: Option<u64>,
@@ -2677,6 +2679,34 @@ fn campaign_input_reference_matches(
     })
 }
 
+fn campaign_input_reference_name(reference: &CampaignOperationInputReference) -> String {
+    reference
+        .input
+        .as_ref()
+        .map(|input| format!("{}[{input}]", reference.operation))
+        .unwrap_or_else(|| reference.operation.clone())
+}
+
+fn campaign_fault_matches_operation(
+    campaign: &CampaignPlan,
+    fault: &CampaignFault,
+    choice: CampaignOperationChoice,
+) -> bool {
+    if let Some(reference) = &fault.after_input {
+        return campaign_input_reference_matches(campaign, &[choice], reference);
+    }
+    fault.after.as_deref() == Some(&campaign.operations[choice.operation].name)
+}
+
+fn campaign_fault_barrier_name(fault: &CampaignFault) -> String {
+    fault
+        .after_input
+        .as_ref()
+        .map(campaign_input_reference_name)
+        .or_else(|| fault.after.clone())
+        .expect("validated campaign topology action has a barrier")
+}
+
 fn campaign_operation_choice_name(
     campaign: &CampaignPlan,
     choice: CampaignOperationChoice,
@@ -3571,12 +3601,12 @@ fn campaign_fault_applies(
         | CampaignFaultKind::NetworkRecover
         | CampaignFaultKind::PacketFault
         | CampaignFaultKind::PacketRecover => {
-            let Some(after) = &fault.after else {
+            if fault.after.is_none() && fault.after_input.is_none() {
                 return false;
-            };
+            }
             history
                 .iter()
-                .any(|operation| campaign.operations[operation.operation].name == *after)
+                .any(|operation| campaign_fault_matches_operation(campaign, fault, *operation))
         }
     }
 }
@@ -3646,7 +3676,9 @@ fn campaign_schedule_events(
             let input = campaign_operation_input(campaign, *operation)?;
             let actions = selected
                 .iter()
-                .filter(|candidate| candidate.after.as_deref() == Some(&definition.name))
+                .filter(|candidate| {
+                    campaign_fault_matches_operation(campaign, candidate, *operation)
+                })
                 .map(|candidate| campaign_action(candidate))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(EventPlan {
@@ -3659,10 +3691,7 @@ fn campaign_schedule_events(
 }
 
 fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
-    let operation = fault
-        .after
-        .clone()
-        .ok_or_else(|| "campaign topology action has no operation barrier".to_owned())?;
+    let operation = campaign_fault_barrier_name(fault);
     Ok(CampaignAction {
         operation,
         kind: fault.kind,
@@ -3716,7 +3745,7 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
                 CampaignFaultKind::Heal => "heal",
                 _ => unreachable!(),
             },
-            fault.after.as_deref().expect("validated action operation")
+            campaign_fault_barrier_name(fault)
         ),
         CampaignFaultKind::LinkPartition | CampaignFaultKind::LinkHeal => format!(
             "{}:{}->{}:{}@{}",
@@ -3728,7 +3757,7 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
                 CampaignFaultKind::LinkHeal => "link_heal",
                 _ => unreachable!(),
             },
-            fault.after.as_deref().expect("validated action operation")
+            campaign_fault_barrier_name(fault)
         ),
         CampaignFaultKind::StorageFault | CampaignFaultKind::StorageRecover => format!(
             "{}:{}:{}@{}",
@@ -3739,7 +3768,7 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
                 CampaignFaultKind::StorageRecover => "storage_recover",
                 _ => unreachable!(),
             },
-            fault.after.as_deref().expect("validated action operation")
+            campaign_fault_barrier_name(fault)
         ),
         CampaignFaultKind::NetworkFault | CampaignFaultKind::NetworkRecover => format!(
             "{}:{}@{}",
@@ -3749,7 +3778,7 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
                 CampaignFaultKind::NetworkRecover => "network_recover",
                 _ => unreachable!(),
             },
-            fault.after.as_deref().expect("validated action operation")
+            campaign_fault_barrier_name(fault)
         ),
         CampaignFaultKind::PacketFault | CampaignFaultKind::PacketRecover => {
             let kind = match fault.kind {
@@ -3772,7 +3801,7 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
             format!(
                 "{target}:{kind}:0x{:04x}@{}",
                 fault.ethertype.expect("validated action ethertype"),
-                fault.after.as_deref().expect("validated action operation")
+                campaign_fault_barrier_name(fault)
             )
         }
     }
@@ -7293,6 +7322,33 @@ mod tests {
                     .collect::<Vec<_>>()
                     == ["write[alpha]", "write[beta]"]
             }));
+        let mut beta_fault = campaign_fault(CampaignFaultKind::Partition);
+        beta_fault.after = None;
+        beta_fault.after_input = Some(CampaignOperationInputReference {
+            operation: "write".to_owned(),
+            input: Some("beta".to_owned()),
+        });
+        assert!(!campaign_fault_applies(
+            &beta_fault,
+            &[choice(0)],
+            &campaign
+        ));
+        assert!(campaign_fault_applies(
+            &beta_fault,
+            &[CampaignOperationChoice {
+                operation: 0,
+                input: 1,
+            }],
+            &campaign,
+        ));
+        assert_eq!(
+            campaign_fault_name(&beta_fault),
+            "backplane:partition@write[beta]"
+        );
+        assert_eq!(
+            campaign_action(&beta_fault).unwrap().operation,
+            "write[beta]"
+        );
         assert_eq!(
             campaign_schedule_events(
                 &campaign,
@@ -7694,6 +7750,7 @@ mod tests {
             to: None,
             drive: None,
             after: Some("write".to_owned()),
+            after_input: None,
             at_round: None,
             duration_rounds: None,
             nanoseconds: None,

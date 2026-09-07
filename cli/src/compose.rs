@@ -723,6 +723,8 @@ pub struct CampaignFaultPlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_input: Option<OperationInputReferencePlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub at_round: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_rounds: Option<u64>,
@@ -1263,8 +1265,6 @@ fn campaign_plan(
     validate_campaign_operation_rules(&operations, &campaign.stages)?;
     let mut faults = Vec::with_capacity(campaign.faults.len());
     for candidate in campaign.faults {
-        let after_is_operation =
-            |after: &str| operations.iter().any(|operation| operation.name == after);
         let has_network_conditions = candidate.drop_ppm.is_some()
             || candidate.duplicate_ppm.is_some()
             || candidate.corrupt_ppm.is_some()
@@ -1339,6 +1339,7 @@ fn campaign_plan(
                     to: None,
                     drive: None,
                     after: None,
+                    after_input: None,
                     at_round: Some(fault.at_round),
                     duration_rounds: fault.duration_rounds,
                     nanoseconds: fault.nanoseconds,
@@ -1371,11 +1372,7 @@ fn campaign_plan(
                         "campaign partition/heal action requires after".to_owned(),
                     )
                 })?;
-                if !after_is_operation(after) {
-                    return Err(ComposeError::Invalid(format!(
-                        "campaign action after references unknown operation {after:?}",
-                    )));
-                }
+                let (after, after_input) = normalize_campaign_fault_after(after, &operations)?;
                 if !services
                     .values()
                     .any(|service| service.networks.iter().any(|name| name == network))
@@ -1409,7 +1406,8 @@ fn campaign_plan(
                     from: None,
                     to: None,
                     drive: None,
-                    after: Some(after.to_owned()),
+                    after,
+                    after_input,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -1458,11 +1456,7 @@ fn campaign_plan(
                             .to_owned(),
                     ));
                 }
-                if !after_is_operation(after) {
-                    return Err(ComposeError::Invalid(format!(
-                        "campaign action after references unknown operation {after:?}",
-                    )));
-                }
+                let (after, after_input) = normalize_campaign_fault_after(after, &operations)?;
                 for service_name in [from, to] {
                     let service = services.get(service_name).ok_or_else(|| {
                         ComposeError::Invalid(format!(
@@ -1499,7 +1493,8 @@ fn campaign_plan(
                     from: Some(from.to_owned()),
                     to: Some(to.to_owned()),
                     drive: None,
-                    after: Some(after.to_owned()),
+                    after,
+                    after_input,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -1533,11 +1528,7 @@ fn campaign_plan(
                 let after = candidate.after.as_deref().ok_or_else(|| {
                     ComposeError::Invalid("campaign storage_fault action requires after".to_owned())
                 })?;
-                if !after_is_operation(after) {
-                    return Err(ComposeError::Invalid(format!(
-                        "campaign action after references unknown operation {after:?}",
-                    )));
-                }
+                let (after, after_input) = normalize_campaign_fault_after(after, &operations)?;
                 let service = services.get(service_name).ok_or_else(|| {
                     ComposeError::Invalid(format!(
                         "campaign storage_fault references unknown service {service_name:?}",
@@ -1602,7 +1593,8 @@ fn campaign_plan(
                     from: None,
                     to: None,
                     drive: Some(drive.to_owned()),
-                    after: Some(after.to_owned()),
+                    after,
+                    after_input,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -1636,11 +1628,7 @@ fn campaign_plan(
                         "campaign network_fault/network_recover action requires after".to_owned(),
                     )
                 })?;
-                if !after_is_operation(after) {
-                    return Err(ComposeError::Invalid(format!(
-                        "campaign action after references unknown operation {after:?}",
-                    )));
-                }
+                let (after, after_input) = normalize_campaign_fault_after(after, &operations)?;
                 if !services
                     .values()
                     .any(|service| service.networks.iter().any(|name| name == network))
@@ -1699,7 +1687,8 @@ fn campaign_plan(
                     from: None,
                     to: None,
                     drive: None,
-                    after: Some(after.to_owned()),
+                    after,
+                    after_input,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -1757,11 +1746,7 @@ fn campaign_plan(
                             .to_owned(),
                     ));
                 }
-                if !after_is_operation(after) {
-                    return Err(ComposeError::Invalid(format!(
-                        "campaign action after references unknown operation {after:?}",
-                    )));
-                }
+                let (after, after_input) = normalize_campaign_fault_after(after, &operations)?;
                 if !services
                     .values()
                     .any(|service| service.networks.iter().any(|name| name == network))
@@ -1844,7 +1829,8 @@ fn campaign_plan(
                     from: directed.map(|(from, _)| from.to_owned()),
                     to: directed.map(|(_, to)| to.to_owned()),
                     drive: None,
-                    after: Some(after.to_owned()),
+                    after,
+                    after_input,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -3193,6 +3179,37 @@ fn validate_operation_input_reference(
     Ok(())
 }
 
+fn normalize_campaign_fault_after(
+    after: &str,
+    operations: &[OperationPlan],
+) -> Result<(Option<String>, Option<OperationInputReferencePlan>), ComposeError> {
+    let reference = normalize_operation_input_references(vec![after.to_owned()], "after", "fault")?
+        .pop()
+        .expect("one campaign fault barrier is normalized");
+    let Some(operation) = operations
+        .iter()
+        .find(|operation| operation.name == reference.operation)
+    else {
+        return Err(ComposeError::Invalid(format!(
+            "campaign action after references unknown operation {after:?}",
+        )));
+    };
+    if let Some(input) = &reference.input {
+        if !operation
+            .inputs
+            .iter()
+            .any(|candidate| candidate.name == *input)
+        {
+            return Err(ComposeError::Invalid(format!(
+                "campaign action after references unknown input {:?}",
+                operation_input_reference_name(&reference)
+            )));
+        }
+        return Ok((None, Some(reference)));
+    }
+    Ok((Some(reference.operation), None))
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -4492,6 +4509,46 @@ x-theseus:
         ));
         assert_eq!(campaign.faults[1].ethertype, Some(0x0800));
         assert_eq!(campaign.faults[1].drop_ppm, None);
+    }
+
+    #[test]
+    fn normalizes_a_campaign_fault_barrier_for_one_input_case() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        inputs:
+          - name: alpha
+            input: "write alpha\n"
+          - name: beta
+            input: "write beta\n"
+    faults:
+      - kind: partition
+        network: backplane
+        after: "write[beta]"
+"#,
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        assert_eq!(campaign.faults[0].after, None);
+        assert_eq!(
+            campaign.faults[0].after_input.as_ref(),
+            Some(&OperationInputReferencePlan {
+                operation: "write".to_owned(),
+                input: Some("beta".to_owned()),
+            })
+        );
     }
 
     #[test]
