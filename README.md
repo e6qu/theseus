@@ -127,6 +127,9 @@ When one operation or property needs a mixed rule, use
 leaves are service `guard`s, JSON `correlation`s, or JSON `join`s.
 `excludes_serial_evidence` blocks an operation or property when its tree
 matches.
+Evidence trees also accept `relation`: compare values selected by two JSON
+endpoints with equality or numeric ordering. This can assert that an observed
+retry generation advances the original request without guest-side test code.
 
 ## Repository layout
 

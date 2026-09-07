@@ -91,13 +91,19 @@ Start with `compose.yaml`.
    to skip it when a completed or forbidden transaction is already present.
    Use `requires_serial_evidence` when a rule combines these evidence types.
    Each node has exactly one of `all`, `any`, `none`, `guard`, `correlation`,
-   or `join`. A `guard` has `service` and the normal serial predicate;
-   `correlation` and `join` use the endpoint forms above. Theseus evaluates
+   `join`, or `relation`. A `guard` has `service` and the normal serial
+   predicate; `correlation` and `join` use the endpoint forms above. A
+   `relation` has `left`, `right`, and an `operator`: `equals`, `not_equals`,
+   `greater_than`, `greater_than_or_equal`, `less_than`, or
+   `less_than_or_equal`. Numeric operators compare one pointer on each side;
+   equality operators can compare same-sized composite keys. Theseus evaluates
    the whole tree against the restored checkpoint before starting an operation.
    Properties also accept `requires_serial_evidence` and
    `excludes_serial_evidence`; the latter rejects a property when its tree
    matches. The retry rule combines an API assertion, auditor readiness, and
-   the three-service composite join in one `all` expression.
+   the three-service composite join in one `all` expression. The stale-read
+   property also requires its assertion attempt to be greater than the write
+   attempt.
    Add `json.where` for one condition per pointer: `equals`, `matches`,
    `greater_than`, `greater_than_or_equal`, `less_than`, `less_than_or_equal`,
    or `exists`. These conditions also match one complete JSON line.

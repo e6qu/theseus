@@ -227,7 +227,7 @@ struct ComposeCampaignFault {
 
 /// Campaign-only faults. Lifecycle faults occur on scheduler rounds; topology
 /// actions run immediately after a named operation reports its UART barrier.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CampaignFaultKind {
     Pause,
@@ -306,8 +306,29 @@ struct ComposeSerialJoin {
     endpoints: Vec<ComposeJsonCorrelationEndpoint>,
 }
 
+/// Require a pair of JSON endpoint values to satisfy one relation.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeSerialRelation {
+    left: ComposeJsonCorrelationEndpoint,
+    right: ComposeJsonCorrelationEndpoint,
+    operator: ComposeJsonRelationOperator,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposeJsonRelationOperator {
+    Equals,
+    NotEquals,
+    GreaterThan,
+    GreaterThanOrEqual,
+    LessThan,
+    LessThanOrEqual,
+}
+
 /// A recursive boolean expression over service-scoped serial predicates,
-/// correlations, and JSON joins. Exactly one member is allowed at each node.
+/// correlations, JSON joins, and value relations. Exactly one member is
+/// allowed at each node.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeSerialEvidence {
@@ -323,6 +344,8 @@ struct ComposeSerialEvidence {
     correlation: Option<ComposeSerialCorrelation>,
     #[serde(default)]
     join: Option<ComposeSerialJoin>,
+    #[serde(default)]
+    relation: Option<ComposeSerialRelation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -663,6 +686,13 @@ pub struct SerialJoinPlan {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct SerialRelationPlan {
+    pub left: JsonCorrelationEndpointPlan,
+    pub right: JsonCorrelationEndpointPlan,
+    pub operator: ComposeJsonRelationOperator,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SerialEvidencePlan {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub all: Vec<SerialEvidencePlan>,
@@ -676,6 +706,8 @@ pub struct SerialEvidencePlan {
     pub correlation: Option<SerialCorrelationPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub join: Option<SerialJoinPlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation: Option<SerialRelationPlan>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1877,10 +1909,11 @@ fn normalize_serial_evidence(
         evidence.guard.is_some(),
         evidence.correlation.is_some(),
         evidence.join.is_some(),
+        evidence.relation.is_some(),
     ];
     if choices.into_iter().filter(|choice| *choice).count() != 1 {
         return Err(ComposeError::Invalid(format!(
-            "campaign {context} serial evidence needs exactly one of all, any, none, guard, correlation, or join"
+            "campaign {context} serial evidence needs exactly one of all, any, none, guard, correlation, join, or relation"
         )));
     }
     let all = evidence
@@ -1916,6 +1949,10 @@ fn normalize_serial_evidence(
                 .map(|mut joins| joins.remove(0))
         })
         .transpose()?;
+    let relation = evidence
+        .relation
+        .map(|relation| normalize_serial_relation(relation, context, services))
+        .transpose()?;
     Ok(SerialEvidencePlan {
         all,
         any,
@@ -1923,6 +1960,37 @@ fn normalize_serial_evidence(
         guard,
         correlation,
         join,
+        relation,
+    })
+}
+
+fn normalize_serial_relation(
+    relation: ComposeSerialRelation,
+    context: &str,
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<SerialRelationPlan, ComposeError> {
+    let left =
+        normalize_json_correlation_endpoint(relation.left, "relation left", context, services)?;
+    let right =
+        normalize_json_correlation_endpoint(relation.right, "relation right", context, services)?;
+    if left.pointers.len() != right.pointers.len() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} relation needs the same number of left and right JSON pointers"
+        )));
+    }
+    if !matches!(
+        relation.operator,
+        ComposeJsonRelationOperator::Equals | ComposeJsonRelationOperator::NotEquals
+    ) && left.pointers.len() != 1
+    {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} numeric relation needs one left and one right JSON pointer"
+        )));
+    }
+    Ok(SerialRelationPlan {
+        left,
+        right,
+        operator: relation.operator,
     })
 }
 
@@ -2984,14 +3052,18 @@ mod tests {
     #[test]
     fn normalizes_recursive_serial_evidence() {
         let evidence: ComposeSerialEvidence = serde_yaml::from_str(
-            "all:\n  - guard:\n      json:\n        fields:\n          /event: replicated\n  - any:\n      - correlation:\n          capture:\n            pointer: /request_id\n            json:\n              fields:\n                /event: write\n          equals:\n            pointer: /request_id\n            json:\n              fields:\n                /event: replicated\n      - join:\n          endpoints:\n            - pointers: [/request_id, /attempt]\n              json:\n                fields:\n                  /event: write\n            - pointers: [/request_id, /attempt]\n              json:\n                fields:\n                  /event: replicated\n",
+            "all:\n  - guard:\n      json:\n        fields:\n          /event: replicated\n  - any:\n      - correlation:\n          capture:\n            pointer: /request_id\n            json:\n              fields:\n                /event: write\n          equals:\n            pointer: /request_id\n            json:\n              fields:\n                /event: replicated\n      - join:\n          endpoints:\n            - pointers: [/request_id, /attempt]\n              json:\n                fields:\n                  /event: write\n            - pointers: [/request_id, /attempt]\n              json:\n                fields:\n                  /event: replicated\n  - relation:\n      left:\n        pointer: /attempt\n        json:\n          fields:\n            /event: replicated\n      right:\n        pointer: /attempt\n        json:\n          fields:\n            /event: write\n      operator: greater_than_or_equal\n",
         )
         .unwrap();
         let plan = normalize_serial_evidence(evidence, "write", &BTreeMap::new()).unwrap();
-        assert_eq!(plan.all.len(), 2);
+        assert_eq!(plan.all.len(), 3);
         assert_eq!(plan.all[1].any.len(), 2);
         assert!(plan.all[1].any[0].correlation.is_some());
         assert!(plan.all[1].any[1].join.is_some());
+        assert_eq!(
+            plan.all[2].relation.as_ref().unwrap().operator,
+            ComposeJsonRelationOperator::GreaterThanOrEqual
+        );
     }
 
     #[test]
@@ -3003,6 +3075,17 @@ mod tests {
 
         let error = normalize_serial_evidence(evidence, "write", &BTreeMap::new()).unwrap_err();
         assert!(error.to_string().contains("exactly one of all, any, none"));
+    }
+
+    #[test]
+    fn rejects_a_composite_numeric_serial_relation() {
+        let relation: ComposeSerialRelation = serde_yaml::from_str(
+            "left:\n  pointers: [/attempt, /generation]\n  json:\n    fields:\n      /event: replicated\nright:\n  pointers: [/attempt, /generation]\n  json:\n    fields:\n      /event: write\noperator: greater_than\n",
+        )
+        .unwrap();
+
+        let error = normalize_serial_relation(relation, "write", &BTreeMap::new()).unwrap_err();
+        assert!(error.to_string().contains("numeric relation needs one"));
     }
 
     #[test]
