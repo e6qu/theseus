@@ -82,7 +82,12 @@ fn default_campaign_operations_per_run() -> u8 {
 #[derive(Debug, Deserialize, Serialize)]
 struct CampaignOperation {
     name: String,
-    input_hex: String,
+    /// `input_hex` is retained only to replay plans locked by older Theseus
+    /// releases. New plans always use named `inputs`.
+    #[serde(default)]
+    input_hex: Option<String>,
+    #[serde(default)]
+    inputs: Vec<CampaignOperationInput>,
     #[serde(default)]
     stage: Option<String>,
     #[serde(default)]
@@ -111,6 +116,12 @@ struct CampaignOperation {
     excludes_serial_evidence: Option<SerialEvidence>,
     #[serde(default)]
     max_uses: Option<u8>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct CampaignOperationInput {
+    name: String,
+    input_hex: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1847,7 +1858,7 @@ fn execute_campaign(
                         schedule
                             .operations
                             .iter()
-                            .map(|operation| campaign.operations[*operation].name.as_str())
+                            .map(|operation| campaign_operation_choice_name(&campaign, *operation))
                             .collect::<Vec<_>>()
                             .join(" -> ")
                     ));
@@ -1916,7 +1927,7 @@ fn execute_campaign(
             operations: schedule
                 .operations
                 .iter()
-                .map(|operation| campaign.operations[*operation].name.clone())
+                .map(|operation| campaign_operation_choice_name(&campaign, *operation))
                 .collect(),
             fault: (schedule.faults.len() == 1)
                 .then(|| campaign_fault_name(&campaign.faults[schedule.faults[0]])),
@@ -2160,7 +2171,7 @@ fn execute_campaign_minimized(
     let original_operations = schedule
         .operations
         .iter()
-        .map(|operation| campaign.operations[*operation].name.clone())
+        .map(|operation| campaign_operation_choice_name(&campaign, *operation))
         .collect::<Vec<_>>();
     let original_faults = campaign_fault_names(&campaign, &schedule.faults);
     let attempts = output.join("minimization-attempts");
@@ -2257,7 +2268,7 @@ fn execute_campaign_minimized(
     let minimized_operations = schedule
         .operations
         .iter()
-        .map(|operation| campaign.operations[*operation].name.clone())
+        .map(|operation| campaign_operation_choice_name(&campaign, *operation))
         .collect::<Vec<_>>();
     fs::write(
         output.join("minimization.json"),
@@ -2290,13 +2301,14 @@ fn execute_campaign_minimized(
 /// then refine only when no chunk can be removed. At its finest granularity the
 /// result is still 1-minimal, while long irrelevant prefixes disappear in one
 /// replay attempt.
-fn minimize_campaign_items<F>(
-    mut items: Vec<usize>,
+fn minimize_campaign_items<T, F>(
+    mut items: Vec<T>,
     minimum_len: usize,
     mut property_fails: F,
-) -> Result<(Vec<usize>, usize), String>
+) -> Result<(Vec<T>, usize), String>
 where
-    F: FnMut(&[usize]) -> Result<bool, String>,
+    T: Clone,
+    F: FnMut(&[T]) -> Result<bool, String>,
 {
     let mut granularity = 2_usize;
     let mut attempts = 0_usize;
@@ -2470,13 +2482,7 @@ fn campaign_counterexample(
         let operations = recorded_run
             .operations
             .iter()
-            .map(|name| {
-                campaign
-                    .operations
-                    .iter()
-                    .position(|operation| operation.name == *name)
-                    .ok_or_else(|| format!("recorded operation is no longer declared: {name}"))
-            })
+            .map(|name| campaign_operation_choice_by_name(campaign, name))
             .collect::<Result<Vec<_>, _>>()?;
         let names = if recorded_run.faults.is_empty() {
             recorded_run.fault.iter().cloned().collect()
@@ -2579,17 +2585,114 @@ fn campaign_property_services(run: &Path, service: Option<&str>) -> Vec<String> 
 
 #[derive(Clone, Debug)]
 struct CampaignSchedule {
-    operations: Vec<usize>,
+    operations: Vec<CampaignOperationChoice>,
     faults: Vec<usize>,
+}
+
+/// An operation remains the stable target for guards, stages, use bounds, and
+/// faults. Its input case is the variable that expands the campaign corpus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CampaignOperationChoice {
+    operation: usize,
+    input: usize,
+}
+
+fn campaign_operation_inputs(operation: &CampaignOperation) -> Vec<CampaignOperationInput> {
+    if operation.inputs.is_empty() {
+        return operation
+            .input_hex
+            .as_ref()
+            .map(|input_hex| CampaignOperationInput {
+                name: "default".to_owned(),
+                input_hex: input_hex.clone(),
+            })
+            .into_iter()
+            .collect();
+    }
+    operation
+        .inputs
+        .iter()
+        .map(|input| CampaignOperationInput {
+            name: input.name.clone(),
+            input_hex: input.input_hex.clone(),
+        })
+        .collect()
+}
+
+fn campaign_operation_choices(campaign: &CampaignPlan) -> Vec<CampaignOperationChoice> {
+    campaign
+        .operations
+        .iter()
+        .enumerate()
+        .flat_map(|(operation, definition)| {
+            (0..campaign_operation_inputs(definition).len())
+                .map(move |input| CampaignOperationChoice { operation, input })
+        })
+        .collect()
+}
+
+fn campaign_operation_input(
+    campaign: &CampaignPlan,
+    choice: CampaignOperationChoice,
+) -> Result<CampaignOperationInput, String> {
+    let operation = campaign.operations.get(choice.operation).ok_or_else(|| {
+        format!(
+            "campaign operation index {} is not declared",
+            choice.operation
+        )
+    })?;
+    campaign_operation_inputs(operation)
+        .get(choice.input)
+        .map(|input| CampaignOperationInput {
+            name: input.name.clone(),
+            input_hex: input.input_hex.clone(),
+        })
+        .ok_or_else(|| {
+            format!(
+                "campaign operation {:?} input index {} is not declared",
+                operation.name, choice.input
+            )
+        })
+}
+
+fn campaign_operation_choice_name(
+    campaign: &CampaignPlan,
+    choice: CampaignOperationChoice,
+) -> String {
+    let operation = &campaign.operations[choice.operation];
+    let inputs = campaign_operation_inputs(operation);
+    let input = &inputs[choice.input];
+    if inputs.len() == 1 && input.name == "default" {
+        operation.name.clone()
+    } else {
+        format!("{}[{}]", operation.name, input.name)
+    }
+}
+
+fn campaign_operation_choice_by_name(
+    campaign: &CampaignPlan,
+    name: &str,
+) -> Result<CampaignOperationChoice, String> {
+    let matches = campaign_operation_choices(campaign)
+        .into_iter()
+        .filter(|choice| campaign_operation_choice_name(campaign, *choice) == name)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [choice] => Ok(*choice),
+        [] => Err(format!(
+            "recorded campaign operation is not declared: {name}"
+        )),
+        _ => Err(format!("recorded campaign operation is ambiguous: {name}")),
+    }
 }
 
 fn campaign_operation_marker_guards_are_ready(
     campaign: &CampaignPlan,
     checkpoint: &CampaignCheckpoint,
-    operation: usize,
+    choice: CampaignOperationChoice,
 ) -> bool {
     let markers = campaign_checkpoint_markers(checkpoint);
-    let candidate = &campaign.operations[operation];
+    let candidate = &campaign.operations[choice.operation];
     candidate
         .requires_markers
         .iter()
@@ -2603,9 +2706,9 @@ fn campaign_operation_marker_guards_are_ready(
 fn campaign_operation_serial_guards_are_ready(
     campaign: &CampaignPlan,
     checkpoint: &CampaignCheckpoint,
-    operation: usize,
+    choice: CampaignOperationChoice,
 ) -> bool {
-    let candidate = &campaign.operations[operation];
+    let candidate = &campaign.operations[choice.operation];
     candidate
         .requires_serial
         .as_ref()
@@ -3035,7 +3138,7 @@ fn campaign_checkpoint_markers(
 
 #[derive(Clone, Debug)]
 struct CampaignGuidanceObservation {
-    operations: Vec<usize>,
+    operations: Vec<CampaignOperationChoice>,
     novel_markers: usize,
     novel_state: bool,
     failed: bool,
@@ -3092,20 +3195,30 @@ fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
 /// Enumerate every ordered operation history, including repetitions, in stable
 /// breadth-first order. A manifest controls the depth explicitly; the global
 /// candidate cap remains the final guard for wide workloads and fault products.
-fn campaign_operation_histories(campaign: &CampaignPlan) -> Vec<Vec<usize>> {
+fn campaign_operation_histories(campaign: &CampaignPlan) -> Vec<Vec<CampaignOperationChoice>> {
+    let choices = campaign_operation_choices(campaign);
     ordered_operation_histories(
-        campaign.operations.len(),
+        choices.len(),
         usize::from(campaign.max_operations_per_run),
-        |history, operation| campaign_operation_is_ready(campaign, history, operation),
+        |history, choice| {
+            let resolved = history
+                .iter()
+                .map(|choice| choices[*choice])
+                .collect::<Vec<_>>();
+            campaign_operation_is_ready(campaign, &resolved, choices[choice])
+        },
     )
+    .into_iter()
+    .map(|history| history.into_iter().map(|choice| choices[choice]).collect())
+    .collect()
 }
 
 fn campaign_operation_is_ready(
     campaign: &CampaignPlan,
-    history: &[usize],
-    operation: usize,
+    history: &[CampaignOperationChoice],
+    choice: CampaignOperationChoice,
 ) -> bool {
-    let candidate = &campaign.operations[operation];
+    let candidate = &campaign.operations[choice.operation];
     let candidate_stage = candidate.stage.as_ref().and_then(|stage| {
         campaign
             .stages
@@ -3113,7 +3226,7 @@ fn campaign_operation_is_ready(
             .position(|declared| declared == stage)
     });
     let stages_are_ordered = history.iter().all(|prior| {
-        let prior_stage = campaign.operations[*prior]
+        let prior_stage = campaign.operations[prior.operation]
             .stage
             .as_ref()
             .and_then(|stage| {
@@ -3129,15 +3242,19 @@ fn campaign_operation_is_ready(
         && candidate.requires.iter().all(|requirement| {
             history
                 .iter()
-                .any(|prior| campaign.operations[*prior].name == requirement.as_str())
+                .any(|prior| campaign.operations[prior.operation].name == requirement.as_str())
         })
         && candidate.excludes.iter().all(|exclusion| {
             history
                 .iter()
-                .all(|prior| campaign.operations[*prior].name != exclusion.as_str())
+                .all(|prior| campaign.operations[prior.operation].name != exclusion.as_str())
         })
         && candidate.max_uses.map_or(true, |maximum| {
-            history.iter().filter(|prior| **prior == operation).count() < usize::from(maximum)
+            history
+                .iter()
+                .filter(|prior| prior.operation == choice.operation)
+                .count()
+                < usize::from(maximum)
         })
 }
 
@@ -3186,15 +3303,7 @@ fn recorded_campaign_schedules(
             let operations = run
                 .operations
                 .iter()
-                .map(|name| {
-                    campaign
-                        .operations
-                        .iter()
-                        .position(|operation| operation.name == *name)
-                        .ok_or_else(|| {
-                            format!("recorded campaign operation is not declared: {name}")
-                        })
-                })
+                .map(|name| campaign_operation_choice_by_name(campaign, name))
                 .collect::<Result<Vec<_>, _>>()?;
             let names = if run.faults.is_empty() {
                 run.fault.iter().cloned().collect::<Vec<_>>()
@@ -3406,7 +3515,7 @@ fn campaign_faults_compatible(first: &CampaignFault, second: &CampaignFault) -> 
 
 fn campaign_fault_applies(
     fault: &CampaignFault,
-    history: &[usize],
+    history: &[CampaignOperationChoice],
     campaign: &CampaignPlan,
 ) -> bool {
     match fault.kind {
@@ -3428,7 +3537,7 @@ fn campaign_fault_applies(
             };
             history
                 .iter()
-                .any(|operation| campaign.operations[*operation].name == *after)
+                .any(|operation| campaign.operations[operation.operation].name == *after)
         }
     }
 }
@@ -3494,15 +3603,16 @@ fn campaign_schedule_events(
         .operations
         .iter()
         .map(|operation| {
-            let operation = &campaign.operations[*operation];
+            let definition = &campaign.operations[operation.operation];
+            let input = campaign_operation_input(campaign, *operation)?;
             let actions = selected
                 .iter()
-                .filter(|candidate| candidate.after.as_deref() == Some(&operation.name))
+                .filter(|candidate| candidate.after.as_deref() == Some(&definition.name))
                 .map(|candidate| campaign_action(candidate))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(EventPlan {
-                data_hex: operation.input_hex.clone(),
-                checkpoint: Some(format!("THES:CHECKPOINT:{}", operation.name)),
+                data_hex: input.input_hex,
+                checkpoint: Some(format!("THES:CHECKPOINT:{}", definition.name)),
                 actions,
             })
         })
@@ -6279,6 +6389,13 @@ fn lock_artifact(service_dir: &Path, name: &str, artifact: &Artifact) -> Result<
 mod tests {
     use super::*;
 
+    fn choice(operation: usize) -> CampaignOperationChoice {
+        CampaignOperationChoice {
+            operation,
+            input: 0,
+        }
+    }
+
     #[test]
     fn json_relations_compare_one_or_composite_endpoint_values() {
         let one = serde_json::json!([2]);
@@ -7030,7 +7147,17 @@ mod tests {
             operations: vec![
                 CampaignOperation {
                     name: "write".to_owned(),
-                    input_hex: "77726974650a".to_owned(),
+                    input_hex: None,
+                    inputs: vec![
+                        CampaignOperationInput {
+                            name: "alpha".to_owned(),
+                            input_hex: "777269746520616c7068610a".to_owned(),
+                        },
+                        CampaignOperationInput {
+                            name: "beta".to_owned(),
+                            input_hex: "777269746520626574610a".to_owned(),
+                        },
+                    ],
                     stage: None,
                     requires: Vec::new(),
                     excludes: Vec::new(),
@@ -7048,7 +7175,8 @@ mod tests {
                 },
                 CampaignOperation {
                     name: "read".to_owned(),
-                    input_hex: "726561640a".to_owned(),
+                    input_hex: Some("726561640a".to_owned()),
+                    inputs: Vec::new(),
                     stage: None,
                     requires: vec!["write".to_owned()],
                     excludes: Vec::new(),
@@ -7090,17 +7218,53 @@ mod tests {
             round: 0,
         };
 
+        assert_eq!(
+            campaign_operation_choice_name(
+                &campaign,
+                CampaignOperationChoice {
+                    operation: 0,
+                    input: 1,
+                },
+            ),
+            "write[beta]"
+        );
+        assert_eq!(
+            campaign_operation_histories(&campaign)
+                .into_iter()
+                .filter(|history| history.len() == 1)
+                .map(|history| campaign_operation_choice_name(&campaign, history[0]))
+                .collect::<Vec<_>>(),
+            vec!["write[alpha]", "write[beta]"]
+        );
+        assert_eq!(
+            campaign_schedule_events(
+                &campaign,
+                &CampaignSchedule {
+                    operations: vec![CampaignOperationChoice {
+                        operation: 0,
+                        input: 1,
+                    }],
+                    faults: Vec::new(),
+                },
+            )
+            .unwrap()[0]
+                .data_hex,
+            "777269746520626574610a"
+        );
+
         assert!(campaign_operation_marker_guards_are_ready(
             &campaign,
             &checkpoint,
-            1
+            choice(1)
         ));
 
         let mut closed = checkpoint.clone();
         closed.scheduler.get_mut("api").unwrap().serial_contents[0]
             .extend_from_slice(b"THES:M:closed\n");
         assert!(!campaign_operation_marker_guards_are_ready(
-            &campaign, &closed, 1
+            &campaign,
+            &closed,
+            choice(1)
         ));
 
         let mut structured = campaign;
@@ -7181,7 +7345,7 @@ mod tests {
         assert!(!campaign_operation_serial_guards_are_ready(
             &structured,
             &checkpoint,
-            1
+            choice(1)
         ));
         let mut stale = checkpoint.clone();
         stale.scheduler.get_mut("api").unwrap().serial_contents[0]
@@ -7203,14 +7367,14 @@ mod tests {
         assert!(campaign_operation_serial_guards_are_ready(
             &structured,
             &stale,
-            1
+            choice(1)
         ));
         structured.operations[1].excludes_serial_joins =
             structured.operations[1].requires_serial_joins.clone();
         assert!(!campaign_operation_serial_guards_are_ready(
             &structured,
             &stale,
-            1
+            choice(1)
         ));
         structured.operations[1].excludes_serial_joins.clear();
         structured.operations[1].requires_serial = None;
@@ -7250,28 +7414,28 @@ mod tests {
         assert!(campaign_operation_serial_guards_are_ready(
             &structured,
             &stale,
-            1
+            choice(1)
         ));
         stale.scheduler.get_mut("api").unwrap().serial_contents[0]
             .extend_from_slice(b"{\"event\":\"write\",\"request_id\":\"r-18\",\"attempt\":1}\n");
         assert!(!campaign_operation_serial_guards_are_ready(
             &structured,
             &stale,
-            1
+            choice(1)
         ));
         stale.scheduler.get_mut("auditor").unwrap().serial_contents[0]
             .extend_from_slice(b"{\"event\":\"audit\",\"request_id\":\"r-18\",\"attempt\":2}\n");
         assert!(!campaign_operation_serial_guards_are_ready(
             &structured,
             &stale,
-            1
+            choice(1)
         ));
         stale.scheduler.get_mut("auditor").unwrap().serial_contents[0]
             .extend_from_slice(b"THES:ASSERT:recovered\n");
         assert!(!campaign_operation_serial_guards_are_ready(
             &structured,
             &stale,
-            1
+            choice(1)
         ));
     }
 
@@ -7326,15 +7490,15 @@ mod tests {
     fn campaign_selection_seeds_each_root_operation_before_extensions() {
         let schedules = vec![
             CampaignSchedule {
-                operations: vec![0],
+                operations: vec![choice(0)],
                 faults: Vec::new(),
             },
             CampaignSchedule {
-                operations: vec![1],
+                operations: vec![choice(1)],
                 faults: Vec::new(),
             },
             CampaignSchedule {
-                operations: vec![0, 1],
+                operations: vec![choice(0), choice(1)],
                 faults: Vec::new(),
             },
         ];
@@ -7342,7 +7506,7 @@ mod tests {
             &schedules,
             &[1, 2],
             &[CampaignGuidanceObservation {
-                operations: vec![0],
+                operations: vec![choice(0)],
                 novel_markers: 2,
                 novel_state: false,
                 failed: false,
@@ -7357,15 +7521,15 @@ mod tests {
     fn campaign_selection_extends_a_new_topology_state_prefix() {
         let schedules = vec![
             CampaignSchedule {
-                operations: vec![0],
+                operations: vec![choice(0)],
                 faults: Vec::new(),
             },
             CampaignSchedule {
-                operations: vec![1],
+                operations: vec![choice(1)],
                 faults: Vec::new(),
             },
             CampaignSchedule {
-                operations: vec![0, 1],
+                operations: vec![choice(0), choice(1)],
                 faults: Vec::new(),
             },
         ];
@@ -7373,7 +7537,7 @@ mod tests {
             &schedules,
             &[2],
             &[CampaignGuidanceObservation {
-                operations: vec![0],
+                operations: vec![choice(0)],
                 novel_markers: 0,
                 novel_state: true,
                 failed: false,
@@ -7388,11 +7552,11 @@ mod tests {
     fn campaign_selection_keeps_canonical_order_without_a_signal() {
         let schedules = vec![
             CampaignSchedule {
-                operations: vec![0],
+                operations: vec![choice(0)],
                 faults: Vec::new(),
             },
             CampaignSchedule {
-                operations: vec![1],
+                operations: vec![choice(1)],
                 faults: Vec::new(),
             },
         ];

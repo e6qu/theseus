@@ -18,6 +18,11 @@ Start with `compose.yaml`.
 2. List operations as ordinary text. Theseus injects them into the driver UART;
    after each input it waits for `THES:CHECKPOINT:<operation-name>` before it
    injects the next one. No SDK or host-side wrapper is required.
+   Use `inputs` when one logical operation has several payload cases. Give each
+   case a name and an `input`; Theseus explores every case, reports it as
+   `operation[case]`, and still applies `requires`, `max_uses`, stages, and
+   faults to the logical operation name. This tutorial's `write` operation
+   explores `write alpha` and `write beta` without duplicating its fault rules.
    Add `requires: [operation-name]` when an operation needs one or more earlier
    operations. Theseus generates only histories where every requirement has
    already occurred; unknown, duplicate, and cyclic requirements are rejected.
