@@ -203,9 +203,15 @@ x-theseus:
               select: latest
               pointer: /request_id
               json:
-                fields:
-                  /event: operation
-                  /name: write
+                # Compose JSON event predicates with all, any, and none.
+                # Every branch still matches this one event.
+                all:
+                  - fields:
+                      /event: operation
+                      /name: write
+                  - where:
+                      - pointer: /attempt
+                        greater_than_or_equal: 1
         stage: recovery
         requires_state: {phase: stale}
         sets_state: {phase: recovered}

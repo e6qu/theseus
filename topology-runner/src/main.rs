@@ -482,6 +482,12 @@ struct JsonPredicate {
     #[serde(default)]
     arrays: Vec<JsonArrayPredicate>,
     #[serde(default)]
+    all: Vec<JsonPredicate>,
+    #[serde(default)]
+    any: Vec<JsonPredicate>,
+    #[serde(default)]
+    none: Vec<JsonPredicate>,
+    #[serde(default)]
     capture: BTreeMap<String, String>,
     #[serde(default)]
     equals_capture: BTreeMap<String, String>,
@@ -4664,6 +4670,19 @@ fn json_predicate_matches_with_captures(
             })
         })
         && predicate
+            .all
+            .iter()
+            .all(|predicate| json_predicate_matches(event, predicate))
+        && (predicate.any.is_empty()
+            || predicate
+                .any
+                .iter()
+                .any(|predicate| json_predicate_matches(event, predicate)))
+        && predicate
+            .none
+            .iter()
+            .all(|predicate| !json_predicate_matches(event, predicate))
+        && predicate
             .equals_capture
             .iter()
             .all(|(pointer, name)| event.pointer(pointer) == captures.get(name))
@@ -7190,6 +7209,9 @@ mod tests {
             ]),
             where_: Vec::new(),
             arrays: Vec::new(),
+            all: Vec::new(),
+            any: Vec::new(),
+            none: Vec::new(),
             capture: BTreeMap::new(),
             equals_capture: BTreeMap::new(),
         };
@@ -7227,6 +7249,38 @@ mod tests {
         ));
         assert!(!serial_matches_json_predicate(
             br#"{"event":"ready","checks":[{"name":"serial","passed":false},{"name":"network","passed":true}]}
+"#,
+            &predicate,
+        ));
+    }
+
+    #[test]
+    fn json_serial_predicates_compose_same_event_branches() {
+        let predicate: JsonPredicate = serde_json::from_value(serde_json::json!({
+            "fields": {"/event": "operation"},
+            "all": [
+                {"where": [{"pointer": "/attempt", "greater_than_or_equal": 2}]},
+                {"any": [
+                    {"fields": {"/name": "write"}},
+                    {"fields": {"/name": "retry"}}
+                ]}
+            ],
+            "none": [{"fields": {"/aborted": true}}]
+        }))
+        .unwrap();
+
+        assert!(serial_matches_json_predicate(
+            br#"{"event":"operation","name":"write","attempt":2}
+"#,
+            &predicate,
+        ));
+        assert!(!serial_matches_json_predicate(
+            br#"{"event":"operation","name":"read","attempt":2}
+"#,
+            &predicate,
+        ));
+        assert!(!serial_matches_json_predicate(
+            br#"{"event":"operation","name":"retry","attempt":2,"aborted":true}
 "#,
             &predicate,
         ));
@@ -7364,6 +7418,9 @@ mod tests {
                 },
             ],
             arrays: Vec::new(),
+            all: Vec::new(),
+            any: Vec::new(),
+            none: Vec::new(),
             capture: BTreeMap::new(),
             equals_capture: BTreeMap::new(),
         };
@@ -7527,6 +7584,9 @@ mod tests {
                         )]),
                         where_: Vec::new(),
                         arrays: Vec::new(),
+                        all: Vec::new(),
+                        any: Vec::new(),
+                        none: Vec::new(),
                         capture: BTreeMap::new(),
                         equals_capture: BTreeMap::new(),
                     },
@@ -7703,6 +7763,9 @@ mod tests {
                         exists: None,
                     }],
                     arrays: Vec::new(),
+                    all: Vec::new(),
+                    any: Vec::new(),
+                    none: Vec::new(),
                     capture: BTreeMap::new(),
                     equals_capture: BTreeMap::new(),
                 }),
