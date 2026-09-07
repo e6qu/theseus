@@ -202,16 +202,24 @@ x-theseus:
             request:
               select: latest
               pointer: /request_id
-              json:
-                # Compose JSON event predicates with all, any, and none.
-                # Every branch still matches this one event.
-                all:
-                  - fields:
-                      /event: operation
-                      /name: write
-                  - where:
-                      - pointer: /attempt
-                        greater_than_or_equal: 1
+              # Select from the final JSON event only after the matching
+              # transaction has started. Sequence captures preserve the key.
+              sequence:
+                - json:
+                    fields:
+                      /event: started
+                    capture:
+                      request: /request_id
+                - json:
+                    all:
+                      - fields:
+                          /event: operation
+                          /name: write
+                      - where:
+                          - pointer: /attempt
+                            greater_than_or_equal: 1
+                    equals_capture:
+                      /request_id: request
         stage: recovery
         requires_state: {phase: stale}
         sets_state: {phase: recovered}
