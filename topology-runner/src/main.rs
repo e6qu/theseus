@@ -248,6 +248,21 @@ struct JsonCorrelationEndpoint {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct SerialJoin {
     endpoints: Vec<JsonCorrelationEndpoint>,
+    #[serde(default)]
+    quantifier: SerialJoinQuantifier,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SerialJoinQuantifier {
+    Any,
+    Every,
+}
+
+impl Default for SerialJoinQuantifier {
+    fn default() -> Self {
+        Self::Any
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2591,15 +2606,24 @@ fn campaign_serial_join_matches(
     let Some((first, rest)) = join.endpoints.split_first() else {
         return false;
     };
-    campaign_join_endpoint_values(checkpoint, driver, first)
-        .into_iter()
-        .any(|candidate| {
-            rest.iter().all(|endpoint| {
-                campaign_join_endpoint_values(checkpoint, driver, endpoint)
-                    .into_iter()
-                    .any(|value| value == candidate)
-            })
-        })
+    let candidates = campaign_join_endpoint_values(checkpoint, driver, first);
+    !candidates.is_empty()
+        && match join.quantifier {
+            SerialJoinQuantifier::Any => candidates.into_iter().any(|candidate| {
+                rest.iter().all(|endpoint| {
+                    campaign_join_endpoint_values(checkpoint, driver, endpoint)
+                        .into_iter()
+                        .any(|value| value == candidate)
+                })
+            }),
+            SerialJoinQuantifier::Every => candidates.into_iter().all(|candidate| {
+                rest.iter().all(|endpoint| {
+                    campaign_join_endpoint_values(checkpoint, driver, endpoint)
+                        .into_iter()
+                        .any(|value| value == candidate)
+                })
+            }),
+        }
 }
 
 fn campaign_serial_correlation_matches(
@@ -3514,15 +3538,24 @@ fn serial_join_matches_property(
     let Some((first, rest)) = join.endpoints.split_first() else {
         return false;
     };
-    serial_join_endpoint_values(run, property, first)
-        .into_iter()
-        .any(|candidate| {
-            rest.iter().all(|endpoint| {
-                serial_join_endpoint_values(run, property, endpoint)
-                    .into_iter()
-                    .any(|value| value == candidate)
-            })
-        })
+    let candidates = serial_join_endpoint_values(run, property, first);
+    !candidates.is_empty()
+        && match join.quantifier {
+            SerialJoinQuantifier::Any => candidates.into_iter().any(|candidate| {
+                rest.iter().all(|endpoint| {
+                    serial_join_endpoint_values(run, property, endpoint)
+                        .into_iter()
+                        .any(|value| value == candidate)
+                })
+            }),
+            SerialJoinQuantifier::Every => candidates.into_iter().all(|candidate| {
+                rest.iter().all(|endpoint| {
+                    serial_join_endpoint_values(run, property, endpoint)
+                        .into_iter()
+                        .any(|value| value == candidate)
+                })
+            }),
+        }
 }
 
 fn serial_relation_matches_property(
@@ -4137,7 +4170,8 @@ fn serial_correlation_description(correlation: &SerialCorrelation) -> String {
 }
 
 fn serial_join_description(join: &SerialJoin) -> String {
-    join.endpoints
+    let endpoints = join
+        .endpoints
         .iter()
         .map(|endpoint| {
             format!(
@@ -4147,7 +4181,11 @@ fn serial_join_description(join: &SerialJoin) -> String {
             )
         })
         .collect::<Vec<_>>()
-        .join(" = ")
+        .join(" = ");
+    match join.quantifier {
+        SerialJoinQuantifier::Any => endpoints,
+        SerialJoinQuantifier::Every => format!("every {endpoints}"),
+    }
 }
 
 fn serial_relation_description(relation: &SerialRelation) -> String {
@@ -6046,7 +6084,7 @@ mod tests {
                         {"service": "api", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "write"}}},
                         {"service": "worker", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "replicated"}}},
                         {"service": "auditor", "pointers": ["/request_id", "/attempt"], "json": {"fields": {"/event": "audit"}}}
-                    ]}},
+                    ], "quantifier": "every"}},
                     {"relation": {
                         "left": {"service": "worker", "pointer": "/attempt", "json": {"fields": {"/event": "replicated"}}},
                         "right": {"service": "api", "pointer": "/attempt", "json": {"fields": {"/event": "write"}}},
@@ -6058,6 +6096,12 @@ mod tests {
         );
         assert!(property_matches_in_run(&joined, &run));
         assert!(campaign_property_description(&joined).contains("worker /attempt >= api /attempt"));
+        fs::write(
+            api.join("serial.log"),
+            "THES:ASSERT:write:pass\nTHES:M:written\nTHES:CHECKPOINT:write\n{\"event\":\"write\",\"request_id\":\"r-17\",\"attempt\":1}\n{\"event\":\"write\",\"request_id\":\"r-18\",\"attempt\":1}\n",
+        )
+        .unwrap();
+        assert!(!property_matches_in_run(&joined, &run));
         joined.excludes_serial_evidence = Some(
             serde_json::from_value(serde_json::json!({
                 "guard": {"service": "auditor", "json": {"fields": {"/event": "audit"}}}
@@ -6472,7 +6516,7 @@ mod tests {
                     {"join": {"endpoints": [
                         {"pointer": "/request_id", "json": {"fields": {"/event": "write"}}},
                         {"service": "auditor", "pointer": "/request_id", "json": {"fields": {"/event": "audit"}}}
-                    ]}},
+                    ], "quantifier": "every"}},
                     {"any": [
                         {"correlation": {
                             "capture": {"pointer": "/request_id", "json": {"fields": {"/event": "write"}}},
@@ -6496,6 +6540,13 @@ mod tests {
             .unwrap(),
         );
         assert!(campaign_operation_serial_guards_are_ready(
+            &structured,
+            &stale,
+            1
+        ));
+        stale.scheduler.get_mut("api").unwrap().serial_contents[0]
+            .extend_from_slice(b"{\"event\":\"write\",\"request_id\":\"r-18\",\"attempt\":1}\n");
+        assert!(!campaign_operation_serial_guards_are_ready(
             &structured,
             &stale,
             1

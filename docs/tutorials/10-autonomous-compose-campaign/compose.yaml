@@ -46,6 +46,9 @@ x-theseus:
                     /passed: true
       replicated_write:
         join:
+          # Do not accept one replicated transaction while another write is
+          # missing. Every API request/attempt must appear at both peers.
+          quantifier: every
           endpoints:
             - pointers: [/request_id, /attempt]
               json:

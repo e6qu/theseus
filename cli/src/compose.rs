@@ -303,11 +303,27 @@ struct ComposeJsonCorrelationEndpoint {
     json: ComposeJsonPredicate,
 }
 
-/// Require one JSON value to occur in every listed endpoint.
+/// Require one or every JSON value from the first endpoint to occur in every
+/// other listed endpoint.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeSerialJoin {
     endpoints: Vec<ComposeJsonCorrelationEndpoint>,
+    #[serde(default)]
+    quantifier: ComposeSerialJoinQuantifier,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposeSerialJoinQuantifier {
+    Any,
+    Every,
+}
+
+impl Default for ComposeSerialJoinQuantifier {
+    fn default() -> Self {
+        Self::Any
+    }
 }
 
 /// Require a pair of JSON endpoint values to satisfy one relation.
@@ -689,6 +705,7 @@ pub struct JsonCorrelationEndpointPlan {
 #[derive(Debug, Clone, Serialize)]
 pub struct SerialJoinPlan {
     pub endpoints: Vec<JsonCorrelationEndpointPlan>,
+    pub quantifier: ComposeSerialJoinQuantifier,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1933,6 +1950,7 @@ fn normalize_serial_joins(
                         normalize_json_correlation_endpoint(endpoint, "join", context, services)
                     })
                     .collect::<Result<_, _>>()?,
+                quantifier: join.quantifier,
             })
         })
         .collect()
@@ -3154,6 +3172,18 @@ mod tests {
         let error = normalize_serial_joins(Some(vec![join]), "replicated_write", &BTreeMap::new())
             .unwrap_err();
         assert!(error.to_string().contains("needs at least two endpoints"));
+    }
+
+    #[test]
+    fn normalizes_universal_json_joins() {
+        let join: ComposeSerialJoin = serde_yaml::from_str(
+            "quantifier: every\nendpoints:\n  - pointer: /request_id\n    json:\n      fields:\n        /event: write\n  - pointer: /request_id\n    json:\n      fields:\n        /event: replicated\n",
+        )
+        .unwrap();
+
+        let plan =
+            normalize_serial_joins(Some(vec![join]), "replicated_write", &BTreeMap::new()).unwrap();
+        assert_eq!(plan[0].quantifier, ComposeSerialJoinQuantifier::Every);
     }
 
     #[test]
