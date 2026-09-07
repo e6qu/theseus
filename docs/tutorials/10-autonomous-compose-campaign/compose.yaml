@@ -201,25 +201,29 @@ x-theseus:
           input_captures:
             request:
               select: latest
-              pointer: /request_id
-              # Select from the final JSON event only after the matching
-              # transaction has started. Sequence captures preserve the key.
-              sequence:
-                - json:
-                    fields:
-                      /event: started
-                    capture:
-                      request: /request_id
-                - json:
-                    all:
+              pointer: /write_request_id
+              # Retry only after the matching write reaches the auditor.
+              # Stage pointers translate each service's event schema.
+              workflow:
+                pointers: [/request_id]
+                stages:
+                  - service: api
+                    steps:
                       - fields:
-                          /event: operation
-                          /name: write
-                      - where:
-                          - pointer: /attempt
-                            greater_than_or_equal: 1
-                    equals_capture:
-                      /request_id: request
+                          /event: started
+                      - all:
+                          - fields:
+                              /event: operation
+                              /name: write
+                          - where:
+                              - pointer: /attempt
+                                greater_than_or_equal: 1
+                  - service: auditor
+                    pointers: [/write_request_id]
+                    steps:
+                      - fields:
+                          /event: audit
+                          /name: write_observed
         stage: recovery
         requires_state: {phase: stale}
         sets_state: {phase: recovered}

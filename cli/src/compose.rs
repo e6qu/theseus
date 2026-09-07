@@ -199,8 +199,8 @@ struct ComposeOperationInputRules {
     sets_state: BTreeMap<String, String>,
 }
 
-/// One value selected from a matching JSON-lines event or an ordered event
-/// sequence in a restored campaign checkpoint.
+/// One value selected from a matching JSON-lines event, local event sequence,
+/// or correlated multi-service workflow in a restored campaign checkpoint.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeOperationInputCapture {
@@ -211,6 +211,8 @@ struct ComposeOperationInputCapture {
     json: Option<ComposeJsonPredicate>,
     #[serde(default)]
     sequence: Vec<ComposeSerialPredicate>,
+    #[serde(default)]
+    workflow: Option<ComposeSerialWorkflow>,
     #[serde(default)]
     encoding: ComposeOperationInputEncoding,
     #[serde(default)]
@@ -818,6 +820,8 @@ pub struct OperationInputCapturePlan {
     pub json: Option<JsonPredicatePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sequence: Vec<SerialPredicatePlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<SerialWorkflowPlan>,
     pub encoding: ComposeOperationInputEncoding,
     pub select: ComposeOperationInputSelect,
 }
@@ -3825,10 +3829,17 @@ fn normalize_operation_input_captures(
                 }
             }
             let context = format!("operation {operation:?} input capture {name:?}");
-            let forms = usize::from(capture.json.is_some()) + usize::from(!capture.sequence.is_empty());
+            let forms = usize::from(capture.json.is_some())
+                + usize::from(!capture.sequence.is_empty())
+                + usize::from(capture.workflow.is_some());
             if forms != 1 {
                 return Err(ComposeError::Invalid(format!(
-                    "campaign {context} needs exactly one of json or sequence"
+                    "campaign {context} needs exactly one of json, sequence, or workflow"
+                )));
+            }
+            if capture.workflow.is_some() && capture.service.is_some() {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign {context} workflow selects its services in workflow stages, not service"
                 )));
             }
             let json = capture
@@ -3836,6 +3847,10 @@ fn normalize_operation_input_captures(
                 .map(|json| normalize_json_predicate(json, &context, false))
                 .transpose()?;
             let sequence = normalize_operation_input_capture_sequence(capture.sequence, &context)?;
+            let workflow = capture
+                .workflow
+                .map(|workflow| normalize_serial_workflow(workflow, &context, services))
+                .transpose()?;
             Ok((
                 name,
                 OperationInputCapturePlan {
@@ -3843,6 +3858,7 @@ fn normalize_operation_input_captures(
                     pointer: capture.pointer,
                     json,
                     sequence,
+                    workflow,
                     encoding: capture.encoding,
                     select: capture.select,
                 },
@@ -4160,7 +4176,7 @@ mod tests {
 
     fn fixture(compose: &str) -> tempfile::TempDir {
         let directory = tempfile::tempdir().unwrap();
-        for service in ["api", "worker"] {
+        for service in ["api", "worker", "auditor"] {
             let root = directory.path().join(service);
             fs::create_dir_all(root.join("runtime")).unwrap();
             fs::create_dir_all(root.join("guest")).unwrap();
@@ -5116,6 +5132,58 @@ x-theseus:
             capture.sequence[1].json.as_ref().unwrap().equals_capture["/request_id"],
             "request"
         );
+    }
+
+    #[test]
+    fn normalizes_campaign_workflow_input_captures() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+  auditor:
+    x-theseus:
+      manifest: auditor/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: retry
+        input_template: "retry {request}\\n"
+        input_captures:
+          request:
+            pointer: /write_request_id
+            workflow:
+              pointers: [/request_id]
+              stages:
+                - service: api
+                  steps:
+                    - fields:
+                        /event: started
+                    - fields:
+                        /event: write
+                - service: auditor
+                  pointers: [/write_request_id]
+                  steps:
+                    - fields:
+                        /event: audit
+"#,
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        let capture = &campaign.operations[0].inputs[0].input_captures["request"];
+        assert!(capture.json.is_none());
+        assert!(capture.sequence.is_empty());
+        let workflow = capture.workflow.as_ref().unwrap();
+        assert_eq!(workflow.stages.len(), 2);
+        assert_eq!(workflow.stages[1].service, "auditor");
+        assert_eq!(workflow.stages[1].pointers, ["/write_request_id"]);
     }
 
     #[test]

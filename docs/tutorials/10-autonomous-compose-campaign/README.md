@@ -45,12 +45,14 @@ Start with `compose.yaml`.
    names while captures fill the shared fields at the restored checkpoint.
    Here the retry grammar explores `normal` and `force` modes with the same
    captured request ID.
-   Use `sequence` instead of `json` when a captured value must come from an
-   ordered transaction. Each item is a normal serial predicate; the final item
-   must be JSON, and Theseus reads the capture pointer from that final event.
-   JSON sequence items can use `capture` and `equals_capture` to keep the
-   selected value tied to the same transaction. This tutorial selects a write
-   request only after its matching `started` event.
+   Use `workflow` when that transaction crosses services. Set shared
+   `pointers`, then list ordered steps for each named service. A stage can
+   override `pointers` when its JSON uses different field names. Theseus reads
+   the capture pointer from the final stage only after one key completes every
+   stage. This tutorial retries only a write that the auditor observed.
+   Use `sequence` for the same ordered proof within one service: each item is
+   a normal serial predicate, and Theseus reads the capture pointer from the
+   final JSON item.
    Set a capture's `encoding` to `text` (the default), `json`, or `hex`
    when the guest protocol needs an unquoted scalar, a JSON literal, or
    hexadecimal text. JSON encoding also preserves a complete captured object
