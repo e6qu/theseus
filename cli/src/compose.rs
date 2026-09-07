@@ -359,6 +359,26 @@ struct ComposeSerialPath {
     occurs: Option<ComposeSerialMatchCount>,
 }
 
+/// Require one or every key to complete ordered local event paths across
+/// several explicitly named services.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeSerialWorkflow {
+    pointers: Vec<String>,
+    stages: Vec<ComposeSerialWorkflowStage>,
+    #[serde(default)]
+    quantifier: ComposeSerialJoinQuantifier,
+    #[serde(default)]
+    occurs: Option<ComposeSerialMatchCount>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeSerialWorkflowStage {
+    service: String,
+    steps: Vec<ComposeJsonPredicate>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComposeSerialRelationOrder {
@@ -411,6 +431,8 @@ struct ComposeSerialEvidence {
     relation: Option<ComposeSerialRelation>,
     #[serde(default)]
     path: Option<ComposeSerialPath>,
+    #[serde(default)]
+    workflow: Option<ComposeSerialWorkflow>,
     #[serde(default, rename = "use")]
     use_: Option<String>,
 }
@@ -779,6 +801,21 @@ pub struct SerialPathPlan {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct SerialWorkflowPlan {
+    pub pointers: Vec<String>,
+    pub stages: Vec<SerialWorkflowStagePlan>,
+    pub quantifier: ComposeSerialJoinQuantifier,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occurs: Option<SerialMatchCountPlan>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SerialWorkflowStagePlan {
+    pub service: String,
+    pub steps: Vec<JsonPredicatePlan>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SerialMatchCountPlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exactly: Option<u64>,
@@ -806,6 +843,8 @@ pub struct SerialEvidencePlan {
     pub relation: Option<SerialRelationPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<SerialPathPlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<SerialWorkflowPlan>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2122,11 +2161,12 @@ fn normalize_serial_evidence(
         evidence.join.is_some(),
         evidence.relation.is_some(),
         evidence.path.is_some(),
+        evidence.workflow.is_some(),
         evidence.use_.is_some(),
     ];
     if choices.into_iter().filter(|choice| *choice).count() != 1 {
         return Err(ComposeError::Invalid(format!(
-            "campaign {context} serial evidence needs exactly one of all, any, none, guard, correlation, join, relation, path, or use"
+            "campaign {context} serial evidence needs exactly one of all, any, none, guard, correlation, join, relation, path, workflow, or use"
         )));
     }
     let all = evidence
@@ -2176,6 +2216,10 @@ fn normalize_serial_evidence(
         .path
         .map(|path| normalize_serial_path(path, context, services))
         .transpose()?;
+    let workflow = evidence
+        .workflow
+        .map(|workflow| normalize_serial_workflow(workflow, context, services))
+        .transpose()?;
     if let Some(name) = evidence.use_ {
         return resolve_named_serial_evidence(&name, definitions, services, resolved, resolving);
     }
@@ -2188,6 +2232,7 @@ fn normalize_serial_evidence(
         join,
         relation,
         path,
+        workflow,
     })
 }
 
@@ -2277,6 +2322,78 @@ fn normalize_serial_path(
             .collect::<Result<_, _>>()?,
         quantifier: path.quantifier,
         occurs: path
+            .occurs
+            .map(|occurs| normalize_serial_match_count(occurs, context))
+            .transpose()?,
+    })
+}
+
+fn normalize_serial_workflow(
+    workflow: ComposeSerialWorkflow,
+    context: &str,
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<SerialWorkflowPlan, ComposeError> {
+    if workflow.pointers.is_empty() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} workflow needs at least one JSON pointer"
+        )));
+    }
+    if workflow.stages.len() < 2 {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} workflow needs at least two service stages"
+        )));
+    }
+    let mut pointers = BTreeSet::new();
+    for pointer in &workflow.pointers {
+        if !valid_json_pointer(pointer) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign {context} workflow has invalid JSON pointer {pointer:?}"
+            )));
+        }
+        if !pointers.insert(pointer) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign {context} workflow repeats JSON pointer {pointer:?}"
+            )));
+        }
+    }
+    let mut stage_services = BTreeSet::new();
+    let stages = workflow
+        .stages
+        .into_iter()
+        .map(|stage| {
+            if !services.contains_key(&stage.service) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign {context} workflow references unknown service {:?}",
+                    stage.service
+                )));
+            }
+            if !stage_services.insert(stage.service.clone()) {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign {context} workflow repeats service {:?}",
+                    stage.service
+                )));
+            }
+            if stage.steps.is_empty() {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign {context} workflow stage {:?} needs at least one JSON event step",
+                    stage.service
+                )));
+            }
+            Ok(SerialWorkflowStagePlan {
+                service: stage.service,
+                steps: stage
+                    .steps
+                    .into_iter()
+                    .map(|step| normalize_json_predicate(step, context, false))
+                    .collect::<Result<_, _>>()?,
+            })
+        })
+        .collect::<Result<Vec<_>, ComposeError>>()?;
+    Ok(SerialWorkflowPlan {
+        pointers: workflow.pointers,
+        stages,
+        quantifier: workflow.quantifier,
+        occurs: workflow
             .occurs
             .map(|occurs| normalize_serial_match_count(occurs, context))
             .transpose()?,
@@ -3496,6 +3613,27 @@ mod tests {
 
         let error = normalize_serial_path(path, "write", &BTreeMap::new()).unwrap_err();
         assert!(error.to_string().contains("at least two JSON event steps"));
+    }
+
+    #[test]
+    fn normalizes_cross_service_json_workflows() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: write\n        input: \"write\\n\"\n    faults: []\n    properties:\n      - name: replicated_write\n        kind: always\n        requires_serial_evidence:\n          workflow:\n            pointers: [/request_id]\n            quantifier: every\n            occurs:\n              exactly: 1\n            stages:\n              - service: api\n                steps:\n                  - fields:\n                      /event: write\n                  - fields:\n                      /event: accepted\n              - service: worker\n                steps:\n                  - fields:\n                      /event: replicated\n",
+        )
+        ;
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let campaign = plan.campaign.unwrap();
+        let plan = campaign.properties[0]
+            .requires_serial_evidence
+            .as_ref()
+            .unwrap()
+            .workflow
+            .as_ref()
+            .unwrap();
+        assert_eq!(plan.stages.len(), 2);
+        assert_eq!(plan.stages[0].service, "api");
+        assert_eq!(plan.stages[0].steps.len(), 2);
+        assert_eq!(plan.occurs.as_ref().unwrap().exactly, Some(1));
     }
 
     #[test]

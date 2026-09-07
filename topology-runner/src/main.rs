@@ -292,6 +292,22 @@ struct SerialPath {
     occurs: Option<SerialMatchCount>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SerialWorkflow {
+    pointers: Vec<String>,
+    stages: Vec<SerialWorkflowStage>,
+    #[serde(default)]
+    quantifier: SerialJoinQuantifier,
+    #[serde(default)]
+    occurs: Option<SerialMatchCount>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SerialWorkflowStage {
+    service: String,
+    steps: Vec<JsonPredicate>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum SerialRelationOrder {
@@ -338,6 +354,8 @@ struct SerialEvidence {
     relation: Option<SerialRelation>,
     #[serde(default)]
     path: Option<SerialPath>,
+    #[serde(default)]
+    workflow: Option<SerialWorkflow>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -2873,6 +2891,67 @@ fn json_path_key(event: &serde_json::Value, pointers: &[String]) -> Option<serde
         .map(serde_json::Value::Array)
 }
 
+fn serial_workflow_stage_values(
+    serial: &[u8],
+    workflow: &SerialWorkflow,
+    stage: &SerialWorkflowStage,
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    serial_path_values(
+        serial,
+        &SerialPath {
+            service: None,
+            pointers: workflow.pointers.clone(),
+            steps: stage.steps.clone(),
+            quantifier: SerialJoinQuantifier::Any,
+            occurs: None,
+        },
+    )
+}
+
+fn serial_workflow_matches(
+    workflow: &SerialWorkflow,
+    stage_values: Vec<(Vec<serde_json::Value>, Vec<serde_json::Value>)>,
+) -> bool {
+    let Some((candidates, _)) = stage_values.first() else {
+        return false;
+    };
+    let matches = candidates
+        .iter()
+        .filter(|key| {
+            stage_values
+                .iter()
+                .all(|(_, matched)| matched.iter().any(|value| value == *key))
+        })
+        .cloned()
+        .collect();
+    serial_match_requirements_met(
+        candidates.clone(),
+        matches,
+        workflow.quantifier,
+        workflow.occurs.as_ref(),
+    )
+}
+
+fn campaign_serial_workflow_matches(
+    checkpoint: &CampaignCheckpoint,
+    workflow: &SerialWorkflow,
+) -> bool {
+    serial_workflow_matches(
+        workflow,
+        workflow
+            .stages
+            .iter()
+            .map(|stage| {
+                serial_workflow_stage_values(
+                    &campaign_checkpoint_serial(checkpoint, &stage.service),
+                    workflow,
+                    stage,
+                )
+            })
+            .collect(),
+    )
+}
+
 fn campaign_serial_evidence_matches(
     checkpoint: &CampaignCheckpoint,
     driver: &str,
@@ -2903,6 +2982,8 @@ fn campaign_serial_evidence_matches(
         campaign_serial_relation_matches(checkpoint, driver, relation)
     } else if let Some(path) = &evidence.path {
         campaign_serial_path_matches(checkpoint, driver, path)
+    } else if let Some(workflow) = &evidence.workflow {
+        campaign_serial_workflow_matches(checkpoint, workflow)
     } else {
         false
     }
@@ -3806,6 +3887,23 @@ fn serial_path_matches_property(
     serial_match_requirements_met(candidates, matches, path.quantifier, path.occurs.as_ref())
 }
 
+fn serial_workflow_matches_property(run: &Path, workflow: &SerialWorkflow) -> bool {
+    serial_workflow_matches(
+        workflow,
+        workflow
+            .stages
+            .iter()
+            .map(|stage| {
+                serial_workflow_stage_values(
+                    &campaign_serial_contents(run, &stage.service),
+                    workflow,
+                    stage,
+                )
+            })
+            .collect(),
+    )
+}
+
 fn serial_evidence_matches_property(
     run: &Path,
     property: &CampaignProperty,
@@ -3836,6 +3934,8 @@ fn serial_evidence_matches_property(
         serial_relation_matches_property(run, property, relation)
     } else if let Some(path) = &evidence.path {
         serial_path_matches_property(run, property, path)
+    } else if let Some(workflow) = &evidence.workflow {
+        serial_workflow_matches_property(run, workflow)
     } else {
         false
     }
@@ -4400,6 +4500,8 @@ fn serial_evidence_description(evidence: &SerialEvidence) -> String {
         serial_relation_description(relation)
     } else if let Some(path) = &evidence.path {
         serial_path_description(path)
+    } else if let Some(workflow) = &evidence.workflow {
+        serial_workflow_description(workflow)
     } else {
         "invalid expression".to_owned()
     }
@@ -4503,6 +4605,28 @@ fn serial_path_description(path: &SerialPath) -> String {
         SerialJoinQuantifier::Every => format!("every {description}"),
     };
     path.occurs
+        .as_ref()
+        .map(|occurs| format!("{description}; {}", serial_match_count_description(occurs)))
+        .unwrap_or(description)
+}
+
+fn serial_workflow_description(workflow: &SerialWorkflow) -> String {
+    let stages = workflow
+        .stages
+        .iter()
+        .map(|stage| format!("{} ({} steps)", stage.service, stage.steps.len()))
+        .collect::<Vec<_>>()
+        .join(" -> ");
+    let description = format!(
+        "workflow [{stages}] keyed by {}",
+        workflow.pointers.join(" + ")
+    );
+    let description = match workflow.quantifier {
+        SerialJoinQuantifier::Any => description,
+        SerialJoinQuantifier::Every => format!("every {description}"),
+    };
+    workflow
+        .occurs
         .as_ref()
         .map(|occurs| format!("{description}; {}", serial_match_count_description(occurs)))
         .unwrap_or(description)
@@ -6343,6 +6467,80 @@ mod tests {
         .unwrap();
         assert!(!property_matches_in_run(&property, &run));
         fs::remove_dir_all(run).unwrap();
+    }
+
+    #[test]
+    fn keyed_json_workflows_require_complete_service_stages() {
+        let workflow: SerialWorkflow = serde_json::from_value(serde_json::json!({
+            "pointers": ["/request_id"],
+            "stages": [
+                {"service": "api", "steps": [
+                    {"fields": {"/event": "write"}},
+                    {"fields": {"/event": "accepted"}}
+                ]},
+                {"service": "worker", "steps": [
+                    {"fields": {"/event": "replicated"}},
+                    {"fields": {"/event": "committed"}}
+                ]}
+            ],
+            "quantifier": "every",
+            "occurs": {"exactly": 1}
+        }))
+        .unwrap();
+        let api = b"{\"event\":\"write\",\"request_id\":\"r-17\"}\n{\"event\":\"accepted\",\"request_id\":\"r-17\"}\n";
+        let worker = b"{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n{\"event\":\"committed\",\"request_id\":\"r-17\"}\n";
+        let values = workflow
+            .stages
+            .iter()
+            .zip([api.as_slice(), worker.as_slice()])
+            .map(|(stage, serial)| serial_workflow_stage_values(serial, &workflow, stage))
+            .collect();
+        assert!(serial_workflow_matches(&workflow, values));
+        let incomplete = serial_workflow_stage_values(
+            b"{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n",
+            &workflow,
+            &workflow.stages[1],
+        );
+        let source = serial_workflow_stage_values(api, &workflow, &workflow.stages[0]);
+        assert!(!serial_workflow_matches(
+            &workflow,
+            vec![source, incomplete]
+        ));
+        let checkpoint = CampaignCheckpoint {
+            switches: BTreeMap::new(),
+            services: BTreeMap::new(),
+            scheduler: BTreeMap::from([
+                (
+                    "api".to_owned(),
+                    ServiceSchedulerCheckpoint {
+                        serial_contents: vec![api.to_vec()],
+                        program_counters: Vec::new(),
+                        next_fault: 0,
+                        paused_until: None,
+                        faults: Vec::new(),
+                        network_traffic: BTreeMap::new(),
+                        network_trace: BTreeMap::new(),
+                    },
+                ),
+                (
+                    "worker".to_owned(),
+                    ServiceSchedulerCheckpoint {
+                        serial_contents: vec![worker.to_vec()],
+                        program_counters: Vec::new(),
+                        next_fault: 0,
+                        paused_until: None,
+                        faults: Vec::new(),
+                        network_traffic: BTreeMap::new(),
+                        network_trace: BTreeMap::new(),
+                    },
+                ),
+            ]),
+            round: 0,
+        };
+        assert!(campaign_serial_workflow_matches(&checkpoint, &workflow));
+        assert!(
+            serial_workflow_description(&workflow).contains("api (2 steps) -> worker (2 steps)")
+        );
     }
 
     #[test]

@@ -131,7 +131,7 @@ distinct left-endpoint values.
 When one operation or property needs a mixed rule, use
 `requires_serial_evidence`: a recursive `all`, `any`, or `none` tree whose
 leaves are service `guard`s, JSON `correlation`s, `join`s, `relation`s, or
-keyed event `path`s.
+keyed event `path`s and cross-service `workflow`s.
 `excludes_serial_evidence` blocks an operation or property when its tree
 matches.
 Evidence trees also accept `relation`: compare values selected by two JSON
@@ -145,6 +145,9 @@ Evidence trees also accept `path`: select one or every distinct key from the
 first JSON event, then require each key through one or more later JSON event
 steps in strict order within one service transcript. Paths support composite
 `pointers`, optional `service`, `quantifier`, and distinct-key `occurs` bounds.
+For several independent service transcripts, use `workflow`: named stages each
+contain a local ordered path for the same key. This asserts distributed
+progress without claiming an unverifiable global serial-event order.
 Define shared trees once under `campaign.evidence` and expand them with
 `use: name` in properties, operation guards, or other evidence trees. Theseus
 rejects undefined and cyclic definitions, then records the expanded form in
