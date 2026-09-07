@@ -147,8 +147,18 @@ jobs:
             "${IMAGE}:${TAG}-amd64" \
             "${IMAGE}:${TAG}-arm64"
 
+      # build-push-action also uploads its .dockerbuild record. Select the
+      # three release archives explicitly: downloading every artifact makes
+      # the release job try to extract that record as a user-facing bundle.
       - uses: actions/download-artifact@v4
         with:
+          pattern: runtime-*
+          path: release
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-macos-arm64
           path: release
           merge-multiple: true
 
