@@ -90,6 +90,10 @@ struct CampaignOperation {
     input_hex: Option<String>,
     #[serde(default)]
     inputs: Vec<CampaignOperationInput>,
+    /// Retained for offline inspection. Execution uses the already-expanded
+    /// input cases, so a replay cannot change with grammar implementation.
+    #[serde(default)]
+    input_grammar: Option<CampaignOperationInputGrammar>,
     #[serde(default)]
     stage: Option<String>,
     #[serde(default)]
@@ -122,6 +126,13 @@ struct CampaignOperation {
     requires_state: BTreeMap<String, String>,
     #[serde(default)]
     sets_state: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CampaignOperationInputGrammar {
+    template: String,
+    name_template: String,
+    choices: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -7290,6 +7301,7 @@ mod tests {
                             sets_state: BTreeMap::from([("phase".to_owned(), "beta".to_owned())]),
                         },
                     ],
+                    input_grammar: None,
                     stage: None,
                     requires: Vec::new(),
                     excludes: Vec::new(),
@@ -7311,6 +7323,7 @@ mod tests {
                     name: "read".to_owned(),
                     input_hex: Some("726561640a".to_owned()),
                     inputs: Vec::new(),
+                    input_grammar: None,
                     stage: None,
                     requires: vec!["write".to_owned()],
                     excludes: Vec::new(),

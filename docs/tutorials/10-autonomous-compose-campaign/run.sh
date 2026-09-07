@@ -44,6 +44,7 @@ grep -a 'counterexample: consistent_read' stale-read-rerun/services/api/result.j
 theseus report --output campaign-report theseus-compose-campaign
 grep -a 'Autonomous Compose campaign' campaign-report/index.html
 grep -a 'Operation model' campaign-report/index.html
+grep -a 'Input grammar' campaign-report/index.html
 grep -a 'Requires observed marker' campaign-report/index.html
 theseus report --output minimized-report stale-read-replay
 grep -a 'Campaign minimization' minimized-report/index.html

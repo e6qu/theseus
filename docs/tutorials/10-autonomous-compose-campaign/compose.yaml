@@ -142,17 +142,29 @@ x-theseus:
               operator: greater_than
     operations:
       - name: write
+        # Expand a finite input grammar into named leaves. Theseus locks the
+        # four concrete UART bytes into the replay plan before it runs a VM.
+        input_grammar:
+          template: "write {value} {durability}\n"
+          name_template: "{value}-{durability}"
+          choices:
+            value: {alpha: alpha, beta: beta}
+            durability: {sync: sync, async: async}
+          cases:
+            alpha-sync:
+              requires_state: {phase: fresh}
+              sets_state: {phase: prepared}
+            alpha-async:
+              requires_state: {phase: fresh}
+              sets_state: {phase: prepared}
+            beta-sync:
+              requires_state: {phase: prepared}
+              sets_state: {phase: written}
+            beta-async:
+              requires_state: {phase: prepared}
+              sets_state: {phase: written}
         # Keep one logical operation for its guards, use bound, and faults,
-        # but explore each named UART payload as a separate deterministic leaf.
-        inputs:
-          - name: alpha
-            input: "write alpha\n"
-            requires_state: {phase: fresh}
-            sets_state: {phase: prepared}
-          - name: beta
-            input: "write beta\n"
-            requires_state: {phase: prepared}
-            sets_state: {phase: written}
+        # while each generated leaf remains addressable by its case name.
         stage: write
         # The driver announces this boot marker before Theseus snapshots the
         # campaign root. Marker guards read the restored serial transcript.
@@ -164,7 +176,7 @@ x-theseus:
             input: "read_stale\n"
             # This case follows one exact write payload, rather than any
             # logical write. The fault barriers still target `write`.
-            requires: ["write[beta]"]
+            requires: ["write[beta-async]"]
             requires_state: {phase: written}
             sets_state: {phase: stale}
         stage: read
@@ -197,8 +209,8 @@ x-theseus:
       # real topology change rather than a per-service flag.
       - kind: partition
         network: backplane
-        # This fault applies after only the beta payload case.
-        after: "write[beta]"
+        # This fault applies after only the beta async grammar leaf.
+        after: "write[beta-async]"
       - kind: heal
         network: backplane
         after: retry

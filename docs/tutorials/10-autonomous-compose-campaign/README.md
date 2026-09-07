@@ -18,17 +18,23 @@ Start with `compose.yaml`.
 2. List operations as ordinary text. Theseus injects them into the driver UART;
    after each input it waits for `THES:CHECKPOINT:<operation-name>` before it
    injects the next one. No SDK or host-side wrapper is required.
-   Use `inputs` when one logical operation has several payload cases. Give each
-   case a name and an `input`; Theseus explores every case, reports it as
-   `operation[case]`, and still applies `requires`, `max_uses`, stages, and
-   faults to the logical operation name. This tutorial's `write` operation
-   explores `write alpha` and `write beta` without duplicating its fault rules.
-   A case can also use `requires`, `excludes`, and `max_uses`. Reference any
-   logical operation as `write`, or one exact payload as `write[beta]`.
-   Quote an exact reference in a YAML flow list: `requires: ["write[beta]"]`.
+   Use `inputs` when one logical operation has several explicit payload cases.
+   Use `input_grammar` when cases are a finite product. Set `template` with
+   `{variable}` placeholders and map each variable to named `choices`.
+   Theseus expands the product before boot, locks the concrete UART bytes into
+   the replay plan, and reports each leaf as `operation[case]`. Set
+   `name_template` to make stable case names from choice names. This tutorial
+   expands `write {value} {durability}` into four leaves, including
+   `write[beta-async]`, without duplicating its operation guards or faults.
+   Add a `cases` entry to attach `requires`, `excludes`, `max_uses`, or state
+   rules to one generated leaf. The grammar is capped at 64 leaves.
+   Reference any logical operation as `write`, or one exact payload case as
+   `write[beta-async]`.
+   Quote an exact reference in a YAML flow list:
+   `requires: ["write[beta-async]"]`.
    These rules constrain the selected cases only; they compose with the
    operation-level state rules. Here `read_stale[after_beta]` can follow the
-   `write[beta]` payload but not `write[alpha]`.
+   `write[beta-async]` payload but not another write leaf.
    Use `state` to declare the initial finite-state model, for example
    `state: {phase: fresh}`. An operation or input case can require an exact
    value with `requires_state` and update it with `sets_state`. Theseus applies
@@ -72,8 +78,8 @@ Start with `compose.yaml`.
    path. `packet_recover` removes that one matching rule. Give these actions
    `after: <operation>`; Theseus applies them immediately after that operation
    reports its checkpoint. To fault only one payload variant, quote its case
-   reference instead: `after: "write[beta]"`. The tutorial partitions the
-   network after the beta write, while the logical `write` remains the
+   reference instead: `after: "write[beta-async]"`. The tutorial partitions
+   the network after that generated beta write, while the logical `write` remains the
    checkpoint name.
    `link_partition` and `link_heal` are narrower: give them `network`, `from`,
    and `to` to block or restore only that directed service-to-service path.

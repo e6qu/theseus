@@ -111,6 +111,8 @@ struct ComposeOperation {
     #[serde(default)]
     inputs: Vec<ComposeOperationInput>,
     #[serde(default)]
+    input_grammar: Option<ComposeOperationInputGrammar>,
+    #[serde(default)]
     stage: Option<String>,
     #[serde(default)]
     requires: Vec<String>,
@@ -149,6 +151,36 @@ struct ComposeOperation {
 struct ComposeOperationInput {
     name: String,
     input: String,
+    #[serde(default)]
+    requires: Vec<String>,
+    #[serde(default)]
+    excludes: Vec<String>,
+    #[serde(default)]
+    max_uses: Option<u8>,
+    #[serde(default)]
+    requires_state: BTreeMap<String, String>,
+    #[serde(default)]
+    sets_state: BTreeMap<String, String>,
+}
+
+/// A finite, declarative input language. Every combination of named choices
+/// becomes one ordinary input case in the locked campaign plan.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeOperationInputGrammar {
+    template: String,
+    #[serde(default)]
+    name_template: Option<String>,
+    choices: BTreeMap<String, BTreeMap<String, String>>,
+    #[serde(default)]
+    cases: BTreeMap<String, ComposeOperationInputRules>,
+}
+
+/// Rules attached to a generated grammar leaf. Keeping this separate from its
+/// payload makes the grammar's finite Cartesian product explicit.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ComposeOperationInputRules {
     #[serde(default)]
     requires: Vec<String>,
     #[serde(default)]
@@ -661,6 +693,8 @@ pub struct OperationPlan {
     pub name: String,
     pub inputs: Vec<OperationInputPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_grammar: Option<OperationInputGrammarPlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
@@ -692,6 +726,15 @@ pub struct OperationPlan {
     pub requires_state: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sets_state: BTreeMap<String, String>,
+}
+
+/// Source-level description retained in locked plans and reports. The runner
+/// executes the expanded `inputs`, so replay never depends on re-expansion.
+#[derive(Debug, Clone, Serialize)]
+pub struct OperationInputGrammarPlan {
+    pub template: String,
+    pub name_template: String,
+    pub choices: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1151,12 +1194,20 @@ fn campaign_plan(
                 operation.name
             )));
         }
-        if operation.input.is_some() && !operation.inputs.is_empty() {
+        let input_forms = usize::from(operation.input.is_some())
+            + usize::from(!operation.inputs.is_empty())
+            + usize::from(operation.input_grammar.is_some());
+        if input_forms > 1 {
             return Err(ComposeError::Invalid(format!(
-                "campaign operation {:?} must use either input or inputs, not both",
+                "campaign operation {:?} must use exactly one of input, inputs, or input_grammar",
                 operation.name
             )));
         }
+        let grammar = operation.input_grammar;
+        let input_grammar = grammar
+            .as_ref()
+            .map(|grammar| normalize_operation_input_grammar(grammar, &operation.name))
+            .transpose()?;
         let inputs = match operation.input {
             Some(input) if input.is_empty() => {
                 return Err(ComposeError::Invalid(format!(
@@ -1173,12 +1224,17 @@ fn campaign_plan(
                 requires_state: BTreeMap::new(),
                 sets_state: BTreeMap::new(),
             }],
-            None if operation.inputs.is_empty() => {
+            None if operation.inputs.is_empty() && input_grammar.is_none() => {
                 return Err(ComposeError::Invalid(format!(
-                    "campaign operation {:?} needs input or inputs",
+                    "campaign operation {:?} needs input, inputs, or input_grammar",
                     operation.name
                 )));
             }
+            None if input_grammar.is_some() => input_grammar
+                .as_ref()
+                .expect("input grammar was normalized")
+                .inputs
+                .clone(),
             None => {
                 let mut input_names = BTreeSet::new();
                 operation
@@ -1271,6 +1327,7 @@ fn campaign_plan(
         operations.push(OperationPlan {
             name: operation.name,
             inputs,
+            input_grammar: input_grammar.map(|grammar| grammar.source),
             stage: operation.stage,
             requires: operation.requires,
             excludes: operation.excludes,
@@ -3420,6 +3477,213 @@ fn normalize_operation_input_references(
         .collect()
 }
 
+struct NormalizedOperationInputGrammar {
+    source: OperationInputGrammarPlan,
+    inputs: Vec<OperationInputPlan>,
+}
+
+/// Expand a small, finite input grammar during Compose normalization. The
+/// persisted plan contains both the source grammar (for inspection) and the
+/// concrete leaves (for exact replay).
+fn normalize_operation_input_grammar(
+    grammar: &ComposeOperationInputGrammar,
+    operation: &str,
+) -> Result<NormalizedOperationInputGrammar, ComposeError> {
+    let variables = operation_input_template_variables(&grammar.template, operation, "template")?;
+    if variables.is_empty() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign operation {operation:?} input_grammar template needs at least one {{variable}}"
+        )));
+    }
+    let mut unique_variables = Vec::new();
+    for variable in variables {
+        if !unique_variables.contains(&variable) {
+            unique_variables.push(variable);
+        }
+    }
+    for variable in &unique_variables {
+        let Some(variants) = grammar.choices.get(variable) else {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} input_grammar has no choices for {variable:?}"
+            )));
+        };
+        if variants.is_empty() {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} input_grammar choices for {variable:?} must not be empty"
+            )));
+        }
+        for name in variants.keys() {
+            validate_name("campaign operation grammar choice", name)?;
+        }
+    }
+    for variable in grammar.choices.keys() {
+        validate_name("campaign operation grammar variable", variable)?;
+        if !unique_variables.contains(variable) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} input_grammar declares unused choices for {variable:?}"
+            )));
+        }
+    }
+
+    let name_template = grammar.name_template.clone().unwrap_or_else(|| {
+        unique_variables
+            .iter()
+            .map(|variable| format!("{variable}-{{{variable}}}"))
+            .collect::<Vec<_>>()
+            .join("--")
+    });
+    operation_input_template_variables(&name_template, operation, "name_template")?;
+    let mut combinations = vec![BTreeMap::<String, (String, String)>::new()];
+    for variable in &unique_variables {
+        let variants = &grammar.choices[variable];
+        let mut next = Vec::with_capacity(combinations.len() * variants.len());
+        for bindings in combinations {
+            for (choice, value) in variants {
+                let mut binding = bindings.clone();
+                binding.insert(variable.clone(), (choice.clone(), value.clone()));
+                next.push(binding);
+            }
+        }
+        if next.len() > 64 {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} input_grammar expands to more than 64 cases"
+            )));
+        }
+        combinations = next;
+    }
+
+    let mut generated = BTreeSet::new();
+    let mut inputs = Vec::with_capacity(combinations.len());
+    for bindings in combinations {
+        let input = render_operation_input_template(
+            &grammar.template,
+            &bindings,
+            false,
+            operation,
+            "template",
+        )?;
+        if input.is_empty() {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} input_grammar generated an empty input"
+            )));
+        }
+        let name = render_operation_input_template(
+            &name_template,
+            &bindings,
+            true,
+            operation,
+            "name_template",
+        )?;
+        validate_name("campaign operation input", &name)?;
+        if !generated.insert(name.clone()) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} input_grammar generates duplicate case {name:?}"
+            )));
+        }
+        let rules = grammar.cases.get(&name).cloned().unwrap_or_default();
+        inputs.push(OperationInputPlan {
+            name,
+            input_hex: hex(input.as_bytes()),
+            requires: normalize_operation_input_references(rules.requires, "requires", operation)?,
+            excludes: normalize_operation_input_references(rules.excludes, "excludes", operation)?,
+            max_uses: rules.max_uses,
+            requires_state: rules.requires_state,
+            sets_state: rules.sets_state,
+        });
+    }
+    for name in grammar.cases.keys() {
+        validate_name("campaign operation grammar case", name)?;
+        if !generated.contains(name) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} input_grammar has rules for unknown case {name:?}"
+            )));
+        }
+    }
+    Ok(NormalizedOperationInputGrammar {
+        source: OperationInputGrammarPlan {
+            template: grammar.template.clone(),
+            name_template,
+            choices: grammar.choices.clone(),
+        },
+        inputs,
+    })
+}
+
+fn operation_input_template_variables(
+    template: &str,
+    operation: &str,
+    field: &str,
+) -> Result<Vec<String>, ComposeError> {
+    let mut variables = Vec::new();
+    let mut cursor = 0;
+    loop {
+        let rest = &template[cursor..];
+        let opening = rest.find('{');
+        let closing = rest.find('}');
+        let Some(relative_start) = opening else {
+            if closing.is_some() {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {operation:?} input_grammar {field} has an unmatched '}}'"
+                )));
+            }
+            break;
+        };
+        if closing.is_some_and(|close| close < relative_start) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} input_grammar {field} has an unmatched '}}'"
+            )));
+        }
+        let start = cursor + relative_start;
+        let value_start = start + 1;
+        let Some(relative_end) = template[value_start..].find('}') else {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} input_grammar {field} has an unclosed '{{'"
+            )));
+        };
+        let end = value_start + relative_end;
+        let variable = &template[value_start..end];
+        if variable.contains('{') || variable.is_empty() {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} input_grammar {field} has an invalid placeholder"
+            )));
+        }
+        validate_name("campaign operation grammar variable", variable)?;
+        variables.push(variable.to_owned());
+        cursor = end + 1;
+    }
+    Ok(variables)
+}
+
+fn render_operation_input_template(
+    template: &str,
+    bindings: &BTreeMap<String, (String, String)>,
+    names: bool,
+    operation: &str,
+    field: &str,
+) -> Result<String, ComposeError> {
+    let mut output = String::new();
+    let mut cursor = 0;
+    while let Some(relative_start) = template[cursor..].find('{') {
+        let start = cursor + relative_start;
+        output.push_str(&template[cursor..start]);
+        let value_start = start + 1;
+        let end = value_start
+            + template[value_start..]
+                .find('}')
+                .expect("template placeholders were validated");
+        let variable = &template[value_start..end];
+        let Some((choice, value)) = bindings.get(variable) else {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} input_grammar {field} references unknown variable {variable:?}"
+            )));
+        };
+        output.push_str(if names { choice } else { value });
+        cursor = end + 1;
+    }
+    output.push_str(&template[cursor..]);
+    Ok(output)
+}
+
 /// Execute a locked plan with the Linux-only runner shipped beside `theseus`
 /// in a published runtime bundle. Planning remains portable because the CLI
 /// itself never links the Linux/KVM VMM.
@@ -4410,6 +4674,96 @@ x-theseus:
     }
 
     #[test]
+    fn expands_campaign_operation_input_grammar_into_locked_cases() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    state: {phase: fresh}
+    operations:
+      - name: write
+        input_grammar:
+          template: "write {value} {mode}\n"
+          name_template: "{value}-{mode}"
+          choices:
+            value: {alpha: alpha, beta: beta}
+            mode: {fast: fast, safe: safe}
+          cases:
+            beta-safe:
+              requires: ["write[alpha-fast]"]
+              sets_state: {phase: written}
+"#,
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        let operation = &campaign.operations[0];
+        assert_eq!(
+            operation
+                .inputs
+                .iter()
+                .map(|input| input.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha-fast", "alpha-safe", "beta-fast", "beta-safe"]
+        );
+        assert_eq!(
+            operation.inputs[0].input_hex,
+            "777269746520616c70686120666173740a"
+        );
+        assert_eq!(
+            operation.inputs[3].input_hex,
+            "7772697465206265746120736166650a"
+        );
+        assert_eq!(
+            operation.inputs[3].requires[0],
+            OperationInputReferencePlan {
+                operation: "write".to_owned(),
+                input: Some("alpha-fast".to_owned()),
+            }
+        );
+        assert_eq!(operation.inputs[3].sets_state["phase"], "written");
+        assert_eq!(
+            operation.input_grammar.as_ref().unwrap().template,
+            "write {value} {mode}\n"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_campaign_operation_input_grammar() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input_grammar:
+          template: "write {value}\n"
+          choices:
+            other: {alpha: alpha}
+"#,
+        );
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("input_grammar has no choices for \"value\""));
+    }
+
+    #[test]
     fn rejects_unreachable_campaign_input_case_requirements() {
         let directory = fixture(
             r#"services:
@@ -4487,7 +4841,9 @@ x-theseus:
 "#,
         );
         let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
-        assert!(error.to_string().contains("either input or inputs"));
+        assert!(error
+            .to_string()
+            .contains("exactly one of input, inputs, or input_grammar"));
     }
 
     #[test]
