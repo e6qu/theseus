@@ -84,6 +84,25 @@ x-theseus:
                 where:
                   - pointer: /reason
                     equals: stale
+      stale_read_path:
+        # Bind the lifecycle to one request ID. Every write key must reach a
+        # later stale-read assertion in the API's own serial transcript.
+        path:
+          pointers: [/request_id]
+          quantifier: every
+          occurs:
+            exactly: 1
+          steps:
+            - fields:
+                /event: operation
+                /name: write
+            - fields:
+                /event: assertion
+                /name: consistent_read
+                /passed: false
+              where:
+                - pointer: /reason
+                  equals: stale
       retry_ready:
         all:
           - use: stale_assertion
@@ -93,6 +112,7 @@ x-theseus:
         all:
           - use: auditor_ready
           - use: replicated_write
+          - use: stale_read_path
           # The stale assertion is a later retry than the original write.
           - relation:
               # The one stale assertion must advance the one write attempt.

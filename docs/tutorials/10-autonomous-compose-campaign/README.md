@@ -97,7 +97,7 @@ Start with `compose.yaml`.
    to skip it when a completed or forbidden transaction is already present.
    Use `requires_serial_evidence` when a rule combines these evidence types.
    Each node has exactly one of `all`, `any`, `none`, `guard`, `correlation`,
-   `join`, or `relation`. A `guard` has `service` and the normal serial
+   `join`, `relation`, or `path`. A `guard` has `service` and the normal serial
    predicate; `correlation` and `join` use the endpoint forms above. A
    `relation` has `left`, `right`, and an `operator`: `equals`, `not_equals`,
    `greater_than`, `greater_than_or_equal`, `less_than`, or
@@ -109,6 +109,10 @@ Start with `compose.yaml`.
    Add `order: before` or `order: after` when both endpoints select the same
    service transcript. This requires strict event order as well as the value
    relation; the stale assertion follows the write in this tutorial.
+   A `path` follows one key through two or more JSON events in one service
+   transcript. Give it `pointers`, ordered `steps`, and optional `service`,
+   `quantifier`, and `occurs`. Each later step must carry the first step's key;
+   the tutorial follows its request ID from write to stale-read assertion.
    Properties also accept `requires_serial_evidence` and
    `excludes_serial_evidence`; the latter rejects a property when its tree
    matches. The retry rule combines an API assertion, auditor readiness, and
