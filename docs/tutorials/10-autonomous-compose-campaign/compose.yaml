@@ -96,6 +96,8 @@ x-theseus:
           # The stale assertion is a later retry than the original write.
           - relation:
               # The one stale assertion must advance the one write attempt.
+              # Both events are in the API transcript, in this order.
+              order: after
               quantifier: every
               occurs:
                 exactly: 1

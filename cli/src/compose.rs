@@ -335,10 +335,20 @@ struct ComposeSerialRelation {
     left: ComposeJsonCorrelationEndpoint,
     right: ComposeJsonCorrelationEndpoint,
     operator: ComposeJsonRelationOperator,
+    /// Order the matching events inside one selected serial transcript.
+    #[serde(default)]
+    order: Option<ComposeSerialRelationOrder>,
     #[serde(default)]
     quantifier: ComposeSerialJoinQuantifier,
     #[serde(default)]
     occurs: Option<ComposeSerialMatchCount>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposeSerialRelationOrder {
+    Before,
+    After,
 }
 
 /// Bounds on the number of distinct left/source endpoint values that match.
@@ -733,6 +743,8 @@ pub struct SerialRelationPlan {
     pub left: JsonCorrelationEndpointPlan,
     pub right: JsonCorrelationEndpointPlan,
     pub operator: ComposeJsonRelationOperator,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<ComposeSerialRelationOrder>,
     pub quantifier: ComposeSerialJoinQuantifier,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub occurs: Option<SerialMatchCountPlan>,
@@ -2166,10 +2178,16 @@ fn normalize_serial_relation(
             "campaign {context} numeric relation needs one left and one right JSON pointer"
         )));
     }
+    if relation.order.is_some() && left.service != right.service {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} ordered relation needs the same left and right service"
+        )));
+    }
     Ok(SerialRelationPlan {
         left,
         right,
         operator: relation.operator,
+        order: relation.order,
         quantifier: relation.quantifier,
         occurs: relation
             .occurs
@@ -3348,13 +3366,24 @@ mod tests {
     #[test]
     fn normalizes_quantified_json_relations() {
         let relation: ComposeSerialRelation = serde_yaml::from_str(
-            "quantifier: every\noccurs:\n  exactly: 1\nleft:\n  pointer: /attempt\n  json:\n    fields:\n      /event: replicated\nright:\n  pointer: /attempt\n  json:\n    fields:\n      /event: write\noperator: greater_than_or_equal\n",
+            "order: after\nquantifier: every\noccurs:\n  exactly: 1\nleft:\n  pointer: /attempt\n  json:\n    fields:\n      /event: replicated\nright:\n  pointer: /attempt\n  json:\n    fields:\n      /event: write\noperator: greater_than_or_equal\n",
         )
         .unwrap();
 
         let plan = normalize_serial_relation(relation, "write", &BTreeMap::new()).unwrap();
+        assert_eq!(plan.order, Some(ComposeSerialRelationOrder::After));
         assert_eq!(plan.quantifier, ComposeSerialJoinQuantifier::Every);
         assert_eq!(plan.occurs.unwrap().exactly, Some(1));
+    }
+
+    #[test]
+    fn rejects_ordered_json_relations_across_services() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: write\n        input: \"write\\n\"\n    faults: []\n    properties:\n      - name: ordered_write\n        kind: always\n        requires_serial_evidence:\n          relation:\n            order: before\n            left:\n              service: api\n              pointer: /request_id\n              json:\n                fields:\n                  /event: write\n            right:\n              service: worker\n              pointer: /request_id\n              json:\n                fields:\n                  /event: replicated\n            operator: equals\n",
+        );
+
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error.to_string().contains("same left and right service"));
     }
 
     #[test]
