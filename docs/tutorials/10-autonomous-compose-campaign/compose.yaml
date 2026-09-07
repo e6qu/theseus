@@ -193,14 +193,18 @@ x-theseus:
       - name: retry
         # Build this UART command from the latest matching event in the
         # restored parent transcript. The concrete bytes are locked per run.
-        input_template: "retry {request}\n"
-        input_captures:
-          request:
-            pointer: /request_id
-            json:
-              fields:
-                /event: operation
-                /name: write
+        input_grammar:
+          template: "retry {request} {mode}\n"
+          name_template: "{mode}"
+          choices:
+            mode: {normal: normal, force: force}
+          input_captures:
+            request:
+              pointer: /request_id
+              json:
+                fields:
+                  /event: operation
+                  /name: write
         stage: recovery
         requires_state: {phase: stale}
         sets_state: {phase: recovered}
