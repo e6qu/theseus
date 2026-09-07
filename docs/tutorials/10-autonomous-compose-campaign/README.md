@@ -29,6 +29,13 @@ Start with `compose.yaml`.
    These rules constrain the selected cases only; they compose with the
    operation-level state rules. Here `read_stale[after_beta]` can follow the
    `write[beta]` payload but not `write[alpha]`.
+   Use `state` to declare the initial finite-state model, for example
+   `state: {phase: fresh}`. An operation or input case can require an exact
+   value with `requires_state` and update it with `sets_state`. Theseus applies
+   the logical operation update first, then the case update, so a case can
+   specialize a shared transition. State guards prune impossible histories
+   before a VM runs; they do not claim that the guest emitted that state. This
+   tutorial moves `fresh → prepared → written → stale → recovered`.
    Add `requires: [operation-name]` when an operation needs one or more earlier
    operations. Theseus generates only histories where every requirement has
    already occurred; unknown, duplicate, and cyclic requirements are rejected.

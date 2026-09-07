@@ -57,6 +57,8 @@ struct TopologyPlan {
 #[derive(Debug, Deserialize, Serialize)]
 struct CampaignPlan {
     driver: String,
+    #[serde(default)]
+    state: BTreeMap<String, String>,
     operations: Vec<CampaignOperation>,
     #[serde(default)]
     stages: Vec<String>,
@@ -116,6 +118,10 @@ struct CampaignOperation {
     excludes_serial_evidence: Option<SerialEvidence>,
     #[serde(default)]
     max_uses: Option<u8>,
+    #[serde(default)]
+    requires_state: BTreeMap<String, String>,
+    #[serde(default)]
+    sets_state: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -128,6 +134,10 @@ struct CampaignOperationInput {
     excludes: Vec<CampaignOperationInputReference>,
     #[serde(default)]
     max_uses: Option<u8>,
+    #[serde(default)]
+    requires_state: BTreeMap<String, String>,
+    #[serde(default)]
+    sets_state: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2623,6 +2633,8 @@ fn campaign_operation_inputs(operation: &CampaignOperation) -> Vec<CampaignOpera
                 requires: Vec::new(),
                 excludes: Vec::new(),
                 max_uses: None,
+                requires_state: BTreeMap::new(),
+                sets_state: BTreeMap::new(),
             })
             .into_iter()
             .collect();
@@ -2736,6 +2748,32 @@ fn campaign_operation_choice_by_name(
         )),
         _ => Err(format!("recorded campaign operation is ambiguous: {name}")),
     }
+}
+
+fn campaign_state_after(
+    campaign: &CampaignPlan,
+    history: &[CampaignOperationChoice],
+) -> BTreeMap<String, String> {
+    let mut state = campaign.state.clone();
+    for choice in history {
+        let operation = &campaign.operations[choice.operation];
+        state.extend(operation.sets_state.clone());
+        let input = campaign_operation_input(campaign, *choice)
+            .expect("recorded campaign operation choice has a declared input");
+        // A case specializes its logical operation, so its explicit value wins
+        // when both transition layers set the same state key.
+        state.extend(input.sets_state);
+    }
+    state
+}
+
+fn campaign_state_matches(
+    state: &BTreeMap<String, String>,
+    required: &BTreeMap<String, String>,
+) -> bool {
+    required
+        .iter()
+        .all(|(key, value)| state.get(key) == Some(value))
 }
 
 fn campaign_operation_marker_guards_are_ready(
@@ -3273,6 +3311,7 @@ fn campaign_operation_is_ready(
     let candidate = &campaign.operations[choice.operation];
     let input = campaign_operation_input(campaign, choice)
         .expect("generated campaign operation choice has a declared input");
+    let state = campaign_state_after(campaign, history);
     let candidate_stage = candidate.stage.as_ref().and_then(|stage| {
         campaign
             .stages
@@ -3293,6 +3332,8 @@ fn campaign_operation_is_ready(
             || candidate_stage.is_none_or(|candidate| prior_stage <= Some(candidate))
     });
     stages_are_ordered
+        && campaign_state_matches(&state, &candidate.requires_state)
+        && campaign_state_matches(&state, &input.requires_state)
         && candidate.requires.iter().all(|requirement| {
             history
                 .iter()
@@ -7212,6 +7253,7 @@ mod tests {
     fn campaign_marker_guards_use_the_restored_parent_transcript() {
         let campaign = CampaignPlan {
             driver: "api".to_owned(),
+            state: BTreeMap::from([("phase".to_owned(), "idle".to_owned())]),
             operations: vec![
                 CampaignOperation {
                     name: "write".to_owned(),
@@ -7223,6 +7265,14 @@ mod tests {
                             requires: Vec::new(),
                             excludes: Vec::new(),
                             max_uses: None,
+                            requires_state: BTreeMap::from([(
+                                "phase".to_owned(),
+                                "idle".to_owned(),
+                            )]),
+                            sets_state: BTreeMap::from([(
+                                "phase".to_owned(),
+                                "written".to_owned(),
+                            )]),
                         },
                         CampaignOperationInput {
                             name: "beta".to_owned(),
@@ -7233,6 +7283,11 @@ mod tests {
                             }],
                             excludes: Vec::new(),
                             max_uses: Some(1),
+                            requires_state: BTreeMap::from([(
+                                "phase".to_owned(),
+                                "written".to_owned(),
+                            )]),
+                            sets_state: BTreeMap::from([("phase".to_owned(), "beta".to_owned())]),
                         },
                     ],
                     stage: None,
@@ -7249,6 +7304,8 @@ mod tests {
                     requires_serial_evidence: None,
                     excludes_serial_evidence: None,
                     max_uses: Some(2),
+                    requires_state: BTreeMap::new(),
+                    sets_state: BTreeMap::new(),
                 },
                 CampaignOperation {
                     name: "read".to_owned(),
@@ -7268,6 +7325,8 @@ mod tests {
                     requires_serial_evidence: None,
                     excludes_serial_evidence: None,
                     max_uses: Some(1),
+                    requires_state: BTreeMap::new(),
+                    sets_state: BTreeMap::new(),
                 },
             ],
             stages: Vec::new(),
@@ -7322,6 +7381,23 @@ mod tests {
                     .collect::<Vec<_>>()
                     == ["write[alpha]", "write[beta]"]
             }));
+        assert_eq!(
+            campaign_state_after(&campaign, &[choice(0)])["phase"],
+            "written"
+        );
+        assert_eq!(
+            campaign_state_after(
+                &campaign,
+                &[
+                    choice(0),
+                    CampaignOperationChoice {
+                        operation: 0,
+                        input: 1,
+                    },
+                ],
+            )["phase"],
+            "beta"
+        );
         let mut beta_fault = campaign_fault(CampaignFaultKind::Partition);
         beta_fault.after = None;
         beta_fault.after_input = Some(CampaignOperationInputReference {

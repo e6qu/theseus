@@ -125,6 +125,8 @@ struct TopologyPlan {
 #[derive(Deserialize)]
 struct CampaignPlan {
     #[serde(default)]
+    state: BTreeMap<String, String>,
+    #[serde(default)]
     operations: Vec<CampaignOperation>,
 }
 
@@ -161,6 +163,10 @@ struct CampaignOperation {
     excludes_serial_evidence: Option<serde_json::Value>,
     #[serde(default)]
     max_uses: Option<u8>,
+    #[serde(default)]
+    requires_state: BTreeMap<String, String>,
+    #[serde(default)]
+    sets_state: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -172,6 +178,10 @@ struct CampaignOperationInput {
     excludes: Vec<CampaignOperationInputReference>,
     #[serde(default)]
     max_uses: Option<u8>,
+    #[serde(default)]
+    requires_state: BTreeMap<String, String>,
+    #[serde(default)]
+    sets_state: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -279,6 +289,7 @@ struct ReportModel {
     campaign_minimization: Option<CampaignMinimization>,
     replay_verification: Option<ReplayVerification>,
     campaign_runs: Vec<CampaignRun>,
+    campaign_state: BTreeMap<String, String>,
     campaign_operations: Vec<CampaignOperation>,
 }
 
@@ -367,6 +378,7 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
         campaign_minimization: None,
         replay_verification: result.replay_verification,
         campaign_runs: Vec::new(),
+        campaign_state: BTreeMap::new(),
         campaign_operations: Vec::new(),
     })
 }
@@ -444,6 +456,7 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
         campaign_minimization: None,
         replay_verification: result.replay_verification,
         campaign_runs: Vec::new(),
+        campaign_state: BTreeMap::new(),
         campaign_operations: Vec::new(),
     })
 }
@@ -529,6 +542,7 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
         campaign_minimization,
         replay_verification: None,
         campaign_runs: Vec::new(),
+        campaign_state: BTreeMap::new(),
         campaign_operations: Vec::new(),
     })
 }
@@ -553,6 +567,10 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
             detail: property.detail,
         })
         .collect();
+    let (campaign_state, campaign_operations) = plan
+        .campaign
+        .map(|campaign| (campaign.state, campaign.operations))
+        .unwrap_or_else(|| (BTreeMap::new(), Vec::new()));
     Ok(ReportModel {
         title: "Autonomous Compose campaign".to_owned(),
         kind: format!("deterministic topology search driven by {}", result.driver),
@@ -587,10 +605,8 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         campaign_minimization: None,
         replay_verification: result.replay_verification,
         campaign_runs: result.runs,
-        campaign_operations: plan
-            .campaign
-            .map(|campaign| campaign.operations)
-            .unwrap_or_default(),
+        campaign_state,
+        campaign_operations,
     })
 }
 
@@ -708,6 +724,7 @@ if(m.error){{const e=section('Error');e.append(el('pre',m.error));}}
 const replay=section(m.command_label);replay.append(el('pre',m.command));
 if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));if(n.serial_log){{d.append(el('p','serial log: '+n.serial_log));}}d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
+if(Object.keys(m.campaign_state).length){{const s=section('Campaign state machine');s.append(el('pre',JSON.stringify(m.campaign_state)));const rows=[];m.campaign_operations.forEach(o=>{{if(Object.keys(o.requires_state).length||Object.keys(o.sets_state).length)rows.push([o.name,JSON.stringify(o.requires_state),JSON.stringify(o.sets_state)]);o.inputs.forEach(i=>{{if(Object.keys(i.requires_state).length||Object.keys(i.sets_state).length)rows.push([o.name+'['+i.name+']',JSON.stringify(i.requires_state),JSON.stringify(i.sets_state)]);}});}});if(rows.length)s.append(table(rows,['Transition','Requires state','Sets state']));}}
 if(m.campaign_operations.length){{const predicate=p=>p?JSON.stringify(p):'none',predicates=ps=>ps.length?JSON.stringify(ps):'none',ref=r=>r.operation+(r.input?'['+r.input+']':''),input=i=>i.name+(i.requires.length||i.excludes.length||i.max_uses!==null?' ('+[i.requires.length?'after '+i.requires.map(ref).join(' + '):'',i.excludes.length?'without '+i.excludes.map(ref).join(' + '):'',i.max_uses===null?'':'at most '+i.max_uses].filter(Boolean).join('; ')+')':''),s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,o.inputs.map(input).join(' + ')||'default',o.stage||'any',o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',predicate(o.requires_serial),predicate(o.excludes_serial),predicates(o.requires_serial_all),predicates(o.excludes_serial_any),predicates(o.requires_serial_joins),predicates(o.excludes_serial_joins),predicate(o.requires_serial_evidence),predicate(o.excludes_serial_evidence),o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Input cases','Stage','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Requires serial predicate','Excludes serial predicate','Requires all serial guards','Excludes any serial guard','Requires JSON joins','Excludes JSON joins','Requires serial evidence','Excludes serial evidence','Maximum uses']));}}
 if(m.campaign_runs.length){{const s=section('Generated timelines');s.append(table(m.campaign_runs.map(r=>[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',r.state_novel?'new':'seen',Object.entries(r.program_counters).map(([service,pcs])=>service+': '+pcs.join(' ')).join(' · ')||'none',r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none']),['Run','Operations','Candidates','Selection','Topology state','Paused PCs','Applied actions','Status','New markers']));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
