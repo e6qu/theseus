@@ -131,6 +131,8 @@ jobs:
   manifest-and-release:
     needs: [runtime, cli-macos-arm64]
     runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ needs.runtime.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -173,12 +175,173 @@ jobs:
           cargo package --manifest-path sdk/Cargo.toml --allow-dirty
           cp sdk/target/package/theseus-sdk-*.crate release/
 
-      - name: Create the SHA release
+      - name: Checksum every release asset
+        run: |
+          (
+            cd release
+            sha256sum ./* > SHA256SUMS
+          )
+
+      - name: Create the draft SHA release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.runtime.outputs.tag }}
         run: |
           gh release create "$TAG" release/* \
             --target "$GITHUB_SHA" \
+            --draft \
             --title "Theseus $TAG" \
             --notes "Runtime bundles and the multi-architecture container are pinned to commit $GITHUB_SHA."
+
+  runtime-release-consumer:
+    name: runtime release consumer (${{ matrix.arch }})
+    needs: manifest-and-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TAG: ${{ needs.manifest-and-release.outputs.tag }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Consume the published multi-architecture image
+        run: |
+          docker pull "${IMAGE}:${TAG}"
+          test "$(docker image inspect "${IMAGE}:${TAG}" --format '{{.Architecture}}')" = "${{ matrix.arch }}"
+          docker run --rm --entrypoint /bin/sh "${IMAGE}:${TAG}" -ec '
+            test -x /usr/local/bin/firecracker
+            test -x /usr/local/bin/theseus
+            test -x /usr/local/bin/theseus-topology
+            test -x /usr/local/bin/theseus-explorer
+            test -s /opt/theseus/vmlinux
+            /usr/local/bin/firecracker --version
+            /usr/local/bin/theseus --help >/dev/null
+          '
+
+      - name: Consume the published runtime archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          consumer=$(mktemp -d)
+          trap 'rm -rf "$consumer"' EXIT
+          archive="theseus-${TAG}-linux-${{ matrix.arch }}.tar.gz"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$archive" --pattern SHA256SUMS --dir "$consumer"
+          (
+            cd "$consumer"
+            sha256sum --ignore-missing -c SHA256SUMS
+          )
+          tar -tzf "$consumer/$archive" | grep -Fx \
+            "theseus-${TAG}-linux-${{ matrix.arch }}/firecracker"
+          mkdir "$consumer/extracted"
+          tar -xzf "$consumer/$archive" -C "$consumer/extracted"
+          (
+            cd "$consumer/extracted/theseus-${TAG}-linux-${{ matrix.arch }}"
+            sha256sum -c SHA256SUMS
+            test -x firecracker
+            test -x theseus
+            test -x theseus-topology
+            test -x theseus-explorer
+            test -s vmlinux
+            ./firecracker --version
+            ./theseus --help >/dev/null
+          )
+
+  cli-release-consumer:
+    name: CLI release consumer (macos arm64)
+    needs: manifest-and-release
+    runs-on: macos-14
+    env:
+      TAG: ${{ needs.manifest-and-release.outputs.tag }}
+    steps:
+      - name: Consume the published macOS CLI archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          consumer=$(mktemp -d)
+          trap 'rm -rf "$consumer"' EXIT
+          archive="theseus-${TAG}-darwin-arm64.tar.gz"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$archive" --pattern SHA256SUMS --dir "$consumer"
+          expected=$(awk -v asset="./$archive" '$2 == asset { print $1 }' "$consumer/SHA256SUMS")
+          actual=$(shasum -a 256 "$consumer/$archive" | awk '{ print $1 }')
+          test -n "$expected"
+          test "$actual" = "$expected"
+          mkdir "$consumer/extracted"
+          tar -xzf "$consumer/$archive" -C "$consumer/extracted"
+          (
+            cd "$consumer/extracted/theseus-${TAG}-darwin-arm64"
+            shasum -a 256 -c SHA256SUMS
+            test -x theseus
+            ./theseus --help >/dev/null
+          )
+
+  sdk-release-consumer:
+    name: SDK release consumer
+    needs: manifest-and-release
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ needs.manifest-and-release.outputs.tag }}
+    steps:
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Compile the published SDK crate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          consumer=$(mktemp -d)
+          trap 'rm -rf "$consumer"' EXIT
+          mkdir "$consumer/release" "$consumer/package" "$consumer/app/src"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'theseus-sdk-*.crate' --pattern SHA256SUMS --dir "$consumer/release"
+          (
+            cd "$consumer/release"
+            sha256sum --ignore-missing -c SHA256SUMS
+          )
+          crate=$(find "$consumer/release" -maxdepth 1 -type f -name 'theseus-sdk-*.crate')
+          test -n "$crate"
+          tar -xzf "$crate" -C "$consumer/package"
+          sdk=$(find "$consumer/package" -mindepth 1 -maxdepth 1 -type d -name 'theseus-sdk-*')
+          test -f "$sdk/Cargo.toml"
+          mv "$sdk" "$consumer/sdk"
+          cat > "$consumer/app/Cargo.toml" <<'EOF'
+          [package]
+          name = "published-sdk-consumer"
+          version = "0.1.0"
+          edition = "2021"
+
+          [dependencies]
+          theseus-sdk = { path = "../sdk" }
+          EOF
+          cat > "$consumer/app/src/main.rs" <<'EOF'
+          fn main() {
+              assert_eq!(theseus_sdk::MAGIC, u32::from_le_bytes(*b"THES"));
+              assert_eq!(theseus_sdk::EVENT_TERMINATOR, 0);
+          }
+          EOF
+          cargo run --manifest-path "$consumer/app/Cargo.toml" --quiet
+
+  publish-release:
+    name: publish verified release
+    needs:
+      [manifest-and-release, runtime-release-consumer, cli-release-consumer, sdk-release-consumer]
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ needs.manifest-and-release.outputs.tag }}
+    steps:
+      - name: Publish the verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
