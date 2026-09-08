@@ -591,6 +591,8 @@ struct CampaignRun {
     selection: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     guidance_evidence: Option<CampaignPosteriorEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    timeline: Vec<CampaignTimelineBoundary>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     program_counters: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -601,6 +603,23 @@ struct CampaignRun {
     state_novel: bool,
     status: &'static str,
     novelty: Vec<String>,
+}
+
+/// One deterministic operation boundary. This deliberately records compact
+/// checkpoint evidence rather than a hardware instruction trace: the full
+/// serial log and VM snapshot remain in the locked run directory.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+struct CampaignTimelineBoundary {
+    operation: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    actions: Vec<AppliedCampaignAction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    markers: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    program_counters: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    instruction_locations: BTreeMap<String, Vec<InstructionLocation>>,
+    serial_sha256: BTreeMap<String, String>,
 }
 
 /// The deterministic posterior used to choose a campaign action. `successes`
@@ -657,6 +676,8 @@ struct RecordedCampaignRun {
     selection: String,
     #[serde(default)]
     guidance_evidence: Option<CampaignPosteriorEvidence>,
+    #[serde(default)]
+    timeline: Vec<CampaignTimelineBoundary>,
     #[serde(default)]
     program_counters: BTreeMap<String, Vec<String>>,
     #[serde(default)]
@@ -1093,6 +1114,15 @@ struct CampaignPrefixCheckpoint {
     checkpoint: CampaignCheckpoint,
     actions: Vec<AppliedCampaignAction>,
     events: Vec<EventPlan>,
+    boundaries: Vec<CampaignCheckpointBoundary>,
+}
+
+#[derive(Clone)]
+struct CampaignCheckpointBoundary {
+    actions: Vec<AppliedCampaignAction>,
+    markers: Vec<String>,
+    program_counters: BTreeMap<String, Vec<String>>,
+    serial_sha256: BTreeMap<String, String>,
 }
 
 enum CampaignPrefixResult {
@@ -1689,6 +1719,7 @@ impl CampaignCheckpointTree {
             checkpoint: self.root.clone(),
             actions: Vec::new(),
             events: Vec::new(),
+            boundaries: Vec::new(),
         };
         for (index, operation) in schedule.operations.iter().enumerate() {
             if !campaign_operation_is_ready(campaign, &schedule.operations[..index], *operation)
@@ -1726,11 +1757,14 @@ impl CampaignCheckpointTree {
                 &directory.join("checkpoints").join(&key),
             )?;
             let mut actions = parent.actions.clone();
-            actions.extend(applied);
+            actions.extend(applied.clone());
+            let mut boundaries = parent.boundaries.clone();
+            boundaries.push(campaign_checkpoint_boundary(&checkpoint, applied));
             parent = CampaignPrefixCheckpoint {
                 checkpoint,
                 actions,
                 events: prefix.clone(),
+                boundaries,
             };
             self.prefixes.insert(key, parent.clone());
         }
@@ -2086,6 +2120,12 @@ fn execute_campaign(
         let actions = campaign_actions(&run_dir)?;
         let program_counters = campaign_checkpoint_program_counters(&prefix.checkpoint);
         let instruction_locations = instruction_symbolizer.symbolize(&program_counters);
+        let timeline = campaign_operation_timeline(
+            &campaign,
+            &schedule,
+            &prefix.boundaries,
+            &instruction_symbolizer,
+        );
         let instruction_novelty = campaign_instruction_locations(&program_counters)
             .into_iter()
             .filter(|location| seen_instruction_locations.insert(location.clone()))
@@ -2117,6 +2157,7 @@ fn execute_campaign(
             actions,
             selection,
             guidance_evidence,
+            timeline,
             program_counters,
             instruction_locations,
             instruction_novelty,
@@ -3767,6 +3808,9 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     {
         mismatches.push("posterior guidance evidence".to_owned());
     }
+    if !expected.timeline.is_empty() && expected.timeline != actual.timeline {
+        mismatches.push("operation-boundary timeline".to_owned());
+    }
     if !expected.program_counters.is_empty() && expected.program_counters != actual.program_counters
     {
         mismatches.push("checkpoint program counters".to_owned());
@@ -4476,6 +4520,57 @@ fn campaign_checkpoint_program_counters(
                     .map(|pc| format!("{pc:#x}"))
                     .collect(),
             )
+        })
+        .collect()
+}
+
+fn campaign_checkpoint_boundary(
+    checkpoint: &CampaignCheckpoint,
+    actions: Vec<AppliedCampaignAction>,
+) -> CampaignCheckpointBoundary {
+    CampaignCheckpointBoundary {
+        actions,
+        markers: campaign_checkpoint_markers(checkpoint)
+            .into_iter()
+            .collect(),
+        program_counters: campaign_checkpoint_program_counters(checkpoint),
+        serial_sha256: campaign_checkpoint_serial_sha256(checkpoint),
+    }
+}
+
+fn campaign_checkpoint_serial_sha256(checkpoint: &CampaignCheckpoint) -> BTreeMap<String, String> {
+    checkpoint
+        .scheduler
+        .iter()
+        .map(|(service, state)| {
+            let mut hasher = Sha256::new();
+            for serial in &state.serial_contents {
+                hasher.update((serial.len() as u64).to_le_bytes());
+                hasher.update(serial);
+            }
+            (service.clone(), format!("{:x}", hasher.finalize()))
+        })
+        .collect()
+}
+
+fn campaign_operation_timeline(
+    campaign: &CampaignPlan,
+    schedule: &CampaignSchedule,
+    boundaries: &[CampaignCheckpointBoundary],
+    symbolizer: &CampaignInstructionSymbolizer,
+) -> Vec<CampaignTimelineBoundary> {
+    debug_assert_eq!(schedule.operations.len(), boundaries.len());
+    schedule
+        .operations
+        .iter()
+        .zip(boundaries)
+        .map(|(operation, boundary)| CampaignTimelineBoundary {
+            operation: campaign_operation_choice_name(campaign, *operation),
+            actions: boundary.actions.clone(),
+            markers: boundary.markers.clone(),
+            program_counters: boundary.program_counters.clone(),
+            instruction_locations: symbolizer.symbolize(&boundary.program_counters),
+            serial_sha256: boundary.serial_sha256.clone(),
         })
         .collect()
 }
@@ -9079,6 +9174,14 @@ mod tests {
                 uncertainty_per_mille: 166,
                 score: 53_248,
             }),
+            timeline: vec![CampaignTimelineBoundary {
+                operation: "write".to_owned(),
+                actions: Vec::new(),
+                markers: vec!["checkpoint".to_owned()],
+                program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
+                instruction_locations: BTreeMap::new(),
+                serial_sha256: BTreeMap::from([("api".to_owned(), "serial".to_owned())]),
+            }],
             program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
             instruction_locations: BTreeMap::from([(
                 "api".to_owned(),
@@ -9106,6 +9209,7 @@ mod tests {
             actions: Vec::new(),
             selection: actual.selection.clone(),
             guidance_evidence: actual.guidance_evidence.clone(),
+            timeline: actual.timeline.clone(),
             program_counters: actual.program_counters.clone(),
             instruction_locations: actual.instruction_locations.clone(),
             instruction_novelty: actual.instruction_novelty.clone(),
@@ -9138,6 +9242,12 @@ mod tests {
             .score = 1;
         assert!(campaign_replay_mismatches(&changed_posterior, &actual)
             .contains(&"posterior guidance evidence".to_owned()));
+        let mut changed_timeline = expected.clone();
+        changed_timeline.timeline[0]
+            .markers
+            .push("other".to_owned());
+        assert!(campaign_replay_mismatches(&changed_timeline, &actual)
+            .contains(&"operation-boundary timeline".to_owned()));
         let mut changed = actual;
         changed.state_sha256 = "other-state".to_owned();
         assert_eq!(
