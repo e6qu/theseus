@@ -1,0 +1,49 @@
+name: verify runtime reproducibility
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    name: runtime (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: source-date
+        run: git show -s --format='value=%ct' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Rebuild the runtime from immutable inputs
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}
+        run: |
+          for build in first second; do
+            docker buildx build \
+              --no-cache \
+              --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+              --output "type=oci,dest=${build}.oci.tar,rewrite-timestamp=true" \
+              .
+            mkdir "$build"
+            tar -xf "${build}.oci.tar" -C "$build"
+          done
+          diff -ru first second
+          sha256sum first.oci.tar second.oci.tar > SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-reproducibility-${{ matrix.arch }}
+          retention-days: 1
+          path: SHA256SUMS
