@@ -98,6 +98,7 @@ enum CampaignGuidance {
     #[default]
     Coverage,
     Adaptive,
+    Posterior,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -588,6 +589,8 @@ struct CampaignRun {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     actions: Vec<AppliedCampaignAction>,
     selection: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guidance_evidence: Option<CampaignPosteriorEvidence>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     program_counters: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -598,6 +601,24 @@ struct CampaignRun {
     state_novel: bool,
     status: &'static str,
     novelty: Vec<String>,
+}
+
+/// The deterministic posterior used to choose a campaign action. `successes`
+/// counts runs which yielded a marker, paused-PC location, topology state, or
+/// failure; `misses` counts runs without any of those outcomes. The uniform
+/// Beta(1, 1) prior makes an untried action explicit rather than silently
+/// treating it as either good or bad.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+struct CampaignPosteriorEvidence {
+    action: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    context: Vec<String>,
+    scope: String,
+    successes: usize,
+    misses: usize,
+    mean_per_mille: usize,
+    uncertainty_per_mille: usize,
+    score: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -634,6 +655,8 @@ struct RecordedCampaignRun {
     actions: Vec<AppliedCampaignAction>,
     #[serde(default)]
     selection: String,
+    #[serde(default)]
+    guidance_evidence: Option<CampaignPosteriorEvidence>,
     #[serde(default)]
     program_counters: BTreeMap<String, Vec<String>>,
     #[serde(default)]
@@ -1995,6 +2018,8 @@ fn execute_campaign(
                 None,
             )
         };
+        let guidance_evidence = (campaign.guidance == CampaignGuidance::Posterior)
+            .then(|| campaign_posterior_evidence(&campaign, &schedule, &observations));
         // Guards inspect each exact restored parent checkpoint. A fault after
         // an earlier operation is visible to the next operation's guard, just
         // as it is to the guest; impossible prefixes never become leaves.
@@ -2091,6 +2116,7 @@ fn execute_campaign(
             faults: campaign_fault_names(&campaign, &schedule.faults),
             actions,
             selection,
+            guidance_evidence,
             program_counters,
             instruction_locations,
             instruction_novelty,
@@ -3736,6 +3762,11 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     if !expected.selection.is_empty() && expected.selection != actual.selection {
         mismatches.push("selection".to_owned());
     }
+    if expected.guidance_evidence.is_some()
+        && expected.guidance_evidence != actual.guidance_evidence
+    {
+        mismatches.push("posterior guidance evidence".to_owned());
+    }
     if !expected.program_counters.is_empty() && expected.program_counters != actual.program_counters
     {
         mismatches.push("checkpoint program counters".to_owned());
@@ -3839,6 +3870,32 @@ fn select_campaign_schedule(
                     ),
                 )
             }
+            CampaignGuidance::Posterior => {
+                let choice = *candidate
+                    .operations
+                    .last()
+                    .expect("campaign schedules always contain an operation");
+                let estimate = campaign_posterior_estimate(
+                    choice,
+                    &candidate.operations[..candidate.operations.len() - 1],
+                    observations,
+                );
+                let base_reason = coverage_reason
+                    .filter(|observation| campaign_guidance_signal(observation) > 0)
+                    .map(campaign_guidance_reason)
+                    .unwrap_or_else(|| "canonical breadth-first seed".to_owned());
+                (
+                    coverage_score.saturating_add(estimate.score),
+                    format!(
+                        "{base_reason}; posterior {} evidence: {} yield(s), {} miss(es), mean {}‰, uncertainty {}‰",
+                        estimate.scope,
+                        estimate.successes,
+                        estimate.misses,
+                        estimate.mean_per_mille,
+                        estimate.uncertainty_per_mille,
+                    ),
+                )
+            }
         };
         if score > selected_score {
             selected = pending_index;
@@ -3876,6 +3933,96 @@ fn campaign_adaptive_action_reward(
     let exploration_bonus =
         observations.len().saturating_add(1).saturating_mul(250) / count.saturating_add(1);
     (mean_reward, count, exploration_bonus)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CampaignPosteriorEstimate {
+    scope: &'static str,
+    successes: usize,
+    misses: usize,
+    mean_per_mille: usize,
+    uncertainty_per_mille: usize,
+    score: usize,
+}
+
+/// Rank an action with a uniform Beta(1, 1) prior and a deterministic
+/// uncertainty width. Prefer evidence from the exact preceding operation
+/// history; when that history has not tried the action, fall back to the
+/// action's global evidence. This stays reproducible and never samples a
+/// random posterior.
+fn campaign_posterior_estimate(
+    choice: CampaignOperationChoice,
+    context: &[CampaignOperationChoice],
+    observations: &[CampaignGuidanceObservation],
+) -> CampaignPosteriorEstimate {
+    let contextual = observations
+        .iter()
+        .filter(|observation| {
+            observation.operations.last() == Some(&choice)
+                && observation.operations[..observation.operations.len().saturating_sub(1)]
+                    == *context
+        })
+        .collect::<Vec<_>>();
+    let (scope, matching) = if contextual.is_empty() {
+        (
+            "global action",
+            observations
+                .iter()
+                .filter(|observation| observation.operations.last() == Some(&choice))
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        ("exact context", contextual)
+    };
+    let successes = matching
+        .iter()
+        .filter(|observation| campaign_guidance_signal(observation) > 0)
+        .count();
+    let misses = matching.len().saturating_sub(successes);
+    let alpha = successes.saturating_add(1);
+    let beta = misses.saturating_add(1);
+    let trials = alpha.saturating_add(beta);
+    let mean_per_mille = alpha.saturating_mul(1_000) / trials;
+    // A small evidence-width bonus gives unseen actions a fair deterministic
+    // trial but declines as the posterior accumulates observations.
+    let uncertainty_per_mille = 500 / trials;
+    let upper_per_mille = mean_per_mille
+        .saturating_add(uncertainty_per_mille)
+        .min(1_000);
+    CampaignPosteriorEstimate {
+        scope,
+        successes,
+        misses,
+        mean_per_mille,
+        uncertainty_per_mille,
+        score: upper_per_mille.saturating_mul(64),
+    }
+}
+
+fn campaign_posterior_evidence(
+    campaign: &CampaignPlan,
+    schedule: &CampaignSchedule,
+    observations: &[CampaignGuidanceObservation],
+) -> CampaignPosteriorEvidence {
+    let choice = *schedule
+        .operations
+        .last()
+        .expect("campaign schedules always contain an operation");
+    let context = &schedule.operations[..schedule.operations.len() - 1];
+    let estimate = campaign_posterior_estimate(choice, context, observations);
+    CampaignPosteriorEvidence {
+        action: campaign_operation_choice_name(campaign, choice),
+        context: context
+            .iter()
+            .map(|choice| campaign_operation_choice_name(campaign, *choice))
+            .collect(),
+        scope: estimate.scope.to_owned(),
+        successes: estimate.successes,
+        misses: estimate.misses,
+        mean_per_mille: estimate.mean_per_mille,
+        uncertainty_per_mille: estimate.uncertainty_per_mille,
+        score: estimate.score,
+    }
 }
 
 fn campaign_guidance_reason(observation: &CampaignGuidanceObservation) -> String {
@@ -8829,6 +8976,54 @@ mod tests {
     }
 
     #[test]
+    fn posterior_guidance_prefers_a_successful_action_with_global_evidence() {
+        let schedules = vec![
+            CampaignSchedule {
+                operations: vec![choice(2), choice(1)],
+                faults: Vec::new(),
+            },
+            CampaignSchedule {
+                operations: vec![choice(2), choice(0)],
+                faults: Vec::new(),
+            },
+        ];
+        let observations = vec![
+            CampaignGuidanceObservation {
+                operations: vec![choice(0)],
+                novel_markers: 1,
+                novel_instructions: 0,
+                novel_state: false,
+                failed: false,
+            },
+            CampaignGuidanceObservation {
+                operations: vec![choice(1)],
+                novel_markers: 0,
+                novel_instructions: 0,
+                novel_state: false,
+                failed: false,
+            },
+        ];
+
+        let (selected, reason) = select_campaign_schedule(
+            &schedules,
+            &[0, 1],
+            &observations,
+            CampaignGuidance::Posterior,
+        );
+
+        assert_eq!(selected, 1);
+        assert_eq!(
+            reason,
+            "canonical breadth-first seed; posterior global action evidence: 1 yield(s), 0 miss(es), mean 666‰, uncertainty 166‰"
+        );
+        let estimate = campaign_posterior_estimate(choice(0), &[choice(2)], &observations);
+        assert_eq!(estimate.scope, "global action");
+        assert_eq!(estimate.successes, 1);
+        assert_eq!(estimate.misses, 0);
+        assert_eq!(estimate.score, 53_248);
+    }
+
+    #[test]
     fn replay_rejects_a_changed_recorded_guidance_policy() {
         let recorded = RecordedCampaignResult {
             guidance: Some(CampaignGuidance::Adaptive),
@@ -8874,6 +9069,16 @@ mod tests {
             faults: vec!["backplane:partition@write".to_owned()],
             actions: Vec::new(),
             selection: "extends 1-operation prefix with new topology state".to_owned(),
+            guidance_evidence: Some(CampaignPosteriorEvidence {
+                action: "write".to_owned(),
+                context: Vec::new(),
+                scope: "global action".to_owned(),
+                successes: 1,
+                misses: 0,
+                mean_per_mille: 666,
+                uncertainty_per_mille: 166,
+                score: 53_248,
+            }),
             program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
             instruction_locations: BTreeMap::from([(
                 "api".to_owned(),
@@ -8900,6 +9105,7 @@ mod tests {
             faults: actual.faults.clone(),
             actions: Vec::new(),
             selection: actual.selection.clone(),
+            guidance_evidence: actual.guidance_evidence.clone(),
             program_counters: actual.program_counters.clone(),
             instruction_locations: actual.instruction_locations.clone(),
             instruction_novelty: actual.instruction_novelty.clone(),
@@ -8924,6 +9130,14 @@ mod tests {
         });
         assert!(campaign_replay_mismatches(&changed_symbols, &actual)
             .contains(&"symbolized instruction locations".to_owned()));
+        let mut changed_posterior = expected.clone();
+        changed_posterior
+            .guidance_evidence
+            .as_mut()
+            .expect("recorded posterior evidence")
+            .score = 1;
+        assert!(campaign_replay_mismatches(&changed_posterior, &actual)
+            .contains(&"posterior guidance evidence".to_owned()));
         let mut changed = actual;
         changed.state_sha256 = "other-state".to_owned();
         assert_eq!(

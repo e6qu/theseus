@@ -282,6 +282,14 @@ completed runs. Theseus adds a declining exploration bonus for operations with
 less evidence. The policy is deterministic: its recorded selection reasons
 are replay-checked; it never calls a remote model or makes random choices.
 
+Set `guidance: posterior` when you want the same evidence to be interpreted as
+a deterministic Beta posterior. Theseus prefers evidence from the exact earlier
+operation history, falls back to the action's global history when needed, and
+keeps an uncertainty bonus so a thinly observed action still gets a fair trial.
+The report records the prior-adjusted mean, uncertainty, yields, and misses for
+every selected action. This is deterministic scheduling, not a remote model or
+random sampling.
+
 When you replay a campaign bundle, Theseus does not search again. It restores
 and runs the recorded operation and fault corpus in the recorded order, then
 checks the selection reasons, marker novelty, topology-state signatures, and
