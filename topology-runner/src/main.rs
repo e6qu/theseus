@@ -7,7 +7,7 @@
 //! macOS, while this binary links Firecracker's Linux/KVM VMM and runs only
 //! from a published Linux runtime bundle.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -615,6 +615,12 @@ struct CampaignTimelineBoundary {
     actions: Vec<AppliedCampaignAction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     markers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    new_markers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    changed_program_counters: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    changed_serial: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     program_counters: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1775,6 +1781,10 @@ impl CampaignCheckpointTree {
         // Include the boot/readiness root, which is also a reusable snapshot.
         self.prefixes.len() + 1
     }
+
+    fn root_boundary(&self) -> CampaignCheckpointBoundary {
+        campaign_checkpoint_boundary(&self.root, Vec::new())
+    }
 }
 
 fn campaign_prefix_key(events: &[EventPlan]) -> Result<String, String> {
@@ -2124,6 +2134,7 @@ fn execute_campaign(
             &campaign,
             &schedule,
             &prefix.boundaries,
+            &checkpoints.root_boundary(),
             &instruction_symbolizer,
         );
         let instruction_novelty = campaign_instruction_locations(&program_counters)
@@ -4557,22 +4568,62 @@ fn campaign_operation_timeline(
     campaign: &CampaignPlan,
     schedule: &CampaignSchedule,
     boundaries: &[CampaignCheckpointBoundary],
+    baseline: &CampaignCheckpointBoundary,
     symbolizer: &CampaignInstructionSymbolizer,
 ) -> Vec<CampaignTimelineBoundary> {
     debug_assert_eq!(schedule.operations.len(), boundaries.len());
+    let mut previous = baseline.clone();
     schedule
         .operations
         .iter()
         .zip(boundaries)
-        .map(|(operation, boundary)| CampaignTimelineBoundary {
-            operation: campaign_operation_choice_name(campaign, *operation),
-            actions: boundary.actions.clone(),
-            markers: boundary.markers.clone(),
-            program_counters: boundary.program_counters.clone(),
-            instruction_locations: symbolizer.symbolize(&boundary.program_counters),
-            serial_sha256: boundary.serial_sha256.clone(),
+        .map(|(operation, boundary)| {
+            let (new_markers, changed_program_counters, changed_serial) =
+                campaign_boundary_delta(&previous, boundary);
+            previous = boundary.clone();
+            CampaignTimelineBoundary {
+                operation: campaign_operation_choice_name(campaign, *operation),
+                actions: boundary.actions.clone(),
+                markers: boundary.markers.clone(),
+                new_markers,
+                changed_program_counters,
+                changed_serial,
+                program_counters: boundary.program_counters.clone(),
+                instruction_locations: symbolizer.symbolize(&boundary.program_counters),
+                serial_sha256: boundary.serial_sha256.clone(),
+            }
         })
         .collect()
+}
+
+/// Compact, deterministic evidence of what an operation changed relative to
+/// its immediately preceding checkpoint.
+fn campaign_boundary_delta(
+    previous: &CampaignCheckpointBoundary,
+    boundary: &CampaignCheckpointBoundary,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let previous_markers = previous.markers.iter().collect::<BTreeSet<_>>();
+    let new_markers = boundary
+        .markers
+        .iter()
+        .filter(|marker| !previous_markers.contains(marker))
+        .cloned()
+        .collect();
+    let changed_program_counters = boundary
+        .program_counters
+        .iter()
+        .filter_map(|(service, counters)| {
+            (previous.program_counters.get(service) != Some(counters)).then(|| service.clone())
+        })
+        .collect();
+    let changed_serial = boundary
+        .serial_sha256
+        .iter()
+        .filter_map(|(service, hash)| {
+            (previous.serial_sha256.get(service) != Some(hash)).then(|| service.clone())
+        })
+        .collect();
+    (new_markers, changed_program_counters, changed_serial)
 }
 
 /// A paused vCPU PC is a deterministic instruction-location sample. The
@@ -9156,6 +9207,47 @@ mod tests {
     }
 
     #[test]
+    fn campaign_boundary_delta_only_reports_new_evidence() {
+        let previous = CampaignCheckpointBoundary {
+            actions: Vec::new(),
+            markers: vec!["booted".to_owned(), "ready".to_owned()],
+            program_counters: BTreeMap::from([
+                ("api".to_owned(), vec!["0x1000".to_owned()]),
+                ("worker".to_owned(), vec!["0x2000".to_owned()]),
+            ]),
+            serial_sha256: BTreeMap::from([
+                ("api".to_owned(), "api-before".to_owned()),
+                ("worker".to_owned(), "worker-before".to_owned()),
+            ]),
+        };
+        let boundary = CampaignCheckpointBoundary {
+            actions: Vec::new(),
+            markers: vec![
+                "booted".to_owned(),
+                "ready".to_owned(),
+                "written".to_owned(),
+            ],
+            program_counters: BTreeMap::from([
+                ("api".to_owned(), vec!["0x1000".to_owned()]),
+                ("worker".to_owned(), vec!["0x2004".to_owned()]),
+            ]),
+            serial_sha256: BTreeMap::from([
+                ("api".to_owned(), "api-before".to_owned()),
+                ("worker".to_owned(), "worker-after".to_owned()),
+            ]),
+        };
+
+        assert_eq!(
+            campaign_boundary_delta(&previous, &boundary),
+            (
+                vec!["written".to_owned()],
+                vec!["worker".to_owned()],
+                vec!["worker".to_owned()],
+            )
+        );
+    }
+
+    #[test]
     fn campaign_replay_verifies_guidance_evidence() {
         let actual = CampaignRun {
             index: 0,
@@ -9178,6 +9270,9 @@ mod tests {
                 operation: "write".to_owned(),
                 actions: Vec::new(),
                 markers: vec!["checkpoint".to_owned()],
+                new_markers: vec!["checkpoint".to_owned()],
+                changed_program_counters: vec!["api".to_owned()],
+                changed_serial: vec!["api".to_owned()],
                 program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
                 instruction_locations: BTreeMap::new(),
                 serial_sha256: BTreeMap::from([("api".to_owned(), "serial".to_owned())]),
