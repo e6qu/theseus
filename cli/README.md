@@ -67,6 +67,11 @@ applied faults for a topology, and the search tree plus dirty-page coverage
 proxy for an exploration. Every report includes a copy-paste command that
 replays only the locked artifacts in that result directory.
 
+Campaign reports also explain paused-vCPU instruction samples from the locked
+service kernel ELF as `address → function + offset`. The address is still the
+replay identity and is used when symbols are absent, so a stripped kernel never
+changes campaign coverage or prevents replay.
+
 ### Hand a failure to CI or an issue
 
 The same locked result can be rendered without a browser. `markdown` writes a

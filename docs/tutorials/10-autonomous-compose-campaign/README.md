@@ -268,9 +268,12 @@ It also treats a changed simulated drive, network traffic/payload fingerprint,
 virtual clock, or paused guest program counter as a new topology state. A new
 per-service paused PC also guides later extensions as an instruction location.
 This reaches divergent outcomes even when the guest prints the same markers.
-The report shows each service's paused PCs; they are checkpoint samples, not a
-full instruction trace. Ordinary serial output and declared fault names are
-not state coverage, so they cannot create artificial novelty.
+The report resolves each sample against that service's locked kernel ELF and
+shows `address → function + offset` when symbols are available. The raw address
+remains the replay identity; stripped or unmatched kernels show the address
+alone. These are checkpoint samples, not a full instruction trace. Ordinary
+serial output and declared fault names are not state coverage, so they cannot
+create artificial novelty.
 
 Set `guidance: adaptive` to also rank a candidate's final operation by the
 marker, instruction-location, topology-state, and failure yield from earlier
