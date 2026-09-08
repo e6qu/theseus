@@ -626,6 +626,24 @@ struct CampaignTimelineBoundary {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     instruction_locations: BTreeMap<String, Vec<InstructionLocation>>,
     serial_sha256: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    serial_delta: BTreeMap<String, CampaignSerialDelta>,
+}
+
+/// A bounded, escaped excerpt of one service's serial bytes emitted between
+/// adjacent operation checkpoints. The hash always covers the complete delta,
+/// including bytes omitted from the excerpt.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+struct CampaignSerialDelta {
+    bytes: usize,
+    sha256: String,
+    excerpt: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    omitted_bytes: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 /// The deterministic posterior used to choose a campaign action. `successes`
@@ -1129,6 +1147,7 @@ struct CampaignCheckpointBoundary {
     markers: Vec<String>,
     program_counters: BTreeMap<String, Vec<String>>,
     serial_sha256: BTreeMap<String, String>,
+    serial_contents: BTreeMap<String, Vec<u8>>,
 }
 
 enum CampaignPrefixResult {
@@ -4546,7 +4565,23 @@ fn campaign_checkpoint_boundary(
             .collect(),
         program_counters: campaign_checkpoint_program_counters(checkpoint),
         serial_sha256: campaign_checkpoint_serial_sha256(checkpoint),
+        serial_contents: campaign_checkpoint_serial_contents(checkpoint),
     }
+}
+
+fn campaign_checkpoint_serial_contents(
+    checkpoint: &CampaignCheckpoint,
+) -> BTreeMap<String, Vec<u8>> {
+    checkpoint
+        .scheduler
+        .iter()
+        .map(|(service, state)| {
+            (
+                service.clone(),
+                state.serial_contents.iter().flatten().copied().collect(),
+            )
+        })
+        .collect()
 }
 
 fn campaign_checkpoint_serial_sha256(checkpoint: &CampaignCheckpoint) -> BTreeMap<String, String> {
@@ -4580,6 +4615,7 @@ fn campaign_operation_timeline(
         .map(|(operation, boundary)| {
             let (new_markers, changed_program_counters, changed_serial) =
                 campaign_boundary_delta(&previous, boundary);
+            let serial_delta = campaign_serial_delta(&previous, boundary);
             previous = boundary.clone();
             CampaignTimelineBoundary {
                 operation: campaign_operation_choice_name(campaign, *operation),
@@ -4591,7 +4627,49 @@ fn campaign_operation_timeline(
                 program_counters: boundary.program_counters.clone(),
                 instruction_locations: symbolizer.symbolize(&boundary.program_counters),
                 serial_sha256: boundary.serial_sha256.clone(),
+                serial_delta,
             }
+        })
+        .collect()
+}
+
+const CAMPAIGN_SERIAL_EXCERPT_BYTES: usize = 512;
+
+fn campaign_serial_delta(
+    previous: &CampaignCheckpointBoundary,
+    boundary: &CampaignCheckpointBoundary,
+) -> BTreeMap<String, CampaignSerialDelta> {
+    boundary
+        .serial_contents
+        .iter()
+        .filter_map(|(service, contents)| {
+            let previous_contents = previous
+                .serial_contents
+                .get(service)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let delta = contents
+                .strip_prefix(previous_contents)
+                .unwrap_or(contents.as_slice());
+            (!delta.is_empty()).then(|| {
+                let excerpt_bytes = &delta[..delta.len().min(CAMPAIGN_SERIAL_EXCERPT_BYTES)];
+                let mut hasher = Sha256::new();
+                hasher.update(delta);
+                (
+                    service.clone(),
+                    CampaignSerialDelta {
+                        bytes: delta.len(),
+                        sha256: format!("{:x}", hasher.finalize()),
+                        excerpt: delta
+                            .iter()
+                            .take(CAMPAIGN_SERIAL_EXCERPT_BYTES)
+                            .flat_map(|byte| std::ascii::escape_default(*byte))
+                            .map(char::from)
+                            .collect(),
+                        omitted_bytes: delta.len() - excerpt_bytes.len(),
+                    },
+                )
+            })
         })
         .collect()
 }
@@ -9219,6 +9297,10 @@ mod tests {
                 ("api".to_owned(), "api-before".to_owned()),
                 ("worker".to_owned(), "worker-before".to_owned()),
             ]),
+            serial_contents: BTreeMap::from([
+                ("api".to_owned(), b"api before\n".to_vec()),
+                ("worker".to_owned(), b"worker before\n".to_vec()),
+            ]),
         };
         let boundary = CampaignCheckpointBoundary {
             actions: Vec::new(),
@@ -9235,6 +9317,13 @@ mod tests {
                 ("api".to_owned(), "api-before".to_owned()),
                 ("worker".to_owned(), "worker-after".to_owned()),
             ]),
+            serial_contents: BTreeMap::from([
+                ("api".to_owned(), b"api before\n".to_vec()),
+                (
+                    "worker".to_owned(),
+                    b"worker before\nworker after\n".to_vec(),
+                ),
+            ]),
         };
 
         assert_eq!(
@@ -9245,6 +9334,56 @@ mod tests {
                 vec!["worker".to_owned()],
             )
         );
+        assert_eq!(
+            campaign_serial_delta(&previous, &boundary),
+            BTreeMap::from([(
+                "worker".to_owned(),
+                CampaignSerialDelta {
+                    bytes: 13,
+                    sha256: "ae5627046ae985f97875c5dddeb60f3bf09d039d752eb841d61baed712e34c5c"
+                        .to_owned(),
+                    excerpt: "worker after\\n".to_owned(),
+                    omitted_bytes: 0,
+                },
+            )])
+        );
+    }
+
+    #[test]
+    fn campaign_serial_delta_escapes_bounds_and_replaces_non_prefix_output() {
+        let previous = CampaignCheckpointBoundary {
+            actions: Vec::new(),
+            markers: Vec::new(),
+            program_counters: BTreeMap::new(),
+            serial_sha256: BTreeMap::new(),
+            serial_contents: BTreeMap::from([
+                ("api".to_owned(), b"old output".to_vec()),
+                ("worker".to_owned(), Vec::new()),
+            ]),
+        };
+        let boundary = CampaignCheckpointBoundary {
+            actions: Vec::new(),
+            markers: Vec::new(),
+            program_counters: BTreeMap::new(),
+            serial_sha256: BTreeMap::new(),
+            serial_contents: BTreeMap::from([
+                ("api".to_owned(), b"new output".to_vec()),
+                (
+                    "worker".to_owned(),
+                    vec![b'\n'; CAMPAIGN_SERIAL_EXCERPT_BYTES + 1],
+                ),
+            ]),
+        };
+
+        let delta = campaign_serial_delta(&previous, &boundary);
+        assert_eq!(delta["api"].bytes, 10);
+        assert_eq!(delta["api"].excerpt, "new output");
+        assert_eq!(delta["worker"].bytes, CAMPAIGN_SERIAL_EXCERPT_BYTES + 1);
+        assert_eq!(
+            delta["worker"].excerpt,
+            "\\n".repeat(CAMPAIGN_SERIAL_EXCERPT_BYTES)
+        );
+        assert_eq!(delta["worker"].omitted_bytes, 1);
     }
 
     #[test]
@@ -9276,6 +9415,7 @@ mod tests {
                 program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
                 instruction_locations: BTreeMap::new(),
                 serial_sha256: BTreeMap::from([("api".to_owned(), "serial".to_owned())]),
+                serial_delta: BTreeMap::new(),
             }],
             program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
             instruction_locations: BTreeMap::from([(
