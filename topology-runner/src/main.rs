@@ -99,6 +99,7 @@ enum CampaignGuidance {
     Coverage,
     Adaptive,
     Posterior,
+    Property,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -591,6 +592,8 @@ struct CampaignRun {
     selection: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     guidance_evidence: Option<CampaignPosteriorEvidence>,
+    #[serde(default)]
+    property_witnesses: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     timeline: Vec<CampaignTimelineBoundary>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -729,6 +732,8 @@ struct RecordedCampaignRun {
     selection: String,
     #[serde(default)]
     guidance_evidence: Option<CampaignPosteriorEvidence>,
+    #[serde(default)]
+    property_witnesses: Option<Vec<String>>,
     #[serde(default)]
     timeline: Vec<CampaignTimelineBoundary>,
     #[serde(default)]
@@ -2209,12 +2214,14 @@ fn execute_campaign(
             .filter(|marker| seen_markers.insert(marker.clone()))
             .collect::<Vec<_>>();
         let failed = status.is_err();
+        let property_witnesses = campaign_property_witnesses(&campaign, &run_dir);
         observations.push(CampaignGuidanceObservation {
             operations: schedule.operations.clone(),
             novel_markers: novelty.len(),
             novel_instructions: instruction_novelty.len(),
             novel_state: state_novel,
             failed,
+            property_witnesses: property_witnesses.clone(),
         });
         let run = CampaignRun {
             index,
@@ -2229,6 +2236,7 @@ fn execute_campaign(
             actions,
             selection,
             guidance_evidence,
+            property_witnesses,
             timeline,
             program_counters,
             instruction_locations,
@@ -2870,6 +2878,28 @@ fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
             .as_ref()
             .map(|evidence| !serial_evidence_matches_property(run, property, evidence))
             .unwrap_or(true)
+}
+
+/// Return declared properties for which this one timeline produced useful
+/// search evidence. A match witnesses `sometimes` and `reachable`; a miss
+/// witnesses an `always` counterexample; and a match witnesses an
+/// `unreachable` counterexample. Final property status still aggregates the
+/// complete retained corpus.
+fn campaign_property_witnesses(campaign: &CampaignPlan, run: &Path) -> Vec<String> {
+    campaign
+        .properties
+        .iter()
+        .filter_map(|property| {
+            let matched = property_matches_in_run(property, run);
+            let witness = match property.kind {
+                PropertyKind::Always => !matched,
+                PropertyKind::Sometimes | PropertyKind::Reachable | PropertyKind::Unreachable => {
+                    matched
+                }
+            };
+            witness.then(|| property.name.clone())
+        })
+        .collect()
 }
 
 fn campaign_property_services(run: &Path, service: Option<&str>) -> Vec<String> {
@@ -3628,6 +3658,7 @@ struct CampaignGuidanceObservation {
     novel_instructions: usize,
     novel_state: bool,
     failed: bool,
+    property_witnesses: Vec<String>,
 }
 
 /// Stable state evidence that is meaningful to a topology campaign. It
@@ -3880,6 +3911,13 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     {
         mismatches.push("posterior guidance evidence".to_owned());
     }
+    if expected
+        .property_witnesses
+        .as_ref()
+        .is_some_and(|witnesses| witnesses != &actual.property_witnesses)
+    {
+        mismatches.push("property guidance evidence".to_owned());
+    }
     if !expected.timeline.is_empty() && expected.timeline != actual.timeline {
         mismatches.push("operation-boundary timeline".to_owned());
     }
@@ -3912,12 +3950,13 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     mismatches
 }
 
-/// Choose the next leaf from observed marker, paused-PC, and topology-state
-/// coverage after first seeding every one-operation history without faults.
-/// An observation only guides schedules that extend the exact operation
-/// history which produced it; adaptive guidance additionally ranks a final
-/// operation by its observed yield across prior contexts. Fault variants
-/// remain separate leaves and all ties fall back to stable corpus order.
+/// Choose the next leaf from observed marker, paused-PC, topology-state, and
+/// declared-property evidence after first seeding every one-operation history
+/// without faults. An observation only guides schedules that extend the exact
+/// operation history which produced it; adaptive, posterior, and property
+/// guidance additionally rank a final operation by its observed yield across
+/// prior contexts. Fault variants remain separate leaves and all ties fall
+/// back to stable corpus order.
 fn select_campaign_schedule(
     schedules: &[CampaignSchedule],
     pending: &[usize],
@@ -3939,6 +3978,7 @@ fn select_campaign_schedule(
     }
     let mut selected = 0;
     let mut selected_score = 0_usize;
+    let mut selected_property_witnesses = 0_usize;
     let mut selected_reason = "canonical breadth-first seed".to_owned();
     for (pending_index, schedule_index) in pending.iter().enumerate() {
         let candidate = &schedules[*schedule_index];
@@ -3958,9 +3998,10 @@ fn select_campaign_schedule(
                 coverage_reason = Some(observation);
             }
         }
-        let (score, reason) = match guidance {
+        let (score, property_witnesses, reason) = match guidance {
             CampaignGuidance::Coverage => (
                 coverage_score,
+                0,
                 coverage_reason
                     .map(campaign_guidance_reason)
                     .unwrap_or_else(|| "canonical breadth-first seed".to_owned()),
@@ -3981,6 +4022,7 @@ fn select_campaign_schedule(
                     .unwrap_or_else(|| "canonical breadth-first seed".to_owned());
                 (
                     coverage_score.saturating_add(adaptive_score),
+                    0,
                     format!(
                         "{base_reason}; adaptive action reward {mean_reward} from {observations} observed run(s), exploration bonus {exploration_bonus}"
                     ),
@@ -4002,6 +4044,7 @@ fn select_campaign_schedule(
                     .unwrap_or_else(|| "canonical breadth-first seed".to_owned());
                 (
                     coverage_score.saturating_add(estimate.score),
+                    0,
                     format!(
                         "{base_reason}; posterior {} evidence: {} yield(s), {} miss(es), mean {}‰, uncertainty {}‰",
                         estimate.scope,
@@ -4012,10 +4055,44 @@ fn select_campaign_schedule(
                     ),
                 )
             }
+            CampaignGuidance::Property => {
+                let choice = *candidate
+                    .operations
+                    .last()
+                    .expect("campaign schedules always contain an operation");
+                let estimate = campaign_property_estimate(
+                    choice,
+                    &candidate.operations[..candidate.operations.len() - 1],
+                    observations,
+                );
+                let base_reason = coverage_reason
+                    .filter(|observation| campaign_guidance_signal(observation) > 0)
+                    .map(campaign_guidance_reason)
+                    .unwrap_or_else(|| "canonical breadth-first seed".to_owned());
+                let properties = if estimate.properties.is_empty() {
+                    "no property witness yet".to_owned()
+                } else {
+                    estimate.properties.join(", ")
+                };
+                (
+                    coverage_score.saturating_add(estimate.score),
+                    estimate.witnesses,
+                    format!(
+                        "{base_reason}; property {} evidence: {properties}; {} witness(es), {} miss(es), exploration bonus {}",
+                        estimate.scope,
+                        estimate.witnesses,
+                        estimate.misses,
+                        estimate.exploration_bonus,
+                    ),
+                )
+            }
         };
-        if score > selected_score {
+        if property_witnesses > selected_property_witnesses
+            || (property_witnesses == selected_property_witnesses && score > selected_score)
+        {
             selected = pending_index;
             selected_score = score;
+            selected_property_witnesses = property_witnesses;
             selected_reason = reason;
         }
     }
@@ -4059,6 +4136,68 @@ struct CampaignPosteriorEstimate {
     mean_per_mille: usize,
     uncertainty_per_mille: usize,
     score: usize,
+}
+
+/// A deterministic action estimate for property-directed scheduling. A
+/// witness is a reachable/sometimes match or an always/unreachable
+/// counterexample. The exploration bonus keeps unseen actions eligible when
+/// no operation has produced a witness yet.
+struct CampaignPropertyEstimate {
+    scope: &'static str,
+    witnesses: usize,
+    misses: usize,
+    properties: Vec<String>,
+    exploration_bonus: usize,
+    score: usize,
+}
+
+fn campaign_property_estimate(
+    choice: CampaignOperationChoice,
+    context: &[CampaignOperationChoice],
+    observations: &[CampaignGuidanceObservation],
+) -> CampaignPropertyEstimate {
+    let contextual = observations
+        .iter()
+        .filter(|observation| {
+            observation.operations.last() == Some(&choice)
+                && observation.operations[..observation.operations.len().saturating_sub(1)]
+                    == *context
+        })
+        .collect::<Vec<_>>();
+    let (scope, matching) = if contextual.is_empty() {
+        (
+            "global action",
+            observations
+                .iter()
+                .filter(|observation| observation.operations.last() == Some(&choice))
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        ("exact context", contextual)
+    };
+    let witnesses = matching
+        .iter()
+        .filter(|observation| !observation.property_witnesses.is_empty())
+        .count();
+    let misses = matching.len().saturating_sub(witnesses);
+    let properties = matching
+        .iter()
+        .flat_map(|observation| observation.property_witnesses.iter().cloned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let exploration_bonus =
+        observations.len().saturating_add(1).saturating_mul(500) / matching.len().saturating_add(1);
+    CampaignPropertyEstimate {
+        scope,
+        witnesses,
+        misses,
+        properties,
+        exploration_bonus,
+        score: witnesses
+            .saturating_mul(100_000)
+            .saturating_add(exploration_bonus),
+    }
 }
 
 /// Rank an action with a uniform Beta(1, 1) prior and a deterministic
@@ -9176,6 +9315,7 @@ mod tests {
                 novel_instructions: 0,
                 novel_state: false,
                 failed: false,
+                property_witnesses: Vec::new(),
             }],
             CampaignGuidance::Coverage,
         );
@@ -9209,6 +9349,7 @@ mod tests {
                 novel_instructions: 0,
                 novel_state: true,
                 failed: false,
+                property_witnesses: Vec::new(),
             }],
             CampaignGuidance::Coverage,
         );
@@ -9238,6 +9379,7 @@ mod tests {
                 novel_instructions: 2,
                 novel_state: false,
                 failed: false,
+                property_witnesses: Vec::new(),
             }],
             CampaignGuidance::Coverage,
         );
@@ -9355,6 +9497,7 @@ mod tests {
                 novel_instructions: 0,
                 novel_state: false,
                 failed: false,
+                property_witnesses: Vec::new(),
             },
             CampaignGuidanceObservation {
                 operations: vec![choice(1)],
@@ -9362,6 +9505,7 @@ mod tests {
                 novel_instructions: 0,
                 novel_state: false,
                 failed: false,
+                property_witnesses: Vec::new(),
             },
             CampaignGuidanceObservation {
                 operations: vec![choice(2)],
@@ -9369,6 +9513,7 @@ mod tests {
                 novel_instructions: 0,
                 novel_state: false,
                 failed: false,
+                property_witnesses: Vec::new(),
             },
         ];
 
@@ -9405,6 +9550,7 @@ mod tests {
                 novel_instructions: 0,
                 novel_state: false,
                 failed: false,
+                property_witnesses: Vec::new(),
             },
             CampaignGuidanceObservation {
                 operations: vec![choice(1)],
@@ -9412,6 +9558,7 @@ mod tests {
                 novel_instructions: 0,
                 novel_state: false,
                 failed: false,
+                property_witnesses: Vec::new(),
             },
         ];
 
@@ -9432,6 +9579,59 @@ mod tests {
         assert_eq!(estimate.successes, 1);
         assert_eq!(estimate.misses, 0);
         assert_eq!(estimate.score, 53_248);
+    }
+
+    #[test]
+    fn property_guidance_prefers_an_action_with_a_property_witness() {
+        let schedules = vec![
+            CampaignSchedule {
+                operations: vec![choice(2), choice(1)],
+                faults: Vec::new(),
+            },
+            CampaignSchedule {
+                operations: vec![choice(2), choice(0)],
+                faults: Vec::new(),
+            },
+        ];
+        let observations = vec![
+            CampaignGuidanceObservation {
+                operations: vec![choice(0)],
+                novel_markers: 0,
+                novel_instructions: 0,
+                novel_state: false,
+                failed: false,
+                property_witnesses: vec!["stale_read_is_reachable".to_owned()],
+            },
+            CampaignGuidanceObservation {
+                operations: vec![choice(1)],
+                novel_markers: 0,
+                novel_instructions: 0,
+                novel_state: false,
+                failed: false,
+                property_witnesses: Vec::new(),
+            },
+        ];
+
+        let (selected, reason) = select_campaign_schedule(
+            &schedules,
+            &[0, 1],
+            &observations,
+            CampaignGuidance::Property,
+        );
+
+        assert_eq!(selected, 1);
+        assert_eq!(
+            reason,
+            "canonical breadth-first seed; property global action evidence: stale_read_is_reachable; 1 witness(es), 0 miss(es), exploration bonus 750"
+        );
+        let estimate = campaign_property_estimate(choice(0), &[choice(2)], &observations);
+        assert_eq!(estimate.scope, "global action");
+        assert_eq!(
+            estimate.properties,
+            vec!["stale_read_is_reachable".to_owned()]
+        );
+        assert_eq!(estimate.witnesses, 1);
+        assert_eq!(estimate.score, 100_750);
     }
 
     #[test]
@@ -9645,6 +9845,7 @@ mod tests {
                 uncertainty_per_mille: 166,
                 score: 53_248,
             }),
+            property_witnesses: vec!["stale_read_is_reachable".to_owned()],
             timeline: vec![CampaignTimelineBoundary {
                 operation: "write".to_owned(),
                 round: 1,
@@ -9689,6 +9890,7 @@ mod tests {
             actions: Vec::new(),
             selection: actual.selection.clone(),
             guidance_evidence: actual.guidance_evidence.clone(),
+            property_witnesses: Some(actual.property_witnesses.clone()),
             timeline: actual.timeline.clone(),
             program_counters: actual.program_counters.clone(),
             instruction_locations: actual.instruction_locations.clone(),
@@ -9714,6 +9916,12 @@ mod tests {
         });
         assert!(campaign_replay_mismatches(&changed_symbols, &actual)
             .contains(&"symbolized instruction locations".to_owned()));
+        let mut changed_property_witnesses = expected.clone();
+        changed_property_witnesses.property_witnesses = Some(vec!["different".to_owned()]);
+        assert!(
+            campaign_replay_mismatches(&changed_property_witnesses, &actual)
+                .contains(&"property guidance evidence".to_owned())
+        );
         let mut changed_posterior = expected.clone();
         changed_posterior
             .guidance_evidence
