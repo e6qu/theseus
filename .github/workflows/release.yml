@@ -235,6 +235,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       TAG: ${{ needs.manifest-and-release.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: docker/setup-buildx-action@v3
 
@@ -263,8 +264,6 @@ jobs:
           '
 
       - name: Consume the published runtime archive
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           consumer=$(mktemp -d)
           trap 'rm -rf "$consumer"' EXIT
