@@ -5,7 +5,9 @@ on:
     branches: [main]
 
 permissions:
+  attestations: write
   contents: write
+  id-token: write
   packages: write
 
 env:
@@ -39,11 +41,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v6
+      - id: image
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}-${{ matrix.arch }}
+
+      - name: Attest the architecture runtime image
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+          # Artifact metadata storage records require an organization-owned repo.
+          create-storage-record: false
 
       - name: Smoke-test the published runtime image
         env:
@@ -147,6 +159,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish the multi-architecture manifest
+        id: manifest
         env:
           TAG: ${{ needs.runtime.outputs.tag }}
         run: |
@@ -154,6 +167,16 @@ jobs:
             --tag "${IMAGE}:${TAG}" \
             "${IMAGE}:${TAG}-amd64" \
             "${IMAGE}:${TAG}-arm64"
+          echo "digest=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{.Manifest.Digest}}')" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the multi-architecture runtime image
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
+          push-to-registry: true
+          # Artifact metadata storage records require an organization-owned repo.
+          create-storage-record: false
 
       # build-push-action also uploads its .dockerbuild record. Select the
       # three release archives explicitly: downloading every artifact makes
@@ -181,6 +204,11 @@ jobs:
             cd release
             sha256sum ./* > SHA256SUMS
           )
+
+      - name: Attest every release asset
+        uses: actions/attest@v4
+        with:
+          subject-path: release/*
 
       - name: Create the draft SHA release
         env:
@@ -220,6 +248,10 @@ jobs:
         run: |
           docker pull "${IMAGE}:${TAG}"
           test "$(docker image inspect "${IMAGE}:${TAG}" --format '{{.Architecture}}')" = "${{ matrix.arch }}"
+          gh attestation verify "oci://${IMAGE}:${TAG}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
           docker run --rm --entrypoint /bin/sh "${IMAGE}:${TAG}" -ec '
             test -x /usr/local/bin/firecracker
             test -x /usr/local/bin/theseus
@@ -243,6 +275,10 @@ jobs:
             cd "$consumer"
             sha256sum --ignore-missing -c SHA256SUMS
           )
+          gh attestation verify "$consumer/$archive" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
           tar -tzf "$consumer/$archive" | grep -Fx \
             "theseus-${TAG}-linux-${{ matrix.arch }}/firecracker"
           mkdir "$consumer/extracted"
@@ -279,6 +315,10 @@ jobs:
           actual=$(shasum -a 256 "$consumer/$archive" | awk '{ print $1 }')
           test -n "$expected"
           test "$actual" = "$expected"
+          gh attestation verify "$consumer/$archive" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
           mkdir "$consumer/extracted"
           tar -xzf "$consumer/$archive" -C "$consumer/extracted"
           (
@@ -312,6 +352,10 @@ jobs:
           )
           crate=$(find "$consumer/release" -maxdepth 1 -type f -name 'theseus-sdk-*.crate')
           test -n "$crate"
+          gh attestation verify "$crate" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
           tar -xzf "$crate" -C "$consumer/package"
           sdk=$(find "$consumer/package" -mindepth 1 -maxdepth 1 -type d -name 'theseus-sdk-*')
           test -f "$sdk/Cargo.toml"
