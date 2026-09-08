@@ -117,6 +117,14 @@ function clone_amazon_linux_repo {
 function get_tag {
     local KERNEL_VERSION=$1
 
+    # Release builds pin the Amazon Linux commit rather than selecting the
+    # newest matching upstream tag at build time.  The generic rebuild tool
+    # retains its upstream-latest behavior when no explicit revision is set.
+    if [[ -n "${THESEUS_KERNEL_REVISION:-}" ]]; then
+        git rev-parse --verify "${THESEUS_KERNEL_REVISION}^{commit}"
+        return
+    fi
+
     if [[ "$KERNEL_VERSION" == "6.18" ]]; then
         git --no-pager tag -l --sort=-v:refname | grep "^kernel.*$KERNEL_VERSION\..*\.amzn2023" | head -n1
         return
@@ -135,6 +143,17 @@ function build_al_kernel {
     pushd linux
     # fails immediately after clone because nothing is checked out
     make distclean || true
+
+    # The release workflow supplies its source commit time.  Linux otherwise
+    # embeds the builder's current clock, host, user, and build counter in the
+    # kernel and module metadata.
+    if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+        export KBUILD_BUILD_TIMESTAMP
+        KBUILD_BUILD_TIMESTAMP=$(date -u -d "@${SOURCE_DATE_EPOCH}" "+%a %b %e %T %Y")
+        export KBUILD_BUILD_USER=theseus
+        export KBUILD_BUILD_HOST=release
+        export KBUILD_BUILD_VERSION=1
+    fi
 
     TAG=$(get_tag $KERNEL_VERSION)
 

@@ -6,6 +6,12 @@
 
 FROM rust:1.97.0-bookworm AS build
 
+ARG SOURCE_DATE_EPOCH
+ARG THESEUS_KERNEL_REVISION=8a40ca92bfa9b706b76287942c89b13884928cb0
+ENV SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH \
+    THESEUS_KERNEL_REVISION=$THESEUS_KERNEL_REVISION \
+    ZERO_AR_DATE=1
+
 RUN apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
         bc bison busybox-static cpio curl dwarves flex gcc git libclang-dev \

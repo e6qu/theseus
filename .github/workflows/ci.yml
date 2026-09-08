@@ -70,3 +70,6 @@ jobs:
           sh -n docs/tutorials/09-inspect-report/run.sh
           sh -n docs/tutorials/10-autonomous-compose-campaign/run.sh
           ! rg -n '/dev/hwrng|(^|[[:space:]])/theseus/|\.\./\.\./\.\.' docs/tutorials
+
+      - name: Check reproducible release archives
+        run: python3 scripts/tests/test_reproducible_tar.py
