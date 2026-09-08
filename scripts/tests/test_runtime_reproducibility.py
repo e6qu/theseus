@@ -23,9 +23,14 @@ def main() -> None:
     assert "THESEUS_KERNEL_REVISION=" in DOCKERFILE
 
     assert "SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}" in RELEASE
+    assert "gh release download" in VERIFY
+    assert "gh attestation verify" in VERIFY
+    assert "ref: ${{ steps.inputs.outputs.commit }}" in VERIFY
     assert "--no-cache" in VERIFY
-    assert "type=oci,dest=${build}.oci.tar,rewrite-timestamp=true" in VERIFY
-    assert "diff -ru first second" in VERIFY
+    assert "--platform \"linux/${{ matrix.arch }}\"" in VERIFY
+    assert "type=oci,dest=$work/${build}.oci.tar,rewrite-timestamp=true" in VERIFY
+    assert "diff -ru \"$work/first\" \"$work/second\"" in VERIFY
+    assert "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6" in VERIFY
     assert "ubuntu-24.04-arm" in VERIFY
 
 
