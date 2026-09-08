@@ -630,6 +630,7 @@ struct CampaignTimelineBoundary {
     serial_delta: BTreeMap<String, CampaignSerialDelta>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     network_traffic_delta: BTreeMap<String, BTreeMap<String, CampaignNetworkTrafficDelta>>,
+    state_sha256: String,
 }
 
 /// A bounded, escaped excerpt of one service's serial bytes emitted between
@@ -4659,9 +4660,24 @@ fn campaign_operation_timeline(
                 serial_sha256: boundary.serial_sha256.clone(),
                 serial_delta,
                 network_traffic_delta,
+                state_sha256: campaign_boundary_state_sha256(boundary),
             }
         })
         .collect()
+}
+
+/// The compact boundary identity covers all checkpoint evidence that feeds the
+/// operation report. It makes an individual row independently comparable
+/// across replay results without changing campaign scheduling.
+fn campaign_boundary_state_sha256(boundary: &CampaignCheckpointBoundary) -> String {
+    let encoded = serde_json::to_vec(&(
+        &boundary.markers,
+        &boundary.program_counters,
+        &boundary.serial_sha256,
+        &boundary.network_traffic,
+    ))
+    .expect("campaign boundary state encodes");
+    format!("{:x}", Sha256::digest(encoded))
 }
 
 fn campaign_network_traffic_delta(
@@ -9452,6 +9468,10 @@ mod tests {
                 )]),
             )])
         );
+        assert_ne!(
+            campaign_boundary_state_sha256(&previous),
+            campaign_boundary_state_sha256(&boundary)
+        );
     }
 
     #[test]
@@ -9524,6 +9544,7 @@ mod tests {
                 serial_sha256: BTreeMap::from([("api".to_owned(), "serial".to_owned())]),
                 serial_delta: BTreeMap::new(),
                 network_traffic_delta: BTreeMap::new(),
+                state_sha256: "state".to_owned(),
             }],
             program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
             instruction_locations: BTreeMap::from([(
