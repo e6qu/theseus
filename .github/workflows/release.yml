@@ -257,6 +257,25 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
+      - name: Record signed runtime build inputs
+        env:
+          TAG: ${{ needs.runtime.outputs.tag }}
+          SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}
+          MANIFEST_DIGEST: ${{ steps.manifest.outputs.digest }}
+        run: |
+          amd64=$(docker buildx imagetools inspect "${IMAGE}:${TAG}-amd64" --format '{{.Manifest.Digest}}')
+          arm64=$(docker buildx imagetools inspect "${IMAGE}:${TAG}-arm64" --format '{{.Manifest.Digest}}')
+          python3 scripts/release_build_inputs.py \
+            --output "release/theseus-${TAG}-build-inputs.json" \
+            --source-repository "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH" \
+            --runtime-image "$IMAGE" \
+            --runtime-tag "$TAG" \
+            --runtime-manifest-digest "$MANIFEST_DIGEST" \
+            --runtime-amd64-digest "$amd64" \
+            --runtime-arm64-digest "$arm64"
+
       - name: Checksum every release asset
         run: |
           (
@@ -328,8 +347,9 @@ jobs:
           trap 'rm -rf "$consumer"' EXIT
           archive="theseus-${TAG}-linux-${{ matrix.arch }}.tar.gz"
           sbom="theseus-${TAG}-linux-${{ matrix.arch }}.spdx.json"
+          inputs="theseus-${TAG}-build-inputs.json"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "$archive" --pattern "$sbom" --pattern SHA256SUMS --dir "$consumer"
+            --pattern "$archive" --pattern "$sbom" --pattern "$inputs" --pattern SHA256SUMS --dir "$consumer"
           (
             cd "$consumer"
             sha256sum --ignore-missing -c SHA256SUMS
@@ -342,8 +362,24 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
             --source-ref refs/heads/main
+          gh attestation verify "$consumer/$inputs" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
           jq -e '(.spdxVersion | startswith("SPDX-")) and (.packages | type == "array")' \
             "$consumer/$sbom" >/dev/null
+          manifest=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{.Manifest.Digest}}')
+          platform=$(docker buildx imagetools inspect "${IMAGE}:${TAG}-${{ matrix.arch }}" --format '{{.Manifest.Digest}}')
+          jq -e --arg commit "$GITHUB_SHA" --arg tag "$TAG" --arg image "$IMAGE" \
+            --arg manifest "$manifest" --arg platform "$platform" --arg arch "${{ matrix.arch }}" '
+            (.schema == 1) and
+            (.source.commit == $commit) and
+            (.runtime.image == $image) and
+            (.runtime.tag == $tag) and
+            (.runtime.manifest_digest == $manifest) and
+            (.runtime.platform_digests[$arch] == $platform) and
+            (.build.kernel_revision | test("^[0-9a-f]{40}$"))
+          ' "$consumer/$inputs" >/dev/null
           tar -tzf "$consumer/$archive" | grep -Fx \
             "theseus-${TAG}-linux-${{ matrix.arch }}/firecracker"
           mkdir "$consumer/extracted"
