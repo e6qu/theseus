@@ -47,6 +47,8 @@ jobs:
           context: .
           push: true
           tags: ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=runtime-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=runtime-${{ matrix.arch }},ignore-error=true
 
       - name: Attest the architecture runtime image
         uses: actions/attest@v4
