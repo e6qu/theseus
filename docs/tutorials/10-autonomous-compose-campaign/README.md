@@ -290,6 +290,13 @@ The report records the prior-adjusted mean, uncertainty, yields, and misses for
 every selected action. This is deterministic scheduling, not a remote model or
 random sampling.
 
+Read the **Operation boundaries** report section to follow a selected timeline
+step by step. Each row is the paused checkpoint after one operation. It shows
+the operation-local topology actions, markers, paused-PC locations, and a hash
+of each service's serial transcript. The full serial logs and VM snapshots stay
+in that locked run directory. These boundary rows explain execution; only the
+final paused-PC samples participate in coverage novelty.
+
 When you replay a campaign bundle, Theseus does not search again. It restores
 and runs the recorded operation and fault corpus in the recorded order, then
 checks the selection reasons, marker novelty, topology-state signatures, and

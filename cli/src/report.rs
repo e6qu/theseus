@@ -310,6 +310,8 @@ struct CampaignRun {
     selection: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     guidance_evidence: Option<CampaignPosteriorEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    timeline: Vec<CampaignTimelineBoundary>,
     #[serde(default)]
     program_counters: BTreeMap<String, Vec<String>>,
     #[serde(default)]
@@ -334,6 +336,21 @@ struct CampaignPosteriorEvidence {
     mean_per_mille: usize,
     uncertainty_per_mille: usize,
     score: usize,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct CampaignTimelineBoundary {
+    operation: String,
+    #[serde(default)]
+    actions: Vec<CampaignAction>,
+    #[serde(default)]
+    markers: Vec<String>,
+    #[serde(default)]
+    program_counters: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    instruction_locations: BTreeMap<String, Vec<InstructionLocation>>,
+    #[serde(default)]
+    serial_sha256: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -886,6 +903,7 @@ if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.sum
 if(Object.keys(m.campaign_state).length){{const s=section('Campaign state machine');s.append(el('pre',JSON.stringify(m.campaign_state)));const rows=[];m.campaign_operations.forEach(o=>{{if(Object.keys(o.requires_state).length||Object.keys(o.sets_state).length)rows.push([o.name,JSON.stringify(o.requires_state),JSON.stringify(o.sets_state)]);o.inputs.forEach(i=>{{if(Object.keys(i.requires_state).length||Object.keys(i.sets_state).length)rows.push([o.name+'['+i.name+']',JSON.stringify(i.requires_state),JSON.stringify(i.sets_state)]);}});}});if(rows.length)s.append(table(rows,['Transition','Requires state','Sets state']));}}
 if(m.campaign_operations.length){{const predicate=p=>p?JSON.stringify(p):'none',predicates=ps=>ps.length?JSON.stringify(ps):'none',ref=r=>r.operation+(r.input?'['+r.input+']':''),capture=(n,c)=>n+'@'+(c.service||'driver')+':'+c.pointer+' · '+JSON.stringify(c.json||c.workflow||{{sequence:c.sequence}})+' ('+(c.encoding||'text')+', '+(c.select||'latest')+')',input=i=>{{const rules=i.requires.length||i.excludes.length||i.max_uses!==null?' ('+[i.requires.length?'after '+i.requires.map(ref).join(' + '):'',i.excludes.length?'without '+i.excludes.map(ref).join(' + '):'',i.max_uses===null?'':'at most '+i.max_uses].filter(Boolean).join('; ')+')':'';const captures=i.input_template?' ← '+i.input_template+' · '+Object.entries(i.input_captures).map(([n,c])=>capture(n,c)).join(', '):'';return i.name+rules+captures}},grammar=o=>o.input_grammar?(o.input_grammar.name_template+' ← '+o.input_grammar.template+' · '+Object.entries(o.input_grammar.choices).map(([v,c])=>v+'='+Object.keys(c).join('/')).join(', ')+(Object.keys(o.input_grammar.input_captures).length?' · '+Object.entries(o.input_grammar.input_captures).map(([n,c])=>capture(n,c)).join(', '):'')):'literal cases',s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,grammar(o),o.inputs.map(input).join(' + ')||'default',o.stage||'any',o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',predicate(o.requires_serial),predicate(o.excludes_serial),predicates(o.requires_serial_all),predicates(o.excludes_serial_any),predicates(o.requires_serial_joins),predicates(o.excludes_serial_joins),predicate(o.requires_serial_evidence),predicate(o.excludes_serial_evidence),o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Input grammar','Input cases','Stage','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Requires serial predicate','Excludes serial predicate','Requires all serial guards','Excludes any serial guard','Requires JSON joins','Excludes JSON joins','Requires serial evidence','Excludes serial evidence','Maximum uses']));}}
 if(m.campaign_runs.length){{const location=l=>{{if(typeof l==='string')return l;const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},locations=r=>Object.entries(r.program_counters).map(([service,pcs])=>service+': '+((r.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',posterior=r=>{{const p=r.guidance_evidence;return p.scope+' · '+p.successes+' yield(s), '+p.misses+' miss(es) · mean '+p.mean_per_mille+'‰ + '+p.uncertainty_per_mille+'‰'}},hasPosterior=m.campaign_runs.some(r=>r.guidance_evidence),rows=m.campaign_runs.map(r=>{{const row=[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed'];if(hasPosterior)row.push(posterior(r));row.push(r.state_novel?'new':'seen',locations(r),r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none');return row}}),heads=['Run','Operations','Candidates','Selection'];if(hasPosterior)heads.push('Posterior evidence');heads.push('Topology state','Instruction locations','Applied actions','Status','New markers');const s=section('Generated timelines');s.append(table(rows,heads));}}
+if(m.campaign_runs.some(r=>r.timeline.length)){{const location=l=>{{const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},locations=b=>Object.entries(b.program_counters).map(([service,pcs])=>service+': '+((b.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',rows=m.campaign_runs.flatMap(r=>r.timeline.map(b=>[String(r.index),b.operation,b.markers.join(' ')||'none',locations(b),b.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',Object.entries(b.serial_sha256).map(([service,hash])=>service+':'+hash).join(' ')||'none'])),s=section('Operation boundaries');s.append(el('p','Each row is the paused checkpoint after one operation. Serial logs and VM snapshots remain in the locked run directory.'));s.append(table(rows,['Run','Operation','Markers','Instruction locations','Applied actions','Serial SHA-256']));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
 if(m.campaign_minimization){{const x=m.campaign_minimization,s=section('Campaign minimization');s.append(table([[x.property,x.original_operations.join(' → ')||'none',x.minimized_operations.join(' → ')||'none',x.original_faults.join(' + ')||'none',x.minimized_faults.join(' + ')||'none',String(x.operation_attempts),String(x.fault_attempts)]],['Property','Original operations','1-minimal operations','Original faults','1-minimal faults','Operation replays','Fault replays']));}}
 if(m.replay_verification){{const s=section('Replay verification');s.append(table([[m.replay_verification.status,m.replay_verification.detail]],['Status','Detail']));}}
@@ -949,11 +967,17 @@ fn instruction_location_label(location: &InstructionLocation) -> String {
 }
 
 fn campaign_instruction_location_labels(run: &CampaignRun) -> String {
-    run.program_counters
+    instruction_location_labels(&run.program_counters, &run.instruction_locations)
+}
+
+fn instruction_location_labels(
+    program_counters: &BTreeMap<String, Vec<String>>,
+    instruction_locations: &BTreeMap<String, Vec<InstructionLocation>>,
+) -> String {
+    program_counters
         .iter()
         .map(|(service, counters)| {
-            let locations = run
-                .instruction_locations
+            let locations = instruction_locations
                 .get(service)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
@@ -966,6 +990,35 @@ fn campaign_instruction_location_labels(run: &CampaignRun) -> String {
         })
         .collect::<Vec<_>>()
         .join(" · ")
+}
+
+fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 6]> {
+    run.timeline
+        .iter()
+        .map(|boundary| {
+            [
+                run.index.to_string(),
+                boundary.operation.clone(),
+                boundary.markers.join(" "),
+                instruction_location_labels(
+                    &boundary.program_counters,
+                    &boundary.instruction_locations,
+                ),
+                boundary
+                    .actions
+                    .iter()
+                    .map(|action| format!("{} {}", action.kind, action.target))
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+                boundary
+                    .serial_sha256
+                    .iter()
+                    .map(|(service, hash)| format!("{service}:{hash}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ]
+        })
+        .collect()
 }
 
 fn campaign_posterior_label(run: &CampaignRun) -> String {
@@ -1082,6 +1135,25 @@ fn render_markdown(model: &ReportModel) -> String {
                     markdown_cell(&run.status)
                 ));
             }
+        }
+    }
+    let timeline = model
+        .campaign_runs
+        .iter()
+        .flat_map(campaign_timeline_labels)
+        .collect::<Vec<_>>();
+    if !timeline.is_empty() {
+        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. Serial logs and VM snapshots remain in the locked run directory.\n\n| Run | Operation | Markers | Instruction locations | Applied actions | Serial SHA-256 |\n| --- | --- | --- | --- | --- | --- |\n");
+        for [run, operation, markers, locations, actions, serial] in timeline {
+            output.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} |\n",
+                markdown_cell(&run),
+                markdown_cell(&operation),
+                markdown_cell(&markers),
+                markdown_cell(&locations),
+                markdown_cell(&actions),
+                markdown_cell(&serial),
+            ));
         }
     }
     if let Some(minimization) = &model.minimization {
@@ -1313,7 +1385,7 @@ mod tests {
         );
         write_json(
             &directory.path().join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","guidance":"posterior","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"marker_guard_rejections":2,"serial_guard_rejections":1,"unique_topology_states":3,"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","guidance_evidence":{"action":"read","context":["write"],"scope":"exact context","successes":2,"misses":1,"mean_per_mille":600,"uncertainty_per_mille":100,"score":44800},"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","guidance":"posterior","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"marker_guard_rejections":2,"serial_guard_rejections":1,"unique_topology_states":3,"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","guidance_evidence":{"action":"read","context":["write"],"scope":"exact context","successes":2,"misses":1,"mean_per_mille":600,"uncertainty_per_mille":100,"score":44800},"timeline":[{"operation":"write","markers":["42"],"program_counters":{"api":["0x7000"]},"instruction_locations":{"api":[{"address":"0x7000","symbol":"write","offset":0}]},"actions":[{"kind":"partition","target":"network:backplane"}],"serial_sha256":{"api":"abc123"}},{"operation":"read","markers":["42","a1"],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"serial_sha256":{"api":"def456"}}],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
         );
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
@@ -1336,6 +1408,9 @@ mod tests {
         );
         assert!(html.contains("Topology state"));
         assert!(html.contains("Instruction locations"));
+        assert!(html.contains("Operation boundaries"));
+        assert!(html.contains("Serial SHA-256"));
+        assert!(html.contains("abc123"));
         assert!(html.contains("Posterior evidence"));
         assert!(html.contains("guidance_evidence"));
         assert!(html.contains("p.mean_per_mille"));
@@ -1346,6 +1421,8 @@ mod tests {
         assert!(html.contains("\"offset\":7"));
         let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
         assert!(markdown.contains("0x8000 → checkpoint +0x7 · kernel/init/main.c:812:4"));
+        assert!(markdown.contains("## Operation boundaries"));
+        assert!(markdown.contains("write | 42 | api: 0x7000 → write"));
         assert!(markdown
             .contains("exact context; 2 yield(s), 1 miss(es); mean 600‰ + 100‰ uncertainty"));
         assert!(html.contains("Operation model"));
