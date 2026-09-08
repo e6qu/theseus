@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use object::{Object, ObjectSymbol, SymbolKind};
 use regex::bytes::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json_path::JsonPath;
@@ -588,6 +589,8 @@ struct CampaignRun {
     selection: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     program_counters: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    instruction_locations: BTreeMap<String, Vec<InstructionLocation>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     instruction_novelty: Vec<String>,
     state_sha256: String,
@@ -619,7 +622,7 @@ struct RecordedCampaignResult {
     runs: Vec<RecordedCampaignRun>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RecordedCampaignRun {
     operations: Vec<String>,
     #[serde(default)]
@@ -633,6 +636,8 @@ struct RecordedCampaignRun {
     #[serde(default)]
     program_counters: BTreeMap<String, Vec<String>>,
     #[serde(default)]
+    instruction_locations: BTreeMap<String, Vec<InstructionLocation>>,
+    #[serde(default)]
     instruction_novelty: Vec<String>,
     #[serde(default)]
     novelty: Vec<String>,
@@ -642,6 +647,18 @@ struct RecordedCampaignRun {
     state_novel: bool,
     #[serde(default)]
     status: String,
+}
+
+/// A paused-PC sample enriched from the locked service kernel's ELF symbol
+/// table. The numeric address remains the replay identity; a symbol is only a
+/// best-effort explanation for people and is absent for stripped kernels.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+struct InstructionLocation {
+    address: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    symbol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    offset: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1917,6 +1934,7 @@ fn execute_campaign(
     }
     let checkpoint =
         boot_campaign_checkpoint(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
+    let instruction_symbolizer = CampaignInstructionSymbolizer::from_topology(&topology);
     let base = serde_json::to_vec(&topology)
         .map_err(|error| format!("cannot encode campaign base plan: {error}"))?;
     let mut checkpoints = CampaignCheckpointTree::new(checkpoint);
@@ -2031,6 +2049,7 @@ fn execute_campaign(
         let markers = campaign_markers(&run_dir)?;
         let actions = campaign_actions(&run_dir)?;
         let program_counters = campaign_checkpoint_program_counters(&prefix.checkpoint);
+        let instruction_locations = instruction_symbolizer.symbolize(&program_counters);
         let instruction_novelty = campaign_instruction_locations(&program_counters)
             .into_iter()
             .filter(|location| seen_instruction_locations.insert(location.clone()))
@@ -2062,6 +2081,7 @@ fn execute_campaign(
             actions,
             selection,
             program_counters,
+            instruction_locations,
             instruction_novelty,
             state_sha256,
             state_novel,
@@ -3709,6 +3729,11 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     {
         mismatches.push("checkpoint program counters".to_owned());
     }
+    if !expected.instruction_locations.is_empty()
+        && expected.instruction_locations != actual.instruction_locations
+    {
+        mismatches.push("symbolized instruction locations".to_owned());
+    }
     if !expected.novelty.is_empty() && expected.novelty != actual.novelty {
         mismatches.push("marker coverage".to_owned());
     }
@@ -4308,6 +4333,109 @@ fn campaign_instruction_locations(program_counters: &BTreeMap<String, Vec<String
                 .map(move |counter| format!("{service}:{counter}"))
         })
         .collect()
+}
+
+#[derive(Debug, Clone)]
+struct KernelSymbol {
+    address: u64,
+    size: u64,
+    name: String,
+}
+
+/// Resolve checkpoint PCs from the bundle-local kernel copies once per
+/// campaign. Symbolization never affects scheduling or replay: a kernel can
+/// be stripped, non-ELF, or have no matching symbol and still retains its raw
+/// deterministic address in the report.
+#[derive(Debug, Default)]
+struct CampaignInstructionSymbolizer {
+    symbols: BTreeMap<String, Vec<KernelSymbol>>,
+}
+
+impl CampaignInstructionSymbolizer {
+    fn from_topology(topology: &TopologyPlan) -> Self {
+        Self {
+            symbols: topology
+                .services
+                .iter()
+                .filter_map(|(service, plan)| {
+                    let symbols = kernel_symbols(Path::new(&plan.run.guest.kernel.path));
+                    (!symbols.is_empty()).then(|| (service.clone(), symbols))
+                })
+                .collect(),
+        }
+    }
+
+    fn symbolize(
+        &self,
+        program_counters: &BTreeMap<String, Vec<String>>,
+    ) -> BTreeMap<String, Vec<InstructionLocation>> {
+        program_counters
+            .iter()
+            .map(|(service, counters)| {
+                let symbols = self.symbols.get(service).map(Vec::as_slice).unwrap_or(&[]);
+                (
+                    service.clone(),
+                    counters
+                        .iter()
+                        .map(|address| symbolize_instruction_location(address, symbols))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+}
+
+fn kernel_symbols(path: &Path) -> Vec<KernelSymbol> {
+    let Ok(bytes) = fs::read(path) else {
+        return Vec::new();
+    };
+    let Ok(file) = object::File::parse(&*bytes) else {
+        return Vec::new();
+    };
+    let mut symbols = file
+        .symbols()
+        .filter(|symbol| symbol.kind() == SymbolKind::Text && symbol.address() != 0)
+        .filter_map(|symbol| {
+            symbol.name().ok().map(|name| KernelSymbol {
+                address: symbol.address(),
+                size: symbol.size(),
+                name: name.to_owned(),
+            })
+        })
+        .collect::<Vec<_>>();
+    symbols.sort_by(|left, right| {
+        left.address
+            .cmp(&right.address)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    symbols.dedup_by(|left, right| left.address == right.address && left.name == right.name);
+    symbols
+}
+
+fn symbolize_instruction_location(address: &str, symbols: &[KernelSymbol]) -> InstructionLocation {
+    let parsed = address
+        .strip_prefix("0x")
+        .and_then(|address| u64::from_str_radix(address, 16).ok());
+    let symbol = parsed.and_then(|address| {
+        let index = symbols.partition_point(|symbol| symbol.address <= address);
+        index.checked_sub(1).and_then(|index| {
+            let symbol = &symbols[index];
+            let end = if symbol.size == 0 {
+                symbols
+                    .get(index + 1)
+                    .map(|symbol| symbol.address)
+                    .unwrap_or(u64::MAX)
+            } else {
+                symbol.address.saturating_add(symbol.size)
+            };
+            (address < end).then(|| (symbol.name.clone(), address.saturating_sub(symbol.address)))
+        })
+    });
+    InstructionLocation {
+        address: address.to_owned(),
+        symbol: symbol.as_ref().map(|(name, _)| name.clone()),
+        offset: symbol.map(|(_, offset)| offset),
+    }
 }
 
 fn campaign_topology_state_sha256(
@@ -8537,6 +8665,59 @@ mod tests {
     }
 
     #[test]
+    fn symbolized_instruction_locations_keep_raw_address_and_function_offset() {
+        let symbols = vec![
+            KernelSymbol {
+                address: 0x8000,
+                size: 0x20,
+                name: "boot_guest".to_owned(),
+            },
+            KernelSymbol {
+                address: 0x9000,
+                size: 0,
+                name: "idle_loop".to_owned(),
+            },
+            KernelSymbol {
+                address: 0xa000,
+                size: 0x10,
+                name: "next_function".to_owned(),
+            },
+        ];
+        assert_eq!(
+            symbolize_instruction_location("0x8007", &symbols),
+            InstructionLocation {
+                address: "0x8007".to_owned(),
+                symbol: Some("boot_guest".to_owned()),
+                offset: Some(7),
+            }
+        );
+        assert_eq!(
+            symbolize_instruction_location("0x8020", &symbols),
+            InstructionLocation {
+                address: "0x8020".to_owned(),
+                symbol: None,
+                offset: None,
+            }
+        );
+        assert_eq!(
+            symbolize_instruction_location("not-an-address", &symbols),
+            InstructionLocation {
+                address: "not-an-address".to_owned(),
+                symbol: None,
+                offset: None,
+            }
+        );
+        assert_eq!(
+            symbolize_instruction_location("0x9fff", &symbols),
+            InstructionLocation {
+                address: "0x9fff".to_owned(),
+                symbol: Some("idle_loop".to_owned()),
+                offset: Some(0xfff),
+            }
+        );
+    }
+
+    #[test]
     fn adaptive_guidance_prefers_an_action_with_observed_yield() {
         let schedules = vec![
             CampaignSchedule {
@@ -8633,6 +8814,14 @@ mod tests {
             actions: Vec::new(),
             selection: "extends 1-operation prefix with new topology state".to_owned(),
             program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
+            instruction_locations: BTreeMap::from([(
+                "api".to_owned(),
+                vec![InstructionLocation {
+                    address: "0x8000".to_owned(),
+                    symbol: Some("checkpoint".to_owned()),
+                    offset: Some(0),
+                }],
+            )]),
             instruction_novelty: Vec::new(),
             state_sha256: "state".to_owned(),
             state_novel: true,
@@ -8646,6 +8835,7 @@ mod tests {
             actions: Vec::new(),
             selection: actual.selection.clone(),
             program_counters: actual.program_counters.clone(),
+            instruction_locations: actual.instruction_locations.clone(),
             instruction_novelty: actual.instruction_novelty.clone(),
             novelty: actual.novelty.clone(),
             state_sha256: actual.state_sha256.clone(),
@@ -8654,6 +8844,16 @@ mod tests {
         };
 
         assert!(campaign_replay_mismatches(&expected, &actual).is_empty());
+        let mut changed_symbols = expected.clone();
+        changed_symbols
+            .instruction_locations
+            .get_mut("api")
+            .expect("recorded API locations")
+            .first_mut()
+            .expect("recorded API location")
+            .symbol = Some("different_function".to_owned());
+        assert!(campaign_replay_mismatches(&changed_symbols, &actual)
+            .contains(&"symbolized instruction locations".to_owned()));
         let mut changed = actual;
         changed.state_sha256 = "other-state".to_owned();
         assert_eq!(

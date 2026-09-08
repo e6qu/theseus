@@ -311,12 +311,23 @@ struct CampaignRun {
     #[serde(default)]
     program_counters: BTreeMap<String, Vec<String>>,
     #[serde(default)]
+    instruction_locations: BTreeMap<String, Vec<InstructionLocation>>,
+    #[serde(default)]
     instruction_novelty: Vec<String>,
     #[serde(default)]
     state_novel: bool,
     status: String,
     #[serde(default)]
     novelty: Vec<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct InstructionLocation {
+    address: String,
+    #[serde(default)]
+    symbol: Option<String>,
+    #[serde(default)]
+    offset: Option<u64>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -849,7 +860,7 @@ if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const 
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
 if(Object.keys(m.campaign_state).length){{const s=section('Campaign state machine');s.append(el('pre',JSON.stringify(m.campaign_state)));const rows=[];m.campaign_operations.forEach(o=>{{if(Object.keys(o.requires_state).length||Object.keys(o.sets_state).length)rows.push([o.name,JSON.stringify(o.requires_state),JSON.stringify(o.sets_state)]);o.inputs.forEach(i=>{{if(Object.keys(i.requires_state).length||Object.keys(i.sets_state).length)rows.push([o.name+'['+i.name+']',JSON.stringify(i.requires_state),JSON.stringify(i.sets_state)]);}});}});if(rows.length)s.append(table(rows,['Transition','Requires state','Sets state']));}}
 if(m.campaign_operations.length){{const predicate=p=>p?JSON.stringify(p):'none',predicates=ps=>ps.length?JSON.stringify(ps):'none',ref=r=>r.operation+(r.input?'['+r.input+']':''),capture=(n,c)=>n+'@'+(c.service||'driver')+':'+c.pointer+' · '+JSON.stringify(c.json||c.workflow||{{sequence:c.sequence}})+' ('+(c.encoding||'text')+', '+(c.select||'latest')+')',input=i=>{{const rules=i.requires.length||i.excludes.length||i.max_uses!==null?' ('+[i.requires.length?'after '+i.requires.map(ref).join(' + '):'',i.excludes.length?'without '+i.excludes.map(ref).join(' + '):'',i.max_uses===null?'':'at most '+i.max_uses].filter(Boolean).join('; ')+')':'';const captures=i.input_template?' ← '+i.input_template+' · '+Object.entries(i.input_captures).map(([n,c])=>capture(n,c)).join(', '):'';return i.name+rules+captures}},grammar=o=>o.input_grammar?(o.input_grammar.name_template+' ← '+o.input_grammar.template+' · '+Object.entries(o.input_grammar.choices).map(([v,c])=>v+'='+Object.keys(c).join('/')).join(', ')+(Object.keys(o.input_grammar.input_captures).length?' · '+Object.entries(o.input_grammar.input_captures).map(([n,c])=>capture(n,c)).join(', '):'')):'literal cases',s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,grammar(o),o.inputs.map(input).join(' + ')||'default',o.stage||'any',o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',predicate(o.requires_serial),predicate(o.excludes_serial),predicates(o.requires_serial_all),predicates(o.excludes_serial_any),predicates(o.requires_serial_joins),predicates(o.excludes_serial_joins),predicate(o.requires_serial_evidence),predicate(o.excludes_serial_evidence),o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Input grammar','Input cases','Stage','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Requires serial predicate','Excludes serial predicate','Requires all serial guards','Excludes any serial guard','Requires JSON joins','Excludes JSON joins','Requires serial evidence','Excludes serial evidence','Maximum uses']));}}
-if(m.campaign_runs.length){{const s=section('Generated timelines');s.append(table(m.campaign_runs.map(r=>[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',r.state_novel?'new':'seen',Object.entries(r.program_counters).map(([service,pcs])=>service+': '+pcs.join(' ')).join(' · ')||'none',r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none']),['Run','Operations','Candidates','Selection','Topology state','Paused PCs','Applied actions','Status','New markers']));}}
+if(m.campaign_runs.length){{const location=l=>typeof l==='string'?l:l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):''),locations=r=>Object.entries(r.program_counters).map(([service,pcs])=>service+': '+((r.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',s=section('Generated timelines');s.append(table(m.campaign_runs.map(r=>[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',r.state_novel?'new':'seen',locations(r),r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none']),['Run','Operations','Candidates','Selection','Topology state','Instruction locations','Applied actions','Status','New markers']));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
 if(m.campaign_minimization){{const x=m.campaign_minimization,s=section('Campaign minimization');s.append(table([[x.property,x.original_operations.join(' → ')||'none',x.minimized_operations.join(' → ')||'none',x.original_faults.join(' + ')||'none',x.minimized_faults.join(' + ')||'none',String(x.operation_attempts),String(x.fault_attempts)]],['Property','Original operations','1-minimal operations','Original faults','1-minimal faults','Operation replays','Fault replays']));}}
 if(m.replay_verification){{const s=section('Replay verification');s.append(table([[m.replay_verification.status,m.replay_verification.detail]],['Status','Detail']));}}
@@ -888,6 +899,36 @@ impl<'a> MachineReport<'a> {
 
 fn markdown_cell(value: &str) -> String {
     value.replace('|', "\\|").replace('\n', "<br>")
+}
+
+fn instruction_location_label(location: &InstructionLocation) -> String {
+    match (&location.symbol, location.offset) {
+        (Some(symbol), Some(offset)) if offset != 0 => {
+            format!("{} → {symbol} +0x{offset:x}", location.address)
+        }
+        (Some(symbol), _) => format!("{} → {symbol}", location.address),
+        (None, _) => location.address.clone(),
+    }
+}
+
+fn campaign_instruction_location_labels(run: &CampaignRun) -> String {
+    run.program_counters
+        .iter()
+        .map(|(service, counters)| {
+            let locations = run
+                .instruction_locations
+                .get(service)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let labels = if locations.is_empty() {
+                counters.clone()
+            } else {
+                locations.iter().map(instruction_location_label).collect()
+            };
+            format!("{}: {}", service, labels.join(" "))
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 fn markdown_fence(value: &str) -> String {
@@ -952,7 +993,7 @@ fn render_markdown(model: &ReportModel) -> String {
         }
     }
     if !model.campaign_runs.is_empty() {
-        output.push_str("\n## Generated timelines\n\n| Run | Operations | Candidates | Status |\n| --- | --- | --- | --- |\n");
+        output.push_str("\n## Generated timelines\n\n| Run | Operations | Candidates | Instruction locations | Status |\n| --- | --- | --- | --- | --- |\n");
         for run in &model.campaign_runs {
             let candidates = if run.faults.is_empty() {
                 run.fault.clone().unwrap_or_else(|| "none".to_owned())
@@ -960,10 +1001,11 @@ fn render_markdown(model: &ReportModel) -> String {
                 run.faults.join(" + ")
             };
             output.push_str(&format!(
-                "| {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} |\n",
                 run.index,
                 markdown_cell(&run.operations.join(" → ")),
                 markdown_cell(&candidates),
+                markdown_cell(&campaign_instruction_location_labels(run)),
                 markdown_cell(&run.status)
             ));
         }
@@ -1197,7 +1239,7 @@ mod tests {
         );
         write_json(
             &directory.path().join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","guidance":"adaptive","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"marker_guard_rejections":2,"serial_guard_rejections":1,"unique_topology_states":3,"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","program_counters":{"api":["0x8000"]},"state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","guidance":"adaptive","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"marker_guard_rejections":2,"serial_guard_rejections":1,"unique_topology_states":3,"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7}]},"state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
         );
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
@@ -1219,8 +1261,12 @@ mod tests {
             html.contains("extends 1-operation prefix with 2 new marker(s) and new topology state")
         );
         assert!(html.contains("Topology state"));
-        assert!(html.contains("Paused PCs"));
+        assert!(html.contains("Instruction locations"));
         assert!(html.contains("0x8000"));
+        assert!(html.contains("checkpoint"));
+        assert!(html.contains("\"offset\":7"));
+        let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
+        assert!(markdown.contains("0x8000 → checkpoint +0x7"));
         assert!(html.contains("Operation model"));
         assert!(html.contains("(c.select||'latest')"));
         assert!(html.contains("JSON.stringify(c.json||c.workflow||{sequence:c.sequence})"));
