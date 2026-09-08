@@ -611,6 +611,7 @@ struct CampaignRun {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 struct CampaignTimelineBoundary {
     operation: String,
+    round: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     actions: Vec<AppliedCampaignAction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1168,6 +1169,7 @@ struct CampaignPrefixCheckpoint {
 #[derive(Clone)]
 struct CampaignCheckpointBoundary {
     actions: Vec<AppliedCampaignAction>,
+    round: u64,
     markers: Vec<String>,
     program_counters: BTreeMap<String, Vec<String>>,
     serial_sha256: BTreeMap<String, String>,
@@ -4585,6 +4587,7 @@ fn campaign_checkpoint_boundary(
 ) -> CampaignCheckpointBoundary {
     CampaignCheckpointBoundary {
         actions,
+        round: checkpoint.round,
         markers: campaign_checkpoint_markers(checkpoint)
             .into_iter()
             .collect(),
@@ -4650,6 +4653,7 @@ fn campaign_operation_timeline(
             previous = boundary.clone();
             CampaignTimelineBoundary {
                 operation: campaign_operation_choice_name(campaign, *operation),
+                round: boundary.round,
                 actions: boundary.actions.clone(),
                 markers: boundary.markers.clone(),
                 new_markers,
@@ -4672,6 +4676,7 @@ fn campaign_operation_timeline(
 fn campaign_boundary_state_sha256(boundary: &CampaignCheckpointBoundary) -> String {
     let encoded = serde_json::to_vec(&(
         &boundary.markers,
+        boundary.round,
         &boundary.program_counters,
         &boundary.serial_sha256,
         &boundary.network_traffic,
@@ -9374,6 +9379,7 @@ mod tests {
     fn campaign_boundary_delta_only_reports_new_evidence() {
         let previous = CampaignCheckpointBoundary {
             actions: Vec::new(),
+            round: 0,
             markers: vec!["booted".to_owned(), "ready".to_owned()],
             program_counters: BTreeMap::from([
                 ("api".to_owned(), vec!["0x1000".to_owned()]),
@@ -9394,6 +9400,7 @@ mod tests {
         };
         let boundary = CampaignCheckpointBoundary {
             actions: Vec::new(),
+            round: 1,
             markers: vec![
                 "booted".to_owned(),
                 "ready".to_owned(),
@@ -9478,6 +9485,7 @@ mod tests {
     fn campaign_serial_delta_escapes_bounds_and_replaces_non_prefix_output() {
         let previous = CampaignCheckpointBoundary {
             actions: Vec::new(),
+            round: 0,
             markers: Vec::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
@@ -9489,6 +9497,7 @@ mod tests {
         };
         let boundary = CampaignCheckpointBoundary {
             actions: Vec::new(),
+            round: 1,
             markers: Vec::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
@@ -9534,6 +9543,7 @@ mod tests {
             }),
             timeline: vec![CampaignTimelineBoundary {
                 operation: "write".to_owned(),
+                round: 1,
                 actions: Vec::new(),
                 markers: vec!["checkpoint".to_owned()],
                 new_markers: vec!["checkpoint".to_owned()],
