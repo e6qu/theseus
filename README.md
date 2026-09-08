@@ -183,6 +183,7 @@ the replay plan.
 - [CLI manifest](cli/README.md) — the self-contained test-directory contract
 - [Tutorials](docs/tutorials/) — hands-on walkthroughs from replay to serial input
 - [Testing](docs/testing.md) — dev loop, e2e proofs, CI
+- [Reproducing a runtime release](docs/reproducing-releases.md) — verify signed inputs and rebuild an OCI digest
 
 ## Quickstart
 
