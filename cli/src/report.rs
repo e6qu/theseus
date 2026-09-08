@@ -342,6 +342,8 @@ struct CampaignPosteriorEvidence {
 struct CampaignTimelineBoundary {
     operation: String,
     #[serde(default)]
+    round: u64,
+    #[serde(default)]
     actions: Vec<CampaignAction>,
     #[serde(default)]
     markers: Vec<String>,
@@ -1072,7 +1074,7 @@ fn campaign_network_traffic_delta_label(boundary: &CampaignTimelineBoundary) -> 
     }
 }
 
-fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 10]> {
+fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 11]> {
     run.timeline
         .iter()
         .map(|boundary| {
@@ -1100,6 +1102,7 @@ fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 10]> {
             [
                 run.index.to_string(),
                 boundary.operation.clone(),
+                boundary.round.to_string(),
                 delta,
                 boundary.markers.join(" "),
                 instruction_location_labels(
@@ -1248,14 +1251,15 @@ fn render_markdown(model: &ReportModel) -> String {
         .flat_map(campaign_timeline_labels)
         .collect::<Vec<_>>();
     if !timeline.is_empty() {
-        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. The delta compares it with the preceding checkpoint. Serial output is an escaped, bounded excerpt; its hash covers the complete new bytes. Network counters show traffic produced by this operation. State SHA-256 identifies the complete boundary evidence. Serial logs and VM snapshots remain in the locked run directory.\n\n| Run | Operation | Delta | Markers | Instruction locations | Applied actions | Serial SHA-256 | New serial output | Network traffic | State SHA-256 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
-        for [run, operation, delta, markers, locations, actions, serial, serial_output, traffic, state] in
+        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. The delta compares it with the preceding checkpoint.\n\n| Run | Operation | Round | Delta | Markers | Instruction locations | Applied actions | Serial SHA-256 | New serial output | Network traffic | State SHA-256 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+        for [run, operation, round, delta, markers, locations, actions, serial, serial_output, traffic, state] in
             timeline
         {
             output.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 markdown_cell(&run),
                 markdown_cell(&operation),
+                markdown_cell(&round),
                 markdown_cell(&delta),
                 markdown_cell(&markers),
                 markdown_cell(&locations),
@@ -1536,7 +1540,9 @@ mod tests {
         let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
         assert!(markdown.contains("0x8000 → checkpoint +0x7 · kernel/init/main.c:812:4"));
         assert!(markdown.contains("## Operation boundaries"));
-        assert!(markdown.contains("write | new markers: 42; changed PCs: api; changed serial: api"));
+        assert!(
+            markdown.contains("write | 0 | new markers: 42; changed PCs: api; changed serial: api")
+        );
         assert!(markdown.contains("new markers: 42; changed PCs: api; changed serial: api"));
         assert!(markdown.contains("api: write\\ncomplete\\n [16 bytes; sha256 write-hash]"));
         assert!(markdown
