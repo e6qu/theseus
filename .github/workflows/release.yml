@@ -28,7 +28,7 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.value }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - id: tag
         run: echo "value=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
@@ -36,16 +36,16 @@ jobs:
       - id: source-date
         run: git show -s --format='value=%ct' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         env:
           SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}
         with:
@@ -58,7 +58,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=runtime-${{ matrix.arch }},ignore-error=true
 
       - name: Attest the architecture runtime image
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.image.outputs.digest }}
@@ -117,7 +117,7 @@ jobs:
           )
 
       - name: Generate the runtime SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with:
           image: ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}-${{ matrix.arch }}
           format: spdx-json
@@ -125,7 +125,7 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: runtime-${{ matrix.arch }}
           retention-days: 1
@@ -139,7 +139,7 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.value }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - id: tag
         run: echo "value=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
@@ -147,7 +147,7 @@ jobs:
       - id: source-date
         run: git show -s --format='value=%ct' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@86e7197484018ef6aaa9255d186f6ce1754276dd
 
       - name: Build and package the CLI
         env:
@@ -168,7 +168,7 @@ jobs:
             "theseus-${TAG}-darwin-arm64"
 
       - name: Generate the CLI SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with:
           path: theseus-${{ steps.tag.outputs.value }}-darwin-arm64
           format: spdx-json
@@ -176,7 +176,7 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: cli-macos-arm64
           retention-days: 1
@@ -190,16 +190,16 @@ jobs:
     outputs:
       tag: ${{ needs.runtime.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - id: source-date
         run: git show -s --format='value=%ct' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@86e7197484018ef6aaa9255d186f6ce1754276dd
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -217,7 +217,7 @@ jobs:
           echo "digest=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{.Manifest.Digest}}')" >> "$GITHUB_OUTPUT"
 
       - name: Attest the multi-architecture runtime image
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.manifest.outputs.digest }}
@@ -228,13 +228,13 @@ jobs:
       # build-push-action also uploads its .dockerbuild record. Select the
       # three release archives explicitly: downloading every artifact makes
       # the release job try to extract that record as a user-facing bundle.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: runtime-*
           path: release
           merge-multiple: true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: cli-macos-arm64
           path: release
@@ -249,7 +249,7 @@ jobs:
           cp sdk/target/package/theseus-sdk-*.crate release/
 
       - name: Generate the SDK SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with:
           file: release/theseus-sdk-0.1.0.crate
           format: spdx-json
@@ -284,7 +284,7 @@ jobs:
           )
 
       - name: Attest every release asset
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: release/*
 
@@ -315,9 +315,9 @@ jobs:
       TAG: ${{ needs.manifest-and-release.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -447,7 +447,7 @@ jobs:
     env:
       TAG: ${{ needs.manifest-and-release.outputs.tag }}
     steps:
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@86e7197484018ef6aaa9255d186f6ce1754276dd
 
       - name: Compile the published SDK crate
         env:
