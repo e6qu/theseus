@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use addr2line::Loader;
 use object::{Object, ObjectSymbol, SymbolKind};
 use regex::bytes::Regex;
 use serde::{Deserialize, Serialize};
@@ -649,9 +650,9 @@ struct RecordedCampaignRun {
     status: String,
 }
 
-/// A paused-PC sample enriched from the locked service kernel's ELF symbol
-/// table. The numeric address remains the replay identity; a symbol is only a
-/// best-effort explanation for people and is absent for stripped kernels.
+/// A paused-PC sample enriched from the locked service kernel's ELF. The
+/// numeric address remains the replay identity; function and source data are
+/// best-effort explanations for people and are absent for stripped kernels.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 struct InstructionLocation {
     address: String,
@@ -659,6 +660,16 @@ struct InstructionLocation {
     symbol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     offset: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<InstructionSourceLocation>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+struct InstructionSourceLocation {
+    file: String,
+    line: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    column: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -4346,23 +4357,26 @@ struct KernelSymbol {
 /// campaign. Symbolization never affects scheduling or replay: a kernel can
 /// be stripped, non-ELF, or have no matching symbol and still retains its raw
 /// deterministic address in the report.
-#[derive(Debug, Default)]
 struct CampaignInstructionSymbolizer {
     symbols: BTreeMap<String, Vec<KernelSymbol>>,
+    sources: BTreeMap<String, Loader>,
 }
 
 impl CampaignInstructionSymbolizer {
     fn from_topology(topology: &TopologyPlan) -> Self {
-        Self {
-            symbols: topology
-                .services
-                .iter()
-                .filter_map(|(service, plan)| {
-                    let symbols = kernel_symbols(Path::new(&plan.run.guest.kernel.path));
-                    (!symbols.is_empty()).then(|| (service.clone(), symbols))
-                })
-                .collect(),
+        let mut symbols = BTreeMap::new();
+        let mut sources = BTreeMap::new();
+        for (service, plan) in &topology.services {
+            let kernel = Path::new(&plan.run.guest.kernel.path);
+            let kernel_symbols = kernel_symbols(kernel);
+            if !kernel_symbols.is_empty() {
+                symbols.insert(service.clone(), kernel_symbols);
+            }
+            if let Ok(source_locations) = Loader::new(kernel) {
+                sources.insert(service.clone(), source_locations);
+            }
         }
+        Self { symbols, sources }
     }
 
     fn symbolize(
@@ -4373,11 +4387,12 @@ impl CampaignInstructionSymbolizer {
             .iter()
             .map(|(service, counters)| {
                 let symbols = self.symbols.get(service).map(Vec::as_slice).unwrap_or(&[]);
+                let sources = self.sources.get(service);
                 (
                     service.clone(),
                     counters
                         .iter()
-                        .map(|address| symbolize_instruction_location(address, symbols))
+                        .map(|address| symbolize_instruction_location(address, symbols, sources))
                         .collect(),
                 )
             })
@@ -4412,7 +4427,11 @@ fn kernel_symbols(path: &Path) -> Vec<KernelSymbol> {
     symbols
 }
 
-fn symbolize_instruction_location(address: &str, symbols: &[KernelSymbol]) -> InstructionLocation {
+fn symbolize_instruction_location(
+    address: &str,
+    symbols: &[KernelSymbol],
+    sources: Option<&Loader>,
+) -> InstructionLocation {
     let parsed = address
         .strip_prefix("0x")
         .and_then(|address| u64::from_str_radix(address, 16).ok());
@@ -4435,6 +4454,32 @@ fn symbolize_instruction_location(address: &str, symbols: &[KernelSymbol]) -> In
         address: address.to_owned(),
         symbol: symbol.as_ref().map(|(name, _)| name.clone()),
         offset: symbol.map(|(_, offset)| offset),
+        source: parsed.and_then(|address| {
+            sources
+                .and_then(|sources| sources.find_location(address).ok().flatten())
+                .and_then(|location| {
+                    Some(InstructionSourceLocation {
+                        file: report_source_path(location.file?),
+                        line: location.line?,
+                        column: location.column,
+                    })
+                })
+        }),
+    }
+}
+
+/// DWARF commonly records an absolute build directory. A report must not leak
+/// it, so preserve relative paths and reduce absolute paths to a stable file
+/// name. The locked kernel image remains the authoritative source artifact.
+fn report_source_path(path: &str) -> String {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown-source")
+            .to_owned()
+    } else {
+        path.to_string_lossy().into_owned()
     }
 }
 
@@ -8684,36 +8729,52 @@ mod tests {
             },
         ];
         assert_eq!(
-            symbolize_instruction_location("0x8007", &symbols),
+            symbolize_instruction_location("0x8007", &symbols, None),
             InstructionLocation {
                 address: "0x8007".to_owned(),
                 symbol: Some("boot_guest".to_owned()),
                 offset: Some(7),
+                source: None,
             }
         );
         assert_eq!(
-            symbolize_instruction_location("0x8020", &symbols),
+            symbolize_instruction_location("0x8020", &symbols, None),
             InstructionLocation {
                 address: "0x8020".to_owned(),
                 symbol: None,
                 offset: None,
+                source: None,
             }
         );
         assert_eq!(
-            symbolize_instruction_location("not-an-address", &symbols),
+            symbolize_instruction_location("not-an-address", &symbols, None),
             InstructionLocation {
                 address: "not-an-address".to_owned(),
                 symbol: None,
                 offset: None,
+                source: None,
             }
         );
         assert_eq!(
-            symbolize_instruction_location("0x9fff", &symbols),
+            symbolize_instruction_location("0x9fff", &symbols, None),
             InstructionLocation {
                 address: "0x9fff".to_owned(),
                 symbol: Some("idle_loop".to_owned()),
                 offset: Some(0xfff),
+                source: None,
             }
+        );
+    }
+
+    #[test]
+    fn source_location_paths_do_not_expose_build_directories() {
+        assert_eq!(
+            report_source_path("kernel/init/main.c"),
+            "kernel/init/main.c"
+        );
+        assert_eq!(
+            report_source_path("/build/linux/kernel/init/main.c"),
+            "main.c"
         );
     }
 
@@ -8820,6 +8881,11 @@ mod tests {
                     address: "0x8000".to_owned(),
                     symbol: Some("checkpoint".to_owned()),
                     offset: Some(0),
+                    source: Some(InstructionSourceLocation {
+                        file: "main.c".to_owned(),
+                        line: 42,
+                        column: None,
+                    }),
                 }],
             )]),
             instruction_novelty: Vec::new(),
@@ -8851,7 +8917,11 @@ mod tests {
             .expect("recorded API locations")
             .first_mut()
             .expect("recorded API location")
-            .symbol = Some("different_function".to_owned());
+            .source = Some(InstructionSourceLocation {
+            file: "other.c".to_owned(),
+            line: 7,
+            column: None,
+        });
         assert!(campaign_replay_mismatches(&changed_symbols, &actual)
             .contains(&"symbolized instruction locations".to_owned()));
         let mut changed = actual;
