@@ -361,6 +361,8 @@ struct CampaignTimelineBoundary {
     serial_delta: BTreeMap<String, CampaignSerialDelta>,
     #[serde(default)]
     network_traffic_delta: BTreeMap<String, BTreeMap<String, CampaignNetworkTrafficDelta>>,
+    #[serde(default)]
+    state_sha256: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1070,7 +1072,7 @@ fn campaign_network_traffic_delta_label(boundary: &CampaignTimelineBoundary) -> 
     }
 }
 
-fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 9]> {
+fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 10]> {
     run.timeline
         .iter()
         .map(|boundary| {
@@ -1118,6 +1120,7 @@ fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 9]> {
                     .join(" "),
                 campaign_serial_delta_label(boundary),
                 campaign_network_traffic_delta_label(boundary),
+                boundary.state_sha256.clone(),
             ]
         })
         .collect()
@@ -1245,12 +1248,12 @@ fn render_markdown(model: &ReportModel) -> String {
         .flat_map(campaign_timeline_labels)
         .collect::<Vec<_>>();
     if !timeline.is_empty() {
-        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. The delta compares it with the preceding checkpoint. Serial output is an escaped, bounded excerpt; its hash covers the complete new bytes. Network counters show traffic produced by this operation. Serial logs and VM snapshots remain in the locked run directory.\n\n| Run | Operation | Delta | Markers | Instruction locations | Applied actions | Serial SHA-256 | New serial output | Network traffic |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
-        for [run, operation, delta, markers, locations, actions, serial, serial_output, traffic] in
+        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. The delta compares it with the preceding checkpoint. Serial output is an escaped, bounded excerpt; its hash covers the complete new bytes. Network counters show traffic produced by this operation. State SHA-256 identifies the complete boundary evidence. Serial logs and VM snapshots remain in the locked run directory.\n\n| Run | Operation | Delta | Markers | Instruction locations | Applied actions | Serial SHA-256 | New serial output | Network traffic | State SHA-256 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+        for [run, operation, delta, markers, locations, actions, serial, serial_output, traffic, state] in
             timeline
         {
             output.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 markdown_cell(&run),
                 markdown_cell(&operation),
                 markdown_cell(&delta),
@@ -1260,6 +1263,7 @@ fn render_markdown(model: &ReportModel) -> String {
                 markdown_cell(&serial),
                 markdown_cell(&serial_output),
                 markdown_cell(&traffic),
+                markdown_cell(&state),
             ));
         }
     }
