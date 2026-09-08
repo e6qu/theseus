@@ -104,10 +104,21 @@ jobs:
             sha256sum -c SHA256SUMS
           )
 
+      - name: Generate the runtime SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}-${{ matrix.arch }}
+          format: spdx-json
+          output-file: theseus-${{ steps.tag.outputs.value }}-linux-${{ matrix.arch }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - uses: actions/upload-artifact@v4
         with:
           name: runtime-${{ matrix.arch }}
-          path: theseus-*.tar.gz
+          path: |
+            theseus-*-linux-${{ matrix.arch }}.tar.gz
+            theseus-*-linux-${{ matrix.arch }}.spdx.json
 
   cli-macos-arm64:
     name: CLI (macos arm64)
@@ -135,10 +146,21 @@ jobs:
           )
           tar -czf "theseus-${TAG}-darwin-arm64.tar.gz" "theseus-${TAG}-darwin-arm64"
 
+      - name: Generate the CLI SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: theseus-${{ steps.tag.outputs.value }}-darwin-arm64
+          format: spdx-json
+          output-file: theseus-${{ steps.tag.outputs.value }}-darwin-arm64.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - uses: actions/upload-artifact@v4
         with:
           name: cli-macos-arm64
-          path: theseus-*-darwin-arm64.tar.gz
+          path: |
+            theseus-*-darwin-arm64.tar.gz
+            theseus-*-darwin-arm64.spdx.json
 
   manifest-and-release:
     needs: [runtime, cli-macos-arm64]
@@ -197,6 +219,15 @@ jobs:
         run: |
           cargo package --manifest-path sdk/Cargo.toml --allow-dirty
           cp sdk/target/package/theseus-sdk-*.crate release/
+
+      - name: Generate the SDK SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          file: release/theseus-sdk-0.1.0.crate
+          format: spdx-json
+          output-file: release/theseus-sdk-0.1.0.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
 
       - name: Checksum every release asset
         run: |
@@ -268,8 +299,9 @@ jobs:
           consumer=$(mktemp -d)
           trap 'rm -rf "$consumer"' EXIT
           archive="theseus-${TAG}-linux-${{ matrix.arch }}.tar.gz"
+          sbom="theseus-${TAG}-linux-${{ matrix.arch }}.spdx.json"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "$archive" --pattern SHA256SUMS --dir "$consumer"
+            --pattern "$archive" --pattern "$sbom" --pattern SHA256SUMS --dir "$consumer"
           (
             cd "$consumer"
             sha256sum --ignore-missing -c SHA256SUMS
@@ -278,6 +310,12 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
             --source-ref refs/heads/main
+          gh attestation verify "$consumer/$sbom" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
+          jq -e '(.spdxVersion | startswith("SPDX-")) and (.packages | type == "array")' \
+            "$consumer/$sbom" >/dev/null
           tar -tzf "$consumer/$archive" | grep -Fx \
             "theseus-${TAG}-linux-${{ matrix.arch }}/firecracker"
           mkdir "$consumer/extracted"
@@ -308,16 +346,27 @@ jobs:
           consumer=$(mktemp -d)
           trap 'rm -rf "$consumer"' EXIT
           archive="theseus-${TAG}-darwin-arm64.tar.gz"
+          sbom="theseus-${TAG}-darwin-arm64.spdx.json"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "$archive" --pattern SHA256SUMS --dir "$consumer"
+            --pattern "$archive" --pattern "$sbom" --pattern SHA256SUMS --dir "$consumer"
           expected=$(awk -v asset="./$archive" '$2 == asset { print $1 }' "$consumer/SHA256SUMS")
           actual=$(shasum -a 256 "$consumer/$archive" | awk '{ print $1 }')
+          test -n "$expected"
+          test "$actual" = "$expected"
+          expected=$(awk -v asset="./$sbom" '$2 == asset { print $1 }' "$consumer/SHA256SUMS")
+          actual=$(shasum -a 256 "$consumer/$sbom" | awk '{ print $1 }')
           test -n "$expected"
           test "$actual" = "$expected"
           gh attestation verify "$consumer/$archive" \
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
             --source-ref refs/heads/main
+          gh attestation verify "$consumer/$sbom" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
+          jq -e '(.spdxVersion | startswith("SPDX-")) and (.packages | type == "array")' \
+            "$consumer/$sbom" >/dev/null
           mkdir "$consumer/extracted"
           tar -xzf "$consumer/$archive" -C "$consumer/extracted"
           (
@@ -344,17 +393,26 @@ jobs:
           trap 'rm -rf "$consumer"' EXIT
           mkdir -p "$consumer/release" "$consumer/package" "$consumer/app/src"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern 'theseus-sdk-*.crate' --pattern SHA256SUMS --dir "$consumer/release"
+            --pattern 'theseus-sdk-*.crate' --pattern 'theseus-sdk-*.spdx.json' \
+            --pattern SHA256SUMS --dir "$consumer/release"
           (
             cd "$consumer/release"
             sha256sum --ignore-missing -c SHA256SUMS
           )
           crate=$(find "$consumer/release" -maxdepth 1 -type f -name 'theseus-sdk-*.crate')
           test -n "$crate"
+          sbom=$(find "$consumer/release" -maxdepth 1 -type f -name 'theseus-sdk-*.spdx.json')
+          test -n "$sbom"
           gh attestation verify "$crate" \
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
             --source-ref refs/heads/main
+          gh attestation verify "$sbom" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
+          jq -e '(.spdxVersion | startswith("SPDX-")) and (.packages | type == "array")' \
+            "$sbom" >/dev/null
           tar -xzf "$crate" -C "$consumer/package"
           sdk=$(find "$consumer/package" -mindepth 1 -maxdepth 1 -type d -name 'theseus-sdk-*')
           test -f "$sdk/Cargo.toml"
