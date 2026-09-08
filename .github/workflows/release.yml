@@ -116,6 +116,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: runtime-${{ matrix.arch }}
+          retention-days: 1
           path: |
             theseus-*-linux-${{ matrix.arch }}.tar.gz
             theseus-*-linux-${{ matrix.arch }}.spdx.json
@@ -158,6 +159,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: cli-macos-arm64
+          retention-days: 1
           path: |
             theseus-*-darwin-arm64.tar.gz
             theseus-*-darwin-arm64.spdx.json
@@ -446,3 +448,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+
+  discard-failed-draft:
+    name: discard failed draft release
+    if: >-
+      ${{
+        always() &&
+        needs.manifest-and-release.result == 'success' &&
+        (needs.runtime-release-consumer.result == 'failure' ||
+         needs.cli-release-consumer.result == 'failure' ||
+         needs.sdk-release-consumer.result == 'failure')
+      }}
+    needs:
+      [manifest-and-release, runtime-release-consumer, cli-release-consumer, sdk-release-consumer]
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ needs.manifest-and-release.outputs.tag }}
+    steps:
+      - name: Delete the unverified draft and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
