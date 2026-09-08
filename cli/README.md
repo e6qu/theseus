@@ -17,6 +17,7 @@ theseus explore --replay exploration-dir --seed-path seed,... [--output explorat
 theseus explore --minimize exploration-dir --seed-path seed,... [--output exploration-dir]
 theseus explore --snapshot exploration-dir --seed-path seed,... [--output snapshot-dir]
 theseus report [--output report-dir] result-dir
+theseus report --format markdown|json|junit [--output file] result-dir
 theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
@@ -65,6 +66,25 @@ The report shows checks and serial logs for one timeline, service checks and
 applied faults for a topology, and the search tree plus dirty-page coverage
 proxy for an exploration. Every report includes a copy-paste command that
 replays only the locked artifacts in that result directory.
+
+### Hand a failure to CI or an issue
+
+The same locked result can be rendered without a browser. `markdown` writes a
+short bug report with the replay command, failed properties, minimized input,
+and logs; use it directly in a GitHub Actions job summary. `junit` emits one
+test case per Theseus property for CI systems. `json` emits the versioned
+`theseus-report-v1` model for issue bots and other tools. Non-HTML formats go
+to stdout unless `--output` names a new file.
+
+```sh
+theseus report --format markdown failing-bundle >> "$GITHUB_STEP_SUMMARY"
+theseus report --format junit --output theseus-results.xml failing-bundle
+theseus report --format json --output theseus-results.json failing-bundle
+```
+
+The output is evidence, not the replay bundle. Upload the original locked
+directory with it; a recipient runs the printed replay command against that
+bundle and needs the matching published Linux runtime to execute it.
 
 ```toml
 [explore]

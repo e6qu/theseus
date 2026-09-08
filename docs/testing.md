@@ -49,3 +49,20 @@ pushes, never on `main`). One job on `ubuntu-latest`:
 
 KVM-backed tests (branch boots, explorer, coverage) are intentionally not
 in CI — run them locally in the privileged container.
+
+## Publish a failure from CI
+
+Keep the failed replay directory as the durable reproduction artifact, then
+render the same evidence for people and CI dashboards. These commands do not
+need KVM because they only read the completed bundle:
+
+```sh
+theseus report --format markdown theseus-compose-campaign >> "$GITHUB_STEP_SUMMARY"
+theseus report --format junit --output theseus-results.xml theseus-compose-campaign
+theseus report --format json --output theseus-results.json theseus-compose-campaign
+```
+
+Upload `theseus-compose-campaign/`, `theseus-results.xml`, and
+`theseus-results.json`. The Markdown names the exact locked replay command;
+the JUnit file exposes each property as a test case; the JSON document uses
+the stable `theseus-report-v1` format for automation.

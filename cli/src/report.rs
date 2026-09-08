@@ -10,6 +10,40 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// A portable representation of an existing Theseus result directory.
+///
+/// HTML remains the default for interactive inspection. The other formats
+/// deliberately contain the same locked replay recipe and outcome so a CI job,
+/// issue, or another program does not have to scrape the browser report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReportFormat {
+    Html,
+    Markdown,
+    Json,
+    Junit,
+}
+
+impl ReportFormat {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "html" => Some(Self::Html),
+            "markdown" | "md" => Some(Self::Markdown),
+            "json" => Some(Self::Json),
+            "junit" | "junit-xml" => Some(Self::Junit),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Html => "html",
+            Self::Markdown => "markdown",
+            Self::Json => "json",
+            Self::Junit => "junit",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ReportError {
     Read {
@@ -348,16 +382,7 @@ struct Coverage {
 /// or exploration directory. All report data comes from files inside that
 /// directory; symlinks outside it are rejected.
 pub fn report(input: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<PathBuf, ReportError> {
-    let root = fs::canonicalize(input.as_ref()).map_err(|source| ReportError::Read {
-        path: input.as_ref().to_path_buf(),
-        source,
-    })?;
-    if !root.is_dir() {
-        return Err(ReportError::Invalid(format!(
-            "report input is not a directory: {}",
-            root.display()
-        )));
-    }
+    let root = report_root(input.as_ref())?;
     let output = output.as_ref();
     if output.exists() {
         return Err(ReportError::Invalid(format!(
@@ -376,6 +401,61 @@ pub fn report(input: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<PathB
         source,
     })?;
     Ok(index)
+}
+
+/// Render a report in a portable text format. Unlike [`report`], this does
+/// not create files, which makes Markdown suitable for `$GITHUB_STEP_SUMMARY`
+/// and JSON suitable for a pipe.
+pub fn report_text(input: impl AsRef<Path>, format: ReportFormat) -> Result<String, ReportError> {
+    if format == ReportFormat::Html {
+        return Err(ReportError::Invalid(
+            "HTML reports need an output directory; use `theseus report`".to_owned(),
+        ));
+    }
+    let root = report_root(input.as_ref())?;
+    render_format(&load_model(&root)?, format)
+}
+
+/// Write a portable text report to a new file.
+pub fn report_file(
+    input: impl AsRef<Path>,
+    format: ReportFormat,
+    output: impl AsRef<Path>,
+) -> Result<PathBuf, ReportError> {
+    if format == ReportFormat::Html {
+        return report(input, output);
+    }
+    let output = output.as_ref();
+    if output.exists() {
+        return Err(ReportError::Invalid(format!(
+            "report output already exists: {}",
+            output.display()
+        )));
+    }
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|source| ReportError::Write {
+        path: parent.to_path_buf(),
+        source,
+    })?;
+    fs::write(output, report_text(input, format)?).map_err(|source| ReportError::Write {
+        path: output.to_path_buf(),
+        source,
+    })?;
+    Ok(output.to_path_buf())
+}
+
+fn report_root(input: &Path) -> Result<PathBuf, ReportError> {
+    let root = fs::canonicalize(input).map_err(|source| ReportError::Read {
+        path: input.to_path_buf(),
+        source,
+    })?;
+    if !root.is_dir() {
+        return Err(ReportError::Invalid(format!(
+            "report input is not a directory: {}",
+            root.display()
+        )));
+    }
+    Ok(root)
 }
 
 fn load_model(root: &Path) -> Result<ReportModel, ReportError> {
@@ -780,6 +860,233 @@ if(m.logs.length){{const s=section('Logs');m.logs.forEach(log=>{{s.append(el('h3
     ))
 }
 
+fn render_format(model: &ReportModel, format: ReportFormat) -> Result<String, ReportError> {
+    match format {
+        ReportFormat::Html => render(model),
+        ReportFormat::Markdown => Ok(render_markdown(model)),
+        ReportFormat::Json => serde_json::to_string_pretty(&MachineReport::new(model))
+            .map_err(|error| ReportError::Invalid(format!("cannot encode report data: {error}"))),
+        ReportFormat::Junit => Ok(render_junit(model)),
+    }
+}
+
+#[derive(Serialize)]
+struct MachineReport<'a> {
+    format: &'static str,
+    #[serde(flatten)]
+    report: &'a ReportModel,
+}
+
+impl<'a> MachineReport<'a> {
+    fn new(report: &'a ReportModel) -> Self {
+        Self {
+            format: "theseus-report-v1",
+            report,
+        }
+    }
+}
+
+fn markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace('\n', "<br>")
+}
+
+fn markdown_fence(value: &str) -> String {
+    let width = value
+        .split(|character| character != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    "`".repeat(width.max(3))
+}
+
+fn render_markdown(model: &ReportModel) -> String {
+    let mut output = format!(
+        "# Theseus failure report: {}\n\n**Status:** {}  \n**Kind:** {}\n\n## Reproduce\n\n```sh\n{}\n```\n",
+        model.title, model.status, model.kind, model.command
+    );
+    if let Some(error) = &model.error {
+        output.push_str("\n## Execution error\n\n");
+        let fence = markdown_fence(error);
+        output.push_str(&format!("{fence}\n{error}\n{fence}\n"));
+    }
+    if !model.checks.is_empty() {
+        output.push_str(
+            "\n## Checks\n\n| Name | Kind | Status | Detail |\n| --- | --- | --- | --- |\n",
+        );
+        for check in &model.checks {
+            output.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                markdown_cell(&check.name),
+                markdown_cell(&check.kind),
+                markdown_cell(&check.status),
+                markdown_cell(&check.detail)
+            ));
+        }
+    }
+    if let Some(coverage) = &model.coverage {
+        output.push_str(&format!(
+            "\n## {}\n\n{}\n",
+            coverage.label, coverage.summary
+        ));
+    }
+    if !model.nodes.is_empty() {
+        output.push_str("\n## Timeline recipes\n\n");
+        for node in &model.nodes {
+            output.push_str(&format!(
+                "- Timeline #{}: seed path `{}`; markers `{}`; dirty pages `{}`.\n",
+                node.search_index,
+                node.seed_path
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                if node.markers_hex.is_empty() {
+                    "none"
+                } else {
+                    &node.markers_hex
+                },
+                node.dirty_pages
+                    .map_or_else(|| "not captured".to_owned(), |pages| pages.to_string())
+            ));
+        }
+    }
+    if !model.campaign_runs.is_empty() {
+        output.push_str("\n## Generated timelines\n\n| Run | Operations | Candidates | Status |\n| --- | --- | --- | --- |\n");
+        for run in &model.campaign_runs {
+            let candidates = if run.faults.is_empty() {
+                run.fault.clone().unwrap_or_else(|| "none".to_owned())
+            } else {
+                run.faults.join(" + ")
+            };
+            output.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                run.index,
+                markdown_cell(&run.operations.join(" → ")),
+                markdown_cell(&candidates),
+                markdown_cell(&run.status)
+            ));
+        }
+    }
+    if let Some(minimization) = &model.minimization {
+        output.push_str(&format!(
+            "\n## Event minimization\n\nOriginal: `{}`  \n1-minimal: `{}`\n",
+            minimization.original_events_hex.join(" "),
+            minimization.minimized_events_hex.join(" ")
+        ));
+    }
+    if let Some(minimization) = &model.campaign_minimization {
+        output.push_str(&format!(
+            "\n## Campaign minimization\n\nProperty: `{}`  \nOperations: `{}` → `{}`  \nFaults: `{}` → `{}`\n",
+            minimization.property,
+            minimization.original_operations.join(" → "),
+            minimization.minimized_operations.join(" → "),
+            minimization.original_faults.join(" + "),
+            minimization.minimized_faults.join(" + ")
+        ));
+    }
+    if let Some(verification) = &model.replay_verification {
+        output.push_str(&format!(
+            "\n## Replay verification\n\n**{}:** {}\n",
+            verification.status, verification.detail
+        ));
+    }
+    if !model.faults.is_empty() {
+        output.push_str("\n## Applied faults\n\n| Round | Kind | Detail |\n| --- | --- | --- |\n");
+        for fault in &model.faults {
+            output.push_str(&format!(
+                "| {} | {} | {} |\n",
+                fault.round,
+                markdown_cell(&fault.kind),
+                markdown_cell(&fault.detail)
+            ));
+        }
+    }
+    if !model.logs.is_empty() {
+        output.push_str("\n## Logs\n");
+        for log in &model.logs {
+            let fence = markdown_fence(&log.text);
+            output.push_str(&format!(
+                "\n### {}\n\n{fence}\n{}\n{fence}\n",
+                log.label, log.text
+            ));
+        }
+    }
+    output
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn render_junit(model: &ReportModel) -> String {
+    let structural_failure = model.status != "passed"
+        && model.error.is_none()
+        && model
+            .checks
+            .iter()
+            .all(|check| check.status == "passed" || check.status == "skipped");
+    let failures = model
+        .checks
+        .iter()
+        .filter(|check| check.status != "passed" && check.status != "skipped")
+        .count()
+        + usize::from(structural_failure);
+    let errors = usize::from(model.error.is_some());
+    let tests = model.checks.len() + usize::from(model.error.is_some() || structural_failure);
+    let tests = tests.max(1);
+    let mut output = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuite name=\"{}\" tests=\"{tests}\" failures=\"{failures}\" errors=\"{errors}\">\n",
+        xml_escape(&model.title)
+    );
+    for check in &model.checks {
+        output.push_str(&format!(
+            "  <testcase classname=\"{}\" name=\"{}\">",
+            xml_escape(if check.kind.is_empty() {
+                "theseus"
+            } else {
+                &check.kind
+            }),
+            xml_escape(&check.name)
+        ));
+        match check.status.as_str() {
+            "passed" => {}
+            "skipped" => output.push_str("<skipped/>"),
+            _ => output.push_str(&format!(
+                "<failure message=\"{}\">{}</failure>",
+                xml_escape(&check.detail),
+                xml_escape(&check.detail)
+            )),
+        }
+        output.push_str("</testcase>\n");
+    }
+    if let Some(error) = &model.error {
+        output.push_str(&format!(
+            "  <testcase classname=\"theseus\" name=\"execution\"><error message=\"{}\">{}</error></testcase>\n",
+            xml_escape(error),
+            xml_escape(error)
+        ));
+    } else if structural_failure {
+        output.push_str(&format!(
+            "  <testcase classname=\"theseus\" name=\"result\"><failure message=\"{}\">The locked result directory reports {}.</failure></testcase>\n",
+            xml_escape(&model.status),
+            xml_escape(&model.status)
+        ));
+    } else if model.checks.is_empty() {
+        output.push_str("  <testcase classname=\"theseus\" name=\"result\"/>\n");
+    }
+    output.push_str(&format!(
+        "  <system-out>{}</system-out>\n</testsuite>\n",
+        xml_escape(&format!("{}\n{}", model.command_label, model.command))
+    ));
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -807,6 +1114,49 @@ mod tests {
         assert!(html.contains("theseus replay"));
         assert!(html.contains("\\u003cimg"));
         assert!(!html.contains("<img src=x"));
+    }
+
+    #[test]
+    fn renders_portable_markdown_json_and_junit_reports() {
+        let directory = tempfile::tempdir().unwrap();
+        write_json(
+            &directory.path().join("result.json"),
+            r#"{"format":"theseus-result-v1","status":"failed","error":null,"checks":[{"name":"no panic","kind":"serial_not_contains","status":"failed","detail":"found <panic>"}]}"#,
+        );
+        fs::write(directory.path().join("serial.log"), b"guest ``` panic\n").unwrap();
+
+        let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
+        assert!(markdown.contains("# Theseus failure report: Timeline replay"));
+        assert!(markdown.contains("theseus replay"));
+        assert!(markdown.contains("found <panic>"));
+        assert!(markdown.contains("````"));
+
+        let json = report_text(directory.path(), ReportFormat::Json).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(json["format"], "theseus-report-v1");
+        assert_eq!(json["checks"][0]["status"], "failed");
+
+        let junit = report_text(directory.path(), ReportFormat::Junit).unwrap();
+        assert!(junit.contains("tests=\"1\" failures=\"1\" errors=\"0\""));
+        assert!(junit.contains("&lt;panic&gt;"));
+        assert!(junit.contains("<failure"));
+    }
+
+    #[test]
+    fn writes_a_new_portable_report_file() {
+        let directory = tempfile::tempdir().unwrap();
+        write_json(
+            &directory.path().join("result.json"),
+            r#"{"format":"theseus-result-v1","status":"passed","error":null,"checks":[]}"#,
+        );
+        let output = directory.path().join("nested/report.json");
+        let path = report_file(directory.path(), ReportFormat::Json, &output).unwrap();
+        assert_eq!(path, output);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(path).unwrap()).unwrap()
+                ["format"],
+            "theseus-report-v1"
+        );
     }
 
     #[test]
