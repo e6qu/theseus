@@ -77,3 +77,4 @@ jobs:
           python3 scripts/tests/test_runtime_reproducibility.py
           python3 scripts/tests/test_release_build_inputs.py
           python3 scripts/tests/test_action_pins.py
+          python3 scripts/tests/test_rebuild_witness.py

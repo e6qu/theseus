@@ -47,4 +47,24 @@ test "$actual" = "$expected"
 The final comparison proves that the rebuilt platform image has the same OCI
 manifest digest as the published `TAG-ARCH` runtime image. The on-demand
 `verify runtime reproducibility` workflow performs this comparison twice with
-independent no-cache builds for both architectures.
+independent no-cache builds for both architectures and signs a witness.
+
+## Create an external witness
+
+Run that workflow in a GitHub repository you control (a fork is fine). Pass
+the official repository and a published tag. It verifies the official signed
+input record, checks out its exact commit, performs two clean native builds,
+compares both OCI layouts and the published digest, then signs the resulting
+`witness.json` and retains it as an Actions artifact for 90 days.
+
+```sh
+gh workflow run verify-runtime-reproducibility.yml \
+  --repo YOUR_ACCOUNT/theseus \
+  --ref main \
+  -f repository=e6qu/theseus \
+  -f tag="$TAG"
+```
+
+The witness attestation belongs to the repository that ran the workflow. That
+separates the external observer's signed rebuild record from Theseus's release
+attestation.

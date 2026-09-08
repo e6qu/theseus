@@ -2,9 +2,21 @@ name: verify runtime reproducibility
 
 on:
   workflow_dispatch:
+    inputs:
+      repository:
+        description: Repository that published the release to reproduce
+        required: true
+        default: e6qu/theseus
+        type: string
+      tag:
+        description: Published 12-character SHA release tag
+        required: true
+        type: string
 
 permissions:
+  attestations: write
   contents: read
+  id-token: write
 
 jobs:
   runtime:
@@ -21,29 +33,96 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - id: source-date
-        run: git show -s --format='value=%ct' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - id: inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ inputs.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          release="$RUNNER_TEMP/release"
+          inputs="theseus-${TAG}-build-inputs.json"
+          mkdir "$release"
+          gh release download "$TAG" --repo "$REPOSITORY" \
+            --pattern "$inputs" --dir "$release"
+          gh attestation verify "$release/$inputs" \
+            --repo "$REPOSITORY" \
+            --signer-workflow "$REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
+          jq -e --arg repository "https://github.com/$REPOSITORY" --arg tag "$TAG" \
+            --arg arch "${{ matrix.arch }}" '
+            (.schema == 1) and
+            (.source.repository == $repository) and
+            (.source.commit | test("^[0-9a-f]{40}$")) and
+            (.source.date_epoch | type == "number") and
+            (.runtime.tag == $tag) and
+            (.runtime.platform_digests[$arch] | test("^sha256:[0-9a-f]{64}$"))
+          ' "$release/$inputs" >/dev/null
+          {
+            echo "commit=$(jq -r .source.commit "$release/$inputs")"
+            echo "epoch=$(jq -r .source.date_epoch "$release/$inputs")"
+            echo "expected=$(jq -r ".runtime.platform_digests[\"${{ matrix.arch }}\"]" "$release/$inputs")"
+            echo "inputs_sha256=$(sha256sum "$release/$inputs" | awk '{print $1}')"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ steps.inputs.outputs.commit }}
+          path: source
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
-      - name: Rebuild the runtime from immutable inputs
+      - id: rebuild
+        name: Rebuild the runtime from immutable inputs
         env:
-          SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}
+          SOURCE_DATE_EPOCH: ${{ steps.inputs.outputs.epoch }}
+          EXPECTED: ${{ steps.inputs.outputs.expected }}
         run: |
+          work="$RUNNER_TEMP/rebuild"
+          mkdir "$work"
           for build in first second; do
             docker buildx build \
+              --platform "linux/${{ matrix.arch }}" \
               --no-cache \
               --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
-              --output "type=oci,dest=${build}.oci.tar,rewrite-timestamp=true" \
-              .
-            mkdir "$build"
-            tar -xf "${build}.oci.tar" -C "$build"
+              --output "type=oci,dest=$work/${build}.oci.tar,rewrite-timestamp=true" \
+              source
+            mkdir "$work/$build"
+            tar -xf "$work/${build}.oci.tar" -C "$work/$build"
           done
-          diff -ru first second
-          sha256sum first.oci.tar second.oci.tar > SHA256SUMS
+          diff -ru "$work/first" "$work/second"
+          actual=$(jq -r '.manifests[0].digest' "$work/first/index.json")
+          test "$actual" = "$EXPECTED"
+          echo "actual=$actual" >> "$GITHUB_OUTPUT"
+
+      - name: Write the rebuild witness
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ steps.inputs.outputs.commit }}
+          EPOCH: ${{ steps.inputs.outputs.epoch }}
+          INPUTS_SHA256: ${{ steps.inputs.outputs.inputs_sha256 }}
+          EXPECTED: ${{ steps.inputs.outputs.expected }}
+          ACTUAL: ${{ steps.rebuild.outputs.actual }}
+        run: |
+          python3 scripts/rebuild_witness.py \
+            --output witness.json \
+            --repository "$REPOSITORY" \
+            --tag "$TAG" \
+            --source-commit "$COMMIT" \
+            --source-date-epoch "$EPOCH" \
+            --inputs-sha256 "$INPUTS_SHA256" \
+            --architecture "${{ matrix.arch }}" \
+            --expected-digest "$EXPECTED" \
+            --actual-digest "$ACTUAL"
+
+      - name: Attest the rebuild witness
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: witness.json
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: runtime-reproducibility-${{ matrix.arch }}
-          retention-days: 1
-          path: SHA256SUMS
+          name: runtime-rebuild-witness-${{ inputs.tag }}-${{ matrix.arch }}
+          retention-days: 90
+          path: witness.json
