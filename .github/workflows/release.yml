@@ -33,6 +33,9 @@ jobs:
       - id: tag
         run: echo "value=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
 
+      - id: source-date
+        run: git show -s --format='value=%ct' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -47,6 +50,8 @@ jobs:
           context: .
           push: true
           tags: ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}-${{ matrix.arch }}
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ steps.source-date.outputs.value }}
           cache-from: type=gha,scope=runtime-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=runtime-${{ matrix.arch }},ignore-error=true
 
@@ -96,7 +101,10 @@ jobs:
             cd "theseus-${TAG}-linux-${{ matrix.arch }}"
             sha256sum ./* > SHA256SUMS
           )
-          tar -czf "theseus-${TAG}-linux-${{ matrix.arch }}.tar.gz" "theseus-${TAG}-linux-${{ matrix.arch }}"
+          python3 scripts/reproducible_tar.py \
+            --mtime "${{ steps.source-date.outputs.value }}" \
+            --output "theseus-${TAG}-linux-${{ matrix.arch }}.tar.gz" \
+            "theseus-${TAG}-linux-${{ matrix.arch }}"
           tar -tzf "theseus-${TAG}-linux-${{ matrix.arch }}.tar.gz" | grep -Fx \
             "theseus-${TAG}-linux-${{ matrix.arch }}/firecracker"
           mkdir extracted
@@ -134,11 +142,16 @@ jobs:
       - id: tag
         run: echo "value=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
 
+      - id: source-date
+        run: git show -s --format='value=%ct' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
       - uses: dtolnay/rust-toolchain@1.97.0
 
       - name: Build and package the CLI
         env:
           TAG: ${{ steps.tag.outputs.value }}
+          SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}
+          ZERO_AR_DATE: 1
         run: |
           cargo build --manifest-path cli/Cargo.toml --release --locked
           mkdir "theseus-${TAG}-darwin-arm64"
@@ -147,7 +160,10 @@ jobs:
             cd "theseus-${TAG}-darwin-arm64"
             shasum -a 256 theseus > SHA256SUMS
           )
-          tar -czf "theseus-${TAG}-darwin-arm64.tar.gz" "theseus-${TAG}-darwin-arm64"
+          python3 scripts/reproducible_tar.py \
+            --mtime "$SOURCE_DATE_EPOCH" \
+            --output "theseus-${TAG}-darwin-arm64.tar.gz" \
+            "theseus-${TAG}-darwin-arm64"
 
       - name: Generate the CLI SBOM
         uses: anchore/sbom-action@v0
@@ -173,6 +189,9 @@ jobs:
       tag: ${{ needs.runtime.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+
+      - id: source-date
+        run: git show -s --format='value=%ct' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@1.97.0
 
@@ -220,6 +239,9 @@ jobs:
           merge-multiple: true
 
       - name: Package the SDK
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}
+          ZERO_AR_DATE: 1
         run: |
           cargo package --manifest-path sdk/Cargo.toml --allow-dirty
           cp sdk/target/package/theseus-sdk-*.crate release/

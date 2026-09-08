@@ -6,6 +6,10 @@
 
 FROM rust:1.97.0-bookworm AS build
 
+ARG SOURCE_DATE_EPOCH
+ENV SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH \
+    ZERO_AR_DATE=1
+
 RUN apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
         bc bison busybox-static cpio curl dwarves flex gcc git libclang-dev \

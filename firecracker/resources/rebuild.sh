@@ -136,6 +136,17 @@ function build_al_kernel {
     # fails immediately after clone because nothing is checked out
     make distclean || true
 
+    # The release workflow supplies its source commit time.  Linux otherwise
+    # embeds the builder's current clock, host, user, and build counter in the
+    # kernel and module metadata.
+    if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+        export KBUILD_BUILD_TIMESTAMP
+        KBUILD_BUILD_TIMESTAMP=$(date -u -d "@${SOURCE_DATE_EPOCH}" "+%a %b %e %T %Y")
+        export KBUILD_BUILD_USER=theseus
+        export KBUILD_BUILD_HOST=release
+        export KBUILD_BUILD_VERSION=1
+    fi
+
     TAG=$(get_tag $KERNEL_VERSION)
 
     git checkout $TAG
