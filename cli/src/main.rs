@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use theseus_cli::{
     explore, explore_compose, load_compose_plan, load_plan, minimize_compose_campaign,
     minimize_exploration_path, replay, replay_compose, replay_exploration, replay_exploration_path,
-    report, snapshot_exploration_path, test, test_compose,
+    report, report_file, report_text, snapshot_exploration_path, test, test_compose, ReportFormat,
 };
 
 const USAGE: &str = "Usage:
@@ -21,6 +21,7 @@ const USAGE: &str = "Usage:
   theseus explore --minimize exploration-dir --seed-path seed,... [--output exploration-dir]
   theseus explore --snapshot exploration-dir --seed-path seed,... [--output snapshot-dir]
   theseus report [--output report-dir] result-dir
+  theseus report --format markdown|json|junit [--output file] result-dir
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
@@ -95,6 +96,35 @@ fn run(args: Vec<String>) -> Result<(), String> {
         [command, bundle] if command == "replay" => {
             let result = replay(bundle).map_err(|error| error.to_string())?;
             println!("replay passed; logs: {}", result.logs.display());
+            Ok(())
+        }
+        [command, format_flag, format, output_flag, output, input]
+            if command == "report" && format_flag == "--format" && output_flag == "--output" =>
+        {
+            let format = ReportFormat::parse(format).ok_or_else(|| {
+                "report format must be one of html, markdown, json, or junit".to_owned()
+            })?;
+            let path = report_file(input, format, output).map_err(|error| error.to_string())?;
+            println!("{} report: {}", format.name(), path.display());
+            Ok(())
+        }
+        [command, format_flag, format, input]
+            if command == "report" && format_flag == "--format" =>
+        {
+            let format = ReportFormat::parse(format).ok_or_else(|| {
+                "report format must be one of html, markdown, json, or junit".to_owned()
+            })?;
+            if format == ReportFormat::Html {
+                let input = PathBuf::from(input);
+                let index = report(&input, input.join("theseus-report"))
+                    .map_err(|error| error.to_string())?;
+                println!("report: {}", index.display());
+            } else {
+                print!(
+                    "{}",
+                    report_text(input, format).map_err(|error| error.to_string())?
+                );
+            }
             Ok(())
         }
         [command, flag, output, input] if command == "report" && flag == "--output" => {

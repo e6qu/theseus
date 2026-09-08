@@ -24,5 +24,5 @@ pub use manifest::{
     load_plan, ArtifactPlan, CheckKind, CheckPlan, ExplorePlan, LoadError, Novelty,
     ReplayFingerprint, ReplayTreeNode, RunPlan,
 };
-pub use report::{report, ReportError};
+pub use report::{report, report_file, report_text, ReportError, ReportFormat};
 pub use runner::{replay, test, ReplayResult, RunError, TestResult};

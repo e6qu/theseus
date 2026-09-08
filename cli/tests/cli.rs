@@ -72,6 +72,34 @@ fn report_writes_a_static_page_without_kvm() {
 }
 
 #[test]
+fn report_writes_markdown_json_and_junit_without_kvm() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("recording");
+    fs::create_dir(&input).unwrap();
+    fs::write(
+        input.join("result.json"),
+        r#"{"format":"theseus-result-v1","status":"failed","error":null,"checks":[{"name":"property","status":"failed","detail":"failed"}]}"#,
+    )
+    .unwrap();
+
+    for (format, file, expected) in [
+        ("markdown", "failure.md", "# Theseus failure report"),
+        ("json", "failure.json", "theseus-report-v1"),
+        ("junit", "failure.xml", "<testsuite"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args(["report", "--format", format, "--output", file, "recording"])
+            .current_dir(directory.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(fs::read_to_string(directory.path().join(file))
+            .unwrap()
+            .contains(expected));
+    }
+}
+
+#[test]
 fn help_lists_bundle_local_replay_commands() {
     let output = Command::new(env!("CARGO_BIN_EXE_theseus"))
         .arg("--help")
@@ -85,4 +113,5 @@ fn help_lists_bundle_local_replay_commands() {
     assert!(help.contains("explore --minimize exploration-dir"));
     assert!(help.contains("explore --snapshot exploration-dir"));
     assert!(help.contains("compose replay replay-dir"));
+    assert!(help.contains("report --format markdown|json|junit"));
 }
