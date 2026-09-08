@@ -631,6 +631,10 @@ struct CampaignTimelineBoundary {
     serial_delta: BTreeMap<String, CampaignSerialDelta>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     network_traffic_delta: BTreeMap<String, BTreeMap<String, CampaignNetworkTrafficDelta>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    changed_storage: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    virtual_time_delta_ns: BTreeMap<String, Vec<u64>>,
     state_sha256: String,
 }
 
@@ -1143,6 +1147,8 @@ struct ServiceSchedulerCheckpoint {
     faults: Vec<AppliedFault>,
     network_traffic: BTreeMap<String, NetworkTraffic>,
     network_trace: BTreeMap<String, Vec<NetworkFrame>>,
+    storage_sha256: BTreeMap<String, String>,
+    virtual_time_ns: Option<Vec<u64>>,
 }
 
 #[derive(Clone)]
@@ -1175,6 +1181,8 @@ struct CampaignCheckpointBoundary {
     serial_sha256: BTreeMap<String, String>,
     serial_contents: BTreeMap<String, Vec<u8>>,
     network_traffic: BTreeMap<String, BTreeMap<String, NetworkTraffic>>,
+    storage_sha256: BTreeMap<String, BTreeMap<String, String>>,
+    virtual_time_ns: BTreeMap<String, Vec<u64>>,
 }
 
 enum CampaignPrefixResult {
@@ -1663,6 +1671,7 @@ impl ServiceRuntime {
 
 fn capture_campaign_checkpoint(
     directory: &Path,
+    topology: &TopologyPlan,
     services: &mut BTreeMap<String, ServiceRuntime>,
     switches: &BTreeMap<String, SharedSimSwitch>,
     round: u64,
@@ -1686,6 +1695,10 @@ fn capture_campaign_checkpoint(
                         .map_err(|error| format!("cannot checkpoint {}: {error}", path.display()))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let storage_sha256 = service
+                .vm
+                .storage_fingerprints(&topology.services[name].run.storage)?;
+            let virtual_time_ns = service.vm.virtual_time_ns()?;
             snapshots.insert(
                 name.clone(),
                 service
@@ -1702,6 +1715,8 @@ fn capture_campaign_checkpoint(
                     faults: service.faults.clone(),
                     network_traffic: service.network_traffic.clone(),
                     network_trace: service.network_trace.clone(),
+                    storage_sha256,
+                    virtual_time_ns,
                 },
             );
         }
@@ -1924,7 +1939,7 @@ fn checkpoint_campaign_operation(
     services.insert(driver_name.to_owned(), driver);
     injection?;
     let checkpoint =
-        capture_campaign_checkpoint(directory, &mut services, &switches, parent.round)?;
+        capture_campaign_checkpoint(directory, topology, &mut services, &switches, parent.round)?;
     Ok((checkpoint, applied))
 }
 
@@ -2413,7 +2428,7 @@ fn boot_campaign_checkpoint(
         "campaign driver serial readiness",
         Duration::from_secs(boot_timeout),
     )?;
-    capture_campaign_checkpoint(directory, &mut services, &switches, 0)
+    capture_campaign_checkpoint(directory, topology, &mut services, &switches, 0)
 }
 
 fn campaign_actions(run: &Path) -> Result<Vec<AppliedCampaignAction>, String> {
@@ -4599,6 +4614,21 @@ fn campaign_checkpoint_boundary(
             .iter()
             .map(|(service, state)| (service.clone(), state.network_traffic.clone()))
             .collect(),
+        storage_sha256: checkpoint
+            .scheduler
+            .iter()
+            .map(|(service, state)| (service.clone(), state.storage_sha256.clone()))
+            .collect(),
+        virtual_time_ns: checkpoint
+            .scheduler
+            .iter()
+            .filter_map(|(service, state)| {
+                state
+                    .virtual_time_ns
+                    .as_ref()
+                    .map(|time| (service.clone(), time.clone()))
+            })
+            .collect(),
     }
 }
 
@@ -4650,6 +4680,8 @@ fn campaign_operation_timeline(
                 campaign_boundary_delta(&previous, boundary);
             let serial_delta = campaign_serial_delta(&previous, boundary);
             let network_traffic_delta = campaign_network_traffic_delta(&previous, boundary);
+            let (changed_storage, virtual_time_delta_ns) =
+                campaign_boundary_state_delta(&previous, boundary);
             previous = boundary.clone();
             CampaignTimelineBoundary {
                 operation: campaign_operation_choice_name(campaign, *operation),
@@ -4664,10 +4696,56 @@ fn campaign_operation_timeline(
                 serial_sha256: boundary.serial_sha256.clone(),
                 serial_delta,
                 network_traffic_delta,
+                changed_storage,
+                virtual_time_delta_ns,
                 state_sha256: campaign_boundary_state_sha256(boundary),
             }
         })
         .collect()
+}
+
+fn campaign_boundary_state_delta(
+    previous: &CampaignCheckpointBoundary,
+    boundary: &CampaignCheckpointBoundary,
+) -> (Vec<String>, BTreeMap<String, Vec<u64>>) {
+    let changed_storage = boundary
+        .storage_sha256
+        .iter()
+        .flat_map(|(service, drives)| {
+            drives.iter().filter_map(move |(drive, hash)| {
+                (previous
+                    .storage_sha256
+                    .get(service)
+                    .and_then(|previous| previous.get(drive))
+                    != Some(hash))
+                .then(|| format!("{service}:{drive}"))
+            })
+        })
+        .collect();
+    let virtual_time_delta_ns = boundary
+        .virtual_time_ns
+        .iter()
+        .filter_map(|(service, current)| {
+            let previous = previous.virtual_time_ns.get(service);
+            let delta = current
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    value.saturating_sub(
+                        previous
+                            .and_then(|time| time.get(index))
+                            .copied()
+                            .unwrap_or(0),
+                    )
+                })
+                .collect::<Vec<_>>();
+            delta
+                .iter()
+                .any(|value| *value > 0)
+                .then(|| (service.clone(), delta))
+        })
+        .collect();
+    (changed_storage, virtual_time_delta_ns)
 }
 
 /// The compact boundary identity covers all checkpoint evidence that feeds the
@@ -4680,6 +4758,8 @@ fn campaign_boundary_state_sha256(boundary: &CampaignCheckpointBoundary) -> Stri
         &boundary.program_counters,
         &boundary.serial_sha256,
         &boundary.network_traffic,
+        &boundary.storage_sha256,
+        &boundary.virtual_time_ns,
     ))
     .expect("campaign boundary state encodes");
     format!("{:x}", Sha256::digest(encoded))
@@ -7713,6 +7793,8 @@ mod tests {
                     faults: Vec::new(),
                     network_traffic: BTreeMap::new(),
                     network_trace: BTreeMap::new(),
+                    storage_sha256: BTreeMap::new(),
+                    virtual_time_ns: None,
                 },
             )]),
             round: 0,
@@ -7799,6 +7881,8 @@ mod tests {
                     faults: Vec::new(),
                     network_traffic: BTreeMap::new(),
                     network_trace: BTreeMap::new(),
+                    storage_sha256: BTreeMap::new(),
+                    virtual_time_ns: None,
                 },
             )]),
             round: 0,
@@ -7898,6 +7982,8 @@ mod tests {
                         faults: Vec::new(),
                         network_traffic: BTreeMap::new(),
                         network_trace: BTreeMap::new(),
+                        storage_sha256: BTreeMap::new(),
+                        virtual_time_ns: None,
                     },
                 ),
                 (
@@ -7910,6 +7996,8 @@ mod tests {
                         faults: Vec::new(),
                         network_traffic: BTreeMap::new(),
                         network_trace: BTreeMap::new(),
+                        storage_sha256: BTreeMap::new(),
+                        virtual_time_ns: None,
                     },
                 ),
             ]),
@@ -8555,6 +8643,8 @@ mod tests {
                     faults: Vec::new(),
                     network_traffic: BTreeMap::new(),
                     network_trace: BTreeMap::new(),
+                    storage_sha256: BTreeMap::new(),
+                    virtual_time_ns: None,
                 },
             )]),
             round: 0,
@@ -8574,6 +8664,8 @@ mod tests {
                     faults: Vec::new(),
                     network_traffic: BTreeMap::new(),
                     network_trace: BTreeMap::new(),
+                    storage_sha256: BTreeMap::new(),
+                    virtual_time_ns: None,
                     },
                 ),
                 (
@@ -8589,6 +8681,8 @@ mod tests {
                         faults: Vec::new(),
                         network_traffic: BTreeMap::new(),
                         network_trace: BTreeMap::new(),
+                        storage_sha256: BTreeMap::new(),
+                        virtual_time_ns: None,
                     },
                 ),
             ]),
@@ -8931,6 +9025,8 @@ mod tests {
                 faults: Vec::new(),
                 network_traffic: BTreeMap::new(),
                 network_trace: BTreeMap::new(),
+                storage_sha256: BTreeMap::new(),
+                virtual_time_ns: None,
             },
         );
         assert!(campaign_operation_serial_guards_are_ready(
@@ -9397,6 +9493,8 @@ mod tests {
                 "api".to_owned(),
                 BTreeMap::from([("backplane".to_owned(), NetworkTraffic::default())]),
             )]),
+            storage_sha256: BTreeMap::new(),
+            virtual_time_ns: BTreeMap::new(),
         };
         let boundary = CampaignCheckpointBoundary {
             actions: Vec::new(),
@@ -9436,6 +9534,8 @@ mod tests {
                     },
                 )]),
             )]),
+            storage_sha256: BTreeMap::new(),
+            virtual_time_ns: BTreeMap::new(),
         };
 
         assert_eq!(
@@ -9494,6 +9594,8 @@ mod tests {
                 ("worker".to_owned(), Vec::new()),
             ]),
             network_traffic: BTreeMap::new(),
+            storage_sha256: BTreeMap::new(),
+            virtual_time_ns: BTreeMap::new(),
         };
         let boundary = CampaignCheckpointBoundary {
             actions: Vec::new(),
@@ -9509,6 +9611,8 @@ mod tests {
                 ),
             ]),
             network_traffic: BTreeMap::new(),
+            storage_sha256: BTreeMap::new(),
+            virtual_time_ns: BTreeMap::new(),
         };
 
         let delta = campaign_serial_delta(&previous, &boundary);
@@ -9554,6 +9658,8 @@ mod tests {
                 serial_sha256: BTreeMap::from([("api".to_owned(), "serial".to_owned())]),
                 serial_delta: BTreeMap::new(),
                 network_traffic_delta: BTreeMap::new(),
+                changed_storage: Vec::new(),
+                virtual_time_delta_ns: BTreeMap::new(),
                 state_sha256: "state".to_owned(),
             }],
             program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),

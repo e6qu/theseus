@@ -364,6 +364,10 @@ struct CampaignTimelineBoundary {
     #[serde(default)]
     network_traffic_delta: BTreeMap<String, BTreeMap<String, CampaignNetworkTrafficDelta>>,
     #[serde(default)]
+    changed_storage: Vec<String>,
+    #[serde(default)]
+    virtual_time_delta_ns: BTreeMap<String, Vec<u64>>,
+    #[serde(default)]
     state_sha256: String,
 }
 
@@ -1074,7 +1078,29 @@ fn campaign_network_traffic_delta_label(boundary: &CampaignTimelineBoundary) -> 
     }
 }
 
-fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 11]> {
+fn campaign_virtual_time_delta_label(boundary: &CampaignTimelineBoundary) -> String {
+    if boundary.virtual_time_delta_ns.is_empty() {
+        "none".to_owned()
+    } else {
+        boundary
+            .virtual_time_delta_ns
+            .iter()
+            .map(|(service, clocks)| {
+                format!(
+                    "{service}: {} ns",
+                    clocks
+                        .iter()
+                        .map(u64::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+}
+
+fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 13]> {
     run.timeline
         .iter()
         .map(|boundary| {
@@ -1123,6 +1149,12 @@ fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 11]> {
                     .join(" "),
                 campaign_serial_delta_label(boundary),
                 campaign_network_traffic_delta_label(boundary),
+                if boundary.changed_storage.is_empty() {
+                    "none".to_owned()
+                } else {
+                    boundary.changed_storage.join(", ")
+                },
+                campaign_virtual_time_delta_label(boundary),
                 boundary.state_sha256.clone(),
             ]
         })
@@ -1251,12 +1283,12 @@ fn render_markdown(model: &ReportModel) -> String {
         .flat_map(campaign_timeline_labels)
         .collect::<Vec<_>>();
     if !timeline.is_empty() {
-        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. The delta compares it with the preceding checkpoint.\n\n| Run | Operation | Round | Delta | Markers | Instruction locations | Applied actions | Serial SHA-256 | New serial output | Network traffic | State SHA-256 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
-        for [run, operation, round, delta, markers, locations, actions, serial, serial_output, traffic, state] in
+        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. The delta compares it with the preceding checkpoint.\n\n| Run | Operation | Round | Delta | Markers | Instruction locations | Applied actions | Serial SHA-256 | New serial output | Network traffic | Changed storage | Virtual time delta | State SHA-256 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+        for [run, operation, round, delta, markers, locations, actions, serial, serial_output, traffic, storage, time, state] in
             timeline
         {
             output.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 markdown_cell(&run),
                 markdown_cell(&operation),
                 markdown_cell(&round),
@@ -1267,6 +1299,8 @@ fn render_markdown(model: &ReportModel) -> String {
                 markdown_cell(&serial),
                 markdown_cell(&serial_output),
                 markdown_cell(&traffic),
+                markdown_cell(&storage),
+                markdown_cell(&time),
                 markdown_cell(&state),
             ));
         }

@@ -305,6 +305,11 @@ snapshot. These rows explain execution; only the final paused-PC samples
 participate in coverage novelty. The row's scheduler round shows deterministic
 progress without relying on host wall-clock time.
 
+When an operation changes a simulated drive, **Changed storage** names that
+service and drive. **Virtual time delta** shows each paused vCPU's elapsed
+virtual nanoseconds. These values are captured at the same barrier as serial,
+network, and instruction evidence, and replay verifies the whole row.
+
 When you replay a campaign bundle, Theseus does not search again. It restores
 and runs the recorded operation and fault corpus in the recorded order, then
 checks the selection reasons, marker novelty, topology-state signatures, and
