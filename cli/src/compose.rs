@@ -739,6 +739,7 @@ pub enum CampaignGuidance {
     Coverage,
     Adaptive,
     Posterior,
+    Property,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4392,6 +4393,18 @@ mod tests {
         assert_eq!(
             plan.campaign.expect("campaign is normalized").guidance,
             CampaignGuidance::Posterior
+        );
+    }
+
+    #[test]
+    fn normalizes_property_directed_campaign_guidance() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    guidance: property\n    max_runs: 1\n    operations:\n      - name: probe\n        input: \"probe\\n\"\n    properties:\n      - name: probe_is_reachable\n        kind: reachable\n        contains: THES:M:probe\n",
+        );
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(
+            plan.campaign.expect("campaign is normalized").guidance,
+            CampaignGuidance::Property
         );
     }
 

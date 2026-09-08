@@ -290,6 +290,15 @@ The report records the prior-adjusted mean, uncertainty, yields, and misses for
 every selected action. This is deterministic scheduling, not a remote model or
 random sampling.
 
+Set `guidance: property` to target your declared properties directly. A
+`reachable` or `sometimes` match is a witness. An `always` miss or
+`unreachable` match is a counterexample. Theseus first seeds every ordinary
+operation, then prefers actions whose earlier executions produced witnesses in
+the same operation history, falling back to that action's global evidence. It
+keeps an exploration bonus for unseen actions, records the chosen reason and
+per-run property witnesses, and replay-checks both. This is deterministic
+property-directed scheduling, not a remote model or random sampling.
+
 Read the **Operation boundaries** report section to follow a selected timeline
 step by step. Each row is the paused checkpoint after one operation. It shows
 the operation-local topology actions, markers, paused-PC locations, and a hash
