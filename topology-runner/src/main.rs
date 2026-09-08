@@ -628,6 +628,8 @@ struct CampaignTimelineBoundary {
     serial_sha256: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     serial_delta: BTreeMap<String, CampaignSerialDelta>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    network_traffic_delta: BTreeMap<String, BTreeMap<String, CampaignNetworkTrafficDelta>>,
 }
 
 /// A bounded, escaped excerpt of one service's serial bytes emitted between
@@ -643,6 +645,27 @@ struct CampaignSerialDelta {
 }
 
 fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
+/// Counter changes observed at an operation boundary. Payload digests remain
+/// in the locked per-service result; these counters make a topology effect
+/// visible in the compact timeline.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+struct CampaignNetworkTrafficDelta {
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    tx_frames: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    rx_frames: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    dropped: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    duplicated: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    corrupted: u64,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
@@ -1148,6 +1171,7 @@ struct CampaignCheckpointBoundary {
     program_counters: BTreeMap<String, Vec<String>>,
     serial_sha256: BTreeMap<String, String>,
     serial_contents: BTreeMap<String, Vec<u8>>,
+    network_traffic: BTreeMap<String, BTreeMap<String, NetworkTraffic>>,
 }
 
 enum CampaignPrefixResult {
@@ -4566,6 +4590,11 @@ fn campaign_checkpoint_boundary(
         program_counters: campaign_checkpoint_program_counters(checkpoint),
         serial_sha256: campaign_checkpoint_serial_sha256(checkpoint),
         serial_contents: campaign_checkpoint_serial_contents(checkpoint),
+        network_traffic: checkpoint
+            .scheduler
+            .iter()
+            .map(|(service, state)| (service.clone(), state.network_traffic.clone()))
+            .collect(),
     }
 }
 
@@ -4616,6 +4645,7 @@ fn campaign_operation_timeline(
             let (new_markers, changed_program_counters, changed_serial) =
                 campaign_boundary_delta(&previous, boundary);
             let serial_delta = campaign_serial_delta(&previous, boundary);
+            let network_traffic_delta = campaign_network_traffic_delta(&previous, boundary);
             previous = boundary.clone();
             CampaignTimelineBoundary {
                 operation: campaign_operation_choice_name(campaign, *operation),
@@ -4628,7 +4658,47 @@ fn campaign_operation_timeline(
                 instruction_locations: symbolizer.symbolize(&boundary.program_counters),
                 serial_sha256: boundary.serial_sha256.clone(),
                 serial_delta,
+                network_traffic_delta,
             }
+        })
+        .collect()
+}
+
+fn campaign_network_traffic_delta(
+    previous: &CampaignCheckpointBoundary,
+    boundary: &CampaignCheckpointBoundary,
+) -> BTreeMap<String, BTreeMap<String, CampaignNetworkTrafficDelta>> {
+    boundary
+        .network_traffic
+        .iter()
+        .filter_map(|(service, networks)| {
+            let previous_networks = previous.network_traffic.get(service);
+            let delta = networks
+                .iter()
+                .filter_map(|(network, current)| {
+                    let previous = previous_networks
+                        .and_then(|networks| networks.get(network))
+                        .cloned()
+                        .unwrap_or_default();
+                    let delta = CampaignNetworkTrafficDelta {
+                        tx_frames: current.tx_frames.saturating_sub(previous.tx_frames),
+                        rx_frames: current.rx_frames.saturating_sub(previous.rx_frames),
+                        dropped: current.dropped.saturating_sub(previous.dropped),
+                        duplicated: current.duplicated.saturating_sub(previous.duplicated),
+                        corrupted: current.corrupted.saturating_sub(previous.corrupted),
+                    };
+                    (delta
+                        != CampaignNetworkTrafficDelta {
+                            tx_frames: 0,
+                            rx_frames: 0,
+                            dropped: 0,
+                            duplicated: 0,
+                            corrupted: 0,
+                        })
+                    .then_some((network.clone(), delta))
+                })
+                .collect::<BTreeMap<_, _>>();
+            (!delta.is_empty()).then_some((service.clone(), delta))
         })
         .collect()
 }
@@ -9301,6 +9371,10 @@ mod tests {
                 ("api".to_owned(), b"api before\n".to_vec()),
                 ("worker".to_owned(), b"worker before\n".to_vec()),
             ]),
+            network_traffic: BTreeMap::from([(
+                "api".to_owned(),
+                BTreeMap::from([("backplane".to_owned(), NetworkTraffic::default())]),
+            )]),
         };
         let boundary = CampaignCheckpointBoundary {
             actions: Vec::new(),
@@ -9324,6 +9398,21 @@ mod tests {
                     b"worker before\nworker after\n".to_vec(),
                 ),
             ]),
+            network_traffic: BTreeMap::from([(
+                "api".to_owned(),
+                BTreeMap::from([(
+                    "backplane".to_owned(),
+                    NetworkTraffic {
+                        tx_frames: 2,
+                        rx_frames: 1,
+                        dropped: 1,
+                        duplicated: 0,
+                        corrupted: 0,
+                        tx_sha256: None,
+                        rx_sha256: None,
+                    },
+                )]),
+            )]),
         };
 
         assert_eq!(
@@ -9347,6 +9436,22 @@ mod tests {
                 },
             )])
         );
+        assert_eq!(
+            campaign_network_traffic_delta(&previous, &boundary),
+            BTreeMap::from([(
+                "api".to_owned(),
+                BTreeMap::from([(
+                    "backplane".to_owned(),
+                    CampaignNetworkTrafficDelta {
+                        tx_frames: 2,
+                        rx_frames: 1,
+                        dropped: 1,
+                        duplicated: 0,
+                        corrupted: 0,
+                    },
+                )]),
+            )])
+        );
     }
 
     #[test]
@@ -9360,6 +9465,7 @@ mod tests {
                 ("api".to_owned(), b"old output".to_vec()),
                 ("worker".to_owned(), Vec::new()),
             ]),
+            network_traffic: BTreeMap::new(),
         };
         let boundary = CampaignCheckpointBoundary {
             actions: Vec::new(),
@@ -9373,6 +9479,7 @@ mod tests {
                     vec![b'\n'; CAMPAIGN_SERIAL_EXCERPT_BYTES + 1],
                 ),
             ]),
+            network_traffic: BTreeMap::new(),
         };
 
         let delta = campaign_serial_delta(&previous, &boundary);
@@ -9416,6 +9523,7 @@ mod tests {
                 instruction_locations: BTreeMap::new(),
                 serial_sha256: BTreeMap::from([("api".to_owned(), "serial".to_owned())]),
                 serial_delta: BTreeMap::new(),
+                network_traffic_delta: BTreeMap::new(),
             }],
             program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
             instruction_locations: BTreeMap::from([(

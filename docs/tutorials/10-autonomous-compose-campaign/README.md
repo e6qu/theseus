@@ -298,8 +298,9 @@ which services changed serial output or paused-PC state since the preceding
 checkpoint. It also shows the new serial bytes as an escaped excerpt, plus
 their byte count and full-delta hash. The excerpt is capped; the complete
 serial logs and VM snapshots stay in that locked run directory. These boundary
-rows explain execution; only the final paused-PC samples participate in
-coverage novelty.
+rows also show the simulated-network TX, RX, drop, duplicate, and corruption
+counters produced by that operation. They explain execution; only the final
+paused-PC samples participate in coverage novelty.
 
 When you replay a campaign bundle, Theseus does not search again. It restores
 and runs the recorded operation and fault corpus in the recorded order, then
