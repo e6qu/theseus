@@ -1,8 +1,9 @@
 # Reproduce a runtime image
 
 Start with a published SHA release. Its signed `build-inputs.json` records the
-source commit, Docker frontend and base-image digests, Debian snapshots, kernel
-commit, source date, and the expected platform-image digest.
+source commit, GitHub Action commits, Docker frontend and base-image digests,
+Debian snapshots, kernel commit, source date, and the expected platform-image
+digest.
 
 Run these commands on a native Linux `amd64` or `arm64` Docker host. Set
 `ARCH` to that host's architecture; do not cross-build for this check.

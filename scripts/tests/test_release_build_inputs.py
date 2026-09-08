@@ -61,6 +61,9 @@ def main() -> None:
     assert record["runtime"]["platform_digests"] == {"amd64": DIGEST, "arm64": DIGEST}
     assert record["build"]["kernel_revision"] == "8a40ca92bfa9b706b76287942c89b13884928cb0"
     assert len(record["build"]["apt_snapshots"]) == 4
+    assert record["build"]["release_workflow_actions"]["docker/build-push-action"] == (
+        "10e90e3645eae34f1e60eeb005ba3a3d33f178e8"
+    )
 
 
 if __name__ == "__main__":

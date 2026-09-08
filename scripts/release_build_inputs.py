@@ -11,6 +11,7 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = ROOT / "Dockerfile"
+RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 SHA256 = re.compile(r"sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"[0-9a-f]{40}$")
 
@@ -31,6 +32,22 @@ def docker_inputs(dockerfile: Path) -> dict[str, object]:
         "apt_snapshots": snapshots,
         "kernel_revision": revision.group(1),
     }
+
+
+def release_workflow_actions(workflow: Path) -> dict[str, str]:
+    references = re.findall(
+        r"^\s*(?:-\s*)?uses:\s*([^@\s]+)@([0-9a-f]{40})\s*$",
+        workflow.read_text(),
+        re.MULTILINE,
+    )
+    if not references:
+        raise ValueError("release workflow does not pin any action dependencies")
+    actions: dict[str, str] = {}
+    for name, revision in references:
+        if name in actions and actions[name] != revision:
+            raise ValueError(f"release workflow pins {name} to multiple revisions")
+        actions[name] = revision
+    return actions
 
 
 def required_sha256(value: str) -> str:
@@ -76,7 +93,10 @@ def main() -> None:
                 "arm64": args.runtime_arm64_digest,
             },
         },
-        "build": docker_inputs(DOCKERFILE),
+        "build": {
+            **docker_inputs(DOCKERFILE),
+            "release_workflow_actions": release_workflow_actions(RELEASE_WORKFLOW),
+        },
     }
     args.output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
 
