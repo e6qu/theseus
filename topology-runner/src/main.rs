@@ -629,6 +629,10 @@ struct CampaignTimelineBoundary {
     /// much the guest consumed and left queued.
     #[serde(default)]
     delivery: CampaignUartDelivery,
+    /// A marker barrier is valid only when it appears after this operation's
+    /// UART bytes were accepted. This records that causal response window.
+    #[serde(default)]
+    barrier: CampaignUartBarrier,
     round: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     actions: Vec<AppliedCampaignAction>,
@@ -659,7 +663,7 @@ struct CampaignTimelineBoundary {
 /// A bounded, escaped excerpt of one service's serial bytes emitted between
 /// adjacent operation checkpoints. The hash always covers the complete delta,
 /// including bytes omitted from the excerpt.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
 struct CampaignSerialDelta {
     bytes: usize,
     sha256: String,
@@ -696,6 +700,17 @@ struct CampaignUartDelivery {
     /// Empty means the operation deliberately had no marker barrier.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     checkpoint: String,
+}
+
+/// The target service's post-input serial evidence through the first matched
+/// operation barrier. The marker offset is relative to this response, never a
+/// reused historical log position.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
+struct CampaignUartBarrier {
+    recorded: bool,
+    checkpoint: String,
+    marker_offset: usize,
+    response: CampaignSerialDelta,
 }
 
 fn is_zero(value: &usize) -> bool {
@@ -1246,6 +1261,7 @@ struct CampaignPrefixCheckpoint {
     checkpoint: CampaignCheckpoint,
     actions: Vec<AppliedCampaignAction>,
     events: Vec<CampaignEvent>,
+    barriers: Vec<CampaignUartBarrier>,
     boundaries: Vec<CampaignCheckpointBoundary>,
 }
 
@@ -1873,6 +1889,7 @@ impl CampaignCheckpointTree {
             checkpoint: self.root.clone(),
             actions: Vec::new(),
             events: Vec::new(),
+            barriers: Vec::new(),
             boundaries: Vec::new(),
         };
         for (index, operation) in schedule.operations.iter().enumerate() {
@@ -1903,7 +1920,7 @@ impl CampaignCheckpointTree {
                 parent = existing.clone();
                 continue;
             }
-            let (checkpoint, applied) = checkpoint_campaign_operation(
+            let (checkpoint, applied, barrier) = checkpoint_campaign_operation(
                 topology,
                 &parent.checkpoint,
                 &prefix[prefix.len() - 1],
@@ -1913,10 +1930,13 @@ impl CampaignCheckpointTree {
             actions.extend(applied.clone());
             let mut boundaries = parent.boundaries.clone();
             boundaries.push(campaign_checkpoint_boundary(&checkpoint, applied));
+            let mut barriers = parent.barriers.clone();
+            barriers.push(barrier);
             parent = CampaignPrefixCheckpoint {
                 checkpoint,
                 actions,
                 events: prefix.clone(),
+                barriers,
                 boundaries,
             };
             self.prefixes.insert(key, parent.clone());
@@ -1949,7 +1969,14 @@ fn checkpoint_campaign_operation(
     parent: &CampaignCheckpoint,
     event: &CampaignEvent,
     directory: &Path,
-) -> Result<(CampaignCheckpoint, Vec<AppliedCampaignAction>), String> {
+) -> Result<
+    (
+        CampaignCheckpoint,
+        Vec<AppliedCampaignAction>,
+        CampaignUartBarrier,
+    ),
+    String,
+> {
     let switches: BTreeMap<String, SharedSimSwitch> = topology
         .networks
         .keys()
@@ -2022,10 +2049,13 @@ fn checkpoint_campaign_operation(
         &mut applied,
     );
     services.insert(event.service.clone(), target);
-    injection?;
+    let barrier = injection?
+        .into_iter()
+        .next()
+        .expect("one checkpoint campaign event yields one barrier receipt");
     let checkpoint =
         capture_campaign_checkpoint(directory, topology, &mut services, &switches, parent.round)?;
-    Ok((checkpoint, applied))
+    Ok((checkpoint, applied, barrier))
 }
 
 fn write_campaign_prefix_actions(
@@ -2275,6 +2305,7 @@ fn execute_campaign(
             &campaign,
             &schedule,
             &prefix.events,
+            &prefix.barriers,
             &prefix.boundaries,
             &checkpoints.root_boundary(),
             &instruction_symbolizer,
@@ -4046,6 +4077,9 @@ fn campaign_timeline_matches(
                 if campaign_uart_delivery_is_absent(&expected.delivery) {
                     normalized.delivery = expected.delivery.clone();
                 }
+                if campaign_uart_barrier_is_absent(&expected.barrier) {
+                    normalized.barrier = expected.barrier.clone();
+                }
                 *expected == normalized
             }
         })
@@ -4065,6 +4099,13 @@ fn campaign_uart_delivery_is_absent(delivery: &CampaignUartDelivery) -> bool {
         && delivery.pending_after == 0
         && delivery.guest_read_bytes == 0
         && delivery.checkpoint.is_empty()
+}
+
+fn campaign_uart_barrier_is_absent(barrier: &CampaignUartBarrier) -> bool {
+    !barrier.recorded
+        && barrier.checkpoint.is_empty()
+        && barrier.marker_offset == 0
+        && barrier.response == CampaignSerialDelta::default()
 }
 
 /// Choose the next leaf from observed marker, paused-PC, topology-state, and
@@ -4957,19 +4998,22 @@ fn campaign_operation_timeline(
     campaign: &CampaignPlan,
     schedule: &CampaignSchedule,
     events: &[CampaignEvent],
+    barriers: &[CampaignUartBarrier],
     boundaries: &[CampaignCheckpointBoundary],
     baseline: &CampaignCheckpointBoundary,
     symbolizer: &CampaignInstructionSymbolizer,
 ) -> Vec<CampaignTimelineBoundary> {
     debug_assert_eq!(schedule.operations.len(), events.len());
+    debug_assert_eq!(schedule.operations.len(), barriers.len());
     debug_assert_eq!(schedule.operations.len(), boundaries.len());
     let mut previous = baseline.clone();
     schedule
         .operations
         .iter()
         .zip(events)
+        .zip(barriers)
         .zip(boundaries)
-        .map(|((operation, event), boundary)| {
+        .map(|(((operation, event), barrier), boundary)| {
             let (new_markers, changed_program_counters, changed_serial) =
                 campaign_boundary_delta(&previous, boundary);
             let serial_delta = campaign_serial_delta(&previous, boundary);
@@ -4985,6 +5029,7 @@ fn campaign_operation_timeline(
                 service: campaign_operation_service(campaign, *operation).to_owned(),
                 input,
                 delivery,
+                barrier: barrier.clone(),
                 round: boundary.round,
                 actions: boundary.actions.clone(),
                 markers: boundary.markers.clone(),
@@ -5155,27 +5200,25 @@ fn campaign_serial_delta(
             let delta = contents
                 .strip_prefix(previous_contents)
                 .unwrap_or(contents.as_slice());
-            (!delta.is_empty()).then(|| {
-                let excerpt_bytes = &delta[..delta.len().min(CAMPAIGN_EVIDENCE_EXCERPT_BYTES)];
-                let mut hasher = Sha256::new();
-                hasher.update(delta);
-                (
-                    service.clone(),
-                    CampaignSerialDelta {
-                        bytes: delta.len(),
-                        sha256: format!("{:x}", hasher.finalize()),
-                        excerpt: delta
-                            .iter()
-                            .take(CAMPAIGN_EVIDENCE_EXCERPT_BYTES)
-                            .flat_map(|byte| std::ascii::escape_default(*byte))
-                            .map(char::from)
-                            .collect(),
-                        omitted_bytes: delta.len() - excerpt_bytes.len(),
-                    },
-                )
-            })
+            (!delta.is_empty()).then(|| (service.clone(), campaign_serial_evidence(delta)))
         })
         .collect()
+}
+
+fn campaign_serial_evidence(bytes: &[u8]) -> CampaignSerialDelta {
+    let excerpt = &bytes[..bytes.len().min(CAMPAIGN_EVIDENCE_EXCERPT_BYTES)];
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    CampaignSerialDelta {
+        bytes: bytes.len(),
+        sha256: format!("{:x}", hasher.finalize()),
+        excerpt: excerpt
+            .iter()
+            .flat_map(|byte| std::ascii::escape_default(*byte))
+            .map(char::from)
+            .collect(),
+        omitted_bytes: bytes.len() - excerpt.len(),
+    }
 }
 
 /// Compact, deterministic evidence of what an operation changed relative to
@@ -7336,19 +7379,31 @@ fn inject_campaign_events(
     topology: &TopologyPlan,
     services: &mut BTreeMap<String, ServiceRuntime>,
     recorded: &mut Vec<AppliedCampaignAction>,
-) -> Result<(), String> {
+) -> Result<Vec<CampaignUartBarrier>, String> {
     if events.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     wait_for_serial(serial_log, b"THES:M:42", "serial readiness")?;
+    let mut barriers = Vec::with_capacity(events.len());
     for event in events {
+        let input_offset = fs::metadata(serial_log)
+            .map_err(|error| {
+                format!(
+                    "cannot inspect serial log {}: {error}",
+                    serial_log.display()
+                )
+            })?
+            .len() as usize;
         driver.vm.push_serial_input(&decode_hex(&event.data_hex)?)?;
         if let Some(checkpoint) = &event.checkpoint {
-            wait_for_serial(
+            barriers.push(wait_for_serial_after(
                 serial_log,
+                input_offset,
                 checkpoint.as_bytes(),
                 "campaign operation checkpoint",
-            )?;
+            )?);
+        } else {
+            barriers.push(CampaignUartBarrier::default());
         }
         for action in &event.actions {
             recorded.push(apply_campaign_action(
@@ -7360,7 +7415,7 @@ fn inject_campaign_events(
             )?);
         }
     }
-    Ok(())
+    Ok(barriers)
 }
 
 fn apply_campaign_action(
@@ -7746,6 +7801,40 @@ fn wait_for_serial_for(
     }
     Err(format!(
         "service did not announce {purpose}: {}",
+        serial_log.display()
+    ))
+}
+
+/// Wait for a serial checkpoint that was emitted after an operation's input
+/// was accepted. Looking only in the post-input suffix prevents a marker from
+/// an earlier operation from satisfying a repeated barrier immediately.
+fn wait_for_serial_after(
+    serial_log: &Path,
+    input_offset: usize,
+    needle: &[u8],
+    purpose: &str,
+) -> Result<CampaignUartBarrier, String> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Ok(serial) = fs::read(serial_log) {
+            let response = serial.get(input_offset..).unwrap_or_default();
+            if let Some(marker_offset) = response
+                .windows(needle.len())
+                .position(|window| window == needle)
+            {
+                let through_marker = &response[..marker_offset + needle.len()];
+                return Ok(CampaignUartBarrier {
+                    recorded: true,
+                    checkpoint: String::from_utf8_lossy(needle).into_owned(),
+                    marker_offset,
+                    response: campaign_serial_evidence(through_marker),
+                });
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Err(format!(
+        "service did not announce {purpose} after UART input: {}",
         serial_log.display()
     ))
 }
@@ -10213,6 +10302,33 @@ mod tests {
     }
 
     #[test]
+    fn campaign_uart_barrier_ignores_a_historical_matching_marker() {
+        let directory = std::env::temp_dir().join(format!(
+            "theseus-causal-uart-barrier-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let serial = directory.join("serial.log");
+        let old = b"THES:M:complete\n";
+        fs::write(&serial, [old.as_slice(), b"reply THES:M:complete"].concat()).unwrap();
+
+        let barrier = wait_for_serial_after(
+            &serial,
+            old.len(),
+            b"THES:M:complete",
+            "campaign operation checkpoint",
+        )
+        .unwrap();
+
+        assert!(barrier.recorded);
+        assert_eq!(barrier.marker_offset, b"reply ".len());
+        assert_eq!(barrier.response.bytes, b"reply THES:M:complete".len());
+        assert_eq!(barrier.response.excerpt, "reply THES:M:complete");
+        assert_eq!(barrier.checkpoint, "THES:M:complete");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn campaign_replay_verifies_guidance_evidence() {
         let actual = CampaignRun {
             index: 0,
@@ -10248,6 +10364,12 @@ mod tests {
                     pending_after: 0,
                     guest_read_bytes: 6,
                     checkpoint: "THES:M:checkpoint".to_owned(),
+                },
+                barrier: CampaignUartBarrier {
+                    recorded: true,
+                    checkpoint: "THES:M:checkpoint".to_owned(),
+                    marker_offset: 0,
+                    response: campaign_serial_evidence(b"THES:M:checkpoint"),
                 },
                 round: 1,
                 actions: Vec::new(),
@@ -10307,6 +10429,7 @@ mod tests {
         legacy_timeline.timeline[0].service.clear();
         legacy_timeline.timeline[0].input = CampaignInputEvidence::default();
         legacy_timeline.timeline[0].delivery = CampaignUartDelivery::default();
+        legacy_timeline.timeline[0].barrier = CampaignUartBarrier::default();
         assert!(campaign_replay_mismatches(&legacy_timeline, &actual).is_empty());
         let mut changed_target = expected.clone();
         changed_target.timeline[0].service = "worker".to_owned();
@@ -10319,6 +10442,10 @@ mod tests {
         let mut changed_delivery = expected.clone();
         changed_delivery.timeline[0].delivery.guest_read_bytes = 5;
         assert!(campaign_replay_mismatches(&changed_delivery, &actual)
+            .contains(&"operation-boundary timeline".to_owned()));
+        let mut changed_barrier = expected.clone();
+        changed_barrier.timeline[0].barrier.marker_offset = 1;
+        assert!(campaign_replay_mismatches(&changed_barrier, &actual)
             .contains(&"operation-boundary timeline".to_owned()));
         let mut changed_symbols = expected.clone();
         changed_symbols
