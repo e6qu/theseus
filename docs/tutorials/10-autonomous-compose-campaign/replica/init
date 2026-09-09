@@ -1,6 +1,15 @@
 #!/bin/busybox sh
 mount -t proc proc /proc
-printf 'replica ready\n'
+printf 'THES:M:42\n'
 printf '%s\n' '{"event":"replicated","name":"write","source_request_id":"transaction-42","source_attempt":1}'
-sleep 2
+
+while IFS= read -r -t 1 command </dev/ttyS0; do
+    case "$command" in
+        probe)
+            printf 'THES:M:replica_probed\n'
+            printf '%s\n' '{"event":"replica_probe","status":"ok"}'
+            printf 'THES:CHECKPOINT:replica_probe\n'
+            ;;
+    esac
+done
 poweroff -f

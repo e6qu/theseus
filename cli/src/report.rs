@@ -346,6 +346,8 @@ struct CampaignPosteriorEvidence {
 struct CampaignTimelineBoundary {
     operation: String,
     #[serde(default)]
+    service: String,
+    #[serde(default)]
     round: u64,
     #[serde(default)]
     actions: Vec<CampaignAction>,
@@ -959,10 +961,10 @@ serial=b=>Object.entries(b.serial_delta).map(([service,d])=>service+': '+d.excer
 traffic=b=>Object.entries(b.network_traffic_delta).flatMap(([service,nets])=>Object.entries(nets).map(([network,d])=>service+'.'+network+': tx '+d.tx_frames+' rx '+d.rx_frames+' drop '+d.dropped+' dup '+d.duplicated+' corrupt '+d.corrupted)).join(' · ')||'none',
 storage=b=>b.changed_storage.join(', ')||'none',
 virtualTime=b=>Object.entries(b.virtual_time_delta_ns).map(([service,clocks])=>service+': '+clocks.join(', ')+' ns').join(' · ')||'none',
-rows=m.campaign_runs.flatMap(r=>r.timeline.map(b=>[String(r.index),b.operation,String(b.round),delta(b),b.markers.join(' ')||'none',locations(b),b.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',Object.entries(b.serial_sha256).map(([service,hash])=>service+':'+hash).join(' ')||'none',serial(b),traffic(b),storage(b),virtualTime(b),b.state_sha256||'none'])),
+rows=m.campaign_runs.flatMap(r=>r.timeline.map(b=>[String(r.index),b.operation,b.service||'driver (legacy)',String(b.round),delta(b),b.markers.join(' ')||'none',locations(b),b.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',Object.entries(b.serial_sha256).map(([service,hash])=>service+':'+hash).join(' ')||'none',serial(b),traffic(b),storage(b),virtualTime(b),b.state_sha256||'none'])),
 s=section('Operation boundaries');
-s.append(el('p','Each row is the paused checkpoint after one operation. The delta compares it with the preceding checkpoint. New serial output is an escaped, bounded excerpt; its hash covers the complete new bytes. Network counters, changed storage, and virtual-time deltas show state produced by this operation. Serial logs and VM snapshots remain in the locked run directory.'));
-s.append(table(rows,['Run','Operation','Round','Delta','Markers','Instruction locations','Applied actions','Serial SHA-256','New serial output','Network traffic','Changed storage','Virtual time delta','State SHA-256']));
+s.append(el('p','Each row is the paused checkpoint after one operation. Target names the service whose UART received it. The delta compares it with the preceding checkpoint. New serial output is an escaped, bounded excerpt; its hash covers the complete new bytes. Network counters, changed storage, and virtual-time deltas show state produced by this operation. Serial logs and VM snapshots remain in the locked run directory.'));
+s.append(table(rows,['Run','Operation','Target','Round','Delta','Markers','Instruction locations','Applied actions','Serial SHA-256','New serial output','Network traffic','Changed storage','Virtual time delta','State SHA-256']));
 }}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
 if(m.campaign_minimization){{const x=m.campaign_minimization,s=section('Campaign minimization');s.append(table([[x.property,x.original_operations.join(' → ')||'none',x.minimized_operations.join(' → ')||'none',x.original_faults.join(' + ')||'none',x.minimized_faults.join(' + ')||'none',String(x.operation_attempts),String(x.fault_attempts)]],['Property','Original operations','1-minimal operations','Original faults','1-minimal faults','Operation replays','Fault replays']));}}
@@ -1119,7 +1121,7 @@ fn campaign_virtual_time_delta_label(boundary: &CampaignTimelineBoundary) -> Str
     }
 }
 
-fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 13]> {
+fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 14]> {
     run.timeline
         .iter()
         .map(|boundary| {
@@ -1147,6 +1149,11 @@ fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 13]> {
             [
                 run.index.to_string(),
                 boundary.operation.clone(),
+                if boundary.service.is_empty() {
+                    "driver (legacy)".to_owned()
+                } else {
+                    boundary.service.clone()
+                },
                 boundary.round.to_string(),
                 delta,
                 boundary.markers.join(" "),
@@ -1343,14 +1350,15 @@ fn render_markdown(model: &ReportModel) -> String {
         .flat_map(campaign_timeline_labels)
         .collect::<Vec<_>>();
     if !timeline.is_empty() {
-        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. The delta compares it with the preceding checkpoint.\n\n| Run | Operation | Round | Delta | Markers | Instruction locations | Applied actions | Serial SHA-256 | New serial output | Network traffic | Changed storage | Virtual time delta | State SHA-256 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
-        for [run, operation, round, delta, markers, locations, actions, serial, serial_output, traffic, storage, time, state] in
+        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. Target is the service whose UART received it. The delta compares it with the preceding checkpoint.\n\n| Run | Operation | Target | Round | Delta | Markers | Instruction locations | Applied actions | Serial SHA-256 | New serial output | Network traffic | Changed storage | Virtual time delta | State SHA-256 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+        for [run, operation, target, round, delta, markers, locations, actions, serial, serial_output, traffic, storage, time, state] in
             timeline
         {
             output.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 markdown_cell(&run),
                 markdown_cell(&operation),
+                markdown_cell(&target),
                 markdown_cell(&round),
                 markdown_cell(&delta),
                 markdown_cell(&markers),
@@ -1594,7 +1602,7 @@ mod tests {
         );
         write_json(
             &directory.path().join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","guidance":"posterior","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"marker_guard_rejections":2,"serial_guard_rejections":1,"unique_topology_states":3,"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","guidance_evidence":{"action":"read","context":["write"],"scope":"exact context","successes":2,"misses":1,"mean_per_mille":600,"uncertainty_per_mille":100,"score":44800},"timeline":[{"operation":"write","round":7,"markers":["42"],"new_markers":["42"],"changed_program_counters":["api"],"changed_serial":["api"],"program_counters":{"api":["0x7000"]},"instruction_locations":{"api":[{"address":"0x7000","symbol":"write","offset":0}]},"actions":[{"kind":"partition","target":"network:backplane"}],"serial_sha256":{"api":"abc123"},"serial_delta":{"api":{"bytes":16,"sha256":"write-hash","excerpt":"write\\ncomplete\\n","omitted_bytes":0}},"network_traffic_delta":{"api":{"backplane":{"tx_frames":2,"rx_frames":1,"dropped":1,"duplicated":0,"corrupted":0}}},"changed_storage":["api:data"],"virtual_time_delta_ns":{"api":[1000]},"state_sha256":"boundary-write"},{"operation":"read","round":9,"markers":["42","a1"],"new_markers":["a1"],"changed_program_counters":["api"],"changed_serial":["api"],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"serial_sha256":{"api":"def456"},"serial_delta":{"api":{"bytes":11,"sha256":"read-hash","excerpt":"read\\nready\\n","omitted_bytes":0}},"network_traffic_delta":{"api":{"backplane":{"tx_frames":0,"rx_frames":2,"dropped":0,"duplicated":1,"corrupted":0}}},"changed_storage":[],"virtual_time_delta_ns":{"api":[2000,3000]},"state_sha256":"boundary-read"}],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","guidance":"posterior","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"marker_guard_rejections":2,"serial_guard_rejections":1,"unique_topology_states":3,"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","guidance_evidence":{"action":"read","context":["write"],"scope":"exact context","successes":2,"misses":1,"mean_per_mille":600,"uncertainty_per_mille":100,"score":44800},"timeline":[{"operation":"write","round":7,"markers":["42"],"new_markers":["42"],"changed_program_counters":["api"],"changed_serial":["api"],"program_counters":{"api":["0x7000"]},"instruction_locations":{"api":[{"address":"0x7000","symbol":"write","offset":0}]},"actions":[{"kind":"partition","target":"network:backplane"}],"serial_sha256":{"api":"abc123"},"serial_delta":{"api":{"bytes":16,"sha256":"write-hash","excerpt":"write\\ncomplete\\n","omitted_bytes":0}},"network_traffic_delta":{"api":{"backplane":{"tx_frames":2,"rx_frames":1,"dropped":1,"duplicated":0,"corrupted":0}}},"changed_storage":["api:data"],"virtual_time_delta_ns":{"api":[1000]},"state_sha256":"boundary-write"},{"operation":"read","service":"worker","round":9,"markers":["42","a1"],"new_markers":["a1"],"changed_program_counters":["api"],"changed_serial":["api"],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"serial_sha256":{"api":"def456"},"serial_delta":{"api":{"bytes":11,"sha256":"read-hash","excerpt":"read\\nready\\n","omitted_bytes":0}},"network_traffic_delta":{"api":{"backplane":{"tx_frames":0,"rx_frames":2,"dropped":0,"duplicated":1,"corrupted":0}}},"changed_storage":[],"virtual_time_delta_ns":{"api":[2000,3000]},"state_sha256":"boundary-read"}],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
         );
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
@@ -1618,6 +1626,9 @@ mod tests {
         assert!(html.contains("Topology state"));
         assert!(html.contains("Instruction locations"));
         assert!(html.contains("Operation boundaries"));
+        assert!(html.contains("Target"));
+        assert!(html.contains("worker"));
+        assert!(html.contains("driver (legacy)"));
         assert!(html.contains("Serial SHA-256"));
         assert!(html.contains("changed PCs"));
         assert!(html.contains("New serial output"));
@@ -1638,9 +1649,9 @@ mod tests {
         let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
         assert!(markdown.contains("0x8000 → checkpoint +0x7 · kernel/init/main.c:812:4"));
         assert!(markdown.contains("## Operation boundaries"));
-        assert!(
-            markdown.contains("write | 7 | new markers: 42; changed PCs: api; changed serial: api")
-        );
+        assert!(markdown.contains(
+            "write | driver (legacy) | 7 | new markers: 42; changed PCs: api; changed serial: api"
+        ));
         assert!(markdown.contains("new markers: 42; changed PCs: api; changed serial: api"));
         assert!(markdown.contains("api: write\\ncomplete\\n [16 bytes; sha256 write-hash]"));
         assert!(markdown.contains("api:data"));

@@ -168,6 +168,14 @@ x-theseus:
         # campaign root. Marker guards read the restored serial transcript.
         requires_markers: ["42"]
         max_uses: 2
+      - name: replica_probe
+        # This operation runs in a second guest. Its event, checkpoint, and
+        # default serial guards belong to replica, not the campaign driver.
+        service: replica
+        input: "probe\n"
+        stage: write
+        requires_markers: ["42"]
+        max_uses: 1
       - name: read_stale
         inputs:
           - name: after_beta
