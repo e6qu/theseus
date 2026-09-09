@@ -309,11 +309,14 @@ the UART target, operation-local topology actions, markers, paused-PC locations,
 of each service's serial transcript. Its delta says which markers are new and
 which services changed serial output or paused-PC state since the preceding
 checkpoint. **UART input** shows the exact delivered bytes as an escaped,
-bounded excerpt with their byte count and full hash. The locked replay plan
-retains the complete input. The report also shows new serial bytes as an
-escaped excerpt, plus their byte count and full-delta hash. The excerpts are
-capped; the complete serial logs and VM snapshots stay in that locked run directory. These boundary
-rows also show the simulated-network TX, RX, drop, duplicate, and corruption
+bounded excerpt with their byte count and full hash. **UART delivery** proves
+the emulator accepted those bytes, shows how many the guest read, records the
+UART FIFO depth before and after, and names the marker barrier it awaited.
+The locked replay plan retains the complete input. The report also shows new
+serial bytes as an escaped excerpt, plus their byte count and full-delta hash.
+The excerpts are capped; the complete serial logs and VM snapshots stay in
+that locked run directory. These boundary rows also show the simulated-network
+TX, RX, drop, duplicate, and corruption
 counters produced by that operation. The boundary state hash covers this
 compact evidence, so compare the same row across replays without opening a VM
 snapshot. These rows explain execution; only the final paused-PC samples

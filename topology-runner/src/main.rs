@@ -624,6 +624,11 @@ struct CampaignTimelineBoundary {
     /// The replay plan retains the complete event corpus.
     #[serde(default)]
     input: CampaignInputEvidence,
+    /// The UART receipt establishes what happened to the operation input: the
+    /// emulator accepted every byte, and the paused checkpoints record how
+    /// much the guest consumed and left queued.
+    #[serde(default)]
+    delivery: CampaignUartDelivery,
     round: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     actions: Vec<AppliedCampaignAction>,
@@ -673,6 +678,24 @@ struct CampaignInputEvidence {
     excerpt: String,
     #[serde(default, skip_serializing_if = "is_zero")]
     omitted_bytes: usize,
+}
+
+/// Exact UART queue accounting for one operation. `accepted_bytes` is all or
+/// nothing: a full FIFO rejects the operation before it can be checkpointed.
+/// `guest_read_bytes` can include older queued input, so the before/after
+/// depths remain explicit rather than implying every read belongs to this
+/// operation.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
+struct CampaignUartDelivery {
+    recorded: bool,
+    accepted_bytes: usize,
+    pending_before: usize,
+    pending_after: usize,
+    guest_read_bytes: usize,
+    /// The serial marker awaited before applying this operation's actions.
+    /// Empty means the operation deliberately had no marker barrier.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    checkpoint: String,
 }
 
 fn is_zero(value: &usize) -> bool {
@@ -1194,6 +1217,7 @@ struct ServiceVmCheckpoint {
 #[derive(Clone)]
 struct ServiceSchedulerCheckpoint {
     serial_contents: Vec<Vec<u8>>,
+    serial_pending_bytes: usize,
     program_counters: Vec<u64>,
     next_fault: usize,
     paused_until: Option<u64>,
@@ -1233,6 +1257,7 @@ struct CampaignCheckpointBoundary {
     program_counters: BTreeMap<String, Vec<String>>,
     serial_sha256: BTreeMap<String, String>,
     serial_contents: BTreeMap<String, Vec<u8>>,
+    serial_pending_bytes: BTreeMap<String, usize>,
     network_traffic: BTreeMap<String, BTreeMap<String, NetworkTraffic>>,
     storage_sha256: BTreeMap<String, BTreeMap<String, String>>,
     virtual_time_ns: BTreeMap<String, Vec<u64>>,
@@ -1306,6 +1331,14 @@ impl ServiceVm {
             .lock()
             .expect("VMM lock poisoned")
             .push_serial_input(bytes)
+            .map_err(|error| error.to_string())
+    }
+
+    fn serial_input_depth(&self) -> Result<usize, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .serial_input_depth()
             .map_err(|error| error.to_string())
     }
 
@@ -1762,6 +1795,7 @@ fn capture_campaign_checkpoint(
                 name.clone(),
                 ServiceSchedulerCheckpoint {
                     serial_contents,
+                    serial_pending_bytes: service.vm.serial_input_depth()?,
                     program_counters: service.vm.paused_program_counters()?,
                     next_fault: service.next_fault,
                     paused_until: service.paused_until,
@@ -4009,6 +4043,9 @@ fn campaign_timeline_matches(
                 if campaign_input_is_absent(&expected.input) {
                     normalized.input = expected.input.clone();
                 }
+                if campaign_uart_delivery_is_absent(&expected.delivery) {
+                    normalized.delivery = expected.delivery.clone();
+                }
                 *expected == normalized
             }
         })
@@ -4019,6 +4056,15 @@ fn campaign_input_is_absent(input: &CampaignInputEvidence) -> bool {
         && input.sha256.is_empty()
         && input.excerpt.is_empty()
         && input.omitted_bytes == 0
+}
+
+fn campaign_uart_delivery_is_absent(delivery: &CampaignUartDelivery) -> bool {
+    !delivery.recorded
+        && delivery.accepted_bytes == 0
+        && delivery.pending_before == 0
+        && delivery.pending_after == 0
+        && delivery.guest_read_bytes == 0
+        && delivery.checkpoint.is_empty()
 }
 
 /// Choose the next leaf from observed marker, paused-PC, topology-state, and
@@ -4849,6 +4895,11 @@ fn campaign_checkpoint_boundary(
         program_counters: campaign_checkpoint_program_counters(checkpoint),
         serial_sha256: campaign_checkpoint_serial_sha256(checkpoint),
         serial_contents: campaign_checkpoint_serial_contents(checkpoint),
+        serial_pending_bytes: checkpoint
+            .scheduler
+            .iter()
+            .map(|(service, state)| (service.clone(), state.serial_pending_bytes))
+            .collect(),
         network_traffic: checkpoint
             .scheduler
             .iter()
@@ -4925,11 +4976,15 @@ fn campaign_operation_timeline(
             let network_traffic_delta = campaign_network_traffic_delta(&previous, boundary);
             let (changed_storage, virtual_time_delta_ns) =
                 campaign_boundary_state_delta(&previous, boundary);
+            let input = campaign_input_evidence(&event.event.data_hex);
+            let delivery =
+                campaign_uart_delivery(&event.service, &event.event, &input, &previous, boundary);
             previous = boundary.clone();
             CampaignTimelineBoundary {
                 operation: campaign_operation_choice_name(campaign, *operation),
                 service: campaign_operation_service(campaign, *operation).to_owned(),
-                input: campaign_input_evidence(&event.event.data_hex),
+                input,
+                delivery,
                 round: boundary.round,
                 actions: boundary.actions.clone(),
                 markers: boundary.markers.clone(),
@@ -4947,6 +5002,38 @@ fn campaign_operation_timeline(
             }
         })
         .collect()
+}
+
+fn campaign_uart_delivery(
+    service: &str,
+    event: &EventPlan,
+    input: &CampaignInputEvidence,
+    previous: &CampaignCheckpointBoundary,
+    boundary: &CampaignCheckpointBoundary,
+) -> CampaignUartDelivery {
+    let pending_before = previous
+        .serial_pending_bytes
+        .get(service)
+        .copied()
+        .unwrap_or_default();
+    let pending_after = boundary
+        .serial_pending_bytes
+        .get(service)
+        .copied()
+        .unwrap_or_default();
+    CampaignUartDelivery {
+        recorded: true,
+        accepted_bytes: input.bytes,
+        pending_before,
+        pending_after,
+        // The runner is the only UART input producer during a campaign. A
+        // successful raw_input call accepts all bytes, so this is the exact
+        // FIFO dequeue count over the operation window.
+        guest_read_bytes: pending_before
+            .saturating_add(input.bytes)
+            .saturating_sub(pending_after),
+        checkpoint: event.checkpoint.clone().unwrap_or_default(),
+    }
 }
 
 fn campaign_boundary_state_delta(
@@ -5002,6 +5089,7 @@ fn campaign_boundary_state_sha256(boundary: &CampaignCheckpointBoundary) -> Stri
         boundary.round,
         &boundary.program_counters,
         &boundary.serial_sha256,
+        &boundary.serial_pending_bytes,
         &boundary.network_traffic,
         &boundary.storage_sha256,
         &boundary.virtual_time_ns,
@@ -8032,6 +8120,7 @@ mod tests {
                         b"{\"event\":\"write\",\"request_id\":\"r-17\"}\n{\"event\":\"replicated\",\"request_id\":\"r-17\"}\n"
                             .to_vec(),
                     ],
+                    serial_pending_bytes: 0,
                     program_counters: Vec::new(),
                     next_fault: 0,
                     paused_until: None,
@@ -8120,6 +8209,7 @@ mod tests {
                 "api".to_owned(),
                 ServiceSchedulerCheckpoint {
                     serial_contents: vec![complete.to_vec()],
+                    serial_pending_bytes: 0,
                     program_counters: Vec::new(),
                     next_fault: 0,
                     paused_until: None,
@@ -8221,6 +8311,7 @@ mod tests {
                     "api".to_owned(),
                     ServiceSchedulerCheckpoint {
                         serial_contents: vec![api.to_vec()],
+                        serial_pending_bytes: 0,
                         program_counters: Vec::new(),
                         next_fault: 0,
                         paused_until: None,
@@ -8235,6 +8326,7 @@ mod tests {
                     "worker".to_owned(),
                     ServiceSchedulerCheckpoint {
                         serial_contents: vec![worker.to_vec()],
+                        serial_pending_bytes: 0,
                         program_counters: Vec::new(),
                         next_fault: 0,
                         paused_until: None,
@@ -8884,6 +8976,7 @@ mod tests {
                 "api".to_owned(),
                 ServiceSchedulerCheckpoint {
                     serial_contents: vec![b"THES:M:42\nTHES:M:written\n".to_vec()],
+                    serial_pending_bytes: 0,
                     program_counters: vec![0x8000],
                     next_fault: 0,
                     paused_until: None,
@@ -8905,6 +8998,7 @@ mod tests {
                         b"{\"event\":\"started\",\"request_id\":\"first\"}\n{\"event\":\"write\",\"request_id\":\"first\"}\n{\"event\":\"started\",\"request_id\":\"latest\"}\n{\"event\":\"write\",\"request_id\":\"latest\"}\n"
                             .to_vec(),
                     ],
+                    serial_pending_bytes: 0,
                     program_counters: Vec::new(),
                     next_fault: 0,
                     paused_until: None,
@@ -8922,6 +9016,7 @@ mod tests {
                             b"{\"event\":\"audit\",\"write_request_id\":\"first\"}\n{\"event\":\"audit\",\"write_request_id\":\"latest\"}\n"
                                 .to_vec(),
                         ],
+                        serial_pending_bytes: 0,
                         program_counters: Vec::new(),
                         next_fault: 0,
                         paused_until: None,
@@ -9317,6 +9412,7 @@ mod tests {
                 serial_contents: vec![
                     b"{\"event\":\"assertion\",\"passed\":false,\"reason\":\"stale\"}\n{\"event\":\"audit\",\"request_id\":\"r-17\",\"attempt\":2}\n".to_vec(),
                 ],
+                serial_pending_bytes: 0,
                 program_counters: Vec::new(),
                 next_fault: 0,
                 paused_until: None,
@@ -9427,6 +9523,7 @@ mod tests {
         .unwrap();
         let scheduler = |serial: &[u8]| ServiceSchedulerCheckpoint {
             serial_contents: vec![serial.to_vec()],
+            serial_pending_bytes: 0,
             program_counters: Vec::new(),
             next_fault: 0,
             paused_until: None,
@@ -9920,6 +10017,7 @@ mod tests {
                 ("api".to_owned(), b"api before\n".to_vec()),
                 ("worker".to_owned(), b"worker before\n".to_vec()),
             ]),
+            serial_pending_bytes: BTreeMap::from([("api".to_owned(), 2), ("worker".to_owned(), 0)]),
             network_traffic: BTreeMap::from([(
                 "api".to_owned(),
                 BTreeMap::from([("backplane".to_owned(), NetworkTraffic::default())]),
@@ -9950,6 +10048,7 @@ mod tests {
                     b"worker before\nworker after\n".to_vec(),
                 ),
             ]),
+            serial_pending_bytes: BTreeMap::from([("api".to_owned(), 0), ("worker".to_owned(), 1)]),
             network_traffic: BTreeMap::from([(
                 "api".to_owned(),
                 BTreeMap::from([(
@@ -10024,6 +10123,7 @@ mod tests {
                 ("api".to_owned(), b"old output".to_vec()),
                 ("worker".to_owned(), Vec::new()),
             ]),
+            serial_pending_bytes: BTreeMap::new(),
             network_traffic: BTreeMap::new(),
             storage_sha256: BTreeMap::new(),
             virtual_time_ns: BTreeMap::new(),
@@ -10041,6 +10141,7 @@ mod tests {
                     vec![b'\n'; CAMPAIGN_EVIDENCE_EXCERPT_BYTES + 1],
                 ),
             ]),
+            serial_pending_bytes: BTreeMap::new(),
             network_traffic: BTreeMap::new(),
             storage_sha256: BTreeMap::new(),
             virtual_time_ns: BTreeMap::new(),
@@ -10072,6 +10173,46 @@ mod tests {
     }
 
     #[test]
+    fn campaign_uart_delivery_accounts_for_queue_and_marker_barrier() {
+        let boundary = |pending| CampaignCheckpointBoundary {
+            actions: Vec::new(),
+            round: 0,
+            markers: Vec::new(),
+            program_counters: BTreeMap::new(),
+            serial_sha256: BTreeMap::new(),
+            serial_contents: BTreeMap::new(),
+            serial_pending_bytes: BTreeMap::from([("worker".to_owned(), pending)]),
+            network_traffic: BTreeMap::new(),
+            storage_sha256: BTreeMap::new(),
+            virtual_time_ns: BTreeMap::new(),
+        };
+        let event = EventPlan {
+            data_hex: "70696e670a".to_owned(),
+            checkpoint: Some("THES:M:pong".to_owned()),
+            actions: Vec::new(),
+        };
+
+        let delivery = campaign_uart_delivery(
+            "worker",
+            &event,
+            &campaign_input_evidence(&event.data_hex),
+            &boundary(2),
+            &boundary(1),
+        );
+
+        assert_eq!(delivery.accepted_bytes, 5);
+        assert_eq!(delivery.pending_before, 2);
+        assert_eq!(delivery.pending_after, 1);
+        assert_eq!(delivery.guest_read_bytes, 6);
+        assert_eq!(delivery.checkpoint, "THES:M:pong");
+        assert!(delivery.recorded);
+        assert_ne!(
+            campaign_boundary_state_sha256(&boundary(2)),
+            campaign_boundary_state_sha256(&boundary(1))
+        );
+    }
+
+    #[test]
     fn campaign_replay_verifies_guidance_evidence() {
         let actual = CampaignRun {
             index: 0,
@@ -10099,6 +10240,14 @@ mod tests {
                     sha256: "input".to_owned(),
                     excerpt: "write\\n".to_owned(),
                     omitted_bytes: 0,
+                },
+                delivery: CampaignUartDelivery {
+                    recorded: true,
+                    accepted_bytes: 6,
+                    pending_before: 0,
+                    pending_after: 0,
+                    guest_read_bytes: 6,
+                    checkpoint: "THES:M:checkpoint".to_owned(),
                 },
                 round: 1,
                 actions: Vec::new(),
@@ -10157,6 +10306,7 @@ mod tests {
         let mut legacy_timeline = expected.clone();
         legacy_timeline.timeline[0].service.clear();
         legacy_timeline.timeline[0].input = CampaignInputEvidence::default();
+        legacy_timeline.timeline[0].delivery = CampaignUartDelivery::default();
         assert!(campaign_replay_mismatches(&legacy_timeline, &actual).is_empty());
         let mut changed_target = expected.clone();
         changed_target.timeline[0].service = "worker".to_owned();
@@ -10165,6 +10315,10 @@ mod tests {
         let mut changed_input = expected.clone();
         changed_input.timeline[0].input.sha256 = "other-input".to_owned();
         assert!(campaign_replay_mismatches(&changed_input, &actual)
+            .contains(&"operation-boundary timeline".to_owned()));
+        let mut changed_delivery = expected.clone();
+        changed_delivery.timeline[0].delivery.guest_read_bytes = 5;
+        assert!(campaign_replay_mismatches(&changed_delivery, &actual)
             .contains(&"operation-boundary timeline".to_owned()));
         let mut changed_symbols = expected.clone();
         changed_symbols
