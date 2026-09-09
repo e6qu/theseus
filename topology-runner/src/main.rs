@@ -6782,11 +6782,6 @@ fn execute(
                 remaining,
             )?);
         }
-        if events.iter().all(|event| event.actions.is_empty()) {
-            let service = &services[name];
-            inject_serial_events(&service.vm, &events, &service.serial_logs[0])?;
-            continue;
-        }
         let mut driver = services.remove(name).expect("topology service missing");
         let serial = driver.serial_logs[0].clone();
         inject_campaign_events(
@@ -6796,6 +6791,8 @@ fn execute(
             &serial,
             &topology,
             &mut services,
+            &switches,
+            &mut round,
             &mut actions,
         )?;
         services.insert(name.clone(), driver);
@@ -7363,9 +7360,6 @@ fn inject_serial_events(
     events: &[EventPlan],
     serial_log: &Path,
 ) -> Result<(), String> {
-    if events.is_empty() {
-        return Ok(());
-    }
     for event in events {
         vm.push_serial_input(&decode_hex(&event.data_hex)?)?;
         if let Some(checkpoint) = &event.checkpoint {
@@ -7386,6 +7380,8 @@ fn inject_campaign_events(
     serial_log: &Path,
     topology: &TopologyPlan,
     services: &mut BTreeMap<String, ServiceRuntime>,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    round: &mut u64,
     recorded: &mut Vec<AppliedCampaignAction>,
 ) -> Result<Vec<CampaignUartBarrier>, String> {
     if events.is_empty() {
@@ -7403,11 +7399,15 @@ fn inject_campaign_events(
             .len() as usize;
         driver.vm.push_serial_input(&decode_hex(&event.data_hex)?)?;
         if let Some(checkpoint) = &event.checkpoint {
-            barriers.push(wait_for_serial_after(
+            barriers.push(wait_for_serial_after_rounds(
                 serial_log,
                 input_offset,
                 checkpoint.as_bytes(),
                 "campaign operation checkpoint",
+                driver,
+                services,
+                switches,
+                round,
             )?);
         } else {
             barriers.push(CampaignUartBarrier::default());
