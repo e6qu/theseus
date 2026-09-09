@@ -710,6 +710,8 @@ struct CampaignUartBarrier {
     recorded: bool,
     checkpoint: String,
     marker_offset: usize,
+    /// The deterministic topology round in which the response was observed.
+    round: u64,
     response: CampaignSerialDelta,
 }
 
@@ -2039,22 +2041,22 @@ fn checkpoint_campaign_operation(
         .ok_or_else(|| format!("campaign operation service disappeared: {}", event.service))?;
     let serial = target.serial_logs[0].clone();
     let mut applied = Vec::new();
-    let injection = inject_campaign_events(
+    let mut round = parent.round;
+    let injection = inject_campaign_operation(
         &event.service,
         &mut target,
-        std::slice::from_ref(&event.event),
         &serial,
         topology,
         &mut services,
+        &switches,
+        &event.event,
+        &mut round,
         &mut applied,
     );
     services.insert(event.service.clone(), target);
-    let barrier = injection?
-        .into_iter()
-        .next()
-        .expect("one checkpoint campaign event yields one barrier receipt");
+    let barrier = injection?;
     let checkpoint =
-        capture_campaign_checkpoint(directory, topology, &mut services, &switches, parent.round)?;
+        capture_campaign_checkpoint(directory, topology, &mut services, &switches, round)?;
     Ok((checkpoint, applied, barrier))
 }
 
@@ -7418,6 +7420,56 @@ fn inject_campaign_events(
     Ok(barriers)
 }
 
+/// Inject one prefix-tree operation and drive the complete simulated topology
+/// in numbered rounds until its post-input marker arrives.  A campaign prefix
+/// cannot use host elapsed time as its response budget: a network-dependent
+/// guest needs the switch and every simulated NIC to advance while it waits.
+fn inject_campaign_operation(
+    driver_name: &str,
+    driver: &mut ServiceRuntime,
+    serial_log: &Path,
+    topology: &TopologyPlan,
+    services: &mut BTreeMap<String, ServiceRuntime>,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    event: &EventPlan,
+    round: &mut u64,
+    recorded: &mut Vec<AppliedCampaignAction>,
+) -> Result<CampaignUartBarrier, String> {
+    wait_for_serial(serial_log, b"THES:M:42", "serial readiness")?;
+    let input_offset = fs::metadata(serial_log)
+        .map_err(|error| {
+            format!(
+                "cannot inspect serial log {}: {error}",
+                serial_log.display()
+            )
+        })?
+        .len() as usize;
+    driver.vm.push_serial_input(&decode_hex(&event.data_hex)?)?;
+    let barrier = match &event.checkpoint {
+        Some(checkpoint) => wait_for_serial_after_rounds(
+            serial_log,
+            input_offset,
+            checkpoint.as_bytes(),
+            "campaign operation checkpoint",
+            driver,
+            services,
+            switches,
+            round,
+        )?,
+        None => CampaignUartBarrier::default(),
+    };
+    for action in &event.actions {
+        recorded.push(apply_campaign_action(
+            action,
+            driver_name,
+            driver,
+            topology,
+            services,
+        )?);
+    }
+    Ok(barrier)
+}
+
 fn apply_campaign_action(
     action: &CampaignAction,
     driver_name: &str,
@@ -7827,6 +7879,7 @@ fn wait_for_serial_after(
                     recorded: true,
                     checkpoint: String::from_utf8_lossy(needle).into_owned(),
                     marker_offset,
+                    round: 0,
                     response: campaign_serial_evidence(through_marker),
                 });
             }
@@ -7835,6 +7888,72 @@ fn wait_for_serial_after(
     }
     Err(format!(
         "service did not announce {purpose} after UART input: {}",
+        serial_log.display()
+    ))
+}
+
+const CAMPAIGN_BARRIER_MAX_ROUNDS: u64 = 512;
+
+/// Drive every service and simulated network once.  The target is held outside
+/// the service map while a prefix operation is injected, so keep it explicit.
+fn advance_campaign_operation_round(
+    target: &mut ServiceRuntime,
+    services: &mut BTreeMap<String, ServiceRuntime>,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+) -> Result<(), String> {
+    target.vm.pump();
+    target.vm.advance_simulated_networks()?;
+    for service in services.values_mut() {
+        service.vm.pump();
+        service.vm.advance_simulated_networks()?;
+    }
+    for switch in switches.values() {
+        switch
+            .lock()
+            .map_err(|_| "simulated switch lock poisoned".to_owned())?
+            .advance_round();
+    }
+    Ok(())
+}
+
+/// Wait for a causal UART barrier using deterministic topology rounds rather
+/// than a host-time deadline. This lets a response that needs simulated
+/// network delivery complete while giving every campaign the same bound.
+fn wait_for_serial_after_rounds(
+    serial_log: &Path,
+    input_offset: usize,
+    needle: &[u8],
+    purpose: &str,
+    target: &mut ServiceRuntime,
+    services: &mut BTreeMap<String, ServiceRuntime>,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    round: &mut u64,
+) -> Result<CampaignUartBarrier, String> {
+    for step in 0..=CAMPAIGN_BARRIER_MAX_ROUNDS {
+        if let Ok(serial) = fs::read(serial_log) {
+            let response = serial.get(input_offset..).unwrap_or_default();
+            if let Some(marker_offset) = response
+                .windows(needle.len())
+                .position(|window| window == needle)
+            {
+                let through_marker = &response[..marker_offset + needle.len()];
+                return Ok(CampaignUartBarrier {
+                    recorded: true,
+                    checkpoint: String::from_utf8_lossy(needle).into_owned(),
+                    marker_offset,
+                    round: *round,
+                    response: campaign_serial_evidence(through_marker),
+                });
+            }
+        }
+        if step == CAMPAIGN_BARRIER_MAX_ROUNDS || *round == u64::MAX {
+            break;
+        }
+        *round += 1;
+        advance_campaign_operation_round(target, services, switches)?;
+    }
+    Err(format!(
+        "service did not announce {purpose} within {CAMPAIGN_BARRIER_MAX_ROUNDS} topology rounds after UART input: {}",
         serial_log.display()
     ))
 }
@@ -10322,6 +10441,7 @@ mod tests {
 
         assert!(barrier.recorded);
         assert_eq!(barrier.marker_offset, b"reply ".len());
+        assert_eq!(barrier.round, 0);
         assert_eq!(barrier.response.bytes, b"reply THES:M:complete".len());
         assert_eq!(barrier.response.excerpt, "reply THES:M:complete");
         assert_eq!(barrier.checkpoint, "THES:M:complete");
@@ -10369,6 +10489,7 @@ mod tests {
                     recorded: true,
                     checkpoint: "THES:M:checkpoint".to_owned(),
                     marker_offset: 0,
+                    round: 1,
                     response: campaign_serial_evidence(b"THES:M:checkpoint"),
                 },
                 round: 1,
