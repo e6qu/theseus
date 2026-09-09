@@ -1202,6 +1202,10 @@ fn traffic_matches(
 struct TopologyResult {
     network_sha256: String,
     #[serde(default)]
+    rounds: u64,
+    #[serde(default)]
+    max_rounds: u64,
+    #[serde(default)]
     actions: Vec<AppliedCampaignAction>,
 }
 
@@ -6808,6 +6812,8 @@ fn execute(
         output.join("topology-result.json"),
         serde_json::to_vec_pretty(&TopologyResult {
             network_sha256: network_sha256.clone(),
+            rounds: round,
+            max_rounds,
             actions: actions.clone(),
         })
         .unwrap(),
