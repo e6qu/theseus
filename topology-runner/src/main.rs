@@ -7322,7 +7322,7 @@ fn apply_scheduled_faults(
                 let serial = service_dir.join(format!("serial-{}.log", service.serial_logs.len()));
                 let kernel = service_dir.join("artifacts/kernel");
                 let initramfs = service_dir.join("artifacts/initramfs");
-                let replacement = build_service(
+                let mut replacement = build_service(
                     name,
                     service.serial_logs.len(),
                     plan,
@@ -7332,6 +7332,14 @@ fn apply_scheduled_faults(
                     switches,
                 )?;
                 replacement.resume()?;
+                wait_for_serial_with_service_rounds(
+                    &serial,
+                    b"THES:M:42",
+                    "restarted service serial readiness",
+                    &mut replacement,
+                    switches,
+                    plan.run.run.max_rounds,
+                )?;
                 inject_serial_events(&replacement, &plan.run.events, &serial)?;
                 service.vm = replacement;
                 service.serial_logs.push(serial);
@@ -7371,6 +7379,38 @@ fn inject_serial_events(
         }
     }
     Ok(())
+}
+
+fn wait_for_serial_with_service_rounds(
+    serial_log: &Path,
+    needle: &[u8],
+    purpose: &str,
+    service: &mut ServiceVm,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    max_rounds: u64,
+) -> Result<(), String> {
+    for round in 0..=max_rounds {
+        if fs::read(serial_log)
+            .is_ok_and(|serial| serial.windows(needle.len()).any(|window| window == needle))
+        {
+            return Ok(());
+        }
+        if round == max_rounds {
+            break;
+        }
+        service.pump();
+        service.advance_simulated_networks()?;
+        for switch in switches.values() {
+            switch
+                .lock()
+                .map_err(|_| "simulated switch lock poisoned".to_owned())?
+                .advance_round();
+        }
+    }
+    Err(format!(
+        "service did not announce {purpose} within {max_rounds} topology rounds: {}",
+        serial_log.display()
+    ))
 }
 
 fn inject_campaign_events(
