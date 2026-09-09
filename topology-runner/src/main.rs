@@ -932,12 +932,18 @@ struct RunConfig {
     vcpu_count: u8,
     mem_size_mib: u32,
     timeout_secs: u64,
+    #[serde(default = "default_max_rounds")]
+    max_rounds: u64,
     virtual_time: Option<VirtualTime>,
 }
 #[derive(Debug, Deserialize, Serialize)]
 struct VirtualTime {
     tick_ns: u64,
     exits_per_tick: u32,
+}
+
+fn default_max_rounds() -> u64 {
+    10_000
 }
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct NetworkConfig {
@@ -6767,15 +6773,14 @@ fn execute(
         )?;
         services.insert(name.clone(), driver);
     }
-    let timeout = topology
+    let max_rounds = topology
         .services
         .values()
-        .map(|service| service.run.run.timeout_secs)
+        .map(|service| service.run.run.max_rounds)
         .max()
-        .unwrap_or(1);
-    let deadline = Instant::now() + Duration::from_secs(timeout);
+        .unwrap_or_else(default_max_rounds);
     let mut round = checkpoint.map_or(0, |checkpoint| checkpoint.round);
-    while Instant::now() < deadline
+    while round < max_rounds
         && services
             .values()
             .any(|service| service.vm.exited().is_none())
@@ -6828,7 +6833,7 @@ fn execute(
             Some(code) => ("failed", Some(format!("guest exited with {code:?}"))),
             None => (
                 "failed",
-                Some("guest did not exit before topology timeout".to_owned()),
+                Some("guest did not exit before the configured topology round budget".to_owned()),
             ),
         };
         let mut checks = evaluate_checks(&topology.services[name].run.checks, &service.serial_logs);

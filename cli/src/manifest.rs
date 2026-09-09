@@ -134,6 +134,8 @@ struct Run {
     mem_size_mib: u32,
     #[serde(default = "default_timeout_secs")]
     timeout_secs: u64,
+    #[serde(default = "default_max_rounds")]
+    max_rounds: u64,
     #[serde(default)]
     virtual_time: Option<VirtualTime>,
 }
@@ -288,6 +290,11 @@ pub struct RunPlanConfig {
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
     pub timeout_secs: u64,
+    #[serde(
+        default = "default_max_rounds",
+        skip_serializing_if = "is_default_max_rounds"
+    )]
+    pub max_rounds: u64,
     pub virtual_time: Option<VirtualTime>,
 }
 
@@ -430,6 +437,11 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             "timeout_secs must be greater than zero".to_owned(),
         ));
     }
+    if manifest.run.max_rounds == 0 {
+        return Err(LoadError::InvalidRunConfig(
+            "max_rounds must be greater than zero".to_owned(),
+        ));
+    }
     if let Some(virtual_time) = &manifest.run.virtual_time {
         if virtual_time.tick_ns == 0 || virtual_time.exits_per_tick == 0 {
             return Err(LoadError::InvalidRunConfig(
@@ -502,6 +514,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             vcpu_count: manifest.run.vcpu_count,
             mem_size_mib: manifest.run.mem_size_mib,
             timeout_secs: manifest.run.timeout_secs,
+            max_rounds: manifest.run.max_rounds,
             virtual_time: manifest.run.virtual_time,
         },
         events,
@@ -658,6 +671,14 @@ fn storage_plan(storage: Vec<Storage>, run_seed: u64) -> Result<Vec<StoragePlan>
 
 fn default_timeout_secs() -> u64 {
     30
+}
+
+fn default_max_rounds() -> u64 {
+    10_000
+}
+
+fn is_default_max_rounds(value: &u64) -> bool {
+    *value == default_max_rounds()
 }
 
 fn default_explore_run_ms() -> u64 {
