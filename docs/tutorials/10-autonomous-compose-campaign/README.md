@@ -308,9 +308,11 @@ step by step. Each row is the paused checkpoint after one operation. It shows
 the UART target, operation-local topology actions, markers, paused-PC locations, and a hash
 of each service's serial transcript. Its delta says which markers are new and
 which services changed serial output or paused-PC state since the preceding
-checkpoint. It also shows the new serial bytes as an escaped excerpt, plus
-their byte count and full-delta hash. The excerpt is capped; the complete
-serial logs and VM snapshots stay in that locked run directory. These boundary
+checkpoint. **UART input** shows the exact delivered bytes as an escaped,
+bounded excerpt with their byte count and full hash. The locked replay plan
+retains the complete input. The report also shows new serial bytes as an
+escaped excerpt, plus their byte count and full-delta hash. The excerpts are
+capped; the complete serial logs and VM snapshots stay in that locked run directory. These boundary
 rows also show the simulated-network TX, RX, drop, duplicate, and corruption
 counters produced by that operation. The boundary state hash covers this
 compact evidence, so compare the same row across replays without opening a VM

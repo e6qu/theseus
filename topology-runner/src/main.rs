@@ -620,6 +620,10 @@ struct CampaignTimelineBoundary {
     /// recorded before service-targeted operations existed.
     #[serde(default)]
     service: String,
+    /// A bounded, escaped view of the exact bytes delivered to this service.
+    /// The replay plan retains the complete event corpus.
+    #[serde(default)]
+    input: CampaignInputEvidence,
     round: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     actions: Vec<AppliedCampaignAction>,
@@ -659,8 +663,37 @@ struct CampaignSerialDelta {
     omitted_bytes: usize,
 }
 
+/// The complete UART input remains in the locked replay plan. This compact
+/// copy makes a boundary understandable in a portable result without allowing
+/// one unusually large input to dominate the report.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
+struct CampaignInputEvidence {
+    bytes: usize,
+    sha256: String,
+    excerpt: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    omitted_bytes: usize,
+}
+
 fn is_zero(value: &usize) -> bool {
     *value == 0
+}
+
+fn campaign_input_evidence(data_hex: &str) -> CampaignInputEvidence {
+    let input = decode_hex(data_hex).expect("campaign input is normalized hexadecimal");
+    let excerpt = &input[..input.len().min(CAMPAIGN_EVIDENCE_EXCERPT_BYTES)];
+    let mut hasher = Sha256::new();
+    hasher.update(&input);
+    CampaignInputEvidence {
+        bytes: input.len(),
+        sha256: format!("{:x}", hasher.finalize()),
+        excerpt: excerpt
+            .iter()
+            .flat_map(|byte| std::ascii::escape_default(*byte))
+            .map(char::from)
+            .collect(),
+        omitted_bytes: input.len() - excerpt.len(),
+    }
 }
 
 /// Counter changes observed at an operation boundary. Payload digests remain
@@ -2207,6 +2240,7 @@ fn execute_campaign(
         let timeline = campaign_operation_timeline(
             &campaign,
             &schedule,
+            &prefix.events,
             &prefix.boundaries,
             &checkpoints.root_boundary(),
             &instruction_symbolizer,
@@ -3972,9 +4006,19 @@ fn campaign_timeline_matches(
             (expected.service.is_empty() || expected.service == actual.service) && {
                 let mut normalized = actual.clone();
                 normalized.service = expected.service.clone();
+                if campaign_input_is_absent(&expected.input) {
+                    normalized.input = expected.input.clone();
+                }
                 *expected == normalized
             }
         })
+}
+
+fn campaign_input_is_absent(input: &CampaignInputEvidence) -> bool {
+    input.bytes == 0
+        && input.sha256.is_empty()
+        && input.excerpt.is_empty()
+        && input.omitted_bytes == 0
 }
 
 /// Choose the next leaf from observed marker, paused-PC, topology-state, and
@@ -4861,17 +4905,20 @@ fn campaign_checkpoint_serial_sha256(checkpoint: &CampaignCheckpoint) -> BTreeMa
 fn campaign_operation_timeline(
     campaign: &CampaignPlan,
     schedule: &CampaignSchedule,
+    events: &[CampaignEvent],
     boundaries: &[CampaignCheckpointBoundary],
     baseline: &CampaignCheckpointBoundary,
     symbolizer: &CampaignInstructionSymbolizer,
 ) -> Vec<CampaignTimelineBoundary> {
+    debug_assert_eq!(schedule.operations.len(), events.len());
     debug_assert_eq!(schedule.operations.len(), boundaries.len());
     let mut previous = baseline.clone();
     schedule
         .operations
         .iter()
+        .zip(events)
         .zip(boundaries)
-        .map(|(operation, boundary)| {
+        .map(|((operation, event), boundary)| {
             let (new_markers, changed_program_counters, changed_serial) =
                 campaign_boundary_delta(&previous, boundary);
             let serial_delta = campaign_serial_delta(&previous, boundary);
@@ -4882,6 +4929,7 @@ fn campaign_operation_timeline(
             CampaignTimelineBoundary {
                 operation: campaign_operation_choice_name(campaign, *operation),
                 service: campaign_operation_service(campaign, *operation).to_owned(),
+                input: campaign_input_evidence(&event.event.data_hex),
                 round: boundary.round,
                 actions: boundary.actions.clone(),
                 markers: boundary.markers.clone(),
@@ -5001,7 +5049,7 @@ fn campaign_network_traffic_delta(
         .collect()
 }
 
-const CAMPAIGN_SERIAL_EXCERPT_BYTES: usize = 512;
+const CAMPAIGN_EVIDENCE_EXCERPT_BYTES: usize = 512;
 
 fn campaign_serial_delta(
     previous: &CampaignCheckpointBoundary,
@@ -5020,7 +5068,7 @@ fn campaign_serial_delta(
                 .strip_prefix(previous_contents)
                 .unwrap_or(contents.as_slice());
             (!delta.is_empty()).then(|| {
-                let excerpt_bytes = &delta[..delta.len().min(CAMPAIGN_SERIAL_EXCERPT_BYTES)];
+                let excerpt_bytes = &delta[..delta.len().min(CAMPAIGN_EVIDENCE_EXCERPT_BYTES)];
                 let mut hasher = Sha256::new();
                 hasher.update(delta);
                 (
@@ -5030,7 +5078,7 @@ fn campaign_serial_delta(
                         sha256: format!("{:x}", hasher.finalize()),
                         excerpt: delta
                             .iter()
-                            .take(CAMPAIGN_SERIAL_EXCERPT_BYTES)
+                            .take(CAMPAIGN_EVIDENCE_EXCERPT_BYTES)
                             .flat_map(|byte| std::ascii::escape_default(*byte))
                             .map(char::from)
                             .collect(),
@@ -9990,7 +10038,7 @@ mod tests {
                 ("api".to_owned(), b"new output".to_vec()),
                 (
                     "worker".to_owned(),
-                    vec![b'\n'; CAMPAIGN_SERIAL_EXCERPT_BYTES + 1],
+                    vec![b'\n'; CAMPAIGN_EVIDENCE_EXCERPT_BYTES + 1],
                 ),
             ]),
             network_traffic: BTreeMap::new(),
@@ -10001,12 +10049,26 @@ mod tests {
         let delta = campaign_serial_delta(&previous, &boundary);
         assert_eq!(delta["api"].bytes, 10);
         assert_eq!(delta["api"].excerpt, "new output");
-        assert_eq!(delta["worker"].bytes, CAMPAIGN_SERIAL_EXCERPT_BYTES + 1);
+        assert_eq!(delta["worker"].bytes, CAMPAIGN_EVIDENCE_EXCERPT_BYTES + 1);
         assert_eq!(
             delta["worker"].excerpt,
-            "\\n".repeat(CAMPAIGN_SERIAL_EXCERPT_BYTES)
+            "\\n".repeat(CAMPAIGN_EVIDENCE_EXCERPT_BYTES)
         );
         assert_eq!(delta["worker"].omitted_bytes, 1);
+    }
+
+    #[test]
+    fn campaign_input_evidence_escapes_and_bounds_delivered_bytes() {
+        let escaped = campaign_input_evidence("ff0a");
+        assert_eq!(escaped.bytes, 2);
+        assert_eq!(escaped.excerpt, "\\xff\\n");
+        assert_eq!(escaped.sha256.len(), 64);
+        assert_eq!(escaped.omitted_bytes, 0);
+
+        let long = campaign_input_evidence(&hex(&vec![b'x'; CAMPAIGN_EVIDENCE_EXCERPT_BYTES + 1]));
+        assert_eq!(long.bytes, CAMPAIGN_EVIDENCE_EXCERPT_BYTES + 1);
+        assert_eq!(long.excerpt, "x".repeat(CAMPAIGN_EVIDENCE_EXCERPT_BYTES));
+        assert_eq!(long.omitted_bytes, 1);
     }
 
     #[test]
@@ -10032,6 +10094,12 @@ mod tests {
             timeline: vec![CampaignTimelineBoundary {
                 operation: "write".to_owned(),
                 service: "api".to_owned(),
+                input: CampaignInputEvidence {
+                    bytes: 6,
+                    sha256: "input".to_owned(),
+                    excerpt: "write\\n".to_owned(),
+                    omitted_bytes: 0,
+                },
                 round: 1,
                 actions: Vec::new(),
                 markers: vec!["checkpoint".to_owned()],
@@ -10088,10 +10156,15 @@ mod tests {
         assert!(campaign_replay_mismatches(&expected, &actual).is_empty());
         let mut legacy_timeline = expected.clone();
         legacy_timeline.timeline[0].service.clear();
+        legacy_timeline.timeline[0].input = CampaignInputEvidence::default();
         assert!(campaign_replay_mismatches(&legacy_timeline, &actual).is_empty());
         let mut changed_target = expected.clone();
         changed_target.timeline[0].service = "worker".to_owned();
         assert!(campaign_replay_mismatches(&changed_target, &actual)
+            .contains(&"operation-boundary timeline".to_owned()));
+        let mut changed_input = expected.clone();
+        changed_input.timeline[0].input.sha256 = "other-input".to_owned();
+        assert!(campaign_replay_mismatches(&changed_input, &actual)
             .contains(&"operation-boundary timeline".to_owned()));
         let mut changed_symbols = expected.clone();
         changed_symbols

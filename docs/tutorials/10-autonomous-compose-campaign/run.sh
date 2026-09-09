@@ -48,6 +48,7 @@ grep -a 'Autonomous Compose campaign' campaign-report/index.html
 grep -a 'Operation model' campaign-report/index.html
 grep -a 'Input grammar' campaign-report/index.html
 grep -a 'Target' campaign-report/index.html
+grep -a 'UART input' campaign-report/index.html
 grep -a 'retry {request}' campaign-report/index.html
 grep -a 'Requires observed marker' campaign-report/index.html
 theseus report --output minimized-report stale-read-replay
