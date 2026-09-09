@@ -157,6 +157,14 @@ struct TopologyPlan {
 }
 
 #[derive(Deserialize)]
+struct TopologyResult {
+    #[serde(default)]
+    rounds: u64,
+    #[serde(default)]
+    max_rounds: u64,
+}
+
+#[derive(Deserialize)]
 struct CampaignPlan {
     #[serde(default)]
     state: BTreeMap<String, String>,
@@ -741,6 +749,11 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
         .is_file()
         .then(|| read_json(root, Path::new("minimization.json")))
         .transpose()?;
+    let topology_budget = root
+        .join("topology-result.json")
+        .is_file()
+        .then(|| read_json::<TopologyResult>(root, Path::new("topology-result.json")))
+        .transpose()?;
     let services = root.join("services");
     let entries = fs::read_dir(&services).map_err(|source| ReportError::Read {
         path: services.clone(),
@@ -802,7 +815,13 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
         faults,
         logs,
         nodes: Vec::new(),
-        coverage: None,
+        coverage: topology_budget.map(|budget| Coverage {
+            label: "Topology execution".to_owned(),
+            summary: format!(
+                "{} of {} deterministic scheduler rounds consumed",
+                budget.rounds, budget.max_rounds
+            ),
+        }),
         minimization: None,
         campaign_minimization,
         replay_verification: None,
