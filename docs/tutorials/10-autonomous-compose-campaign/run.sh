@@ -32,6 +32,8 @@ grep -a '"kind": "storage_fault"' theseus-compose-campaign/campaign-result.json
 grep -a '"faults": \[' theseus-compose-campaign/campaign-result.json
 grep -a '"marker_guard_rejections":' theseus-compose-campaign/campaign-result.json
 grep -a '"serial_guard_rejections":' theseus-compose-campaign/campaign-result.json
+grep -a '"operation": "replica_probe"' theseus-compose-campaign/campaign-result.json
+grep -a '"service": "replica"' theseus-compose-campaign/campaign-result.json
 if theseus compose explore --minimize theseus-compose-campaign --output stale-read-replay; then
     echo 'expected the minimized stale-read counterexample' >&2
     exit 1
@@ -45,6 +47,7 @@ theseus report --output campaign-report theseus-compose-campaign
 grep -a 'Autonomous Compose campaign' campaign-report/index.html
 grep -a 'Operation model' campaign-report/index.html
 grep -a 'Input grammar' campaign-report/index.html
+grep -a 'Target' campaign-report/index.html
 grep -a 'retry {request}' campaign-report/index.html
 grep -a 'Requires observed marker' campaign-report/index.html
 theseus report --output minimized-report stale-read-replay

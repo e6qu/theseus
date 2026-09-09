@@ -616,6 +616,10 @@ struct CampaignRun {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 struct CampaignTimelineBoundary {
     operation: String,
+    /// The UART service that received this operation. Empty only in a result
+    /// recorded before service-targeted operations existed.
+    #[serde(default)]
+    service: String,
     round: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     actions: Vec<AppliedCampaignAction>,
@@ -3922,7 +3926,9 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     {
         mismatches.push("property guidance evidence".to_owned());
     }
-    if !expected.timeline.is_empty() && expected.timeline != actual.timeline {
+    if !expected.timeline.is_empty()
+        && !campaign_timeline_matches(&expected.timeline, &actual.timeline)
+    {
         mismatches.push("operation-boundary timeline".to_owned());
     }
     if !expected.program_counters.is_empty() && expected.program_counters != actual.program_counters
@@ -3952,6 +3958,23 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
         mismatches.push("status".to_owned());
     }
     mismatches
+}
+
+/// Legacy campaign results have operation boundaries but no target service.
+/// Continue to verify every older field while allowing that absent explanation;
+/// new results lock the target into replay verification.
+fn campaign_timeline_matches(
+    expected: &[CampaignTimelineBoundary],
+    actual: &[CampaignTimelineBoundary],
+) -> bool {
+    expected.len() == actual.len()
+        && expected.iter().zip(actual).all(|(expected, actual)| {
+            (expected.service.is_empty() || expected.service == actual.service) && {
+                let mut normalized = actual.clone();
+                normalized.service = expected.service.clone();
+                *expected == normalized
+            }
+        })
 }
 
 /// Choose the next leaf from observed marker, paused-PC, topology-state, and
@@ -4858,6 +4881,7 @@ fn campaign_operation_timeline(
             previous = boundary.clone();
             CampaignTimelineBoundary {
                 operation: campaign_operation_choice_name(campaign, *operation),
+                service: campaign_operation_service(campaign, *operation).to_owned(),
                 round: boundary.round,
                 actions: boundary.actions.clone(),
                 markers: boundary.markers.clone(),
@@ -10007,6 +10031,7 @@ mod tests {
             property_witnesses: vec!["stale_read_is_reachable".to_owned()],
             timeline: vec![CampaignTimelineBoundary {
                 operation: "write".to_owned(),
+                service: "api".to_owned(),
                 round: 1,
                 actions: Vec::new(),
                 markers: vec!["checkpoint".to_owned()],
@@ -10061,6 +10086,13 @@ mod tests {
         };
 
         assert!(campaign_replay_mismatches(&expected, &actual).is_empty());
+        let mut legacy_timeline = expected.clone();
+        legacy_timeline.timeline[0].service.clear();
+        assert!(campaign_replay_mismatches(&legacy_timeline, &actual).is_empty());
+        let mut changed_target = expected.clone();
+        changed_target.timeline[0].service = "worker".to_owned();
+        assert!(campaign_replay_mismatches(&changed_target, &actual)
+            .contains(&"operation-boundary timeline".to_owned()));
         let mut changed_symbols = expected.clone();
         changed_symbols
             .instruction_locations
