@@ -6760,9 +6760,28 @@ fn execute(
         let service = &services[name];
         service.vm.resume()?;
     }
+    let max_rounds = topology
+        .services
+        .values()
+        .map(|service| service.run.run.max_rounds)
+        .max()
+        .unwrap_or_else(default_max_rounds);
+    let mut round = checkpoint.map_or(0, |checkpoint| checkpoint.round);
     let mut actions = Vec::new();
     for name in &names {
         let events = topology.services[name].run.events.clone();
+        if !events.is_empty() {
+            let serial = services[name].serial_logs[0].clone();
+            let remaining = max_rounds.saturating_sub(round);
+            round = round.saturating_add(wait_for_serial_with_topology_rounds(
+                &serial,
+                b"THES:M:42",
+                "serial readiness",
+                &mut services,
+                &switches,
+                remaining,
+            )?);
+        }
         if events.iter().all(|event| event.actions.is_empty()) {
             let service = &services[name];
             inject_serial_events(&service.vm, &events, &service.serial_logs[0])?;
@@ -6781,13 +6800,6 @@ fn execute(
         )?;
         services.insert(name.clone(), driver);
     }
-    let max_rounds = topology
-        .services
-        .values()
-        .map(|service| service.run.run.max_rounds)
-        .max()
-        .unwrap_or_else(default_max_rounds);
-    let mut round = checkpoint.map_or(0, |checkpoint| checkpoint.round);
     while round < max_rounds
         && services
             .values()
@@ -7354,27 +7366,6 @@ fn inject_serial_events(
     if events.is_empty() {
         return Ok(());
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if fs::read(serial_log).is_ok_and(|serial| {
-            serial
-                .windows(b"THES:M:42".len())
-                .any(|window| window == b"THES:M:42")
-        }) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    if !fs::read(serial_log).is_ok_and(|serial| {
-        serial
-            .windows(b"THES:M:42".len())
-            .any(|window| window == b"THES:M:42")
-    }) {
-        return Err(format!(
-            "service did not announce serial readiness: {}",
-            serial_log.display()
-        ));
-    }
     for event in events {
         vm.push_serial_input(&decode_hex(&event.data_hex)?)?;
         if let Some(checkpoint) = &event.checkpoint {
@@ -7400,7 +7391,6 @@ fn inject_campaign_events(
     if events.is_empty() {
         return Ok(Vec::new());
     }
-    wait_for_serial(serial_log, b"THES:M:42", "serial readiness")?;
     let mut barriers = Vec::with_capacity(events.len());
     for event in events {
         let input_offset = fs::metadata(serial_log)
@@ -7450,7 +7440,6 @@ fn inject_campaign_operation(
     round: &mut u64,
     recorded: &mut Vec<AppliedCampaignAction>,
 ) -> Result<CampaignUartBarrier, String> {
-    wait_for_serial(serial_log, b"THES:M:42", "serial readiness")?;
     let input_offset = fs::metadata(serial_log)
         .map_err(|error| {
             format!(
