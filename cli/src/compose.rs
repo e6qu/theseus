@@ -110,6 +110,8 @@ struct ComposeCampaign {
 struct ComposeOperation {
     name: String,
     #[serde(default)]
+    service: Option<String>,
+    #[serde(default)]
     input: Option<String>,
     #[serde(default)]
     input_template: Option<String>,
@@ -762,6 +764,7 @@ pub struct CampaignPlan {
 #[derive(Debug, Clone, Serialize)]
 pub struct OperationPlan {
     pub name: String,
+    pub service: String,
     pub inputs: Vec<OperationInputPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_grammar: Option<OperationInputGrammarPlan>,
@@ -1294,6 +1297,13 @@ fn campaign_plan(
                 operation.name
             )));
         }
+        let service = operation.service.unwrap_or_else(|| campaign.driver.clone());
+        if !services.contains_key(&service) {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {:?} targets unknown service {service:?}",
+                operation.name
+            )));
+        }
         let input_forms = usize::from(operation.input.is_some())
             + usize::from(operation.input_template.is_some())
             + usize::from(!operation.inputs.is_empty())
@@ -1464,6 +1474,7 @@ fn campaign_plan(
             .transpose()?;
         operations.push(OperationPlan {
             name: operation.name,
+            service,
             inputs,
             input_grammar: input_grammar.map(|grammar| grammar.source),
             stage: operation.stage,
@@ -4406,6 +4417,29 @@ mod tests {
             plan.campaign.expect("campaign is normalized").guidance,
             CampaignGuidance::Property
         );
+    }
+
+    #[test]
+    fn normalizes_a_campaign_operation_for_another_service() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: compact\n        service: worker\n        input: \"compact\\n\"\n",
+        );
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(
+            plan.campaign.expect("campaign is normalized").operations[0].service,
+            "worker"
+        );
+    }
+
+    #[test]
+    fn rejects_a_campaign_operation_for_an_unknown_service() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: compact\n        service: missing\n        input: \"compact\\n\"\n",
+        );
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("targets unknown service \"missing\""));
     }
 
     #[test]
