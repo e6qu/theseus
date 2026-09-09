@@ -429,6 +429,8 @@ struct CampaignUartBarrier {
     #[serde(default)]
     marker_offset: usize,
     #[serde(default)]
+    round: u64,
+    #[serde(default)]
     response: CampaignSerialDelta,
 }
 
@@ -1006,7 +1008,7 @@ delta=b=>[['new markers',b.new_markers.join(' ')],['changed PCs',b.changed_progr
 serial=b=>Object.entries(b.serial_delta).map(([service,d])=>service+': '+d.excerpt+' ['+d.bytes+' bytes; sha256 '+d.sha256+(d.omitted_bytes?'; +'+d.omitted_bytes+' bytes':'')+']').join(' · ')||'none',
 input=b=>b.input.sha256?b.input.excerpt+' ['+b.input.bytes+' bytes; sha256 '+b.input.sha256+(b.input.omitted_bytes?'; +'+b.input.omitted_bytes+' bytes':'')+']':'unrecorded (legacy)',
 delivery=b=>b.delivery.recorded?'accepted '+b.delivery.accepted_bytes+' bytes; guest read '+b.delivery.guest_read_bytes+'; queued '+b.delivery.pending_before+' → '+b.delivery.pending_after+(b.delivery.checkpoint?' · waited for '+b.delivery.checkpoint:' · no marker barrier'):'unrecorded (legacy)',
-barrier=b=>b.barrier.recorded?b.barrier.checkpoint+' at +'+b.barrier.marker_offset+' · '+b.barrier.response.excerpt+' ['+b.barrier.response.bytes+' bytes; sha256 '+b.barrier.response.sha256+(b.barrier.response.omitted_bytes?'; +'+b.barrier.response.omitted_bytes+' bytes':'')+']':'unrecorded (legacy)',
+barrier=b=>b.barrier.recorded?b.barrier.checkpoint+' at round '+b.barrier.round+', +'+b.barrier.marker_offset+' · '+b.barrier.response.excerpt+' ['+b.barrier.response.bytes+' bytes; sha256 '+b.barrier.response.sha256+(b.barrier.response.omitted_bytes?'; +'+b.barrier.response.omitted_bytes+' bytes':'')+']':'unrecorded (legacy)',
 traffic=b=>Object.entries(b.network_traffic_delta).flatMap(([service,nets])=>Object.entries(nets).map(([network,d])=>service+'.'+network+': tx '+d.tx_frames+' rx '+d.rx_frames+' drop '+d.dropped+' dup '+d.duplicated+' corrupt '+d.corrupted)).join(' · ')||'none',
 storage=b=>b.changed_storage.join(', ')||'none',
 virtualTime=b=>Object.entries(b.virtual_time_delta_ns).map(([service,clocks])=>service+': '+clocks.join(', ')+' ns').join(' · ')||'none',
@@ -1209,8 +1211,9 @@ fn campaign_uart_barrier_label(boundary: &CampaignTimelineBoundary) -> String {
     }
     let response = &boundary.barrier.response;
     format!(
-        "{} at +{}; {} [{} bytes; sha256 {}{}]",
+        "{} at round {}, +{}; {} [{} bytes; sha256 {}{}]",
         boundary.barrier.checkpoint,
+        boundary.barrier.round,
         boundary.barrier.marker_offset,
         response.excerpt,
         response.bytes,
@@ -1768,8 +1771,9 @@ mod tests {
         assert!(markdown.contains("read\\n [5 bytes; sha256 input-hash]"));
         assert!(markdown
             .contains("accepted 5 bytes; guest read 6; queued 1 → 0; waited for THES:M:read"));
-        assert!(markdown
-            .contains("THES:M:read at +6; reply THES:M:read [17 bytes; sha256 barrier-hash]"));
+        assert!(markdown.contains(
+            "THES:M:read at round 0, +6; reply THES:M:read [17 bytes; sha256 barrier-hash]"
+        ));
         assert!(markdown.contains(
             "write | driver (legacy) | unrecorded (legacy) | unrecorded (legacy) | unrecorded (legacy) | 7 | new markers: 42; changed PCs: api; changed serial: api"
         ));

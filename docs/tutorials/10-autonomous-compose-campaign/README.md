@@ -314,6 +314,9 @@ the emulator accepted those bytes, shows how many the guest read, records the
 UART FIFO depth before and after, and names the marker barrier it awaited.
 **UART barrier** proves that marker appeared after the operation input, with a
 bounded response excerpt and full response hash through the matched marker.
+Theseus advances the simulated topology in numbered rounds while it waits, so
+a response that needs the network can reach its barrier without host-time
+polling.
 The locked replay plan retains the complete input. The report also shows new
 serial bytes as an escaped excerpt, plus their byte count and full-delta hash.
 The excerpts are capped; the complete serial logs and VM snapshots stay in
