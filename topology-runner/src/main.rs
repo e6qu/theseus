@@ -12,7 +12,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use addr2line::Loader;
 use object::{Object, ObjectSymbol, SymbolKind};
@@ -7336,11 +7335,18 @@ fn apply_scheduled_faults(
                     &serial,
                     b"THES:M:42",
                     "restarted service serial readiness",
+                    0,
                     &mut replacement,
                     switches,
                     plan.run.run.max_rounds,
                 )?;
-                inject_serial_events(&replacement, &plan.run.events, &serial)?;
+                inject_serial_events_with_service_rounds(
+                    &mut replacement,
+                    &plan.run.events,
+                    &serial,
+                    switches,
+                    plan.run.run.max_rounds,
+                )?;
                 service.vm = replacement;
                 service.serial_logs.push(serial);
                 service.faults.push(AppliedFault {
@@ -7363,18 +7369,32 @@ fn apply_scheduled_faults(
     Ok(())
 }
 
-fn inject_serial_events(
-    vm: &ServiceVm,
+fn inject_serial_events_with_service_rounds(
+    service: &mut ServiceVm,
     events: &[EventPlan],
     serial_log: &Path,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    max_rounds: u64,
 ) -> Result<(), String> {
     for event in events {
-        vm.push_serial_input(&decode_hex(&event.data_hex)?)?;
+        let input_offset = fs::metadata(serial_log)
+            .map_err(|error| {
+                format!(
+                    "cannot inspect serial log {}: {error}",
+                    serial_log.display()
+                )
+            })?
+            .len() as usize;
+        service.push_serial_input(&decode_hex(&event.data_hex)?)?;
         if let Some(checkpoint) = &event.checkpoint {
-            wait_for_serial(
+            wait_for_serial_with_service_rounds(
                 serial_log,
                 checkpoint.as_bytes(),
                 "campaign operation checkpoint",
+                input_offset,
+                service,
+                switches,
+                max_rounds,
             )?;
         }
     }
@@ -7385,13 +7405,14 @@ fn wait_for_serial_with_service_rounds(
     serial_log: &Path,
     needle: &[u8],
     purpose: &str,
+    input_offset: usize,
     service: &mut ServiceVm,
     switches: &BTreeMap<String, SharedSimSwitch>,
     max_rounds: u64,
 ) -> Result<(), String> {
     for round in 0..=max_rounds {
         if fs::read(serial_log)
-            .is_ok_and(|serial| serial.windows(needle.len()).any(|window| window == needle))
+            .is_ok_and(|serial| serial_marker_after(&serial, input_offset, needle))
         {
             return Ok(());
         }
@@ -7411,6 +7432,14 @@ fn wait_for_serial_with_service_rounds(
         "service did not announce {purpose} within {max_rounds} topology rounds: {}",
         serial_log.display()
     ))
+}
+
+fn serial_marker_after(serial: &[u8], input_offset: usize, needle: &[u8]) -> bool {
+    serial.get(input_offset..).is_some_and(|response| {
+        response
+            .windows(needle.len())
+            .any(|window| window == needle)
+    })
 }
 
 fn inject_campaign_events(
@@ -7876,31 +7905,6 @@ fn apply_campaign_action(
     }
 }
 
-fn wait_for_serial(serial_log: &Path, needle: &[u8], purpose: &str) -> Result<(), String> {
-    wait_for_serial_for(serial_log, needle, purpose, Duration::from_secs(5))
-}
-
-fn wait_for_serial_for(
-    serial_log: &Path,
-    needle: &[u8],
-    purpose: &str,
-    timeout: Duration,
-) -> Result<(), String> {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if fs::read(serial_log)
-            .is_ok_and(|serial| serial.windows(needle.len()).any(|window| window == needle))
-        {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    Err(format!(
-        "service did not announce {purpose}: {}",
-        serial_log.display()
-    ))
-}
-
 fn wait_for_serial_with_topology_rounds(
     serial_log: &Path,
     needle: &[u8],
@@ -7925,41 +7929,6 @@ fn wait_for_serial_with_topology_rounds(
     }
     Err(format!(
         "service did not announce {purpose} within {max_rounds} topology rounds: {}",
-        serial_log.display()
-    ))
-}
-
-/// Wait for a serial checkpoint that was emitted after an operation's input
-/// was accepted. Looking only in the post-input suffix prevents a marker from
-/// an earlier operation from satisfying a repeated barrier immediately.
-fn wait_for_serial_after(
-    serial_log: &Path,
-    input_offset: usize,
-    needle: &[u8],
-    purpose: &str,
-) -> Result<CampaignUartBarrier, String> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if let Ok(serial) = fs::read(serial_log) {
-            let response = serial.get(input_offset..).unwrap_or_default();
-            if let Some(marker_offset) = response
-                .windows(needle.len())
-                .position(|window| window == needle)
-            {
-                let through_marker = &response[..marker_offset + needle.len()];
-                return Ok(CampaignUartBarrier {
-                    recorded: true,
-                    checkpoint: String::from_utf8_lossy(needle).into_owned(),
-                    marker_offset,
-                    round: 0,
-                    response: campaign_serial_evidence(through_marker),
-                });
-            }
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    Err(format!(
-        "service did not announce {purpose} after UART input: {}",
         serial_log.display()
     ))
 }
@@ -10493,31 +10462,14 @@ mod tests {
     }
 
     #[test]
-    fn campaign_uart_barrier_ignores_a_historical_matching_marker() {
-        let directory = std::env::temp_dir().join(format!(
-            "theseus-causal-uart-barrier-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&directory).unwrap();
-        let serial = directory.join("serial.log");
+    fn serial_marker_after_ignores_a_historical_matching_marker() {
         let old = b"THES:M:complete\n";
-        fs::write(&serial, [old.as_slice(), b"reply THES:M:complete"].concat()).unwrap();
-
-        let barrier = wait_for_serial_after(
-            &serial,
+        assert!(!serial_marker_after(old, old.len(), b"THES:M:complete"));
+        assert!(serial_marker_after(
+            &[old.as_slice(), b"reply THES:M:complete"].concat(),
             old.len(),
-            b"THES:M:complete",
-            "campaign operation checkpoint",
-        )
-        .unwrap();
-
-        assert!(barrier.recorded);
-        assert_eq!(barrier.marker_offset, b"reply ".len());
-        assert_eq!(barrier.round, 0);
-        assert_eq!(barrier.response.bytes, b"reply THES:M:complete".len());
-        assert_eq!(barrier.response.excerpt, "reply THES:M:complete");
-        assert_eq!(barrier.checkpoint, "THES:M:complete");
-        fs::remove_dir_all(directory).unwrap();
+            b"THES:M:complete"
+        ));
     }
 
     #[test]
