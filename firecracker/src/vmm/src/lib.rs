@@ -525,6 +525,40 @@ impl Vmm {
             .map_err(|error| VmmError::ControlChannel(error.to_string()))
     }
 
+    /// Theseus: report bytes still waiting in the emulated UART receive FIFO.
+    ///
+    /// Campaign checkpoints use this alongside an input receipt to distinguish
+    /// bytes accepted by the UART from bytes the guest has read. The value is
+    /// part of the serial device snapshot, so it is stable while a paused VM
+    /// is captured or restored.
+    pub fn serial_input_depth(&self) -> Result<usize, VmmError> {
+        #[cfg(target_arch = "x86_64")]
+        let serial = self
+            .device_manager
+            .legacy_devices
+            .as_ref()
+            .ok_or(VmmError::NotSupported)?
+            .stdio_serial
+            .clone();
+        #[cfg(target_arch = "aarch64")]
+        let serial = self
+            .device_manager
+            .mmio_platform_devices
+            .serial
+            .as_ref()
+            .ok_or(VmmError::NotSupported)?
+            .inner
+            .clone();
+
+        Ok(serial
+            .lock()
+            .expect("Poisoned lock")
+            .serial
+            .state()
+            .in_buffer
+            .len())
+    }
+
     /// Theseus: drain guest→host control-channel events (commands/markers).
     pub fn drain_control_events(&mut self) -> Vec<ControlEvent> {
         match &self.device_manager.mmio_platform_devices.theseus {
