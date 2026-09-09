@@ -6810,6 +6810,7 @@ fn execute(
                 &topology.services[name],
                 &output.join("services").join(name),
                 &mut service,
+                &mut services,
                 &mut switches,
             )?;
             if service.paused_until.is_none() && service.vm.exited().is_none() {
@@ -7274,6 +7275,7 @@ fn apply_scheduled_faults(
     plan: &ServicePlan,
     service_dir: &Path,
     service: &mut ServiceRuntime,
+    services: &mut BTreeMap<String, ServiceRuntime>,
     switches: &mut BTreeMap<String, SharedSimSwitch>,
 ) -> Result<(), String> {
     if service.paused_until == Some(round) {
@@ -7337,6 +7339,7 @@ fn apply_scheduled_faults(
                     "restarted service serial readiness",
                     0,
                     &mut replacement,
+                    services,
                     switches,
                     plan.run.run.max_rounds,
                 )?;
@@ -7344,6 +7347,7 @@ fn apply_scheduled_faults(
                     &mut replacement,
                     &plan.run.events,
                     &serial,
+                    services,
                     switches,
                     plan.run.run.max_rounds,
                 )?;
@@ -7373,6 +7377,7 @@ fn inject_serial_events_with_service_rounds(
     service: &mut ServiceVm,
     events: &[EventPlan],
     serial_log: &Path,
+    services: &mut BTreeMap<String, ServiceRuntime>,
     switches: &BTreeMap<String, SharedSimSwitch>,
     max_rounds: u64,
 ) -> Result<(), String> {
@@ -7393,6 +7398,7 @@ fn inject_serial_events_with_service_rounds(
                 "campaign operation checkpoint",
                 input_offset,
                 service,
+                services,
                 switches,
                 max_rounds,
             )?;
@@ -7407,6 +7413,7 @@ fn wait_for_serial_with_service_rounds(
     purpose: &str,
     input_offset: usize,
     service: &mut ServiceVm,
+    services: &mut BTreeMap<String, ServiceRuntime>,
     switches: &BTreeMap<String, SharedSimSwitch>,
     max_rounds: u64,
 ) -> Result<(), String> {
@@ -7419,19 +7426,28 @@ fn wait_for_serial_with_service_rounds(
         if round == max_rounds {
             break;
         }
-        service.pump();
-        service.advance_simulated_networks()?;
-        for switch in switches.values() {
-            switch
-                .lock()
-                .map_err(|_| "simulated switch lock poisoned".to_owned())?
-                .advance_round();
-        }
+        advance_topology_round_with_target(service, services, switches)?;
     }
     Err(format!(
         "service did not announce {purpose} within {max_rounds} topology rounds: {}",
         serial_log.display()
     ))
+}
+
+/// Drive the target held outside `services` and every peer through one
+/// deterministic topology round. Lifecycle restart barriers use this while a
+/// replacement VM is not yet part of the service map.
+fn advance_topology_round_with_target(
+    target: &mut ServiceVm,
+    services: &mut BTreeMap<String, ServiceRuntime>,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+) -> Result<(), String> {
+    target.pump();
+    for service in services.values_mut() {
+        service.vm.pump();
+    }
+    target.advance_simulated_networks()?;
+    advance_network_round(switches, services)
 }
 
 fn serial_marker_after(serial: &[u8], input_offset: usize, needle: &[u8]) -> bool {
