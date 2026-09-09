@@ -2540,22 +2540,26 @@ fn boot_campaign_checkpoint(
     for service in services.values() {
         service.vm.resume()?;
     }
-    let boot_timeout = topology
+    let max_rounds = topology
         .services
         .values()
-        .map(|service| service.run.run.timeout_secs)
+        .map(|service| service.run.run.max_rounds)
         .max()
-        .unwrap_or(5);
-    let driver = services
+        .unwrap_or_else(default_max_rounds);
+    let serial = services
         .get(driver)
-        .ok_or_else(|| format!("campaign driver did not start: {driver}"))?;
-    wait_for_serial_for(
-        &driver.serial_logs[0],
+        .ok_or_else(|| format!("campaign driver did not start: {driver}"))?
+        .serial_logs[0]
+        .clone();
+    let startup_round = wait_for_serial_with_topology_rounds(
+        &serial,
         b"THES:M:42",
         "campaign driver serial readiness",
-        Duration::from_secs(boot_timeout),
+        &mut services,
+        &switches,
+        max_rounds,
     )?;
-    capture_campaign_checkpoint(directory, topology, &mut services, &switches, 0)
+    capture_campaign_checkpoint(directory, topology, &mut services, &switches, startup_round)
 }
 
 fn campaign_actions(run: &Path) -> Result<Vec<AppliedCampaignAction>, String> {
@@ -7864,6 +7868,34 @@ fn wait_for_serial_for(
     }
     Err(format!(
         "service did not announce {purpose}: {}",
+        serial_log.display()
+    ))
+}
+
+fn wait_for_serial_with_topology_rounds(
+    serial_log: &Path,
+    needle: &[u8],
+    purpose: &str,
+    services: &mut BTreeMap<String, ServiceRuntime>,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    max_rounds: u64,
+) -> Result<u64, String> {
+    for round in 0..=max_rounds {
+        if fs::read(serial_log)
+            .is_ok_and(|serial| serial.windows(needle.len()).any(|window| window == needle))
+        {
+            return Ok(round);
+        }
+        if round == max_rounds {
+            break;
+        }
+        for service in services.values_mut() {
+            service.vm.pump();
+        }
+        advance_network_round(switches, services)?;
+    }
+    Err(format!(
+        "service did not announce {purpose} within {max_rounds} topology rounds: {}",
         serial_log.display()
     ))
 }
