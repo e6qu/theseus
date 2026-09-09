@@ -317,6 +317,8 @@ bounded response excerpt and full response hash through the matched marker.
 Theseus advances the simulated topology in numbered rounds while it waits, so
 a response that needs the network can reach its barrier without host-time
 polling.
+Set `max_rounds` in each service manifest to bound the complete topology run
+the same way; it replaces host elapsed time once the guests are running.
 The locked replay plan retains the complete input. The report also shows new
 serial bytes as an escaped excerpt, plus their byte count and full-delta hash.
 The excerpts are capped; the complete serial logs and VM snapshots stay in

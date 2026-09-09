@@ -12,6 +12,7 @@ seed = 71
 vcpu_count = 1
 mem_size_mib = 128
 timeout_secs = 10
+max_rounds = 10000
 
 [network]
 loopback = false
