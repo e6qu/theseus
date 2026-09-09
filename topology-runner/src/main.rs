@@ -105,6 +105,8 @@ enum CampaignGuidance {
 #[derive(Debug, Deserialize, Serialize)]
 struct CampaignOperation {
     name: String,
+    #[serde(default)]
+    service: String,
     /// `input_hex` is retained only to replay plans locked by older Theseus
     /// releases. New plans always use named `inputs`.
     #[serde(default)]
@@ -907,6 +909,15 @@ struct EventPlan {
     actions: Vec<CampaignAction>,
 }
 
+/// A campaign event retains its UART target alongside its bytes. Ordinary
+/// topology plans keep their per-service event lists; this wrapper exists only
+/// while checkpoints share a mixed-service campaign prefix.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CampaignEvent {
+    service: String,
+    event: EventPlan,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct CampaignAction {
     operation: String,
@@ -1173,7 +1184,7 @@ struct CampaignCheckpoint {
 struct CampaignPrefixCheckpoint {
     checkpoint: CampaignCheckpoint,
     actions: Vec<AppliedCampaignAction>,
-    events: Vec<EventPlan>,
+    events: Vec<CampaignEvent>,
     boundaries: Vec<CampaignCheckpointBoundary>,
 }
 
@@ -1823,7 +1834,6 @@ impl CampaignCheckpointTree {
             }
             let (checkpoint, applied) = checkpoint_campaign_operation(
                 topology,
-                &campaign.driver,
                 &parent.checkpoint,
                 &prefix[prefix.len() - 1],
                 &directory.join("checkpoints").join(&key),
@@ -1853,21 +1863,20 @@ impl CampaignCheckpointTree {
     }
 }
 
-fn campaign_prefix_key(events: &[EventPlan]) -> Result<String, String> {
+fn campaign_prefix_key(events: &[CampaignEvent]) -> Result<String, String> {
     let encoded = serde_json::to_vec(events)
         .map_err(|error| format!("cannot encode campaign checkpoint prefix: {error}"))?;
     Ok(format!("{:x}", Sha256::digest(encoded)))
 }
 
-/// Resume a parent topology snapshot just long enough to execute one driver
+/// Resume a parent topology snapshot just long enough to execute one service
 /// operation. Its UART checkpoint is the fork barrier. We then stop every
 /// vCPU and capture the complete resulting topology, so sibling operations
 /// begin from byte-identical VM, disk, network, serial, and scheduler state.
 fn checkpoint_campaign_operation(
     topology: &TopologyPlan,
-    driver_name: &str,
     parent: &CampaignCheckpoint,
-    event: &EventPlan,
+    event: &CampaignEvent,
     directory: &Path,
 ) -> Result<(CampaignCheckpoint, Vec<AppliedCampaignAction>), String> {
     let switches: BTreeMap<String, SharedSimSwitch> = topology
@@ -1927,21 +1936,21 @@ fn checkpoint_campaign_operation(
     for name in &names {
         services[name].vm.resume()?;
     }
-    let mut driver = services
-        .remove(driver_name)
-        .ok_or_else(|| format!("campaign driver disappeared: {driver_name}"))?;
-    let serial = driver.serial_logs[0].clone();
+    let mut target = services
+        .remove(&event.service)
+        .ok_or_else(|| format!("campaign operation service disappeared: {}", event.service))?;
+    let serial = target.serial_logs[0].clone();
     let mut applied = Vec::new();
     let injection = inject_campaign_events(
-        driver_name,
-        &mut driver,
-        std::slice::from_ref(event),
+        &event.service,
+        &mut target,
+        std::slice::from_ref(&event.event),
         &serial,
         topology,
         &mut services,
         &mut applied,
     );
-    services.insert(driver_name.to_owned(), driver);
+    services.insert(event.service.clone(), target);
     injection?;
     let checkpoint =
         capture_campaign_checkpoint(directory, topology, &mut services, &switches, parent.round)?;
@@ -2165,12 +2174,7 @@ fn execute_campaign(
                 .map_err(|error| format!("cannot encode campaign replay plan: {error}"))?,
         )
         .map_err(|error| format!("cannot decode campaign tail plan: {error}"))?;
-        run.services
-            .get_mut(&campaign.driver)
-            .expect("campaign driver remains in replay plan")
-            .run
-            .events
-            .clear();
+        clear_campaign_events(&mut run);
         let run_dir = output.join("runs").join(format!("{index:03}"));
         let status = execute(
             run,
@@ -2547,13 +2551,7 @@ fn execute_campaign_minimized(
             .map_err(|error| format!("cannot encode campaign replay plan: {error}"))?,
     )
     .map_err(|error| format!("cannot decode campaign tail plan: {error}"))?;
-    final_plan
-        .services
-        .get_mut(&campaign.driver)
-        .expect("campaign driver remains in replay plan")
-        .run
-        .events
-        .clear();
+    clear_campaign_events(&mut final_plan);
     let result = execute(
         final_plan,
         output,
@@ -2679,12 +2677,7 @@ fn execute_campaign_minimization_attempt(
             .map_err(|error| format!("cannot encode campaign replay plan: {error}"))?,
     )
     .map_err(|error| format!("cannot decode campaign tail plan: {error}"))?;
-    plan.services
-        .get_mut(&campaign.driver)
-        .expect("campaign driver remains in replay plan")
-        .run
-        .events
-        .clear();
+    clear_campaign_events(&mut plan);
     let result = execute(
         plan,
         directory,
@@ -2929,6 +2922,20 @@ struct CampaignOperationChoice {
     input: usize,
 }
 
+/// Older locked plans have no operation service and retain the designated
+/// campaign driver as their target. New normalized plans always name it.
+fn campaign_operation_service<'a>(
+    campaign: &'a CampaignPlan,
+    choice: CampaignOperationChoice,
+) -> &'a str {
+    let service = &campaign.operations[choice.operation].service;
+    if service.is_empty() {
+        &campaign.driver
+    } else {
+        service
+    }
+}
+
 fn campaign_operation_inputs(operation: &CampaignOperation) -> Vec<CampaignOperationInput> {
     if operation.inputs.is_empty() {
         return operation
@@ -3108,45 +3115,42 @@ fn campaign_operation_serial_guards_are_ready(
     choice: CampaignOperationChoice,
 ) -> bool {
     let candidate = &campaign.operations[choice.operation];
+    let service = campaign_operation_service(campaign, choice);
     candidate
         .requires_serial
         .as_ref()
-        .map(|guard| campaign_serial_guard_matches(checkpoint, &campaign.driver, guard))
+        .map(|guard| campaign_serial_guard_matches(checkpoint, service, guard))
         .unwrap_or(true)
         && candidate
             .requires_serial_all
             .iter()
-            .all(|guard| campaign_serial_guard_matches(checkpoint, &campaign.driver, guard))
+            .all(|guard| campaign_serial_guard_matches(checkpoint, service, guard))
         && candidate
             .excludes_serial
             .as_ref()
-            .map(|guard| !campaign_serial_guard_matches(checkpoint, &campaign.driver, guard))
+            .map(|guard| !campaign_serial_guard_matches(checkpoint, service, guard))
             .unwrap_or(true)
         && candidate
             .excludes_serial_any
             .iter()
-            .all(|guard| !campaign_serial_guard_matches(checkpoint, &campaign.driver, guard))
+            .all(|guard| !campaign_serial_guard_matches(checkpoint, service, guard))
         && candidate
             .requires_serial_joins
             .iter()
-            .all(|join| campaign_serial_join_matches(checkpoint, &campaign.driver, join))
+            .all(|join| campaign_serial_join_matches(checkpoint, service, join))
         && candidate
             .excludes_serial_joins
             .iter()
-            .all(|join| !campaign_serial_join_matches(checkpoint, &campaign.driver, join))
+            .all(|join| !campaign_serial_join_matches(checkpoint, service, join))
         && candidate
             .requires_serial_evidence
             .as_ref()
-            .map(|evidence| {
-                campaign_serial_evidence_matches(checkpoint, &campaign.driver, evidence)
-            })
+            .map(|evidence| campaign_serial_evidence_matches(checkpoint, service, evidence))
             .unwrap_or(true)
         && candidate
             .excludes_serial_evidence
             .as_ref()
-            .map(|evidence| {
-                !campaign_serial_evidence_matches(checkpoint, &campaign.driver, evidence)
-            })
+            .map(|evidence| !campaign_serial_evidence_matches(checkpoint, service, evidence))
             .unwrap_or(true)
 }
 
@@ -4404,18 +4408,28 @@ fn apply_campaign_schedule(
     topology: &mut TopologyPlan,
     campaign: &CampaignPlan,
     schedule: &CampaignSchedule,
-    events: &[EventPlan],
+    events: &[CampaignEvent],
 ) -> Result<(), String> {
     let selected = schedule
         .faults
         .iter()
         .map(|index| &campaign.faults[*index])
         .collect::<Vec<_>>();
-    let driver = topology
-        .services
-        .get_mut(&campaign.driver)
-        .ok_or_else(|| format!("campaign driver disappeared: {}", campaign.driver))?;
-    driver.run.events = events.to_vec();
+    for service in topology.services.values_mut() {
+        service.run.events.clear();
+    }
+    for campaign_event in events {
+        let service = topology
+            .services
+            .get_mut(&campaign_event.service)
+            .ok_or_else(|| {
+                format!(
+                    "campaign operation service disappeared: {}",
+                    campaign_event.service
+                )
+            })?;
+        service.run.events.push(campaign_event.event.clone());
+    }
     for candidate in selected {
         if matches!(
             candidate.kind,
@@ -4448,12 +4462,21 @@ fn apply_campaign_schedule(
     Ok(())
 }
 
+/// A recorded replay plan retains the mixed-service input corpus for people
+/// and offline reports. Restored campaign checkpoints already include those
+/// inputs, so execution must clear every service's plan-level event list.
+fn clear_campaign_events(topology: &mut TopologyPlan) {
+    for service in topology.services.values_mut() {
+        service.run.events.clear();
+    }
+}
+
 fn campaign_schedule_event(
     campaign: &CampaignPlan,
     schedule: &CampaignSchedule,
     index: usize,
     checkpoint: &CampaignCheckpoint,
-) -> Result<EventPlan, String> {
+) -> Result<CampaignEvent, String> {
     let selected = schedule
         .faults
         .iter()
@@ -4470,15 +4493,19 @@ fn campaign_schedule_event(
         .filter(|candidate| campaign_fault_matches_operation(campaign, candidate, operation))
         .map(|candidate| campaign_action(candidate))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(EventPlan {
-        data_hex: campaign_operation_input_hex(campaign, checkpoint, &input)?,
-        checkpoint: Some(format!("THES:CHECKPOINT:{}", definition.name)),
-        actions,
+    Ok(CampaignEvent {
+        service: campaign_operation_service(campaign, operation).to_owned(),
+        event: EventPlan {
+            data_hex: campaign_operation_input_hex(campaign, definition, checkpoint, &input)?,
+            checkpoint: Some(format!("THES:CHECKPOINT:{}", definition.name)),
+            actions,
+        },
     })
 }
 
 fn campaign_operation_input_hex(
     campaign: &CampaignPlan,
+    operation: &CampaignOperation,
     checkpoint: &CampaignCheckpoint,
     input: &CampaignOperationInput,
 ) -> Result<String, String> {
@@ -4487,7 +4514,14 @@ fn campaign_operation_input_hex(
     };
     let mut values = BTreeMap::new();
     for (name, capture) in &input.input_captures {
-        let service = capture.service.as_deref().unwrap_or(&campaign.driver);
+        let service = capture
+            .service
+            .as_deref()
+            .unwrap_or(if operation.service.is_empty() {
+                &campaign.driver
+            } else {
+                &operation.service
+            });
         let serial = campaign_checkpoint_serial(checkpoint, service);
         let mut captured_values = campaign_input_capture_values(checkpoint, &serial, capture)
             .into_iter()
@@ -8677,13 +8711,14 @@ mod tests {
 
     #[test]
     fn campaign_marker_guards_use_the_restored_parent_transcript() {
-        let campaign = CampaignPlan {
+        let mut campaign = CampaignPlan {
             driver: "api".to_owned(),
             guidance: CampaignGuidance::Coverage,
             state: BTreeMap::from([("phase".to_owned(), "idle".to_owned())]),
             operations: vec![
                 CampaignOperation {
                     name: "write".to_owned(),
+                    service: "api".to_owned(),
                     input_hex: None,
                     inputs: vec![
                         CampaignOperationInput {
@@ -8741,6 +8776,7 @@ mod tests {
                 },
                 CampaignOperation {
                     name: "read".to_owned(),
+                    service: "api".to_owned(),
                     input_hex: Some("726561640a".to_owned()),
                     inputs: Vec::new(),
                     input_grammar: None,
@@ -8865,7 +8901,13 @@ mod tests {
             sets_state: BTreeMap::new(),
         };
         assert_eq!(
-            campaign_operation_input_hex(&campaign, &captured_checkpoint, &captured_input).unwrap(),
+            campaign_operation_input_hex(
+                &campaign,
+                &campaign.operations[0],
+                &captured_checkpoint,
+                &captured_input,
+            )
+            .unwrap(),
             "7265747279206c61746573740a"
         );
         let mut sequenced_input: CampaignOperationInput =
@@ -8891,8 +8933,13 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(
-            campaign_operation_input_hex(&campaign, &captured_checkpoint, &sequenced_input)
-                .unwrap(),
+            campaign_operation_input_hex(
+                &campaign,
+                &campaign.operations[0],
+                &captured_checkpoint,
+                &sequenced_input,
+            )
+            .unwrap(),
             "7265747279206c61746573740a"
         );
         sequenced_input
@@ -8901,8 +8948,13 @@ mod tests {
             .unwrap()
             .select = CampaignOperationInputSelect::First;
         assert_eq!(
-            campaign_operation_input_hex(&campaign, &captured_checkpoint, &sequenced_input)
-                .unwrap(),
+            campaign_operation_input_hex(
+                &campaign,
+                &campaign.operations[0],
+                &captured_checkpoint,
+                &sequenced_input,
+            )
+            .unwrap(),
             "72657472792066697273740a"
         );
         let workflow_input: CampaignOperationInput = serde_json::from_value(serde_json::json!({
@@ -8929,7 +8981,13 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            campaign_operation_input_hex(&campaign, &captured_checkpoint, &workflow_input).unwrap(),
+            campaign_operation_input_hex(
+                &campaign,
+                &campaign.operations[0],
+                &captured_checkpoint,
+                &workflow_input,
+            )
+            .unwrap(),
             "7265747279206c61746573740a"
         );
         let mut first_input = captured_input.clone();
@@ -8939,7 +8997,13 @@ mod tests {
             .unwrap()
             .select = CampaignOperationInputSelect::First;
         assert_eq!(
-            campaign_operation_input_hex(&campaign, &captured_checkpoint, &first_input).unwrap(),
+            campaign_operation_input_hex(
+                &campaign,
+                &campaign.operations[0],
+                &captured_checkpoint,
+                &first_input,
+            )
+            .unwrap(),
             "72657472792066697273740a"
         );
         let mut encoded_input = captured_input.clone();
@@ -8950,7 +9014,13 @@ mod tests {
             .unwrap()
             .encoding = CampaignOperationInputEncoding::Hex;
         assert_eq!(
-            campaign_operation_input_hex(&campaign, &captured_checkpoint, &encoded_input).unwrap(),
+            campaign_operation_input_hex(
+                &campaign,
+                &campaign.operations[0],
+                &captured_checkpoint,
+                &encoded_input,
+            )
+            .unwrap(),
             "7265747279203663363137343635373337340a"
         );
         assert_eq!(
@@ -9046,9 +9116,26 @@ mod tests {
                 &checkpoint,
             )
             .unwrap()
+            .event
             .data_hex,
             "777269746520626574610a"
         );
+        campaign.operations[0].service = "replica".to_owned();
+        assert_eq!(
+            campaign_schedule_event(
+                &campaign,
+                &CampaignSchedule {
+                    operations: vec![choice(0)],
+                    faults: Vec::new(),
+                },
+                0,
+                &checkpoint,
+            )
+            .unwrap()
+            .service,
+            "replica"
+        );
+        campaign.operations[0].service = "api".to_owned();
 
         assert!(campaign_operation_marker_guards_are_ready(
             &campaign,
@@ -9244,40 +9331,112 @@ mod tests {
     }
 
     #[test]
-    fn campaign_prefix_key_includes_barrier_actions() {
-        let ordinary = vec![EventPlan {
-            data_hex: "70696e670a".to_owned(),
-            checkpoint: Some("THES:CHECKPOINT:ping".to_owned()),
-            actions: Vec::new(),
-        }];
-        let faulted = vec![EventPlan {
-            data_hex: "70696e670a".to_owned(),
-            checkpoint: Some("THES:CHECKPOINT:ping".to_owned()),
-            actions: vec![CampaignAction {
-                operation: "ping".to_owned(),
-                kind: CampaignFaultKind::Partition,
-                service: None,
-                network: Some("backplane".to_owned()),
-                from: None,
-                to: None,
-                drive: None,
-                error_ppm: None,
-                latency_rounds: None,
-                torn_write_bytes: None,
-                corrupt_read_xor: None,
-                ethertype: None,
-                ip_protocol: None,
-                source_port: None,
-                destination_port: None,
-                drop_ppm: None,
-                duplicate_ppm: None,
-                corrupt_ppm: None,
-                jitter_rounds: None,
-                tx_bytes_per_round: None,
-                mtu_bytes: None,
-                tx_queue_frames: None,
-                rx_queue_frames: None,
+    fn campaign_operation_uses_its_target_for_default_guards_and_captures() {
+        let campaign: CampaignPlan = serde_json::from_value(serde_json::json!({
+            "driver": "api",
+            "operations": [{
+                "name": "retry",
+                "service": "worker",
+                "inputs": [{
+                    "name": "default",
+                    "input_hex": "",
+                    "input_template": "retry {request_id}\n",
+                    "input_captures": {
+                        "request_id": {
+                            "pointer": "/request_id",
+                            "json": {"fields": {"/event": "ready"}}
+                        }
+                    }
+                }],
+                "requires_serial": {"contains": "THES:M:ready"}
             }],
+            "max_runs": 1
+        }))
+        .unwrap();
+        let scheduler = |serial: &[u8]| ServiceSchedulerCheckpoint {
+            serial_contents: vec![serial.to_vec()],
+            program_counters: Vec::new(),
+            next_fault: 0,
+            paused_until: None,
+            faults: Vec::new(),
+            network_traffic: BTreeMap::new(),
+            network_trace: BTreeMap::new(),
+            storage_sha256: BTreeMap::new(),
+            virtual_time_ns: None,
+        };
+        let checkpoint = CampaignCheckpoint {
+            services: BTreeMap::new(),
+            scheduler: BTreeMap::from([
+                ("api".to_owned(), scheduler(b"THES:M:not-ready\n")),
+                (
+                    "worker".to_owned(),
+                    scheduler(b"THES:M:ready\n{\"event\":\"ready\",\"request_id\":\"worker-1\"}\n"),
+                ),
+            ]),
+            switches: BTreeMap::new(),
+            round: 0,
+        };
+
+        assert!(campaign_operation_serial_guards_are_ready(
+            &campaign,
+            &checkpoint,
+            choice(0)
+        ));
+        let event = campaign_schedule_event(
+            &campaign,
+            &CampaignSchedule {
+                operations: vec![choice(0)],
+                faults: Vec::new(),
+            },
+            0,
+            &checkpoint,
+        )
+        .unwrap();
+        assert_eq!(event.service, "worker");
+        assert_eq!(event.event.data_hex, "726574727920776f726b65722d310a");
+    }
+
+    #[test]
+    fn campaign_prefix_key_includes_barrier_actions() {
+        let ordinary = vec![CampaignEvent {
+            service: "api".to_owned(),
+            event: EventPlan {
+                data_hex: "70696e670a".to_owned(),
+                checkpoint: Some("THES:CHECKPOINT:ping".to_owned()),
+                actions: Vec::new(),
+            },
+        }];
+        let faulted = vec![CampaignEvent {
+            service: "worker".to_owned(),
+            event: EventPlan {
+                data_hex: "70696e670a".to_owned(),
+                checkpoint: Some("THES:CHECKPOINT:ping".to_owned()),
+                actions: vec![CampaignAction {
+                    operation: "ping".to_owned(),
+                    kind: CampaignFaultKind::Partition,
+                    service: None,
+                    network: Some("backplane".to_owned()),
+                    from: None,
+                    to: None,
+                    drive: None,
+                    error_ppm: None,
+                    latency_rounds: None,
+                    torn_write_bytes: None,
+                    corrupt_read_xor: None,
+                    ethertype: None,
+                    ip_protocol: None,
+                    source_port: None,
+                    destination_port: None,
+                    drop_ppm: None,
+                    duplicate_ppm: None,
+                    corrupt_ppm: None,
+                    jitter_rounds: None,
+                    tx_bytes_per_round: None,
+                    mtu_bytes: None,
+                    tx_queue_frames: None,
+                    rx_queue_frames: None,
+                }],
+            },
         }];
 
         assert_eq!(

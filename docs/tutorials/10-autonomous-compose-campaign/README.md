@@ -15,9 +15,12 @@ docker run --rm --privileged -v "$PWD":/tutorial -w /tutorial \
 Start with `compose.yaml`.
 
 1. Set `driver` to the service that accepts workload input on `/dev/ttyS0`.
-2. List operations as ordinary text. Theseus injects them into the driver UART;
-   after each input it waits for `THES:CHECKPOINT:<operation-name>` before it
-   injects the next one. No SDK or host-side wrapper is required.
+2. List operations as ordinary text. Theseus injects them into the driver UART
+   by default; set an operation's `service` to send it to another service's
+   `/dev/ttyS0`. Each target must announce `THES:M:42` and print
+   `THES:CHECKPOINT:<operation-name>` after its input. Theseus waits for that
+   checkpoint before injecting the next operation. No SDK or host-side wrapper
+   is required.
    Use `inputs` when one logical operation has several explicit payload cases.
    Use `input_grammar` when cases are a finite product. Set `template` with
    `{variable}` placeholders and map each variable to named `choices`.
@@ -35,7 +38,7 @@ Start with `compose.yaml`.
    Use `input_template` when the next UART command needs a value the guest
    already emitted. Put each `{placeholder}` under `input_captures` with a
    JSON event predicate and pointer; set `service` to read another service,
-   or omit it for the driver. Set `select` to `first` or `latest` (the default)
+   or omit it for the operation target. Set `select` to `first` or `latest` (the default)
    to choose a matching event from the restored parent transcript. The template
    placeholders and capture names must match exactly. This tutorial turns the
    write request ID into
