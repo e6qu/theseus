@@ -131,6 +131,16 @@ history level.
 - Benchmark topology fan-out by deterministic work counts and separately
   publish non-authoritative wall-clock measurements.
 
+**Current implementation:** retain each service checkpoint in an anonymous
+memfd, deserialize fresh VMM state for every child, and restore the memory
+through a private mapping. Linux shares clean source pages and COWs writes, so
+siblings no longer create `state.snap`/`memory.snap` files. The campaign tree
+owns every retained branch and releases all of them when that invocation ends;
+its result now records retained immutable bytes, logical COW-mapped restore
+bytes, dirty pages at capture barriers, and zero snapshot-file bytes. Switch
+state, UART transcripts, storage fingerprints, scheduler cursors, and virtual
+clocks remain in the same pause barrier.
+
 **Exit criteria:** sibling topology leaves share immutable memory pages; branch
 isolation and replay are proven under multi-service network/storage faults;
 cache reclamation cannot invalidate a locked replay bundle.
