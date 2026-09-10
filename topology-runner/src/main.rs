@@ -6801,7 +6801,7 @@ fn execute(
         )?;
         services.insert(name.clone(), driver);
     }
-    while round < max_rounds
+    while round.saturating_add(lifecycle_barrier_rounds) < max_rounds
         && services
             .values()
             .any(|service| service.vm.exited().is_none())
@@ -6809,22 +6809,19 @@ fn execute(
         round += 1;
         for name in topology.services.keys() {
             let mut service = services.remove(name).expect("topology service missing");
-            let faults_before = service.faults.len();
-            apply_scheduled_faults(
-                round,
-                name,
-                &topology.services[name],
-                &output.join("services").join(name),
-                &mut service,
-                &mut services,
-                &mut switches,
-            )?;
-            lifecycle_barrier_rounds = lifecycle_barrier_rounds.saturating_add(
-                service.faults[faults_before..]
-                    .iter()
-                    .filter_map(|fault| fault.barrier_rounds)
-                    .sum::<u64>(),
-            );
+            let remaining_rounds =
+                max_rounds.saturating_sub(round.saturating_add(lifecycle_barrier_rounds));
+            lifecycle_barrier_rounds =
+                lifecycle_barrier_rounds.saturating_add(apply_scheduled_faults(
+                    round,
+                    name,
+                    &topology.services[name],
+                    &output.join("services").join(name),
+                    &mut service,
+                    &mut services,
+                    &mut switches,
+                    remaining_rounds,
+                )?);
             if service.paused_until.is_none() && service.vm.exited().is_none() {
                 service.vm.pump();
             }
@@ -7290,7 +7287,9 @@ fn apply_scheduled_faults(
     service: &mut ServiceRuntime,
     services: &mut BTreeMap<String, ServiceRuntime>,
     switches: &mut BTreeMap<String, SharedSimSwitch>,
-) -> Result<(), String> {
+    max_rounds: u64,
+) -> Result<u64, String> {
+    let mut barrier_rounds: u64 = 0;
     if service.paused_until == Some(round) {
         if service.vm.exited().is_none() {
             service.vm.resume()?;
@@ -7357,7 +7356,7 @@ fn apply_scheduled_faults(
                     &mut replacement,
                     services,
                     switches,
-                    plan.run.run.max_rounds,
+                    max_rounds,
                 )?;
                 let event_rounds = inject_serial_events_with_service_rounds(
                     &mut replacement,
@@ -7365,7 +7364,7 @@ fn apply_scheduled_faults(
                     &serial,
                     services,
                     switches,
-                    plan.run.run.max_rounds.saturating_sub(readiness_rounds),
+                    max_rounds.saturating_sub(readiness_rounds),
                 )?;
                 service.vm = replacement;
                 service.serial_logs.push(serial);
@@ -7375,6 +7374,8 @@ fn apply_scheduled_faults(
                     detail: "cold-restarted from locked service artifacts".to_owned(),
                     barrier_rounds: Some(readiness_rounds.saturating_add(event_rounds)),
                 });
+                barrier_rounds =
+                    barrier_rounds.saturating_add(readiness_rounds.saturating_add(event_rounds));
             }
             FaultKind::ClockJump => {
                 let nanoseconds = fault.nanoseconds.expect("validated clock jump fault");
@@ -7388,7 +7389,7 @@ fn apply_scheduled_faults(
             }
         }
     }
-    Ok(())
+    Ok(barrier_rounds)
 }
 
 fn inject_serial_events_with_service_rounds(
