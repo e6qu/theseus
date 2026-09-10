@@ -294,8 +294,15 @@ address alone. These are checkpoint samples, not a full instruction trace.
 Ordinary serial output and declared fault names are not state coverage, so they
 cannot create artificial novelty.
 
+Choose the primary coverage signal with `coverage:`. The default,
+`execution_locations`, uses the accumulated exit samples. Use `markers` for a
+marker-only baseline or `checkpoint_pcs` for the final paused-PC baseline.
+All three retain topology-state and failure evidence, use the same candidate
+corpus, and lock the chosen mode into the replay bundle. That makes a campaign
+comparison a change of one explicit input, not a different test.
+
 Set `guidance: adaptive` to also rank a candidate's final operation by the
-marker, instruction-location, topology-state, and failure yield from earlier
+selected coverage signal, topology-state, and failure yield from earlier
 completed runs. Theseus adds a declining exploration bonus for operations with
 less evidence. The policy is deterministic: its recorded selection reasons
 are replay-checked; it never calls a remote model or makes random choices.

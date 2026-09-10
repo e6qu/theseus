@@ -155,8 +155,8 @@ Replace checkpoint-PC sampling as the main coverage signal.
 - Validate it against the existing single-step collector on small guests.
 - Feed novelty into the corpus scheduler with deterministic tie breaks; retain
   the complete choice evidence and replay-check it.
-- Add an evaluation workload where marker-only, checkpoint-PC, and execution
-  coverage select materially different histories.
+- Add a live evaluation workload where marker-only, checkpoint-PC, and
+  execution coverage select materially different histories.
 
 **Exit criteria:** coverage works on practical campaign workloads without
 single stepping; its identity, corpus choice, and replay behavior are stable.
@@ -165,7 +165,10 @@ single stepping; its identity, corpus choice, and replay behavior are stable.
 deterministic handled KVM exits and at explicit pause barriers. The collector
 leaves ordinary UART, virtio, network, and storage emulation enabled; it is
 inherited through topology COW branches as runtime checkpoint state. Campaign
-novelty now uses those accumulated location identities, while paused-PC and
+novelty defaults to those accumulated location identities; `markers` and
+`checkpoint_pcs` are replay-locked baselines that use the same corpus and
+topology-state/failure evidence. A deterministic scheduler test demonstrates
+that the three modes choose distinct extension histories. Paused-PC and
 single-step collection remain diagnostics and the small-guest ground truth.
 
 ### P17 — ordinary workload integration

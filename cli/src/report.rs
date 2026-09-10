@@ -287,6 +287,8 @@ struct CampaignResult {
     #[serde(default)]
     guidance: String,
     #[serde(default)]
+    coverage: String,
+    #[serde(default)]
     checkpoint_nodes: usize,
     #[serde(default)]
     checkpoint_reuses: usize,
@@ -336,6 +338,8 @@ struct CampaignRun {
     instruction_locations: BTreeMap<String, Vec<InstructionLocation>>,
     #[serde(default)]
     instruction_novelty: Vec<String>,
+    #[serde(default)]
+    checkpoint_pc_novelty: Vec<String>,
     #[serde(default)]
     state_novel: bool,
     status: String,
@@ -915,6 +919,12 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         "property" => "declared-property and coverage guidance",
         _ => "marker, instruction-location, and topology-state coverage",
     };
+    let coverage_signal = match result.coverage.as_str() {
+        "markers" => "marker novelty",
+        "checkpoint_pcs" => "paused checkpoint-PC novelty",
+        "execution_locations" | "" => "exit-sampled execution-location novelty",
+        _ => "recorded coverage novelty",
+    };
     let checkpoint = result
         .search
         .as_ref()
@@ -951,7 +961,7 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         coverage: Some(Coverage {
             label: "Campaign corpus".to_owned(),
             summary: format!(
-                "{} of {} deterministic candidates selected by {guidance}; {} marker-guard leaves and {} serial-guard leaves skipped; {} unique instruction locations; {} unique topology states; {} root captures, {} reusable checkpoint nodes, {} prefix captures, {} prefix reuses ({} avoided recomputations), {} topology restores ({} prefix materializations + {} leaf replays); {} retained immutable bytes, {} logical COW-mapped restore bytes, {} dirty pages at capture barriers, {} snapshot-file bytes{}",
+                "{} of {} deterministic candidates selected by {guidance} using {coverage_signal}; {} marker-guard leaves and {} serial-guard leaves skipped; {} unique instruction locations; {} unique topology states; {} root captures, {} reusable checkpoint nodes, {} prefix captures, {} prefix reuses ({} avoided recomputations), {} topology restores ({} prefix materializations + {} leaf replays); {} retained immutable bytes, {} logical COW-mapped restore bytes, {} dirty pages at capture barriers, {} snapshot-file bytes{}",
                 result.runs.len(),
                 result.generated_candidates,
                 result.marker_guard_rejections,
@@ -1832,7 +1842,7 @@ mod tests {
             "1 root captures, 4 reusable checkpoint nodes, 3 prefix captures, 7 prefix reuses (7 avoided recomputations), 4 topology restores (3 prefix materializations + 1 leaf replays); 1048576 retained immutable bytes, 4194304 logical COW-mapped restore bytes, 12 dirty pages at capture barriers, 0 snapshot-file bytes; guidance ledger: 1 observations, sha256 ledger-hash"
         ));
         assert!(html.contains(
-            "1 of 12 deterministic candidates selected by posterior coverage and action-yield guidance"
+            "1 of 12 deterministic candidates selected by posterior coverage and action-yield guidance using exit-sampled execution-location novelty"
         ));
         assert!(html.contains("2 marker-guard leaves and 1 serial-guard leaves skipped"));
         assert!(html.contains("3 unique topology states"));

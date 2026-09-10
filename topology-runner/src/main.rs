@@ -66,6 +66,9 @@ struct CampaignPlan {
     /// replay itself executes the recorded schedule order.
     #[serde(default)]
     guidance: CampaignGuidance,
+    /// The deterministic coverage evidence used by the corpus scheduler.
+    #[serde(default)]
+    coverage: CampaignCoverage,
     #[serde(default)]
     state: BTreeMap<String, String>,
     operations: Vec<CampaignOperation>,
@@ -101,6 +104,19 @@ enum CampaignGuidance {
     Adaptive,
     Posterior,
     Property,
+}
+
+/// Select one primary coverage signal when comparing scheduler strategies.
+/// Topology-state and failure evidence remains a shared secondary signal.
+/// `execution_locations` is the practical default; the other modes remain
+/// reproducible baselines for evaluating its value on a campaign workload.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CampaignCoverage {
+    Markers,
+    CheckpointPcs,
+    #[default]
+    ExecutionLocations,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -569,6 +585,7 @@ struct CampaignResult {
     status: &'static str,
     driver: String,
     guidance: CampaignGuidance,
+    coverage: CampaignCoverage,
     checkpoint_nodes: usize,
     checkpoint_reuses: usize,
     generated_candidates: usize,
@@ -612,6 +629,8 @@ struct CampaignRun {
     instruction_locations: BTreeMap<String, Vec<InstructionLocation>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     instruction_novelty: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    checkpoint_pc_novelty: Vec<String>,
     state_sha256: String,
     state_novel: bool,
     status: &'static str,
@@ -848,6 +867,8 @@ struct RecordedCampaignResult {
     #[serde(default)]
     guidance: Option<CampaignGuidance>,
     #[serde(default)]
+    coverage: Option<CampaignCoverage>,
+    #[serde(default)]
     generated_candidates: usize,
     #[serde(default)]
     search: Option<CampaignSearchEvidence>,
@@ -879,6 +900,8 @@ struct RecordedCampaignRun {
     instruction_locations: BTreeMap<String, Vec<InstructionLocation>>,
     #[serde(default)]
     instruction_novelty: Vec<String>,
+    #[serde(default)]
+    checkpoint_pc_novelty: Vec<String>,
     #[serde(default)]
     novelty: Vec<String>,
     #[serde(default)]
@@ -2613,7 +2636,7 @@ fn execute_campaign(
         .take()
         .expect("campaign execution requires a campaign");
     if let Some(recorded) = recorded {
-        verify_recorded_campaign_guidance(campaign.guidance, recorded)?;
+        verify_recorded_campaign_guidance(campaign.guidance, campaign.coverage, recorded)?;
     }
     let checkpoint =
         boot_campaign_checkpoint(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
@@ -2633,6 +2656,7 @@ fn execute_campaign(
     let mut seen_markers = std::collections::BTreeSet::new();
     let mut seen_topology_states = std::collections::BTreeSet::new();
     let mut seen_instruction_locations = std::collections::BTreeSet::new();
+    let mut seen_checkpoint_pcs = std::collections::BTreeSet::new();
     let mut pending = (0..schedules.len()).collect::<Vec<_>>();
     let mut observations = Vec::new();
     let mut replay_mismatches = Vec::new();
@@ -2660,8 +2684,13 @@ fn execute_campaign(
                 Some(expected),
             )
         } else {
-            let (pending_index, selection) =
-                select_campaign_schedule(&schedules, &pending, &observations, campaign.guidance);
+            let (pending_index, selection) = select_campaign_schedule(
+                &schedules,
+                &pending,
+                &observations,
+                campaign.guidance,
+                campaign.coverage,
+            );
             (
                 schedules[pending.remove(pending_index)].clone(),
                 selection,
@@ -2750,6 +2779,10 @@ fn execute_campaign(
             .into_iter()
             .filter(|location| seen_instruction_locations.insert(location.clone()))
             .collect::<Vec<_>>();
+        let checkpoint_pc_novelty = campaign_instruction_locations(&program_counters)
+            .into_iter()
+            .filter(|location| seen_checkpoint_pcs.insert(location.clone()))
+            .collect::<Vec<_>>();
         let state_sha256 = campaign_topology_state_sha256(&run_dir, &program_counters)?;
         let state_novel = seen_topology_states.insert(state_sha256.clone());
         let novelty = markers
@@ -2762,6 +2795,7 @@ fn execute_campaign(
             operations: schedule.operations.clone(),
             novel_markers: novelty.len(),
             novel_instructions: instruction_novelty.len(),
+            novel_checkpoint_pcs: checkpoint_pc_novelty.len(),
             novel_state: state_novel,
             failed,
             property_witnesses: property_witnesses.clone(),
@@ -2785,6 +2819,7 @@ fn execute_campaign(
             program_counters,
             instruction_locations,
             instruction_novelty,
+            checkpoint_pc_novelty,
             state_sha256,
             state_novel,
             status: if failed { "failed" } else { "passed" },
@@ -2829,6 +2864,7 @@ fn execute_campaign(
     )
     .map_err(|error| format!("cannot parse {}: {error}", first_plan.display()))?;
     let guidance = campaign.guidance;
+    let coverage = campaign.coverage;
     replay.campaign = Some(campaign);
     fs::write(
         output.join("replay-plan.json"),
@@ -2851,6 +2887,7 @@ fn execute_campaign(
                 .driver
                 .clone(),
             guidance,
+            coverage,
             checkpoint_nodes: checkpoints.nodes(),
             checkpoint_reuses: checkpoints.reuses,
             generated_candidates: schedules.len(),
@@ -3033,7 +3070,7 @@ fn execute_campaign_minimized(
             .map_err(|error| format!("cannot read campaign result: {error}"))?,
     )
     .map_err(|error| format!("cannot parse campaign result: {error}"))?;
-    verify_recorded_campaign_guidance(campaign.guidance, &recorded)?;
+    verify_recorded_campaign_guidance(campaign.guidance, campaign.coverage, &recorded)?;
     let checkpoint =
         boot_campaign_checkpoint(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
     let base = serde_json::to_vec(&topology)
@@ -4222,6 +4259,7 @@ struct CampaignGuidanceObservation {
     operations: Vec<CampaignOperationChoice>,
     novel_markers: usize,
     novel_instructions: usize,
+    novel_checkpoint_pcs: usize,
     novel_state: bool,
     failed: bool,
     property_witnesses: Vec<String>,
@@ -4469,6 +4507,7 @@ fn recorded_campaign_schedules(
 /// coverage ordering.
 fn verify_recorded_campaign_guidance(
     guidance: CampaignGuidance,
+    coverage: CampaignCoverage,
     recorded: &RecordedCampaignResult,
 ) -> Result<(), String> {
     if recorded
@@ -4476,6 +4515,12 @@ fn verify_recorded_campaign_guidance(
         .is_some_and(|recorded_guidance| recorded_guidance != guidance)
     {
         return Err("recorded campaign guidance differs from replay plan".to_owned());
+    }
+    if recorded
+        .coverage
+        .is_some_and(|recorded_coverage| recorded_coverage != coverage)
+    {
+        return Err("recorded campaign coverage differs from replay plan".to_owned());
     }
     Ok(())
 }
@@ -4539,6 +4584,11 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
         && expected.instruction_novelty != actual.instruction_novelty
     {
         mismatches.push("instruction-location coverage".to_owned());
+    }
+    if !expected.checkpoint_pc_novelty.is_empty()
+        && expected.checkpoint_pc_novelty != actual.checkpoint_pc_novelty
+    {
+        mismatches.push("checkpoint-PC coverage".to_owned());
     }
     if !expected.state_sha256.is_empty()
         && (expected.state_sha256 != actual.state_sha256
@@ -4613,6 +4663,7 @@ fn select_campaign_schedule(
     pending: &[usize],
     observations: &[CampaignGuidanceObservation],
     guidance: CampaignGuidance,
+    coverage: CampaignCoverage,
 ) -> (usize, String) {
     if let Some((pending_index, _)) = pending.iter().enumerate().find(|(_, schedule_index)| {
         let candidate = &schedules[**schedule_index];
@@ -4639,10 +4690,7 @@ fn select_campaign_schedule(
             if !candidate.operations.starts_with(&observation.operations) {
                 continue;
             }
-            // Markers are user-visible coverage; paused program counters add
-            // guest execution locations without requiring guest SDK calls.
-            // The final drive/network/clock state catches topology divergence.
-            let signal = campaign_guidance_signal(observation);
+            let signal = campaign_guidance_signal(observation, coverage);
             let candidate_score = signal.saturating_mul(256) + observation.operations.len();
             if candidate_score > coverage_score {
                 coverage_score = candidate_score;
@@ -4654,7 +4702,7 @@ fn select_campaign_schedule(
                 coverage_score,
                 0,
                 coverage_reason
-                    .map(campaign_guidance_reason)
+                    .map(|observation| campaign_guidance_reason(observation, coverage))
                     .unwrap_or_else(|| "canonical breadth-first seed".to_owned()),
             ),
             CampaignGuidance::Adaptive => {
@@ -4663,13 +4711,13 @@ fn select_campaign_schedule(
                     .last()
                     .expect("campaign schedules always contain an operation");
                 let (mean_reward, observations, exploration_bonus) =
-                    campaign_adaptive_action_reward(choice, observations);
+                    campaign_adaptive_action_reward(choice, observations, coverage);
                 let adaptive_score = mean_reward
                     .saturating_mul(64)
                     .saturating_add(exploration_bonus);
                 let base_reason = coverage_reason
-                    .filter(|observation| campaign_guidance_signal(observation) > 0)
-                    .map(campaign_guidance_reason)
+                    .filter(|observation| campaign_guidance_signal(observation, coverage) > 0)
+                    .map(|observation| campaign_guidance_reason(observation, coverage))
                     .unwrap_or_else(|| "canonical breadth-first seed".to_owned());
                 (
                     coverage_score.saturating_add(adaptive_score),
@@ -4688,10 +4736,11 @@ fn select_campaign_schedule(
                     choice,
                     &candidate.operations[..candidate.operations.len() - 1],
                     observations,
+                    coverage,
                 );
                 let base_reason = coverage_reason
-                    .filter(|observation| campaign_guidance_signal(observation) > 0)
-                    .map(campaign_guidance_reason)
+                    .filter(|observation| campaign_guidance_signal(observation, coverage) > 0)
+                    .map(|observation| campaign_guidance_reason(observation, coverage))
                     .unwrap_or_else(|| "canonical breadth-first seed".to_owned());
                 (
                     coverage_score.saturating_add(estimate.score),
@@ -4717,8 +4766,8 @@ fn select_campaign_schedule(
                     observations,
                 );
                 let base_reason = coverage_reason
-                    .filter(|observation| campaign_guidance_signal(observation) > 0)
-                    .map(campaign_guidance_reason)
+                    .filter(|observation| campaign_guidance_signal(observation, coverage) > 0)
+                    .map(|observation| campaign_guidance_reason(observation, coverage))
                     .unwrap_or_else(|| "canonical breadth-first seed".to_owned());
                 let properties = if estimate.properties.is_empty() {
                     "no property witness yet".to_owned()
@@ -4750,11 +4799,18 @@ fn select_campaign_schedule(
     (selected, selected_reason)
 }
 
-fn campaign_guidance_signal(observation: &CampaignGuidanceObservation) -> usize {
-    observation.novel_markers.saturating_mul(1_000)
-        + observation.novel_instructions.saturating_mul(500)
-        + usize::from(observation.novel_state).saturating_mul(250)
-        + usize::from(observation.failed).saturating_mul(100)
+fn campaign_guidance_signal(
+    observation: &CampaignGuidanceObservation,
+    coverage: CampaignCoverage,
+) -> usize {
+    let primary = match coverage {
+        CampaignCoverage::Markers => observation.novel_markers.saturating_mul(1_000),
+        CampaignCoverage::CheckpointPcs => observation.novel_checkpoint_pcs.saturating_mul(500),
+        CampaignCoverage::ExecutionLocations => observation.novel_instructions.saturating_mul(500),
+    };
+    primary
+        .saturating_add(usize::from(observation.novel_state).saturating_mul(250))
+        .saturating_add(usize::from(observation.failed).saturating_mul(100))
 }
 
 /// Return a deterministic empirical action reward and an uncertainty bonus.
@@ -4763,6 +4819,7 @@ fn campaign_guidance_signal(observation: &CampaignGuidanceObservation) -> usize 
 fn campaign_adaptive_action_reward(
     choice: CampaignOperationChoice,
     observations: &[CampaignGuidanceObservation],
+    coverage: CampaignCoverage,
 ) -> (usize, usize, usize) {
     let matching = observations
         .iter()
@@ -4771,7 +4828,7 @@ fn campaign_adaptive_action_reward(
     let count = matching.len();
     let reward = matching
         .into_iter()
-        .map(campaign_guidance_signal)
+        .map(|observation| campaign_guidance_signal(observation, coverage))
         .sum::<usize>();
     let mean_reward = reward / count.max(1);
     let exploration_bonus =
@@ -4860,6 +4917,7 @@ fn campaign_posterior_estimate(
     choice: CampaignOperationChoice,
     context: &[CampaignOperationChoice],
     observations: &[CampaignGuidanceObservation],
+    coverage: CampaignCoverage,
 ) -> CampaignPosteriorEstimate {
     let contextual = observations
         .iter()
@@ -4882,7 +4940,7 @@ fn campaign_posterior_estimate(
     };
     let successes = matching
         .iter()
-        .filter(|observation| campaign_guidance_signal(observation) > 0)
+        .filter(|observation| campaign_guidance_signal(observation, coverage) > 0)
         .count();
     let misses = matching.len().saturating_sub(successes);
     let alpha = successes.saturating_add(1);
@@ -4915,7 +4973,7 @@ fn campaign_posterior_evidence(
         .last()
         .expect("campaign schedules always contain an operation");
     let context = &schedule.operations[..schedule.operations.len() - 1];
-    let estimate = campaign_posterior_estimate(choice, context, observations);
+    let estimate = campaign_posterior_estimate(choice, context, observations, campaign.coverage);
     CampaignPosteriorEvidence {
         action: campaign_operation_choice_name(campaign, choice),
         context: context
@@ -4931,22 +4989,31 @@ fn campaign_posterior_evidence(
     }
 }
 
-fn campaign_guidance_reason(observation: &CampaignGuidanceObservation) -> String {
+fn campaign_guidance_reason(
+    observation: &CampaignGuidanceObservation,
+    coverage: CampaignCoverage,
+) -> String {
     let mut signals = Vec::new();
-    if observation.novel_markers > 0 {
+    if coverage == CampaignCoverage::Markers && observation.novel_markers > 0 {
         signals.push(format!("{} new marker(s)", observation.novel_markers));
     }
-    if observation.novel_instructions > 0 {
+    if coverage == CampaignCoverage::ExecutionLocations && observation.novel_instructions > 0 {
         signals.push(format!(
             "{} new instruction location(s)",
             observation.novel_instructions
+        ));
+    }
+    if coverage == CampaignCoverage::CheckpointPcs && observation.novel_checkpoint_pcs > 0 {
+        signals.push(format!(
+            "{} new checkpoint PC(s)",
+            observation.novel_checkpoint_pcs
         ));
     }
     if observation.novel_state {
         signals.push("new topology state".to_owned());
     }
     if observation.failed {
-        signals.push("failure".to_owned());
+        signals.push("failed run".to_owned());
     }
     format!(
         "extends {}-operation prefix with {}",
@@ -9800,6 +9867,7 @@ mod tests {
         let mut campaign = CampaignPlan {
             driver: "api".to_owned(),
             guidance: CampaignGuidance::Coverage,
+            coverage: CampaignCoverage::ExecutionLocations,
             state: BTreeMap::from([("phase".to_owned(), "idle".to_owned())]),
             operations: vec![
                 CampaignOperation {
@@ -10573,11 +10641,13 @@ mod tests {
                 operations: vec![choice(0)],
                 novel_markers: 2,
                 novel_instructions: 0,
+                novel_checkpoint_pcs: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
             }],
             CampaignGuidance::Coverage,
+            CampaignCoverage::ExecutionLocations,
         );
 
         assert_eq!(selected, 0);
@@ -10607,11 +10677,13 @@ mod tests {
                 operations: vec![choice(0)],
                 novel_markers: 0,
                 novel_instructions: 0,
+                novel_checkpoint_pcs: 0,
                 novel_state: true,
                 failed: false,
                 property_witnesses: Vec::new(),
             }],
             CampaignGuidance::Coverage,
+            CampaignCoverage::ExecutionLocations,
         );
 
         assert_eq!(selected, 0);
@@ -10637,11 +10709,13 @@ mod tests {
                 operations: vec![choice(0)],
                 novel_markers: 0,
                 novel_instructions: 2,
+                novel_checkpoint_pcs: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
             }],
             CampaignGuidance::Coverage,
+            CampaignCoverage::ExecutionLocations,
         );
 
         assert_eq!(selected, 0);
@@ -10649,6 +10723,83 @@ mod tests {
             reason,
             "extends 1-operation prefix with 2 new instruction location(s)"
         );
+    }
+
+    #[test]
+    fn coverage_modes_choose_distinct_extension_histories() {
+        // This is the minimal deterministic evaluation corpus: every prior
+        // prefix contributes exactly one kind of primary coverage evidence.
+        // With one shared candidate corpus, changing only `coverage` must
+        // choose a different continuation history.
+        let schedules = vec![
+            CampaignSchedule {
+                operations: vec![choice(0), choice(3)],
+                faults: Vec::new(),
+            },
+            CampaignSchedule {
+                operations: vec![choice(1), choice(3)],
+                faults: Vec::new(),
+            },
+            CampaignSchedule {
+                operations: vec![choice(2), choice(3)],
+                faults: Vec::new(),
+            },
+        ];
+        let observations = vec![
+            CampaignGuidanceObservation {
+                operations: vec![choice(0)],
+                novel_markers: 1,
+                novel_instructions: 0,
+                novel_checkpoint_pcs: 0,
+                novel_state: false,
+                failed: false,
+                property_witnesses: Vec::new(),
+            },
+            CampaignGuidanceObservation {
+                operations: vec![choice(1)],
+                novel_markers: 0,
+                novel_instructions: 0,
+                novel_checkpoint_pcs: 1,
+                novel_state: false,
+                failed: false,
+                property_witnesses: Vec::new(),
+            },
+            CampaignGuidanceObservation {
+                operations: vec![choice(2)],
+                novel_markers: 0,
+                novel_instructions: 1,
+                novel_checkpoint_pcs: 0,
+                novel_state: false,
+                failed: false,
+                property_witnesses: Vec::new(),
+            },
+        ];
+
+        let marker_history = select_campaign_schedule(
+            &schedules,
+            &[0, 1, 2],
+            &observations,
+            CampaignGuidance::Coverage,
+            CampaignCoverage::Markers,
+        );
+        let checkpoint_pc_history = select_campaign_schedule(
+            &schedules,
+            &[0, 1, 2],
+            &observations,
+            CampaignGuidance::Coverage,
+            CampaignCoverage::CheckpointPcs,
+        );
+        let execution_history = select_campaign_schedule(
+            &schedules,
+            &[0, 1, 2],
+            &observations,
+            CampaignGuidance::Coverage,
+            CampaignCoverage::ExecutionLocations,
+        );
+
+        assert_eq!(marker_history.0, 0);
+        assert_eq!(checkpoint_pc_history.0, 1);
+        assert_eq!(execution_history.0, 2);
     }
 
     #[test]
@@ -10796,6 +10947,7 @@ mod tests {
                 operations: vec![choice(0)],
                 novel_markers: 2,
                 novel_instructions: 0,
+                novel_checkpoint_pcs: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -10804,6 +10956,7 @@ mod tests {
                 operations: vec![choice(1)],
                 novel_markers: 0,
                 novel_instructions: 0,
+                novel_checkpoint_pcs: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -10812,6 +10965,7 @@ mod tests {
                 operations: vec![choice(2)],
                 novel_markers: 0,
                 novel_instructions: 0,
+                novel_checkpoint_pcs: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -10823,6 +10977,7 @@ mod tests {
             &[0, 1],
             &observations,
             CampaignGuidance::Adaptive,
+            CampaignCoverage::Markers,
         );
 
         assert_eq!(selected, 1);
@@ -10849,6 +11004,7 @@ mod tests {
                 operations: vec![choice(0)],
                 novel_markers: 1,
                 novel_instructions: 0,
+                novel_checkpoint_pcs: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -10857,6 +11013,7 @@ mod tests {
                 operations: vec![choice(1)],
                 novel_markers: 0,
                 novel_instructions: 0,
+                novel_checkpoint_pcs: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -10868,6 +11025,7 @@ mod tests {
             &[0, 1],
             &observations,
             CampaignGuidance::Posterior,
+            CampaignCoverage::Markers,
         );
 
         assert_eq!(selected, 1);
@@ -10875,7 +11033,12 @@ mod tests {
             reason,
             "canonical breadth-first seed; posterior global action evidence: 1 yield(s), 0 miss(es), mean 666‰, uncertainty 166‰"
         );
-        let estimate = campaign_posterior_estimate(choice(0), &[choice(2)], &observations);
+        let estimate = campaign_posterior_estimate(
+            choice(0),
+            &[choice(2)],
+            &observations,
+            CampaignCoverage::Markers,
+        );
         assert_eq!(estimate.scope, "global action");
         assert_eq!(estimate.successes, 1);
         assert_eq!(estimate.misses, 0);
@@ -10899,6 +11062,7 @@ mod tests {
                 operations: vec![choice(0)],
                 novel_markers: 0,
                 novel_instructions: 0,
+                novel_checkpoint_pcs: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: vec!["stale_read_is_reachable".to_owned()],
@@ -10907,6 +11071,7 @@ mod tests {
                 operations: vec![choice(1)],
                 novel_markers: 0,
                 novel_instructions: 0,
+                novel_checkpoint_pcs: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -10918,6 +11083,7 @@ mod tests {
             &[0, 1],
             &observations,
             CampaignGuidance::Property,
+            CampaignCoverage::ExecutionLocations,
         );
 
         assert_eq!(selected, 1);
@@ -10936,20 +11102,37 @@ mod tests {
     }
 
     #[test]
-    fn replay_rejects_a_changed_recorded_guidance_policy() {
+    fn replay_rejects_a_changed_recorded_guidance_or_coverage_policy() {
         let recorded = RecordedCampaignResult {
             guidance: Some(CampaignGuidance::Adaptive),
+            coverage: Some(CampaignCoverage::Markers),
             generated_candidates: 0,
             search: None,
             runs: Vec::new(),
         };
 
         assert_eq!(
-            verify_recorded_campaign_guidance(CampaignGuidance::Coverage, &recorded),
+            verify_recorded_campaign_guidance(
+                CampaignGuidance::Coverage,
+                CampaignCoverage::ExecutionLocations,
+                &recorded,
+            ),
             Err("recorded campaign guidance differs from replay plan".to_owned())
         );
         assert_eq!(
-            verify_recorded_campaign_guidance(CampaignGuidance::Adaptive, &recorded),
+            verify_recorded_campaign_guidance(
+                CampaignGuidance::Adaptive,
+                CampaignCoverage::ExecutionLocations,
+                &recorded,
+            ),
+            Err("recorded campaign coverage differs from replay plan".to_owned())
+        );
+        assert_eq!(
+            verify_recorded_campaign_guidance(
+                CampaignGuidance::Adaptive,
+                CampaignCoverage::Markers,
+                &recorded,
+            ),
             Ok(())
         );
     }
@@ -10966,8 +11149,13 @@ mod tests {
                 faults: Vec::new(),
             },
         ];
-        let (selected, reason) =
-            select_campaign_schedule(&schedules, &[0, 1], &[], CampaignGuidance::Coverage);
+        let (selected, reason) = select_campaign_schedule(
+            &schedules,
+            &[0, 1],
+            &[],
+            CampaignGuidance::Coverage,
+            CampaignCoverage::ExecutionLocations,
+        );
 
         assert_eq!(selected, 0);
         assert_eq!(reason, "canonical breadth-first operation seed");
@@ -11275,6 +11463,7 @@ mod tests {
                 }],
             )]),
             instruction_novelty: Vec::new(),
+            checkpoint_pc_novelty: Vec::new(),
             state_sha256: "state".to_owned(),
             state_novel: true,
             status: "passed",
@@ -11293,6 +11482,7 @@ mod tests {
             program_counters: actual.program_counters.clone(),
             instruction_locations: actual.instruction_locations.clone(),
             instruction_novelty: actual.instruction_novelty.clone(),
+            checkpoint_pc_novelty: actual.checkpoint_pc_novelty.clone(),
             novelty: actual.novelty.clone(),
             state_sha256: actual.state_sha256.clone(),
             state_novel: true,
@@ -11378,6 +11568,7 @@ mod tests {
             operations: vec![choice(0)],
             novel_markers: 1,
             novel_instructions: 0,
+            novel_checkpoint_pcs: 0,
             novel_state: false,
             failed: false,
             property_witnesses: Vec::new(),
