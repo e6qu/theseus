@@ -1371,6 +1371,9 @@ struct ServiceSchedulerCheckpoint {
     storage_sha256: BTreeMap<String, String>,
     virtual_time_ns: Option<Vec<u64>>,
     private_dirty_pages: Option<u64>,
+    /// Runtime execution samples inherited with a COW branch. They are not
+    /// Firecracker snapshot state: this campaign tree owns their lifetime.
+    execution_locations: Option<Vec<Vec<u64>>>,
 }
 
 #[derive(Clone)]
@@ -1894,6 +1897,14 @@ impl ServiceVm {
             .dirty_page_count()
     }
 
+    fn execution_locations(&self) -> Result<Vec<Vec<u64>>, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .execution_location_samples()
+            .map_err(|error| error.to_string())
+    }
+
     fn paused_program_counters(&self) -> Result<Vec<u64>, String> {
         self.vmm
             .lock()
@@ -1959,6 +1970,7 @@ fn capture_campaign_checkpoint(
                 .vm
                 .storage_fingerprints(&topology.services[name].run.storage)?;
             let virtual_time_ns = service.vm.virtual_time_ns()?;
+            let execution_locations = service.vm.execution_locations()?;
             snapshots.insert(
                 name.clone(),
                 service.vm.snapshot(topology.services[name].run.run.seed)?,
@@ -1977,6 +1989,7 @@ fn capture_campaign_checkpoint(
                     storage_sha256,
                     virtual_time_ns,
                     private_dirty_pages: service.vm.dirty_page_count(),
+                    execution_locations: Some(execution_locations),
                 },
             );
         }
@@ -2202,6 +2215,7 @@ fn checkpoint_campaign_operation(
             Path::new(&service.run.guest.initramfs.path),
             serial,
             &switches,
+            scheduler.execution_locations.as_deref(),
             parent
                 .services
                 .get(name)
@@ -2721,7 +2735,8 @@ fn execute_campaign(
         let markers = campaign_markers(&run_dir)?;
         let actions = campaign_actions(&run_dir)?;
         let program_counters = campaign_checkpoint_program_counters(&prefix.checkpoint);
-        let instruction_locations = instruction_symbolizer.symbolize(&program_counters);
+        let execution_locations = campaign_checkpoint_execution_locations(&prefix.checkpoint);
+        let instruction_locations = instruction_symbolizer.symbolize(&execution_locations);
         let timeline = campaign_operation_timeline(
             &campaign,
             &schedule,
@@ -2731,7 +2746,7 @@ fn execute_campaign(
             &checkpoints.root_boundary(),
             &instruction_symbolizer,
         );
-        let instruction_novelty = campaign_instruction_locations(&program_counters)
+        let instruction_novelty = campaign_instruction_locations(&execution_locations)
             .into_iter()
             .filter(|location| seen_instruction_locations.insert(location.clone()))
             .collect::<Vec<_>>();
@@ -5401,6 +5416,41 @@ fn campaign_checkpoint_program_counters(
         .collect()
 }
 
+/// Low-overhead execution coverage captured by vCPU threads at deterministic
+/// handled-exit quanta. A legacy checkpoint without this runtime-only state
+/// falls back to its paused PC, so old locked bundles remain readable.
+fn campaign_checkpoint_execution_locations(
+    checkpoint: &CampaignCheckpoint,
+) -> BTreeMap<String, Vec<String>> {
+    checkpoint
+        .scheduler
+        .iter()
+        .map(|(service, state)| {
+            let locations = state
+                .execution_locations
+                .as_ref()
+                .filter(|samples| !samples.is_empty())
+                .map(|samples| {
+                    samples
+                        .iter()
+                        .flat_map(|vcpu| vcpu.iter())
+                        .map(|location| format!("{location:#x}"))
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect()
+                })
+                .unwrap_or_else(|| {
+                    state
+                        .program_counters
+                        .iter()
+                        .map(|location| format!("{location:#x}"))
+                        .collect()
+                });
+            (service.clone(), locations)
+        })
+        .collect()
+}
+
 fn campaign_checkpoint_boundary(
     checkpoint: &CampaignCheckpoint,
     actions: Vec<AppliedCampaignAction>,
@@ -7163,6 +7213,7 @@ fn execute(
                     Path::new(&service.run.guest.initramfs.path),
                     serial,
                     &switches,
+                    scheduler.execution_locations.as_deref(),
                     checkpoint
                         .services
                         .get(name)
@@ -8791,6 +8842,7 @@ fn restore_service(
     initramfs: &Path,
     serial: &Path,
     switches: &BTreeMap<String, SharedSimSwitch>,
+    execution_locations: Option<&[Vec<u64>]>,
     checkpoint: &ServiceVmCheckpoint,
 ) -> Result<ServiceVm, String> {
     let mut resources = service_resources(service, kernel, initramfs, serial)?;
@@ -8845,6 +8897,10 @@ fn restore_service(
     };
     {
         let mut vmm = vm.vmm.lock().expect("VMM lock poisoned");
+        if let Some(execution_locations) = execution_locations {
+            vmm.seed_execution_location_samples(execution_locations)
+                .map_err(|error| error.to_string())?;
+        }
         for (network, id) in &vm.networks {
             let switch = switches
                 .get(network)
@@ -8988,6 +9044,7 @@ mod tests {
                     storage_sha256: BTreeMap::new(),
                     virtual_time_ns: None,
                     private_dirty_pages: None,
+                    execution_locations: None,
                 },
             )]),
             round: 0,
@@ -9078,6 +9135,7 @@ mod tests {
                     storage_sha256: BTreeMap::new(),
                     virtual_time_ns: None,
                     private_dirty_pages: None,
+                    execution_locations: None,
                 },
             )]),
             round: 0,
@@ -9181,6 +9239,7 @@ mod tests {
                         storage_sha256: BTreeMap::new(),
                         virtual_time_ns: None,
                         private_dirty_pages: None,
+                        execution_locations: None,
                     },
                 ),
                 (
@@ -9197,6 +9256,7 @@ mod tests {
                         storage_sha256: BTreeMap::new(),
                         virtual_time_ns: None,
                         private_dirty_pages: None,
+                        execution_locations: None,
                     },
                 ),
             ]),
@@ -9848,6 +9908,7 @@ mod tests {
                     storage_sha256: BTreeMap::new(),
                     virtual_time_ns: None,
                     private_dirty_pages: None,
+                    execution_locations: None,
                 },
             )]),
             round: 0,
@@ -9871,6 +9932,7 @@ mod tests {
                     storage_sha256: BTreeMap::new(),
                     virtual_time_ns: None,
                     private_dirty_pages: None,
+                    execution_locations: None,
                     },
                 ),
                 (
@@ -9890,6 +9952,7 @@ mod tests {
                         storage_sha256: BTreeMap::new(),
                         virtual_time_ns: None,
                         private_dirty_pages: None,
+                        execution_locations: None,
                     },
                 ),
             ]),
@@ -10287,6 +10350,7 @@ mod tests {
                 storage_sha256: BTreeMap::new(),
                 virtual_time_ns: None,
                 private_dirty_pages: None,
+                execution_locations: None,
             },
         );
         assert!(campaign_operation_serial_guards_are_ready(
@@ -10399,6 +10463,7 @@ mod tests {
             storage_sha256: BTreeMap::new(),
             virtual_time_ns: None,
             private_dirty_pages: None,
+            execution_locations: None,
         };
         let checkpoint = CampaignCheckpoint {
             services: BTreeMap::new(),
@@ -10601,6 +10666,47 @@ mod tests {
                 "api:0x9000".to_owned(),
                 "auditor:0x8000".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn checkpoint_execution_locations_prefer_exit_samples_and_keep_legacy_fallback() {
+        let scheduler =
+            |program_counters: Vec<u64>, execution_locations| ServiceSchedulerCheckpoint {
+                serial_contents: Vec::new(),
+                serial_pending_bytes: 0,
+                program_counters,
+                next_fault: 0,
+                paused_until: None,
+                faults: Vec::new(),
+                network_traffic: BTreeMap::new(),
+                network_trace: BTreeMap::new(),
+                storage_sha256: BTreeMap::new(),
+                virtual_time_ns: None,
+                private_dirty_pages: None,
+                execution_locations,
+            };
+        let checkpoint = CampaignCheckpoint {
+            switches: BTreeMap::new(),
+            services: BTreeMap::new(),
+            scheduler: BTreeMap::from([
+                (
+                    "api".to_owned(),
+                    scheduler(vec![0x1000], Some(vec![vec![0x2000, 0x1000], vec![0x2000]])),
+                ),
+                ("legacy".to_owned(), scheduler(vec![0x3000], None)),
+            ]),
+            round: 0,
+        };
+        assert_eq!(
+            campaign_checkpoint_execution_locations(&checkpoint),
+            BTreeMap::from([
+                (
+                    "api".to_owned(),
+                    vec!["0x1000".to_owned(), "0x2000".to_owned()],
+                ),
+                ("legacy".to_owned(), vec!["0x3000".to_owned()]),
+            ])
         );
     }
 
