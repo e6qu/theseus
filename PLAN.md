@@ -168,8 +168,11 @@ inherited through topology COW branches as runtime checkpoint state. Campaign
 novelty defaults to those accumulated location identities; `markers` and
 `checkpoint_pcs` are replay-locked baselines that use the same corpus and
 topology-state/failure evidence. A deterministic scheduler test demonstrates
-that the three modes choose distinct extension histories. Paused-PC and
-single-step collection remain diagnostics and the small-guest ground truth.
+that the three modes choose distinct extension histories. Every live campaign
+checkpoint now also verifies its pause-barrier PC is present in the matching
+vCPU's sampled set, making a broken collector fail before it can guide a
+corpus. Paused-PC and single-step collection remain diagnostics and the
+small-guest ground truth.
 
 ### P17 — ordinary workload integration
 

@@ -128,3 +128,6 @@ workloads. Compose campaigns use a low-overhead alternative: each vCPU records
 PCs at deterministic handled-exit intervals and pause barriers, so ordinary
 devices stay enabled. Campaign plans can select that accumulated signal,
 markers, or final checkpoint PCs as replay-locked coverage baselines.
+At every campaign checkpoint, Theseus verifies that each paused vCPU PC is in
+its own accumulated sample set. This checks the fast collector's pause-barrier
+contract on real KVM without pretending it is an instruction trace.
