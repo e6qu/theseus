@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -40,8 +41,9 @@ use vmm::vmm_config::snapshot::{
 };
 use vmm::{EventManager, FcExitCode, Vmm};
 
-const USAGE: &str =
-    "Usage: theseus-topology --plan topology-plan.json --output replay-dir [--minimize]";
+const USAGE: &str = "Usage:
+  theseus-topology --plan topology-plan.json --output replay-dir [--minimize]
+  theseus-topology certify --plan topology-plan.json --output certificate-dir";
 const MAX_CAMPAIGN_CANDIDATES: usize = 4_096;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1136,6 +1138,7 @@ struct ServiceResult {
     storage_sha256: BTreeMap<String, String>,
     network_traffic: BTreeMap<String, NetworkTraffic>,
     network_trace: BTreeMap<String, Vec<NetworkFrame>>,
+    entropy_probe_sha256: String,
     virtual_time_ns: Option<Vec<u64>>,
     error: Option<String>,
     checks: Vec<CheckResult>,
@@ -1159,7 +1162,58 @@ struct RecordedServiceResult {
     #[serde(default)]
     network_traffic: Option<BTreeMap<String, NetworkTraffic>>,
     #[serde(default)]
+    entropy_probe_sha256: Option<String>,
+    #[serde(default)]
     virtual_time_ns: Option<Option<Vec<u64>>>,
+}
+
+/// A portable, machine-readable statement of the strict runtime contract.
+/// The certificate deliberately describes only devices that the topology
+/// runner constructs itself; it does not infer guarantees from a host setup.
+#[derive(Serialize)]
+struct RuntimeCertificate {
+    format: &'static str,
+    status: &'static str,
+    profile: RuntimeSupportProfile,
+    source: CertificateSource,
+    repeatability: CertificateRepeatability,
+    services: BTreeMap<String, CertificateServiceEvidence>,
+}
+
+#[derive(Serialize)]
+struct RuntimeSupportProfile {
+    id: &'static str,
+    architecture: &'static str,
+    execution: &'static str,
+    virtual_time: &'static str,
+    entropy: &'static str,
+    network: &'static str,
+    storage: &'static str,
+    host_fds: &'static str,
+    rejected: Vec<&'static str>,
+    known_limit: &'static str,
+}
+
+#[derive(Serialize)]
+struct CertificateSource {
+    plan_sha256: String,
+    plan: String,
+}
+
+#[derive(Serialize)]
+struct CertificateRepeatability {
+    executions: u8,
+    comparison: &'static str,
+    evidence_sha256: String,
+}
+
+#[derive(Serialize)]
+struct CertificateServiceEvidence {
+    entropy_probe_sha256: String,
+    serial_sha256: Vec<String>,
+    storage_sha256: BTreeMap<String, String>,
+    network_traffic: BTreeMap<String, NetworkTraffic>,
+    virtual_time_ns: Vec<u64>,
 }
 
 /// Deterministic simulated-NIC counters for one service network.
@@ -1434,6 +1488,18 @@ impl ServiceVm {
             .expect("VMM lock poisoned")
             .virtual_time_ns()
             .map_err(|error| error.to_string())
+    }
+
+    /// Fingerprint the next guest-visible entropy bytes without consuming
+    /// them. This closes the gap between a configured seed and evidence that
+    /// the live VMM restored the same seeded stream.
+    fn entropy_probe_sha256(&self) -> String {
+        let probe = self
+            .vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .entropy_probe(64);
+        format!("{:x}", Sha256::digest(probe))
     }
 
     fn storage_fingerprints(
@@ -2165,6 +2231,14 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
+    if let [command, flag_plan, plan, flag_output, output] = args.as_slice() {
+        if command == "certify" {
+            if flag_plan != "--plan" || flag_output != "--output" {
+                return Err(USAGE.to_owned());
+            }
+            return certify(plan, Path::new(output));
+        }
+    }
     let (flag_plan, plan, flag_output, output, minimize) = match args.as_slice() {
         [flag_plan, plan, flag_output, output] => (flag_plan, plan, flag_output, output, false),
         [flag_plan, plan, flag_output, output, flag] if flag == "--minimize" => {
@@ -2178,11 +2252,23 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let input = fs::read_to_string(plan).map_err(|error| format!("cannot read {plan}: {error}"))?;
     let topology: TopologyPlan = serde_json::from_str(&input)
         .map_err(|error| format!("cannot parse topology plan: {error}"))?;
+    execute_plan(topology, Path::new(plan), PathBuf::from(output), minimize)
+}
+
+/// Execute a plan or a locked replay plan. Keeping this boundary shared with
+/// certification means the second certification run exercises the exact same
+/// replay checks as an operator's normal replay command.
+fn execute_plan(
+    topology: TopologyPlan,
+    plan: &Path,
+    output: PathBuf,
+    minimize: bool,
+) -> Result<(), String> {
     if topology.format != "theseus-compose-plan-v1" || topology.services.is_empty() {
         return Err("unsupported or empty topology plan".to_owned());
     }
     let service_names = topology.services.keys().cloned().collect::<Vec<_>>();
-    let recorded_campaign = recorded_campaign_result(Path::new(plan))?;
+    let recorded_campaign = recorded_campaign_result(plan)?;
     let (
         expected_serial,
         expected_faults,
@@ -2190,23 +2276,24 @@ fn run(args: Vec<String>) -> Result<(), String> {
         expected_actions,
         expected_storage,
         expected_traffic,
+        expected_entropy,
         expected_virtual_time,
         expected_lifecycle_rounds,
     ) = if recorded_campaign.is_some() {
-        (None, None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None, None)
     } else {
         (
-            recorded_serial_fingerprints(Path::new(plan), &service_names)?,
-            recorded_fault_fingerprints(Path::new(plan), &service_names)?,
-            recorded_network_fingerprint(Path::new(plan))?,
-            recorded_campaign_actions(Path::new(plan))?,
-            recorded_storage_fingerprints(Path::new(plan), &service_names)?,
-            recorded_network_traffic(Path::new(plan), &service_names)?,
-            recorded_virtual_times(Path::new(plan), &service_names)?,
-            recorded_lifecycle_barrier_rounds(Path::new(plan))?,
+            recorded_serial_fingerprints(plan, &service_names)?,
+            recorded_fault_fingerprints(plan, &service_names)?,
+            recorded_network_fingerprint(plan)?,
+            recorded_campaign_actions(plan)?,
+            recorded_storage_fingerprints(plan, &service_names)?,
+            recorded_network_traffic(plan, &service_names)?,
+            recorded_entropy_probes(plan, &service_names)?,
+            recorded_virtual_times(plan, &service_names)?,
+            recorded_lifecycle_barrier_rounds(plan)?,
         )
     };
-    let output = PathBuf::from(output);
     if output.exists() {
         return Err(format!(
             "replay output already exists: {}",
@@ -2221,6 +2308,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             || expected_actions.is_some()
             || expected_storage.is_some()
             || expected_traffic.is_some()
+            || expected_entropy.is_some()
             || expected_virtual_time.is_some()
             || expected_lifecycle_rounds.is_some()
         {
@@ -2248,10 +2336,201 @@ fn run(args: Vec<String>) -> Result<(), String> {
             expected_actions,
             expected_storage,
             expected_traffic,
+            expected_entropy,
             expected_virtual_time,
             expected_lifecycle_rounds,
         )
     }
+}
+
+/// Run a strict deterministic topology twice on real KVM. The first run
+/// locks its artifacts and fingerprints; the second is an ordinary Theseus
+/// replay and therefore fails on changed serial, entropy, storage, network,
+/// virtual-clock, lifecycle, or action evidence.
+fn certify(plan: &str, output: &Path) -> Result<(), String> {
+    if output.exists() {
+        return Err(format!(
+            "certificate output already exists: {}",
+            output.display()
+        ));
+    }
+    let input = fs::read(plan).map_err(|error| format!("cannot read {plan}: {error}"))?;
+    let topology: TopologyPlan = serde_json::from_slice(&input)
+        .map_err(|error| format!("cannot parse topology plan: {error}"))?;
+    validate_certification_plan(&topology)?;
+    ensure_kvm_access()?;
+
+    fs::create_dir_all(output).map_err(|error| error.to_string())?;
+    let first = output.join("first");
+    execute_plan(topology, Path::new(plan), first.clone(), false)?;
+
+    let replay_plan = first.join("replay-plan.json");
+    let replay_input = fs::read(&replay_plan)
+        .map_err(|error| format!("cannot read {}: {error}", replay_plan.display()))?;
+    let replay_topology: TopologyPlan = serde_json::from_slice(&replay_input)
+        .map_err(|error| format!("cannot parse {}: {error}", replay_plan.display()))?;
+    let replay = output.join("replay");
+    execute_plan(replay_topology, &replay_plan, replay, false)?;
+
+    let services = certification_service_evidence(&first)?;
+    let certificate = RuntimeCertificate {
+        format: "theseus-runtime-certificate-v1",
+        status: "passed",
+        profile: RuntimeSupportProfile {
+            id: "linux-kvm-simulated-io-v1",
+            architecture: runtime_architecture()?,
+            execution: "two real-KVM executions; the second is a locked replay",
+            virtual_time: "exit-counted quanta with exact final vCPU-clock fingerprint equality",
+            entropy: "seeded virtio-rng with exact next-64-byte fingerprint equality",
+            network: "Theseus simulated virtio-net only",
+            storage: "Theseus in-memory simulated virtio-block only",
+            host_fds: "no guest-visible host-backed network, vsock, block, or pmem device",
+            rejected: vec![
+                "host timerfd rate limiters",
+                "tap network devices",
+                "Unix-socket vsock devices",
+                "file-backed or vhost-user block devices",
+                "host-backed persistent memory",
+            ],
+            known_limit: "counter reads can free-run within an exit-counted quantum; this profile proves exact end-of-run fingerprints, not instruction-by-instruction clock reads",
+        },
+        source: CertificateSource {
+            plan_sha256: format!("{:x}", Sha256::digest(&input)),
+            plan: plan.to_owned(),
+        },
+        repeatability: CertificateRepeatability {
+            executions: 2,
+            comparison: "the replay compares serial, entropy, storage, network traffic, virtual clocks, lifecycle rounds, and scheduled actions exactly",
+            evidence_sha256: certification_evidence_sha256(&first, &services)?,
+        },
+        services,
+    };
+    let path = output.join("certificate.json");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&certificate).expect("runtime certificate serializes"),
+    )
+    .map_err(|error| error.to_string())?;
+    println!("certified: {}", path.display());
+    Ok(())
+}
+
+fn validate_certification_plan(topology: &TopologyPlan) -> Result<(), String> {
+    if topology.format != "theseus-compose-plan-v1" || topology.services.is_empty() {
+        return Err("certification requires a non-empty Theseus Compose plan".to_owned());
+    }
+    if topology.campaign.is_some() {
+        return Err(
+            "certification requires one fixed topology schedule, not an autonomous campaign"
+                .to_owned(),
+        );
+    }
+    for (name, service) in &topology.services {
+        let Some(clock) = &service.run.run.virtual_time else {
+            return Err(format!(
+                "service {name:?} has no virtual-time configuration; deterministic certification fails closed"
+            ));
+        };
+        if clock.tick_ns == 0 || clock.exits_per_tick == 0 {
+            return Err(format!(
+                "service {name:?} has an invalid virtual-time configuration; deterministic certification fails closed"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_kvm_access() -> Result<(), String> {
+    let kvm = Path::new("/dev/kvm");
+    let metadata = fs::metadata(kvm).map_err(|_| {
+        "real KVM is required for certification: /dev/kvm is unavailable".to_owned()
+    })?;
+    if !metadata.file_type().is_char_device() {
+        return Err(
+            "real KVM is required for certification: /dev/kvm is not a character device".to_owned(),
+        );
+    }
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(kvm)
+        .map_err(|_| {
+            "real KVM is required for certification: /dev/kvm is not readable and writable"
+                .to_owned()
+        })?;
+    Ok(())
+}
+
+fn runtime_architecture() -> Result<&'static str, String> {
+    match env::consts::ARCH {
+        "x86_64" => Ok("amd64"),
+        "aarch64" => Ok("arm64"),
+        architecture => Err(format!(
+            "deterministic certification is supported only on amd64 or arm64, not {architecture}"
+        )),
+    }
+}
+
+fn certification_service_evidence(
+    first: &Path,
+) -> Result<BTreeMap<String, CertificateServiceEvidence>, String> {
+    let plan: TopologyPlan = serde_json::from_slice(
+        &fs::read(first.join("replay-plan.json"))
+            .map_err(|error| format!("cannot read locked certification plan: {error}"))?,
+    )
+    .map_err(|error| format!("cannot parse locked certification plan: {error}"))?;
+    plan.services
+        .keys()
+        .map(|name| {
+            let path = first.join("services").join(name).join("result.json");
+            let recorded: RecordedServiceResult = serde_json::from_slice(
+                &fs::read(&path)
+                    .map_err(|error| format!("cannot read {}: {error}", path.display()))?,
+            )
+            .map_err(|error| format!("cannot parse {}: {error}", path.display()))?;
+            let entropy_probe_sha256 = recorded.entropy_probe_sha256.ok_or_else(|| {
+                format!(
+                    "{} has no entropy probe; certification fails closed",
+                    path.display()
+                )
+            })?;
+            let virtual_time_ns = recorded.virtual_time_ns.flatten().ok_or_else(|| {
+                format!(
+                    "{} has no virtual-clock evidence; certification fails closed",
+                    path.display()
+                )
+            })?;
+            if virtual_time_ns.is_empty() {
+                return Err(format!(
+                    "{} has empty virtual-clock evidence; certification fails closed",
+                    path.display()
+                ));
+            }
+            Ok((
+                name.clone(),
+                CertificateServiceEvidence {
+                    entropy_probe_sha256,
+                    serial_sha256: recorded.serial_sha256,
+                    storage_sha256: recorded.storage_sha256.unwrap_or_default(),
+                    network_traffic: recorded.network_traffic.unwrap_or_default(),
+                    virtual_time_ns,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn certification_evidence_sha256(
+    first: &Path,
+    services: &BTreeMap<String, CertificateServiceEvidence>,
+) -> Result<String, String> {
+    let mut evidence = fs::read(first.join("topology-result.json"))
+        .map_err(|error| format!("cannot read topology certification evidence: {error}"))?;
+    evidence.extend(
+        serde_json::to_vec(services)
+            .map_err(|error| format!("cannot encode certification evidence: {error}"))?,
+    );
+    Ok(format!("{:x}", Sha256::digest(evidence)))
 }
 
 /// Execute an autonomous campaign from one reusable, whole-topology branch
@@ -2365,6 +2644,7 @@ fn execute_campaign(
             run,
             &run_dir,
             Some(&prefix.checkpoint),
+            None,
             None,
             None,
             None,
@@ -2766,6 +3046,7 @@ fn execute_campaign_minimized(
         None,
         None,
         None,
+        None,
     );
     fs::write(
         output.join("replay-plan.json"),
@@ -2885,6 +3166,7 @@ fn execute_campaign_minimization_attempt(
         plan,
         directory,
         Some(&prefix.checkpoint),
+        None,
         None,
         None,
         None,
@@ -6740,6 +7022,7 @@ fn execute(
     expected_actions: Option<Vec<AppliedCampaignAction>>,
     expected_storage: Option<BTreeMap<String, BTreeMap<String, String>>>,
     expected_traffic: Option<BTreeMap<String, BTreeMap<String, NetworkTraffic>>>,
+    expected_entropy: Option<BTreeMap<String, String>>,
     expected_virtual_time: Option<BTreeMap<String, Option<Vec<u64>>>>,
     expected_lifecycle_rounds: Option<u64>,
 ) -> Result<(), String> {
@@ -6987,6 +7270,7 @@ fn execute(
         let storage_sha256 = service
             .vm
             .storage_fingerprints(&topology.services[name].run.storage)?;
+        let entropy_probe_sha256 = service.vm.entropy_probe_sha256();
         let virtual_time_ns = service.vm.virtual_time_ns()?;
         checks.insert(
             0,
@@ -7102,6 +7386,24 @@ fn execute(
                 error = Some("network traffic or payload replay fingerprint changed".to_owned());
             }
         }
+        if let Some(expected) = &expected_entropy {
+            let expected = expected
+                .get(name)
+                .expect("recorded entropy probe missing service");
+            let matches = expected == &entropy_probe_sha256;
+            checks.push(CheckResult {
+                name: "replay_entropy".to_owned(),
+                status: if matches { "passed" } else { "failed" },
+                detail: if matches {
+                    "seeded entropy stream matches the original replay bundle".to_owned()
+                } else {
+                    "seeded entropy stream differs from the original replay bundle".to_owned()
+                },
+            });
+            if !matches && error.is_none() {
+                error = Some("entropy replay fingerprint changed".to_owned());
+            }
+        }
         if let Some(expected) = &expected_virtual_time {
             let expected = expected
                 .get(name)
@@ -7141,6 +7443,7 @@ fn execute(
             storage_sha256,
             network_traffic: service.network_traffic.clone(),
             network_trace: service.network_trace.clone(),
+            entropy_probe_sha256,
             virtual_time_ns,
             error,
             checks,
@@ -7277,6 +7580,31 @@ fn recorded_network_traffic(
             return Ok(None);
         };
         expected.insert(name.clone(), traffic);
+    }
+    Ok(Some(expected))
+}
+
+fn recorded_entropy_probes(
+    plan: &Path,
+    services: &[String],
+) -> Result<Option<BTreeMap<String, String>>, String> {
+    if plan.file_name().and_then(|name| name.to_str()) != Some("replay-plan.json") {
+        return Ok(None);
+    }
+    let bundle = plan
+        .parent()
+        .ok_or_else(|| format!("replay plan has no parent directory: {}", plan.display()))?;
+    let mut expected = BTreeMap::new();
+    for name in services {
+        let result_path = bundle.join("services").join(name).join("result.json");
+        let result = fs::read(&result_path)
+            .map_err(|error| format!("cannot read {}: {error}", result_path.display()))?;
+        let recorded: RecordedServiceResult = serde_json::from_slice(&result)
+            .map_err(|error| format!("cannot parse {}: {error}", result_path.display()))?;
+        let Some(probe) = recorded.entropy_probe_sha256 else {
+            return Ok(None);
+        };
+        expected.insert(name.clone(), probe);
     }
     Ok(Some(expected))
 }
@@ -8481,6 +8809,29 @@ fn lock_artifact(service_dir: &Path, name: &str, artifact: &Artifact) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn certification_requires_virtual_time_for_every_service() {
+        let topology: TopologyPlan = serde_json::from_str(
+            r#"{
+              "format":"theseus-compose-plan-v1",
+              "compose":"compose.yaml",
+              "services":{"api":{
+                "manifest":"api/theseus.toml",
+                "run":{"format":"theseus-run-plan-v1","manifest":"api/theseus.toml",
+                  "runtime":{"firecracker":{"path":"firecracker","sha256":"a"}},
+                  "guest":{"kernel":{"path":"vmlinux","sha256":"b"},"initramfs":{"path":"initramfs","sha256":"c"}},
+                  "run":{"seed":1,"vcpu_count":1,"mem_size_mib":128,"timeout_secs":1,"virtual_time":null}
+                },"networks":[]
+              }},"networks":{}
+            }"#,
+        )
+        .unwrap();
+
+        assert!(validate_certification_plan(&topology)
+            .unwrap_err()
+            .contains("no virtual-time configuration"));
+    }
 
     fn choice(operation: usize) -> CampaignOperationChoice {
         CampaignOperationChoice {

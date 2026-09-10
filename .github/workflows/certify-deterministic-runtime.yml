@@ -1,0 +1,77 @@
+name: certify deterministic runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published 12-character SHA release tag to certify
+        required: true
+        type: string
+
+permissions:
+  attestations: write
+  contents: write
+  id-token: write
+
+jobs:
+  amd64:
+    name: certify (amd64 KVM metal)
+    runs-on: [self-hosted, Linux, X64, kvm]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Run the published runtime certification
+        env:
+          TAG: ${{ inputs.tag }}
+          IMAGE: ghcr.io/e6qu/theseus
+        run: |
+          test -c /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
+          docker pull "$IMAGE:$TAG-amd64"
+          docker run --rm --privileged \
+            -v "$GITHUB_WORKSPACE/docs/tutorials/11-certify-runtime":/tutorial \
+            -w /tutorial "$IMAGE:$TAG-amd64" sh ./run.sh
+          cp docs/tutorials/11-certify-runtime/certificate/certificate.json \
+            "theseus-${TAG}-runtime-certificate-amd64.json"
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: theseus-${{ inputs.tag }}-runtime-certificate-amd64.json
+
+      - name: Attach the certificate to the SHA release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" "theseus-${TAG}-runtime-certificate-amd64.json" --clobber
+
+  arm64:
+    name: certify (arm64 KVM metal)
+    runs-on: [self-hosted, Linux, ARM64, kvm]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Run the published runtime certification
+        env:
+          TAG: ${{ inputs.tag }}
+          IMAGE: ghcr.io/e6qu/theseus
+        run: |
+          test -c /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
+          docker pull "$IMAGE:$TAG-arm64"
+          docker run --rm --privileged \
+            -v "$GITHUB_WORKSPACE/docs/tutorials/11-certify-runtime":/tutorial \
+            -w /tutorial "$IMAGE:$TAG-arm64" sh ./run.sh
+          cp docs/tutorials/11-certify-runtime/certificate/certificate.json \
+            "theseus-${TAG}-runtime-certificate-arm64.json"
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: theseus-${{ inputs.tag }}-runtime-certificate-arm64.json
+
+      - name: Attach the certificate to the SHA release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" "theseus-${TAG}-runtime-certificate-arm64.json" --clobber

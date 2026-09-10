@@ -82,6 +82,9 @@ pub enum StartMicrovmError {
     /// Rate limiters use host-wall-time timerfds and break determinism;
     /// they cannot be combined with virtual time (Theseus).
     RateLimiterWithVirtualTime,
+    /// Host-backed network, block, and persistent-memory devices can observe
+    /// host state and cannot be combined with virtual time (Theseus).
+    HostBackedDeviceWithVirtualTime,
     /// Failed to apply virtual time: {0}
     ApplyVirtualTime(String),
     /// Error creating legacy device: {0}
@@ -164,6 +167,32 @@ fn validate_deterministic_config(
             .any(|c| c.rate_limiter.is_some());
     if has_rate_limiters {
         return Err(StartMicrovmError::RateLimiterWithVirtualTime);
+    }
+    // A deterministic topology may use Theseus's in-memory block devices and
+    // simulated NICs. A tap, a Unix-socket vsock, a file-backed drive, or
+    // pmem gives the guest a path back to host state, however, so reject it
+    // at the VMM boundary rather than relying on the caller to remember this
+    // restriction.
+    let has_host_backed_devices = vm_resources
+        .net_builder
+        .configs()
+        .iter()
+        .any(|config| config.sim.is_none())
+        || vm_resources
+            .block
+            .configs()
+            .iter()
+            .any(|config| {
+                config
+                    .path_on_host
+                    .as_deref()
+                    .is_some_and(|path| !path.starts_with("memory://theseus/"))
+                    || config.socket.is_some()
+            })
+        || !vm_resources.pmem.configs.is_empty()
+        || vm_resources.vsock.config().is_some();
+    if has_host_backed_devices {
+        return Err(StartMicrovmError::HostBackedDeviceWithVirtualTime);
     }
     Ok(())
 }
@@ -875,7 +904,7 @@ pub(crate) mod tests {
     use crate::vmm_config::boot_source::BootSourceConfig;
     use crate::vmm_config::drive::{BlockBuilder, BlockDeviceConfig};
     use crate::vmm_config::entropy::{EntropyDeviceBuilder, EntropyDeviceConfig};
-    use crate::vmm_config::machine_config::MachineConfig;
+    use crate::vmm_config::machine_config::{MachineConfig, VirtualTimeConfig};
     use crate::vmm_config::net::{NetBuilder, NetworkInterfaceConfig};
     use crate::vmm_config::pmem::{PmemBuilder, PmemConfig};
     use crate::vmm_config::vsock::tests::default_config;
@@ -926,6 +955,30 @@ pub(crate) mod tests {
             .into_string()
             .unwrap()
             .contains(slug)
+    }
+
+    fn virtual_time_resources() -> VmResources {
+        let mut resources = VmResources::default();
+        resources.machine_config.virtual_time = Some(VirtualTimeConfig {
+            tick_ns: 1_000_000,
+            exits_per_tick: 64,
+        });
+        resources
+    }
+
+    #[test]
+    fn deterministic_mode_rejects_host_backed_pmem_before_kvm_boot() {
+        let mut resources = virtual_time_resources();
+        resources.pmem.configs.push(PmemConfig {
+            id: "host-pmem".to_owned(),
+            path_on_host: "/tmp/host-pmem".to_owned(),
+            ..Default::default()
+        });
+
+        assert!(matches!(
+            validate_deterministic_config(&resources),
+            Err(StartMicrovmError::HostBackedDeviceWithVirtualTime)
+        ));
     }
 
     pub(crate) fn default_kernel_cmdline() -> Cmdline {
