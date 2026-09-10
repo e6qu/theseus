@@ -2127,8 +2127,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
         expected_storage,
         expected_traffic,
         expected_virtual_time,
+        expected_lifecycle_rounds,
     ) = if recorded_campaign.is_some() {
-        (None, None, None, None, None, None, None)
+        (None, None, None, None, None, None, None, None)
     } else {
         (
             recorded_serial_fingerprints(Path::new(plan), &service_names)?,
@@ -2138,6 +2139,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             recorded_storage_fingerprints(Path::new(plan), &service_names)?,
             recorded_network_traffic(Path::new(plan), &service_names)?,
             recorded_virtual_times(Path::new(plan), &service_names)?,
+            recorded_lifecycle_barrier_rounds(Path::new(plan))?,
         )
     };
     let output = PathBuf::from(output);
@@ -2156,6 +2158,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             || expected_storage.is_some()
             || expected_traffic.is_some()
             || expected_virtual_time.is_some()
+            || expected_lifecycle_rounds.is_some()
         {
             return Err(
                 "campaign bundles replay their recorded schedules, not single-run fingerprints"
@@ -2182,6 +2185,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             expected_storage,
             expected_traffic,
             expected_virtual_time,
+            expected_lifecycle_rounds,
         )
     }
 }
@@ -2296,6 +2300,7 @@ fn execute_campaign(
             run,
             &run_dir,
             Some(&prefix.checkpoint),
+            None,
             None,
             None,
             None,
@@ -2685,6 +2690,7 @@ fn execute_campaign_minimized(
         None,
         None,
         None,
+        None,
     );
     fs::write(
         output.join("replay-plan.json"),
@@ -2804,6 +2810,7 @@ fn execute_campaign_minimization_attempt(
         plan,
         directory,
         Some(&prefix.checkpoint),
+        None,
         None,
         None,
         None,
@@ -6626,6 +6633,7 @@ fn execute(
     expected_storage: Option<BTreeMap<String, BTreeMap<String, String>>>,
     expected_traffic: Option<BTreeMap<String, BTreeMap<String, NetworkTraffic>>>,
     expected_virtual_time: Option<BTreeMap<String, Option<Vec<u64>>>>,
+    expected_lifecycle_rounds: Option<u64>,
 ) -> Result<(), String> {
     if checkpoint.is_none() {
         if let Some(runner) = &mut topology.topology_runner {
@@ -6933,6 +6941,21 @@ fn execute(
                 error = Some("network replay fingerprint changed".to_owned());
             }
         }
+        if let Some(expected) = expected_lifecycle_rounds {
+            let matches = expected == lifecycle_barrier_rounds;
+            checks.push(CheckResult {
+                name: "replay_lifecycle_rounds".to_owned(),
+                status: if matches { "passed" } else { "failed" },
+                detail: if matches {
+                    "lifecycle barrier rounds match the original replay bundle".to_owned()
+                } else {
+                    "lifecycle barrier rounds differ from the original replay bundle".to_owned()
+                },
+            });
+            if !matches && error.is_none() {
+                error = Some("lifecycle round replay evidence changed".to_owned());
+            }
+        }
         if let Some(expected) = &expected_storage {
             let expected = expected
                 .get(name)
@@ -7041,6 +7064,23 @@ fn recorded_network_fingerprint(plan: &Path) -> Result<Option<String>, String> {
     match fs::read(&result_path) {
         Ok(result) => serde_json::from_slice::<TopologyResult>(&result)
             .map(|result| Some(result.network_sha256))
+            .map_err(|error| format!("cannot parse {}: {error}", result_path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("cannot read {}: {error}", result_path.display())),
+    }
+}
+
+fn recorded_lifecycle_barrier_rounds(plan: &Path) -> Result<Option<u64>, String> {
+    if plan.file_name().and_then(|name| name.to_str()) != Some("replay-plan.json") {
+        return Ok(None);
+    }
+    let result_path = plan
+        .parent()
+        .ok_or_else(|| format!("replay plan has no parent directory: {}", plan.display()))?
+        .join("topology-result.json");
+    match fs::read(&result_path) {
+        Ok(result) => serde_json::from_slice::<TopologyResult>(&result)
+            .map(|result| Some(result.lifecycle_barrier_rounds))
             .map_err(|error| format!("cannot parse {}: {error}", result_path.display())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("cannot read {}: {error}", result_path.display())),
