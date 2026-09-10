@@ -6941,19 +6941,21 @@ fn execute(
                 error = Some("network replay fingerprint changed".to_owned());
             }
         }
-        if let Some(expected) = expected_lifecycle_rounds {
-            let matches = expected == lifecycle_barrier_rounds;
-            checks.push(CheckResult {
-                name: "replay_lifecycle_rounds".to_owned(),
-                status: if matches { "passed" } else { "failed" },
-                detail: if matches {
-                    "lifecycle barrier rounds match the original replay bundle".to_owned()
-                } else {
-                    "lifecycle barrier rounds differ from the original replay bundle".to_owned()
-                },
-            });
-            if !matches && error.is_none() {
-                error = Some("lifecycle round replay evidence changed".to_owned());
+        if name == names.first().expect("topology service list is not empty") {
+            if let Some(expected) = expected_lifecycle_rounds {
+                let matches = expected == lifecycle_barrier_rounds;
+                checks.push(CheckResult {
+                    name: "replay_lifecycle_rounds".to_owned(),
+                    status: if matches { "passed" } else { "failed" },
+                    detail: if matches {
+                        "lifecycle barrier rounds match the original replay bundle".to_owned()
+                    } else {
+                        "lifecycle barrier rounds differ from the original replay bundle".to_owned()
+                    },
+                });
+                if !matches && error.is_none() {
+                    error = Some("lifecycle round replay evidence changed".to_owned());
+                }
             }
         }
         if let Some(expected) = &expected_storage {
