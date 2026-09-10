@@ -502,6 +502,18 @@ impl Vmm {
             .collect())
     }
 
+    /// Verify the fast coverage collector at a pause barrier. Every paused
+    /// vCPU PC must be present in that vCPU's accumulated exit-sampled set:
+    /// `VcpuEvent::Pause` records it before acknowledging the barrier. This
+    /// is a live-KVM contract check, not a claim that the sampled set equals
+    /// instruction-by-instruction coverage.
+    pub fn validate_execution_location_samples(&self) -> Result<(), VmmError> {
+        let program_counters = self.paused_vcpu_program_counters()?;
+        let samples = self.execution_location_samples()?;
+        validate_execution_location_samples(&program_counters, &samples)
+            .map_err(VmmError::ExecutionCoverage)
+    }
+
     /// Restore the inherited execution-coverage history into a COW child.
     /// This runtime-only evidence is intentionally separate from Firecracker's
     /// persisted MicrovmState: the topology checkpoint owns it and drops it
@@ -1047,6 +1059,50 @@ impl Vmm {
             .clone();
         self.device_manager
             .hot_unplug_device(kvm_vm, device_id, event_manager)
+    }
+}
+
+fn validate_execution_location_samples(
+    program_counters: &[u64],
+    samples: &[Vec<u64>],
+) -> Result<(), String> {
+    if program_counters.len() != samples.len() {
+        return Err(format!(
+            "paused vCPU count {} differs from sample-set count {}",
+            program_counters.len(),
+            samples.len()
+        ));
+    }
+    for (index, (program_counter, locations)) in program_counters.iter().zip(samples).enumerate() {
+        if !locations.contains(program_counter) {
+            return Err(format!(
+                "vCPU {index} paused PC 0x{program_counter:x} is absent from its execution samples"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod execution_coverage_tests {
+    use super::validate_execution_location_samples;
+
+    #[test]
+    fn pause_barrier_validation_requires_each_vcpu_pc() {
+        assert_eq!(
+            validate_execution_location_samples(&[0x1000, 0x2000], &[vec![0x1000], vec![0x2000]]),
+            Ok(())
+        );
+        assert!(
+            validate_execution_location_samples(&[0x1000], &[vec![0x2000]])
+                .unwrap_err()
+                .contains("vCPU 0 paused PC 0x1000")
+        );
+        assert!(
+            validate_execution_location_samples(&[0x1000], &[])
+                .unwrap_err()
+                .contains("count")
+        );
     }
 }
 

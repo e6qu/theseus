@@ -1928,6 +1928,14 @@ impl ServiceVm {
             .map_err(|error| error.to_string())
     }
 
+    fn validate_execution_locations(&self) -> Result<(), String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .validate_execution_location_samples()
+            .map_err(|error| error.to_string())
+    }
+
     fn paused_program_counters(&self) -> Result<Vec<u64>, String> {
         self.vmm
             .lock()
@@ -1981,6 +1989,7 @@ fn capture_campaign_checkpoint(
         let mut snapshots = BTreeMap::new();
         let mut scheduler = BTreeMap::new();
         for (name, service) in services.iter_mut() {
+            service.vm.validate_execution_locations()?;
             let serial_contents = service
                 .serial_logs
                 .iter()
