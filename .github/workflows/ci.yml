@@ -69,6 +69,7 @@ jobs:
           sh -n docs/tutorials/08-explore-sdk-guest/run.sh
           sh -n docs/tutorials/09-inspect-report/run.sh
           sh -n docs/tutorials/10-autonomous-compose-campaign/run.sh
+          sh -n docs/tutorials/11-certify-runtime/run.sh
           ! rg -n '/dev/hwrng|(^|[[:space:]])/theseus/|\.\./\.\./\.\.' docs/tutorials
 
       - name: Check reproducible release archives

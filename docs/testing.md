@@ -50,6 +50,18 @@ pushes, never on `main`). One job on `ubuntu-latest`:
 KVM-backed tests (branch boots, explorer, coverage) are intentionally not
 in CI — run them locally in the privileged container.
 
+## Runtime certification
+
+The `certify deterministic runtime` workflow is the real-KVM support matrix.
+It runs only on self-hosted Linux metal labelled `kvm`: one `X64` worker and
+one `ARM64` worker. Give it a published SHA release tag. Each worker pulls its
+native runtime image, runs Tutorial 11's fixed topology twice, attests the
+resulting `certificate.json`, and attaches it to that release.
+
+The certificate is evidence for the strict `linux-kvm-simulated-io-v1`
+profile, not a claim about tap networking, host-backed disks, or every clock
+read inside one exit-counted quantum.
+
 ## Publish a failure from CI
 
 Keep the failed replay directory as the durable reproduction artifact, then

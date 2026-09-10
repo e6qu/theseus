@@ -29,6 +29,8 @@ kernel module is shipped.
 10. [Find a bad topology timeline](10-autonomous-compose-campaign/) — drive a
     three-service Compose campaign through UART operations and report an
     intentional runtime-property failure.
+11. [Certify a deterministic runtime](11-certify-runtime/) — run a fixed KVM
+    topology twice and save its machine-readable repeatability witness.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

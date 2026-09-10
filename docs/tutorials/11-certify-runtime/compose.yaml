@@ -1,0 +1,19 @@
+name: certify-runtime
+
+services:
+  service:
+    x-theseus:
+      manifest: service/theseus.toml
+      faults:
+        - at_round: 2
+          kind: pause
+          duration_rounds: 1
+        - at_round: 4
+          kind: restart
+        - at_round: 6
+          kind: clock_jump
+          nanoseconds: 1000000000
+    networks: [backplane]
+
+networks:
+  backplane: {}

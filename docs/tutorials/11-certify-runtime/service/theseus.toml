@@ -1,0 +1,30 @@
+version = 1
+
+[runtime]
+firecracker = "runtime/firecracker"
+
+[guest]
+kernel = "guest/vmlinux"
+initramfs = "guest/initramfs.cpio.gz"
+
+[run]
+seed = 71
+vcpu_count = 1
+mem_size_mib = 128
+timeout_secs = 5
+
+[run.virtual_time]
+tick_ns = 1000000
+exits_per_tick = 10
+
+[network]
+loopback = false
+
+[[storage]]
+id = "state"
+size_mib = 1
+
+[[checks]]
+name = "service completed after its restart"
+kind = "serial_contains"
+value = "finished"

@@ -51,6 +51,10 @@ sim config is rewritten in the captured state at spawn).
 
 - Rate limiters use host timerfds — **rejected** when virtual time is
   enabled (`validate_deterministic_config`).
+- Tap NICs, Unix-socket vsock, file-backed or vhost-user block devices, and
+  host-backed pmem are **rejected** when virtual time is enabled. A
+  deterministic topology uses Theseus's simulated NIC and memory-only block
+  devices instead.
 - The test harness itself used unseeded randomness (descriptor gaps,
   frame payloads); now fixed patterns.
 - `test_token_bucket_auto_replenish_one` flaked on wall-clock sleeps; it
@@ -85,3 +89,20 @@ records:
 
 Two runs of the same exploration must produce identical fingerprints at
 every node; the explorer's tests assert exactly that.
+
+## Certify a runtime
+
+On a Linux host with read/write `/dev/kvm`, run a fixed Compose plan twice and
+write a support-profile witness:
+
+```sh
+theseus compose plan > plan.json
+theseus-topology certify --plan plan.json --output certificate
+```
+
+The second execution is a normal locked replay of the first. Its certificate
+records the plan digest, platform profile, and exact serial, entropy,
+storage, network, virtual-clock, lifecycle, and scheduled-action comparisons.
+Certification fails closed without virtual time, KVM access, or the supported
+simulated-I/O profile. It does not claim instruction-by-instruction equality
+for counter reads inside a virtual-time quantum.

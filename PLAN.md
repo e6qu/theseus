@@ -79,44 +79,38 @@ understood by offline reports, and verified on replay.
 | P6–P10 product | Done | Public CLI, Compose runner, replay/minimization, reports, tutorials, and autonomous campaigns. |
 | P11 release | Done | Multi-architecture artifacts, consumer verification, provenance, SBOMs, reproducible build inputs, and external rebuild witnesses. |
 | P12 campaign correctness | Done through PR #169 | Prefix checkpoints, coverage/property guidance, detailed operation evidence, deterministic lifecycle scheduling, and replay proof. |
+| P13 scalable exploration | Done through PR #170 | Checkpoint economics, per-decision guidance ledgers, replay-checked search evidence, and portable reports. |
 
-P12 is closed. Do not reopen it for isolated report fields or scheduler
-bookkeeping. Fold any new search capability into the next complete tranche.
+P12 and P13 are closed. Do not reopen them for isolated report fields or
+scheduler bookkeeping. Fold new search capability into the next complete
+tranche.
 
 ## Next work, in order
 
 ### P13 — scalable deterministic exploration
 
-**Current big PR:** make the existing whole-topology checkpoint tree an
-auditable search engine rather than an implementation detail.
-
-- Record deterministic checkpoint economics: root/prefix captures, prefix
-  reuse, logical topology restores, leaf replays, and work avoided by reuse.
-  These replace meaningless host-time throughput claims and are replay-checked.
-- Record a hash of the exact earlier observation corpus that each scheduling
-  decision saw. Render it beside the selection reason; replay rejects a
-  changed ledger.
-- Preserve one global search-evidence record in the replay bundle and surface
-  it in portable reports and the autonomous Compose tutorial.
-- Keep the prefix tree as the only execution path for campaign search and
-  minimization. Add tests for counters, guidance-ledger stability, and changed
-  replay evidence.
-
-**Exit criteria:** a report states exactly how much topology work was captured,
-restored, and avoided; every scheduler decision has a compact deterministic
-input proof; replay detects changed global search economics or guidance.
+**Done in PR #170.** The checkpoint tree now records captured/restored/avoided
+work, every adaptive choice retains its input ledger, and replay checks the
+same search evidence that reports display.
 
 ### P14 — deterministic-runtime certification
 
 Turn the current virtual-time caveat into a tested support contract.
 
-- Run a real-KVM matrix on supported amd64 and arm64 metal: TSC/kvmclock,
-  timer deadlines, serial/network barriers, snapshots, and lifecycle restarts.
-- Add a deterministic-runtime probe suite that deliberately detects clock,
-  timerfd, entropy, and host-fd leaks. Fail closed for configurations that
-  cannot meet the stated contract.
-- Publish an explicit support profile with measured repeatability bounds and
-  attach its result to releases.
+**Current big PR:** turn one fixed Compose topology into a reusable,
+release-attested certification witness.
+
+- Add `theseus-topology certify`: require KVM and virtual time, execute once,
+  replay once, and save a stable certificate containing exact serial, entropy,
+  storage, network, virtual-clock, lifecycle, and action evidence.
+- Reject host timerfd rate limiters plus tap, Unix-socket vsock,
+  file-backed/vhost-user block, and host-pmem devices at the VMM boundary
+  whenever virtual time is enabled.
+- Ship a self-contained certification tutorial and a manually dispatched,
+  native amd64/arm64 KVM-metal workflow that attests and attaches the result to
+  its SHA release.
+- Use the first metal certificates to measure timer-deadline and quantum-tail
+  behavior. Escalate to kernel/KVM work if the exact replay witness diverges.
 
 **Exit criteria:** supported hardware/configuration pairs have a reproducible
 certification artifact; unsupported configurations are rejected or labelled

@@ -1,0 +1,6 @@
+#!/bin/busybox sh
+mount -t proc proc /proc
+echo started
+sleep 1
+echo finished
+poweroff -f
