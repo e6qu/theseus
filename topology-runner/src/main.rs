@@ -1205,6 +1205,8 @@ struct TopologyResult {
     #[serde(default)]
     max_rounds: u64,
     #[serde(default)]
+    lifecycle_barrier_rounds: u64,
+    #[serde(default)]
     actions: Vec<AppliedCampaignAction>,
 }
 
@@ -6769,6 +6771,7 @@ fn execute(
         .unwrap_or_else(default_max_rounds);
     let mut round = checkpoint.map_or(0, |checkpoint| checkpoint.round);
     let mut actions = Vec::new();
+    let mut lifecycle_barrier_rounds: u64 = 0;
     for name in &names {
         let events = topology.services[name].run.events.clone();
         if !events.is_empty() {
@@ -6806,6 +6809,7 @@ fn execute(
         round += 1;
         for name in topology.services.keys() {
             let mut service = services.remove(name).expect("topology service missing");
+            let faults_before = service.faults.len();
             apply_scheduled_faults(
                 round,
                 name,
@@ -6815,6 +6819,12 @@ fn execute(
                 &mut services,
                 &mut switches,
             )?;
+            lifecycle_barrier_rounds = lifecycle_barrier_rounds.saturating_add(
+                service.faults[faults_before..]
+                    .iter()
+                    .filter_map(|fault| fault.barrier_rounds)
+                    .sum::<u64>(),
+            );
             if service.paused_until.is_none() && service.vm.exited().is_none() {
                 service.vm.pump();
             }
@@ -6829,6 +6839,7 @@ fn execute(
             network_sha256: network_sha256.clone(),
             rounds: round,
             max_rounds,
+            lifecycle_barrier_rounds,
             actions: actions.clone(),
         })
         .unwrap(),

@@ -162,6 +162,8 @@ struct TopologyResult {
     rounds: u64,
     #[serde(default)]
     max_rounds: u64,
+    #[serde(default)]
+    lifecycle_barrier_rounds: u64,
 }
 
 #[derive(Deserialize)]
@@ -820,8 +822,8 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
         coverage: topology_budget.map(|budget| Coverage {
             label: "Topology execution".to_owned(),
             summary: format!(
-                "{} of {} deterministic scheduler rounds consumed",
-                budget.rounds, budget.max_rounds
+                "{} of {} deterministic scheduler rounds consumed; {} lifecycle barrier rounds",
+                budget.rounds, budget.max_rounds, budget.lifecycle_barrier_rounds
             ),
         }),
         minimization: None,
