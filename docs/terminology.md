@@ -39,9 +39,11 @@ Terms used across Theseus code and documentation. See
   capture time. Must equal a fresh ChaCha stream of the node's seed.
 - **Dirty pages** — count of guest pages written, from the KVM dirty
   bitmap; a memory-footprint coverage signal.
-- **Coverage** — the set of guest program counters executed, collected by
-  single-stepping (`KVM_GUESTDBG_SINGLESTEP`). The ground-truth signal;
-  markers and dirty pages are the cheap proxies.
+- **Coverage** — an execution identity used to guide search. Single-stepping
+  (`KVM_GUESTDBG_SINGLESTEP`) collects the ground-truth PC set for small
+  guests. Compose campaigns normally use PCs sampled at deterministic handled
+  exits and pause barriers; markers and final checkpoint PCs are replay-locked
+  baseline signals.
 
 ## Execution machinery
 

@@ -123,6 +123,8 @@ asserts it.
 `coverage.rs` collects executed guest PCs via `KVM_GUESTDBG_SINGLESTEP` —
 true coverage with zero guest instrumentation. MMIO instructions are
 counted and skipped (aarch64 fixed width; x86_64 reports
-`UnsupportedMmioSkip`). It is the ground-truth reference for small
-workloads and for validating a future fast instrumentor; the explorer
-currently uses markers and dirty pages as its cheap signals.
+`UnsupportedMmioSkip`). It remains the ground-truth reference for small
+workloads. Compose campaigns use a low-overhead alternative: each vCPU records
+PCs at deterministic handled-exit intervals and pause barriers, so ordinary
+devices stay enabled. Campaign plans can select that accumulated signal,
+markers, or final checkpoint PCs as replay-locked coverage baselines.

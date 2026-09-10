@@ -26,6 +26,8 @@ x-theseus:
     stages: [write, read, recovery]
     # Target declared property evidence while retaining deterministic replay.
     guidance: property
+    # Rank coverage with accumulated PCs sampled at deterministic device exits.
+    coverage: execution_locations
     max_runs: 40
     # Explore every ordered operation history through this depth. Repetition is
     # intentional: it models retries and repeated reads without a host driver.
