@@ -11,10 +11,10 @@ simulation, and chaos tooling. Terms are defined in
 |---|---|---|---|
 | What is tested | Functions / units of code | Whole distributed systems, unmodified | Whole distributed systems, unmodified |
 | Method | Generate inputs, check properties | Deterministic hypervisor + guided state-space exploration + fault injection | Same idea, on a Firecracker/KVM fork |
-| Replay | Seeded input shrinking | Perfect, instruction-level | Seeded timelines; instruction-exact except mid-quantum clock reads (Track B′ leak, documented) |
+| Replay | Seeded input shrinking | Perfect, instruction-level | Locked seeded timelines, actions, coverage, guidance, and properties; clock reads retain a documented mid-quantum caveat |
 | Determinism mechanism | In-process seeded PRNG | Custom deterministic hypervisor (bhyve fork) on bare metal | KVM + seeded devices + tick-stepped virtual clock |
-| Fault injection | None | Guided (network, disk, crash, clock) | Sim net drops/partitions + Compose lifecycle/clock candidates |
-| Coverage guidance | Shrinking / targeted generators | RL-guided exploration | Marker novelty + dirty pages; deterministic campaign corpus |
+| Fault injection | None | Guided (network, disk, crash, clock) | Simulated network/storage faults plus Compose lifecycle, clock, and packet actions |
+| Coverage guidance | Shrinking / targeted generators | RL-guided exploration | Marker, checkpoint-PC, topology-state, property, adaptive, and posterior guidance; no fast execution coverage yet |
 | Model | You write properties | You state invariants; product finds bugs | Same |
 | License | Open source (MPL) | Commercial (some OSS tools) | AGPL-3.0-or-later (engine); Apache-2.0 (fork) |
 
@@ -54,9 +54,11 @@ Key architectural differences with Theseus:
   that leak.
 - **Exploration guidance**: Antithesis uses coverage-guided RL at scale.
   Theseus restores Compose campaign candidates from a reusable whole-topology
-  checkpoint, while its single-VM explorer uses deterministic DFS and marker
-  novelty ordering. Ground-truth single-step coverage exists as the reference
-  for a future fast instrumentor.
+  prefix tree and ranks them with marker, paused-PC, topology-state, property,
+  adaptive, and deterministic-posterior evidence. Its single-VM explorer uses
+  deterministic DFS and marker/dirty-page novelty. Ground-truth single-step
+  coverage exists as the reference for a future fast instrumentor; it is not
+  yet the practical campaign coverage path.
 - **Campaign interface**: Antithesis can drive unmodified workloads through
   its test templates and property APIs. Theseus accepts a designated Compose
   driver, text UART operations, lifecycle/clock candidates, barrier-triggered

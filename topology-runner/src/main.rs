@@ -574,6 +574,9 @@ struct CampaignResult {
     serial_guard_rejections: usize,
     unique_topology_states: usize,
     unique_instruction_locations: usize,
+    /// A compact, deterministic account of the search work. This is separate
+    /// from wall-clock timing: host scheduling must never affect a replay.
+    search: CampaignSearchEvidence,
     #[serde(skip_serializing_if = "Option::is_none")]
     replay_verification: Option<CampaignReplayVerification>,
     runs: Vec<CampaignRun>,
@@ -591,6 +594,10 @@ struct CampaignRun {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     actions: Vec<AppliedCampaignAction>,
     selection: String,
+    /// The complete prior-observation ledger which the scheduler saw when it
+    /// selected this candidate. Its digest makes guidance auditable without
+    /// embedding an O(n²) copy of the corpus in every run.
+    guidance_ledger: CampaignGuidanceLedger,
     #[serde(skip_serializing_if = "Option::is_none")]
     guidance_evidence: Option<CampaignPosteriorEvidence>,
     #[serde(default)]
@@ -774,6 +781,40 @@ struct CampaignPosteriorEvidence {
     score: usize,
 }
 
+/// Deterministic search work performed by one campaign. The values are
+/// logical topology restores and captures, rather than elapsed time, so they
+/// stay meaningful and replayable on differently loaded hosts.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
+struct CampaignCheckpointEconomics {
+    root_captures: usize,
+    prefix_captures: usize,
+    checkpoint_nodes: usize,
+    prefix_reuses: usize,
+    prefix_restores: usize,
+    leaf_restores: usize,
+    topology_restores: usize,
+    avoided_prefix_recomputations: usize,
+}
+
+/// Global proof that the checkpoint tree and the inputs to guidance were the
+/// same during replay. Per-run evidence explains individual choices; this
+/// record catches changes to the search as a whole.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
+struct CampaignSearchEvidence {
+    checkpoint: CampaignCheckpointEconomics,
+    guidance_observations: usize,
+    guidance_sha256: String,
+}
+
+/// The scheduler's deterministic input at one choice point. Operation names
+/// and outcomes are hashed in stable declaration order, keeping result files
+/// compact while making every later scheduling decision replay-verifiable.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
+struct CampaignGuidanceLedger {
+    observations: usize,
+    sha256: String,
+}
+
 #[derive(Debug, Serialize)]
 struct CampaignPropertyResult {
     name: String,
@@ -794,6 +835,8 @@ struct RecordedCampaignResult {
     guidance: Option<CampaignGuidance>,
     #[serde(default)]
     generated_candidates: usize,
+    #[serde(default)]
+    search: Option<CampaignSearchEvidence>,
     runs: Vec<RecordedCampaignRun>,
 }
 
@@ -808,6 +851,8 @@ struct RecordedCampaignRun {
     actions: Vec<AppliedCampaignAction>,
     #[serde(default)]
     selection: String,
+    #[serde(default)]
+    guidance_ledger: Option<CampaignGuidanceLedger>,
     #[serde(default)]
     guidance_evidence: Option<CampaignPosteriorEvidence>,
     #[serde(default)]
@@ -1309,6 +1354,8 @@ struct CampaignCheckpointTree {
     root: CampaignCheckpoint,
     prefixes: BTreeMap<String, CampaignPrefixCheckpoint>,
     reuses: usize,
+    prefix_captures: usize,
+    prefix_restores: usize,
 }
 
 impl ServiceVm {
@@ -1886,6 +1933,8 @@ impl CampaignCheckpointTree {
             root,
             prefixes: BTreeMap::new(),
             reuses: 0,
+            prefix_captures: 0,
+            prefix_restores: 0,
         }
     }
 
@@ -1941,6 +1990,8 @@ impl CampaignCheckpointTree {
                 &prefix[prefix.len() - 1],
                 &directory.join("checkpoints").join(&key),
             )?;
+            self.prefix_restores += 1;
+            self.prefix_captures += 1;
             let mut actions = parent.actions.clone();
             actions.extend(applied.clone());
             let mut boundaries = parent.boundaries.clone();
@@ -1966,6 +2017,19 @@ impl CampaignCheckpointTree {
 
     fn root_boundary(&self) -> CampaignCheckpointBoundary {
         campaign_checkpoint_boundary(&self.root, Vec::new())
+    }
+
+    fn economics(&self, leaf_restores: usize) -> CampaignCheckpointEconomics {
+        CampaignCheckpointEconomics {
+            root_captures: 1,
+            prefix_captures: self.prefix_captures,
+            checkpoint_nodes: self.nodes(),
+            prefix_reuses: self.reuses,
+            prefix_restores: self.prefix_restores,
+            leaf_restores,
+            topology_restores: self.prefix_restores.saturating_add(leaf_restores),
+            avoided_prefix_recomputations: self.reuses,
+        }
     }
 }
 
@@ -2257,6 +2321,7 @@ fn execute_campaign(
                 None,
             )
         };
+        let guidance_ledger = CampaignGuidanceLedger::from_observations(&observations);
         let guidance_evidence = (campaign.guidance == CampaignGuidance::Posterior)
             .then(|| campaign_posterior_evidence(&campaign, &schedule, &observations));
         // Guards inspect each exact restored parent checkpoint. A fault after
@@ -2362,6 +2427,7 @@ fn execute_campaign(
             faults: campaign_fault_names(&campaign, &schedule.faults),
             actions,
             selection,
+            guidance_ledger,
             guidance_evidence,
             property_witnesses,
             timeline,
@@ -2385,12 +2451,17 @@ fn execute_campaign(
         return Err("campaign produced no schedules after marker guards".to_owned());
     }
     let properties = evaluate_campaign_properties(&campaign, output, &runs)?;
+    let search = CampaignSearchEvidence::from_search(&checkpoints, runs.len(), &observations);
     let passed = runs.iter().all(|run| run.status == "passed")
         && properties
             .iter()
             .all(|property| property.status == "passed");
+    let search_matches = recorded
+        .and_then(|recorded| recorded.search.as_ref())
+        .is_none_or(|expected| expected == &search);
     let replay_verified = recorded.is_none()
         || (replay_mismatches.is_empty()
+            && search_matches
             && recorded.is_some_and(|recorded| {
                 recorded.generated_candidates == 0
                     || recorded.generated_candidates == schedules.len()
@@ -2431,6 +2502,7 @@ fn execute_campaign(
             serial_guard_rejections,
             unique_topology_states: seen_topology_states.len(),
             unique_instruction_locations: seen_instruction_locations.len(),
+            search,
             replay_verification: recorded.map(|recorded| CampaignReplayVerification {
                 status: if replay_verified { "passed" } else { "failed" },
                 detail: if replay_verified {
@@ -2441,6 +2513,9 @@ fn execute_campaign(
                         && recorded.generated_candidates != schedules.len()
                     {
                         detail.push("generated candidate corpus changed".to_owned());
+                    }
+                    if !search_matches {
+                        detail.push("campaign search evidence changed".to_owned());
                     }
                     detail.join("; ")
                 },
@@ -3045,7 +3120,7 @@ struct CampaignSchedule {
 
 /// An operation remains the stable target for guards, stages, use bounds, and
 /// faults. Its input case is the variable that expands the campaign corpus.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 struct CampaignOperationChoice {
     operation: usize,
     input: usize,
@@ -3784,7 +3859,7 @@ fn campaign_checkpoint_markers(
     markers
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 struct CampaignGuidanceObservation {
     operations: Vec<CampaignOperationChoice>,
     novel_markers: usize,
@@ -3792,6 +3867,32 @@ struct CampaignGuidanceObservation {
     novel_state: bool,
     failed: bool,
     property_witnesses: Vec<String>,
+}
+
+impl CampaignGuidanceLedger {
+    fn from_observations(observations: &[CampaignGuidanceObservation]) -> Self {
+        let encoded =
+            serde_json::to_vec(observations).expect("campaign guidance observations serialize");
+        Self {
+            observations: observations.len(),
+            sha256: format!("{:x}", Sha256::digest(encoded)),
+        }
+    }
+}
+
+impl CampaignSearchEvidence {
+    fn from_search(
+        checkpoints: &CampaignCheckpointTree,
+        leaf_restores: usize,
+        observations: &[CampaignGuidanceObservation],
+    ) -> Self {
+        let ledger = CampaignGuidanceLedger::from_observations(observations);
+        Self {
+            checkpoint: checkpoints.economics(leaf_restores),
+            guidance_observations: ledger.observations,
+            guidance_sha256: ledger.sha256,
+        }
+    }
 }
 
 /// Stable state evidence that is meaningful to a topology campaign. It
@@ -4038,6 +4139,13 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     }
     if !expected.selection.is_empty() && expected.selection != actual.selection {
         mismatches.push("selection".to_owned());
+    }
+    if expected
+        .guidance_ledger
+        .as_ref()
+        .is_some_and(|ledger| ledger != &actual.guidance_ledger)
+    {
+        mismatches.push("guidance ledger".to_owned());
     }
     if expected.guidance_evidence.is_some()
         && expected.guidance_evidence != actual.guidance_evidence
@@ -10295,6 +10403,7 @@ mod tests {
         let recorded = RecordedCampaignResult {
             guidance: Some(CampaignGuidance::Adaptive),
             generated_candidates: 0,
+            search: None,
             runs: Vec::new(),
         };
 
@@ -10560,6 +10669,10 @@ mod tests {
             faults: vec!["backplane:partition@write".to_owned()],
             actions: Vec::new(),
             selection: "extends 1-operation prefix with new topology state".to_owned(),
+            guidance_ledger: CampaignGuidanceLedger {
+                observations: 1,
+                sha256: "ledger".to_owned(),
+            },
             guidance_evidence: Some(CampaignPosteriorEvidence {
                 action: "write".to_owned(),
                 context: Vec::new(),
@@ -10636,6 +10749,7 @@ mod tests {
             faults: actual.faults.clone(),
             actions: Vec::new(),
             selection: actual.selection.clone(),
+            guidance_ledger: Some(actual.guidance_ledger.clone()),
             guidance_evidence: actual.guidance_evidence.clone(),
             property_witnesses: Some(actual.property_witnesses.clone()),
             timeline: actual.timeline.clone(),
@@ -10699,6 +10813,14 @@ mod tests {
             .score = 1;
         assert!(campaign_replay_mismatches(&changed_posterior, &actual)
             .contains(&"posterior guidance evidence".to_owned()));
+        let mut changed_ledger = expected.clone();
+        changed_ledger
+            .guidance_ledger
+            .as_mut()
+            .expect("recorded guidance ledger")
+            .sha256 = "other-ledger".to_owned();
+        assert!(campaign_replay_mismatches(&changed_ledger, &actual)
+            .contains(&"guidance ledger".to_owned()));
         let mut changed_timeline = expected.clone();
         changed_timeline.timeline[0]
             .markers
@@ -10710,6 +10832,69 @@ mod tests {
         assert_eq!(
             campaign_replay_mismatches(&expected, &changed),
             vec!["topology-state coverage"]
+        );
+    }
+
+    #[test]
+    fn campaign_guidance_ledger_is_stable_and_sensitive_to_observations() {
+        let observations = vec![CampaignGuidanceObservation {
+            operations: vec![choice(0)],
+            novel_markers: 1,
+            novel_instructions: 0,
+            novel_state: false,
+            failed: false,
+            property_witnesses: Vec::new(),
+        }];
+        let first = CampaignGuidanceLedger::from_observations(&observations);
+        let second = CampaignGuidanceLedger::from_observations(&observations);
+        assert_eq!(first, second);
+        assert_eq!(first.observations, 1);
+        assert_eq!(first.sha256.len(), 64);
+
+        let mut changed = observations;
+        changed[0].failed = true;
+        assert_ne!(first, CampaignGuidanceLedger::from_observations(&changed));
+    }
+
+    #[test]
+    fn checkpoint_economics_counts_capture_reuse_and_leaf_restore_work() {
+        let root = CampaignCheckpoint {
+            switches: BTreeMap::new(),
+            services: BTreeMap::new(),
+            scheduler: BTreeMap::new(),
+            round: 0,
+        };
+        let prefix = CampaignPrefixCheckpoint {
+            checkpoint: root.clone(),
+            actions: Vec::new(),
+            events: Vec::new(),
+            barriers: Vec::new(),
+            boundaries: Vec::new(),
+        };
+        let tree = CampaignCheckpointTree {
+            root,
+            prefixes: BTreeMap::from([
+                ("first".to_owned(), prefix.clone()),
+                ("second".to_owned(), prefix.clone()),
+                ("third".to_owned(), prefix),
+            ]),
+            reuses: 5,
+            prefix_captures: 3,
+            prefix_restores: 3,
+        };
+
+        assert_eq!(
+            tree.economics(4),
+            CampaignCheckpointEconomics {
+                root_captures: 1,
+                prefix_captures: 3,
+                checkpoint_nodes: 4,
+                prefix_reuses: 5,
+                prefix_restores: 3,
+                leaf_restores: 4,
+                topology_restores: 7,
+                avoided_prefix_recomputations: 5,
+            }
         );
     }
 
