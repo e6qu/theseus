@@ -319,6 +319,10 @@ a response that needs the network can reach its barrier without host-time
 polling.
 Set `max_rounds` in each service manifest to bound the complete topology run
 the same way; it replaces host elapsed time once the guests are running.
+For a scheduled restart, the **Applied faults** report row also records the
+deterministic barrier rounds used to reach the replacement's ready marker and
+to replay its initial UART events. Use that number to see how much simulated
+topology progress the restart required.
 The locked replay plan retains the complete input. The report also shows new
 serial bytes as an escaped excerpt, plus their byte count and full-delta hash.
 The excerpts are capped; the complete serial logs and VM snapshots stay in

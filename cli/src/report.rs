@@ -494,6 +494,8 @@ struct Fault {
     round: u64,
     kind: String,
     detail: String,
+    #[serde(default)]
+    barrier_rounds: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -1040,7 +1042,7 @@ if(m.minimization){{const s=section('Event minimization');s.append(table([[m.min
 if(m.campaign_minimization){{const x=m.campaign_minimization,s=section('Campaign minimization');s.append(table([[x.property,x.original_operations.join(' → ')||'none',x.minimized_operations.join(' → ')||'none',x.original_faults.join(' + ')||'none',x.minimized_faults.join(' + ')||'none',String(x.operation_attempts),String(x.fault_attempts)]],['Property','Original operations','1-minimal operations','Original faults','1-minimal faults','Operation replays','Fault replays']));}}
 if(m.replay_verification){{const s=section('Replay verification');s.append(table([[m.replay_verification.status,m.replay_verification.detail]],['Status','Detail']));}}
 if(m.checks.length){{const s=section('Checks');s.append(table(m.checks.map(c=>[c.name,c.kind,c.status,c.detail]),['Name','Kind','Status','Detail']));}}
-if(m.faults.length){{const s=section('Applied faults');s.append(table(m.faults.map(f=>[String(f.round),f.kind,f.detail]),['Round','Kind','Detail']));}}
+if(m.faults.length){{const s=section('Applied faults');s.append(table(m.faults.map(f=>[String(f.round),f.kind,f.detail,f.barrier_rounds===null?'—':String(f.barrier_rounds)]),['Round','Kind','Detail','Barrier rounds']));}}
 if(m.logs.length){{const s=section('Logs');m.logs.forEach(log=>{{s.append(el('h3',log.label));s.append(el('pre',log.text));}});}}
 </script></body></html>"##
     ))
@@ -1525,13 +1527,16 @@ fn render_markdown(model: &ReportModel) -> String {
         ));
     }
     if !model.faults.is_empty() {
-        output.push_str("\n## Applied faults\n\n| Round | Kind | Detail |\n| --- | --- | --- |\n");
+        output.push_str("\n## Applied faults\n\n| Round | Kind | Detail | Barrier rounds |\n| --- | --- | --- | --- |\n");
         for fault in &model.faults {
             output.push_str(&format!(
-                "| {} | {} | {} |\n",
+                "| {} | {} | {} | {} |\n",
                 fault.round,
                 markdown_cell(&fault.kind),
-                markdown_cell(&fault.detail)
+                markdown_cell(&fault.detail),
+                fault
+                    .barrier_rounds
+                    .map_or_else(|| "—".to_owned(), |rounds| rounds.to_string())
             ));
         }
     }
@@ -1703,7 +1708,7 @@ mod tests {
         fs::create_dir_all(&service).unwrap();
         write_json(
             &service.join("result.json"),
-            r#"{"status":"passed","checks":[{"name":"guest_exit","status":"passed","detail":"ok"}],"faults":[{"round":2,"kind":"restart","detail":"restarted"}]}"#,
+            r#"{"status":"passed","checks":[{"name":"guest_exit","status":"passed","detail":"ok"}],"faults":[{"round":2,"kind":"restart","detail":"restarted","barrier_rounds":3}]}"#,
         );
         write_json(
             &directory.path().join("minimization.json"),
@@ -1714,6 +1719,8 @@ mod tests {
         let html = fs::read_to_string(index).unwrap();
         assert!(html.contains("Topology replay"));
         assert!(html.contains("restart"));
+        assert!(html.contains("Barrier rounds"));
+        assert!(html.contains("\"barrier_rounds\":3"));
         assert!(html.contains("api: serial.log"));
         assert!(html.contains("Campaign minimization"));
         assert!(html.contains("1-minimal faults"));
