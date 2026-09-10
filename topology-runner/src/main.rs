@@ -1223,6 +1223,8 @@ struct AppliedFault {
     round: u64,
     kind: String,
     detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    barrier_rounds: Option<u64>,
 }
 
 struct ServiceVm {
@@ -7285,6 +7287,7 @@ fn apply_scheduled_faults(
                 round,
                 kind: "resume".to_owned(),
                 detail: "pause duration elapsed".to_owned(),
+                barrier_rounds: None,
             });
         }
         service.paused_until = None;
@@ -7302,6 +7305,7 @@ fn apply_scheduled_faults(
                 round,
                 kind: fault_kind_name(&fault.kind).to_owned(),
                 detail: "skipped because the service had already exited".to_owned(),
+                barrier_rounds: None,
             });
             continue;
         }
@@ -7314,6 +7318,7 @@ fn apply_scheduled_faults(
                     round,
                     kind: "pause".to_owned(),
                     detail: format!("paused for {duration} scheduler rounds"),
+                    barrier_rounds: None,
                 });
             }
             FaultKind::Restart => {
@@ -7333,7 +7338,7 @@ fn apply_scheduled_faults(
                     switches,
                 )?;
                 replacement.resume()?;
-                wait_for_serial_with_service_rounds(
+                let readiness_rounds = wait_for_serial_with_service_rounds(
                     &serial,
                     b"THES:M:42",
                     "restarted service serial readiness",
@@ -7343,7 +7348,7 @@ fn apply_scheduled_faults(
                     switches,
                     plan.run.run.max_rounds,
                 )?;
-                inject_serial_events_with_service_rounds(
+                let event_rounds = inject_serial_events_with_service_rounds(
                     &mut replacement,
                     &plan.run.events,
                     &serial,
@@ -7357,6 +7362,7 @@ fn apply_scheduled_faults(
                     round,
                     kind: "restart".to_owned(),
                     detail: "cold-restarted from locked service artifacts".to_owned(),
+                    barrier_rounds: Some(readiness_rounds.saturating_add(event_rounds)),
                 });
             }
             FaultKind::ClockJump => {
@@ -7366,6 +7372,7 @@ fn apply_scheduled_faults(
                     round,
                     kind: "clock_jump".to_owned(),
                     detail: format!("advanced virtual clock by {nanoseconds} ns"),
+                    barrier_rounds: None,
                 });
             }
         }
@@ -7380,7 +7387,8 @@ fn inject_serial_events_with_service_rounds(
     services: &mut BTreeMap<String, ServiceRuntime>,
     switches: &BTreeMap<String, SharedSimSwitch>,
     max_rounds: u64,
-) -> Result<(), String> {
+) -> Result<u64, String> {
+    let mut rounds: u64 = 0;
     for event in events {
         let input_offset = fs::metadata(serial_log)
             .map_err(|error| {
@@ -7392,7 +7400,7 @@ fn inject_serial_events_with_service_rounds(
             .len() as usize;
         service.push_serial_input(&decode_hex(&event.data_hex)?)?;
         if let Some(checkpoint) = &event.checkpoint {
-            wait_for_serial_with_service_rounds(
+            rounds = rounds.saturating_add(wait_for_serial_with_service_rounds(
                 serial_log,
                 checkpoint.as_bytes(),
                 "campaign operation checkpoint",
@@ -7401,10 +7409,10 @@ fn inject_serial_events_with_service_rounds(
                 services,
                 switches,
                 max_rounds,
-            )?;
+            )?);
         }
     }
-    Ok(())
+    Ok(rounds)
 }
 
 fn wait_for_serial_with_service_rounds(
@@ -7416,12 +7424,12 @@ fn wait_for_serial_with_service_rounds(
     services: &mut BTreeMap<String, ServiceRuntime>,
     switches: &BTreeMap<String, SharedSimSwitch>,
     max_rounds: u64,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     for round in 0..=max_rounds {
         if fs::read(serial_log)
             .is_ok_and(|serial| serial_marker_after(&serial, input_offset, needle))
         {
-            return Ok(());
+            return Ok(round);
         }
         if round == max_rounds {
             break;
