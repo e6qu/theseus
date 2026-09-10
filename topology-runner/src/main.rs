@@ -7354,7 +7354,7 @@ fn apply_scheduled_faults(
                     &serial,
                     services,
                     switches,
-                    plan.run.run.max_rounds,
+                    plan.run.run.max_rounds.saturating_sub(readiness_rounds),
                 )?;
                 service.vm = replacement;
                 service.serial_logs.push(serial);
@@ -7400,7 +7400,7 @@ fn inject_serial_events_with_service_rounds(
             .len() as usize;
         service.push_serial_input(&decode_hex(&event.data_hex)?)?;
         if let Some(checkpoint) = &event.checkpoint {
-            rounds = rounds.saturating_add(wait_for_serial_with_service_rounds(
+            let used = wait_for_serial_with_service_rounds(
                 serial_log,
                 checkpoint.as_bytes(),
                 "campaign operation checkpoint",
@@ -7408,8 +7408,9 @@ fn inject_serial_events_with_service_rounds(
                 service,
                 services,
                 switches,
-                max_rounds,
-            )?);
+                max_rounds.saturating_sub(rounds),
+            )?;
+            rounds = rounds.saturating_add(used);
         }
     }
     Ok(rounds)
