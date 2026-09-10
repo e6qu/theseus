@@ -5,10 +5,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
+use std::collections::BTreeSet;
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{Ordering, fence};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::Duration;
 use std::{fmt, io, thread};
 
@@ -34,6 +35,12 @@ pub const VCPU_RTSIG_OFFSET: i32 = 0;
 
 /// Maximum time to wait for a vCPU thread to exit when dropping its handle.
 const VCPU_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Sample one executed location per this many deterministic, handled exits.
+/// This is deliberately far sparser than single-stepping: normal virtio and
+/// UART workloads keep their normal device path while still yielding stable
+/// execution identities at the exits Theseus controls.
+const EXECUTION_LOCATION_SAMPLE_EXITS: u64 = 64;
 
 /// Errors associated with the wrappers over KVM ioctls.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -116,6 +123,9 @@ pub struct Vcpu {
     /// aarch64 can only write the counter offset after KVM_ARM_VCPU_INIT
     /// (vCPU configure time), so the anchor is applied on first run.
     vclock_anchored: bool,
+    /// Stable guest PCs sampled from the vCPU thread at handled KVM exits.
+    execution_locations: Arc<Mutex<BTreeSet<u64>>>,
+    execution_location_exits: u64,
 }
 
 /// States of the vCPU thread's run loop.
@@ -167,6 +177,8 @@ impl Vcpu {
             exits_since_tick: 0,
             exits_per_tick: crate::vmm_config::machine_config::DEFAULT_EXITS_PER_TICK,
             vclock_anchored: false,
+            execution_locations: Arc::new(Mutex::new(BTreeSet::new())),
+            execution_location_exits: 0,
         })
     }
 
@@ -229,6 +241,10 @@ impl Vcpu {
     /// moment where writing the guest clock is race-free.
     #[inline]
     fn maybe_tick(&mut self) {
+        self.execution_location_exits = self.execution_location_exits.saturating_add(1);
+        if self.execution_location_exits % EXECUTION_LOCATION_SAMPLE_EXITS == 0 {
+            self.record_execution_location();
+        }
         if self.vclock.is_none() {
             return;
         }
@@ -247,6 +263,25 @@ impl Vcpu {
         if let Err(err) = self.kvm_vcpu.apply_virtual_time(vclock.now_ns()) {
             error!("Failed to apply virtual time: {err:?}");
             METRICS.vcpu.failures.inc();
+        }
+    }
+
+    fn record_execution_location(&self) {
+        #[cfg(target_arch = "aarch64")]
+        let location = {
+            let mut value = [0u8; 8];
+            self.kvm_vcpu
+                .fd
+                .get_one_reg(crate::arch::aarch64::regs::PC, &mut value)
+                .map(|_| u64::from_ne_bytes(value))
+        };
+        #[cfg(target_arch = "x86_64")]
+        let location = self.kvm_vcpu.fd.get_regs().map(|registers| registers.rip);
+        if let Ok(location) = location {
+            self.execution_locations
+                .lock()
+                .expect("execution coverage lock poisoned")
+                .insert(location);
         }
     }
 
@@ -285,6 +320,7 @@ impl Vcpu {
         let vcpu_fd = self
             .copy_kvm_vcpu_fd(vm)
             .map_err(StartThreadedError::CopyFd)?;
+        let execution_locations = self.execution_locations.clone();
         let vcpu_thread = thread::Builder::new()
             .name(format!("fc_vcpu {}", self.kvm_vcpu.index))
             .spawn(move || {
@@ -300,6 +336,7 @@ impl Vcpu {
             event_sender,
             response_receiver,
             vcpu_fd,
+            execution_locations,
             vcpu_thread,
         ))
     }
@@ -368,7 +405,9 @@ impl Vcpu {
         match self.event_receiver.try_recv() {
             // Running ---- Pause ----> Paused
             Ok(VcpuEvent::Pause) => {
-                // Nothing special to do.
+                // Capture every explicit Theseus barrier even if the service
+                // performed fewer than one sampling quantum of device exits.
+                self.record_execution_location();
                 self.response_sender
                     .send(VcpuResponse::Paused)
                     .expect("vcpu channel unexpectedly closed");
@@ -444,6 +483,9 @@ impl Vcpu {
                 VcpuRunState::Running
             }
             Ok(VcpuEvent::Pause) => {
+                // Capture every explicit Theseus barrier even if the service
+                // performed fewer than one sampling quantum of device exits.
+                self.record_execution_location();
                 self.response_sender
                     .send(VcpuResponse::Paused)
                     .expect("vcpu channel unexpectedly closed");
@@ -748,6 +790,7 @@ pub struct VcpuHandle {
     response_receiver: Receiver<VcpuResponse>,
     /// VcpuFd
     pub vcpu_fd: VcpuFd,
+    execution_locations: Arc<Mutex<BTreeSet<u64>>>,
     // Rust JoinHandles have to be wrapped in Option if you ever plan on 'join()'ing them.
     // We want to be able to join these threads in tests.
     vcpu_thread: Option<thread::JoinHandle<()>>,
@@ -769,12 +812,14 @@ impl VcpuHandle {
         event_sender: Sender<VcpuEvent>,
         response_receiver: Receiver<VcpuResponse>,
         vcpu_fd: VcpuFd,
+        execution_locations: Arc<Mutex<BTreeSet<u64>>>,
         vcpu_thread: thread::JoinHandle<()>,
     ) -> Self {
         Self {
             event_sender,
             response_receiver,
             vcpu_fd,
+            execution_locations,
             vcpu_thread: Some(vcpu_thread),
         }
     }
@@ -803,6 +848,24 @@ impl VcpuHandle {
     /// Returns a reference to the [`Received`] from which the vcpu's responses can be read.
     pub fn response_receiver(&self) -> &Receiver<VcpuResponse> {
         &self.response_receiver
+    }
+
+    /// Stable location samples gathered while this vCPU ran normally.
+    pub fn execution_locations(&self) -> Vec<u64> {
+        self.execution_locations
+            .lock()
+            .expect("execution coverage lock poisoned")
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    /// Seed a restored child with its parent branch's coverage history.
+    pub fn extend_execution_locations(&self, locations: impl IntoIterator<Item = u64>) {
+        self.execution_locations
+            .lock()
+            .expect("execution coverage lock poisoned")
+            .extend(locations);
     }
 }
 

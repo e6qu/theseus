@@ -240,6 +240,8 @@ pub enum VmmError {
     DirtyBitmap(kvm_ioctls::Error),
     /// Theseus: error reading a paused vCPU program counter. {0}
     GuestProgramCounter(kvm_ioctls::Error),
+    /// Theseus: execution-coverage vCPU count mismatch: {0}
+    ExecutionCoverage(String),
     /// I8042 error: {0}
     I8042Error(devices::legacy::I8042DeviceError),
     #[cfg(target_arch = "x86_64")]
@@ -479,6 +481,48 @@ impl Vmm {
                 }
             })
             .collect()
+    }
+
+    /// Theseus: deterministic guest-location samples gathered at handled KVM
+    /// exits while the VM ran normally. Unlike single-step coverage, this
+    /// leaves ordinary device emulation enabled and samples only every fixed
+    /// exit quantum plus explicit pause barriers.
+    pub fn execution_location_samples(&self) -> Result<Vec<Vec<u64>>, VmmError> {
+        if self.instance_info.state != VmState::Paused {
+            return Err(VmmError::VcpuPause);
+        }
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        Ok(kvm_vm
+            .vcpus_handles()
+            .iter()
+            .map(|handle| handle.execution_locations())
+            .collect())
+    }
+
+    /// Restore the inherited execution-coverage history into a COW child.
+    /// This runtime-only evidence is intentionally separate from Firecracker's
+    /// persisted MicrovmState: the topology checkpoint owns it and drops it
+    /// with the campaign branch tree.
+    pub fn seed_execution_location_samples(&self, samples: &[Vec<u64>]) -> Result<(), VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        let handles = kvm_vm.vcpus_handles();
+        if handles.len() != samples.len() {
+            return Err(VmmError::ExecutionCoverage(format!(
+                "expected {} vCPU sample sets, got {}",
+                handles.len(),
+                samples.len()
+            )));
+        }
+        for (handle, locations) in handles.iter().zip(samples) {
+            handle.extend_execution_locations(locations.iter().copied());
+        }
+        Ok(())
     }
 
     /// Theseus: push an event byte into the guest's control-channel FIFO.

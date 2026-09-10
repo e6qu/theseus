@@ -161,6 +161,13 @@ Replace checkpoint-PC sampling as the main coverage signal.
 **Exit criteria:** coverage works on practical campaign workloads without
 single stepping; its identity, corpus choice, and replay behavior are stable.
 
+**Current implementation:** every vCPU records its PC at a fixed cadence of
+deterministic handled KVM exits and at explicit pause barriers. The collector
+leaves ordinary UART, virtio, network, and storage emulation enabled; it is
+inherited through topology COW branches as runtime checkpoint state. Campaign
+novelty now uses those accumulated location identities, while paused-PC and
+single-step collection remain diagnostics and the small-guest ground truth.
+
 ### P17 — ordinary workload integration
 
 Make Theseus useful without a bespoke guest protocol.

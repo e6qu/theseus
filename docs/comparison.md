@@ -14,7 +14,7 @@ simulation, and chaos tooling. Terms are defined in
 | Replay | Seeded input shrinking | Perfect, instruction-level | Locked seeded timelines, actions, coverage, guidance, and properties; clock reads retain a documented mid-quantum caveat |
 | Determinism mechanism | In-process seeded PRNG | Custom deterministic hypervisor (bhyve fork) on bare metal | KVM + seeded devices + tick-stepped virtual clock |
 | Fault injection | None | Guided (network, disk, crash, clock) | Simulated network/storage faults plus Compose lifecycle, clock, and packet actions |
-| Coverage guidance | Shrinking / targeted generators | RL-guided exploration | Marker, checkpoint-PC, topology-state, property, adaptive, and posterior guidance; no fast execution coverage yet |
+| Coverage guidance | Shrinking / targeted generators | RL-guided exploration | Marker, deterministic exit-sampled execution locations, topology-state, property, adaptive, and posterior guidance |
 | Model | You write properties | You state invariants; product finds bugs | Same |
 | License | Open source (MPL) | Commercial (some OSS tools) | AGPL-3.0-or-later (engine); Apache-2.0 (fork) |
 
@@ -54,11 +54,11 @@ Key architectural differences with Theseus:
   that leak.
 - **Exploration guidance**: Antithesis uses coverage-guided RL at scale.
   Theseus restores Compose campaign candidates from a reusable whole-topology
-  prefix tree and ranks them with marker, paused-PC, topology-state, property,
-  adaptive, and deterministic-posterior evidence. Its single-VM explorer uses
-  deterministic DFS and marker/dirty-page novelty. Ground-truth single-step
-  coverage exists as the reference for a future fast instrumentor; it is not
-  yet the practical campaign coverage path.
+  prefix tree and ranks them with marker, deterministic exit-sampled execution
+  locations, topology-state, property, adaptive, and deterministic-posterior
+  evidence. Its single-VM explorer uses deterministic DFS and marker/dirty-page
+  novelty. Ground-truth single-step coverage remains the validation reference
+  for small guests.
 - **Campaign interface**: Antithesis can drive unmodified workloads through
   its test templates and property APIs. Theseus accepts a designated Compose
   driver, text UART operations, lifecycle/clock candidates, barrier-triggered

@@ -282,7 +282,9 @@ the full candidate count.
 
 It also treats a changed simulated drive, network traffic/payload fingerprint,
 virtual clock, or paused guest program counter as a new topology state. A new
-per-service paused PC also guides later extensions as an instruction location.
+per-service execution locations sampled at deterministic device-exit quanta
+also guide later extensions. The final paused PC is retained as a diagnostic,
+but it is not the main execution-coverage signal.
 This reaches divergent outcomes even when the guest prints the same markers.
 The report resolves each sample against that service's locked kernel ELF and
 shows `address → function + offset · file:line` when symbols and DWARF debug
@@ -342,8 +344,8 @@ that locked run directory. These boundary rows also show the simulated-network
 TX, RX, drop, duplicate, and corruption
 counters produced by that operation. The boundary state hash covers this
 compact evidence, so compare the same row across replays without opening a VM
-snapshot. These rows explain execution; only the final paused-PC samples
-participate in coverage novelty. The row's scheduler round shows deterministic
+snapshot. These rows explain execution; accumulated device-exit location
+samples participate in coverage novelty. The row's scheduler round shows deterministic
 progress without relying on host wall-clock time.
 
 When an operation changes a simulated drive, **Changed storage** names that
