@@ -1,478 +1,213 @@
-# Theseus: Deterministic Simulation Testing on a Firecracker Fork
+# Theseus roadmap
 
-**Goal:** fork Firecracker and turn it into a deterministic execution environment for
-whole-system testing — virtual time, seeded entropy, simulated net/disk with fault
-injection, a guest↔host control channel, and cheap snapshot branching (the
-"multiverse"). Inspired by Antithesis's Determinator (bhyve fork), but on Linux/KVM
-with a Rust codebase.
+## Objective
 
-**Baseline:** `firecracker/` (Apache-2.0, commit `f3f65a3`). Analysis below is from
-code inspection of that commit.
+Build an open, deterministic system-testing environment for Linux services.
+Theseus runs a Firecracker/KVM topology, controls its nondeterministic inputs,
+branches it at reproducible checkpoints, searches faulted histories, and emits
+one self-contained replay bundle for every result.
 
----
+The target is the useful part of the Antithesis experience: test a real service
+topology, explore failures automatically, reproduce any result exactly, and
+understand why that history was selected. Theseus is not yet an instruction-
+perfect deterministic hypervisor or a hosted Antithesis replacement. Do not
+claim either.
 
-## 1. Codebase map (what we cloned)
+## Current baseline
 
-| Path | Role | Relevance to us |
-|---|---|---|
-| `src/firecracker` | API server binary (HTTP over unix socket) + main loop | Where new config knobs (seed, fault schedule) enter |
-| `src/jailer` | Isolation: chroot, cgroups, namespaces (excluded from default build) | Keep as-is; orthogonal |
-| `src/vmm/src/vstate/vcpu.rs` | vCPU thread; `run()` → `run_emulation()` → `handle_kvm_exit()` | **Exit-handling hub.** MMIO read/write, FailEntry, InternalError, SystemEvent handled here |
-| `src/vmm/src/arch/x86_64/vcpu.rs` | Arch exits (`IoIn`/`IoOut` → PIO bus); TSC handling | TSC work is **snapshot-scaling only** (`get/set_tsc_khz`, `KVM_CLOCK_REALTIME` on restore). Guest time today = host time |
-| `src/vmm/src/vstate/vm.rs` | VM fd, guest memory registration, **userfaultfd** hooks (used for lazy snapshot restore) | uffd machinery reusable for CoW branching |
-| `src/vmm/src/vstate/memory.rs` | `GuestMemoryMmap` wrappers | unsafe hotspot; our new memory tricks live here |
-| `src/vmm/src/devices/virtio/` | net (host **tap**), block (host file + **io_uring**), vsock (unix socket), **rng** (`rand::fill` → host getrandom), balloon, mem, pmem | Devices are the fault-injection surface |
-| `src/vmm/src/devices/legacy/` | serial, i8042, rtc_pl031 (aarch64) | PIO bus pattern to copy for our control device |
-| `src/vmm/src/devices/pseudo/` | placeholder/pseudo devices | Template for a minimal custom device |
-| `src/vmm/src/device_manager/` | attach/restore, MMIO + PIO buses | Device insertion point |
-| `src/vmm/src/persist.rs` + `snapshot/` | `create_snapshot` / `load_snapshot`, versioned `MicrovmState`, **diff snapshots via KVM dirty bitmap** | Branching foundation — but serializes to files; no in-memory fork |
-| `src/vmm/src/dumbo/` | Firecracker's own TCP stack (used by MMDS) | In-tree reference for packet handling in a simulated NIC |
-| `src/vmm/src/gdb/` | gdbstub (feature-gated) | Debugging synergy later |
+### What is shipped
 
-**`unsafe` inventory:** 479 blocks. Hotspots: `virtio/iovec.rs` (30),
-`virtio/vhost_user.rs` (24), `virtio/queue.rs` (19), `io_uring/*` (~32),
-`vstate/memory.rs` (14), `virtio/net/*` (~23), `cpuid` (~17). Pattern: guest-memory
-access + kernel FFI + io_uring. Workspace lint `undocumented_unsafe_blocks = "warn"`
-is already enabled — keep that discipline.
+- Published macOS-arm64 and Linux amd64/arm64 CLI/runtime artifacts, plus
+  Linux multi-architecture OCI images. Tutorials consume those artifacts and
+  are self-contained directories.
+- Seeded guest entropy, including `/dev/random` and `/dev/urandom` through the
+  matching Theseus kernel/module distribution; a serial/TTY control protocol;
+  and a guest SDK as an optional third integration path.
+- Deterministic simulated NICs and storage: delay, jitter, partitioning,
+  loss, duplication, corruption, bandwidth/queue/MTU limits, and storage
+  errors, latency, torn writes, and read corruption.
+- Exit-counted virtual time, deterministic topology rounds, lifecycle faults,
+  causal UART barriers, and a single topology-wide budget. No normal topology
+  path waits on host elapsed time.
+- Compose campaigns: operation/input grammars, state and serial guards,
+  cross-service JSON evidence, property checks, deterministic fault actions,
+  minimization, locked replay, portable HTML/Markdown/JSON/JUnit reports.
+- A whole-topology operation-prefix checkpoint tree. A shared prefix is
+  captured once, then later schedules restore it instead of replaying its
+  earlier operations. Marker, paused-PC, topology-state, property, adaptive,
+  and posterior guidance are deterministic and replay-checked.
+- Explorer primitives: in-memory branch snapshots, kernel COW child mappings,
+  seeded child divergence, dirty-page and marker novelty, and slow
+  single-step PC coverage as a ground-truth reference.
 
----
+### Constraints we must keep visible
 
-## 2. Determinism insertion points (the fork's diff surface)
+- KVM does not trap ordinary clock reads. Virtual time is deterministic at
+  exit-counted quantum boundaries, but a guest can see a small host-time tail
+  while it runs within a quantum. See `docs/determinism.md`; do not call this
+  instruction-perfect replay.
+- Compose checkpoint snapshots currently use Firecracker snapshot files. The
+  prefix tree avoids repeated histories, but it is not yet a zero-copy,
+  whole-topology snapshot store.
+- Single-step coverage is intentionally slow and suitable only as a reference
+  signal. Campaign PC samples are cheap checkpoint observations, not execution
+  coverage.
+- The supported production path is Linux/KVM. macOS is a CLI authoring
+  platform, not a local VM execution platform.
 
-Ordered by build sequence. Items 2.1–2.4 are easy wins; 2.5 (virtual time) is the
-design's critical piece — settled on Track B′ (below); 2.6–2.7 are the payoff.
+## Architecture that work must preserve
 
-### 2.1 Seeded entropy — `devices/virtio/rng/device.rs`
-Today: `rand::fill()` (host `getrandom`) at lines ~129–135. **Replace with a seeded
-ChaCha RNG** whose seed arrives via the control channel / API. Trivial, safe Rust.
-Also audit `cpu_config/x86_64/cpuid` — guest `RDRAND`/`RDSEED` bypass virtio-rng;
-KVM userspace can't trap them, so v1 hides those CPUID bits (guest falls back to
-virtio-rng) and documents the limitation.
+```
+manifest / Compose input
+        ↓ normalize and lock released artifacts
+deterministic topology runner
+        ↓ rounds, UART, faults, simulated devices
+whole-topology checkpoint tree ──→ campaign corpus scheduler
+        ↓                                  ↓
+locked replay bundle ← evidence, properties, minimization, report
+```
 
-### 2.1b Host-side entropy leaks — `detrng.rs` (found during Phase 5 sweep)
-Upstream draws guest-visible randomness from host entropy in more places than
-virtio-rng: aarch64 FDT `rng-seed`, vmgenid generation IDs, MMDS token keys,
-dumbo TCP ISNs. All now route through `detrng` — a VM-owned seeded ChaCha
-stream, entered at root construction, child restore, and timeline execution.
-Also de-randomized the test harness: descriptor-gap injection and
-frame/payload generators in `test_utils`/`tap`/`block` tests and the APIC
-interrupt test used unseeded `vmm_sys_util::rand` — now deterministic patterns.
-Parallel in-process timelines therefore cannot interleave guest-visible host
-randomness.
+The replay bundle is the product boundary. New guidance, metrics, artifacts,
+or debugging data are only complete when they are copied into the bundle,
+understood by offline reports, and verified on replay.
 
-### 2.2 Control channel (our `VMCALL` equivalent)
-- **Custom MMIO device** (`devices/pseudo/theseus.rs`): magic ("THES"),
-  status, host→guest event FIFO, and guest→host command/log registers. No
-  IRQ — the guest polls, the orchestrator drives host-side.
-  **Simplified during implementation: MMIO on both arches** (one code path,
-  boot-timer precedent) at a fixed platform slot (`THESEUS_MEM_START` =
-  `0x40003000` on aarch64; after boot-timer slot on x86_64; the dynamic
-  virtio MMIO base moved one slot up on both). Always attached at build.
-  Not snapshotted (transient FIFO; orchestrator re-drives per branch).
-  Verified through the host-side MMIO bus on real KVM
-  (`device_manager::tests::test_theseus_mmio_roundtrip`).
-Every control-channel read is a **branch point** in the timeline tree — log them.
+## Completed tranches
 
-### 2.3 Simulated network — `devices/virtio/net/`
-Today the TX/RX path terminates in a host tap fd (`tap.rs`). **Swap the backend**:
-keep the virtio frontend (guest sees a normal NIC), replace tap with an in-process
-deterministic switch: delivery order, latency, partitions, packet loss driven by the
-seeded RNG + fault schedule. All safe Rust on the data path except existing
-iovec/queue plumbing. `dumbo/` is the in-tree packet-handling reference.
+| Tranche | Status | Outcome |
+| --- | --- | --- |
+| P0–P5 core | Done | Deterministic devices, virtual-time plumbing, branching, explorer, serial transport, and reference coverage. |
+| P6–P10 product | Done | Public CLI, Compose runner, replay/minimization, reports, tutorials, and autonomous campaigns. |
+| P11 release | Done | Multi-architecture artifacts, consumer verification, provenance, SBOMs, reproducible build inputs, and external rebuild witnesses. |
+| P12 campaign correctness | Done through PR #169 | Prefix checkpoints, coverage/property guidance, detailed operation evidence, deterministic lifecycle scheduling, and replay proof. |
 
-### 2.4 Simulated block device — `devices/virtio/block/`
-Today: host file + io_uring (nondeterministic completion timing). v1: synchronous
-in-process engine behind the virtio frontend with injected faults (latency, errors,
-torn writes). Skip io_uring in the sim path; determinism beats IOPS here.
+P12 is closed. Do not reopen it for isolated report fields or scheduler
+bookkeeping. Fold any new search capability into the next complete tranche.
 
-### 2.5 Virtual time — Track B′: tick-stepped clock, pure userspace
-Constraint found in analysis: **KVM's userspace API cannot trap `RDTSC`** (no VMX
-RDTSC-exiting knob), and the kvmclock pvclock page is maintained by KVM from the
-host clock. Firecracker today only *scales* TSC frequency on snapshot restore
-(`KVM_SET_TSC_KHZ`) and optionally sets `KVM_CLOCK_REALTIME` via `KVM_SET_CLOCK` —
-guest time = host time. Antithesis could virtualize time fully only because they own
-the whole hypervisor. So our design is:
+## Next work, in order
 
-**Run the vCPU in bounded quanta. On each quantum boundary, advance the guest
-clock by a fixed simulated tick.** Key refinement made during implementation:
-quanta are **exit-counted, not host-timed** — a quantum ends after N
-guest-visible exits, counted in the vCPU thread. A host-time ticker would make
-tick boundaries nondeterministic relative to guest execution (host scheduling
-jitter); exit counting makes tick interleaving identical on every replay,
-since every guest-visible event flows through exits we already handle. On each
-boundary (between `KVM_RUN` calls — the only race-free moment), the vCPU
-thread advances `VirtualClock` and applies it via the uniform
-`KvmVcpu::apply_virtual_time(now_ns)`:
-- **x86_64**: write TSC MSR (`set_tsc`); kvmclock anchored once at boot via
-  `KvmVm::set_virtual_clock_ns(0)`.
-- **aarch64**: write `KVM_REG_ARM_TIMER_CNT` via `KVM_SET_ONE_REG`
-  (re-anchors the guest CNTVCT offset). Hard-won UAPI notes, from kernel
-  source: the per-vcpu `KVM_ARM_VCPU_TIMER_CTRL` group only handles
-  TIMER_IRQ_* attrs (TIMER_OFF → ENXIO); the VM-scoped
-  `KVM_VM_SET_COUNTER_OFFSET` EBUSYs once vCPUs run; and the write must happen
-  after `KVM_ARM_VCPU_INIT`, so the aarch64 anchor is applied by the vCPU
-  thread on first run (`vclock_anchored`).
-Deterministic at tick granularity; the counter free-runs only *within* a
-quantum (guest counter reads don't exit — accepted, documented leak; measured
-on metal as ≤ a few ticks of jitter from host preemption). Zero kernel work;
-no extra threads; no cross-thread `unsafe`. **Proven on aarch64 metal:**
-`test_guest_virtual_time_is_reproducible` boots a bare-metal guest that prints
-CNTVCT — anchored near zero and bounded-close across runs with virtual time
-on, divergent with it off. Rate limiters (host timerfds) rejected in
-deterministic mode.
+### P13 — scalable deterministic exploration
 
-**Snapshot interaction (B′ + branching compose cleanly):** the virtual clock is VM
-state → save `virtual_now` in `MicrovmState`; on restore `KVM_SET_CLOCK` **without**
-`KVM_CLOCK_REALTIME` (that flag re-anchors to host wall time — the opposite of what
-we want); keep TSC consistent with kvmclock (TSC MSR restore ordering +
-`fix_zero_tsc_deadline_msr` already exist); keep `tsc_khz` constant across restores.
-Synergy: B′'s quanta are deterministic pause points — exactly where snapshots/forks
-should happen; branches forked from one snapshot inherit identical clock state and
-diverge only via seed.
+**Current big PR:** make the existing whole-topology checkpoint tree an
+auditable search engine rather than an implementation detail.
 
-**Validation:** during Phases 1–2, log host-TSC delta per virtual tick and measure
-whether time-nondeterminism actually correlates with replay divergence. Escalate
-only if divergence persists in practice.
+- Record deterministic checkpoint economics: root/prefix captures, prefix
+  reuse, logical topology restores, leaf replays, and work avoided by reuse.
+  These replace meaningless host-time throughput claims and are replay-checked.
+- Record a hash of the exact earlier observation corpus that each scheduling
+  decision saw. Render it beside the selection reason; replay rejects a
+  changed ledger.
+- Preserve one global search-evidence record in the replay bundle and surface
+  it in portable reports and the autonomous Compose tutorial.
+- Keep the prefix tree as the only execution path for campaign search and
+  minimization. Add tests for counters, guidance-ledger stability, and changed
+  replay evidence.
 
-**Rejected / parked alternatives:**
-- *Host time (do nothing)* — kills replay for time-sensitive logic (timeouts,
-  leader election); Phase 0 placeholder only.
-- *Guest-cooperative clock (SDK/faketime)* — leaks for uncooperative code; kept as
-  an optional complement for clock-reading app code, not as the mechanism.
-- *Out-of-tree KVM patch (RDTSC exiting, pinned pvclock)* — Antithesis-grade,
-  instruction-level fidelity, but months of kernel engineering; the B′ quanta
-  machinery is exactly what it would plug into, so the option stays open.
-- *Linux time namespaces (`CLONE_NEWTIME`)* — dead end: fixed offsets for
-  MONOTONIC/BOOTTIME only, designed for CRIU on host processes; invisible to KVM
-  guests (guest time comes from TSC + kvmclock, outside any namespace).
+**Exit criteria:** a report states exactly how much topology work was captured,
+restored, and avoided; every scheduler decision has a compact deterministic
+input proof; replay detects changed global search economics or guidance.
 
-### 2.6 Branching / multiverse — `branch.rs`, `persist.rs`
-**Implemented:** pause → `BranchPoint::capture` (MicrovmState bytes + guest RAM
-dump to memfd) → children restore through the existing snapshot path with the
-memfd as `/proc/self/fd/<n>`. Discovered during implementation: the snapshot-file
-memory path already maps `MAP_PRIVATE`, so **children get kernel copy-on-write
-for free** — no uffd write-protect layer needed (sibling isolation proven by
-`test_branch_children_memory_is_cow`). The only eager cost is one RAM dump per
-branch point, not per child; a `clone`-style shared-dump optimization is future
-work if profiling demands it. No new `unsafe` was needed after all.
+### P14 — deterministic-runtime certification
 
-### 2.7 Orchestrator — `orchestrator/` (in the vmm crate)
-Tree + spawn + live explore loop, all proven on aarch64 KVM (see Phase 5).
-**Parallel fan-out landed**: children of a node run on scoped threads (one
-timeline per thread), results joined in spawn order so the tree stays
-deterministic. Finding: `event_manager::EventManager` is not `Send`
-(subscriber trait objects aren't), so capture is headless — vCPU threads
-handle MMIO synchronously and pause/probe/capture are `Vmm` methods.
-Constraint: parallel timelines must be free of host-fd-backed devices (tap,
-file-backed block); sim backends and the MMIO door are pump-free.
-**Guest SDK landed**: `src/theseus-sdk` (no_std, shared by host device and
-guest code — single source of truth for registers/commands/markers), and a
-Rust bare-metal guest (`mock_resources/theseus_guest_rs/`, built by its
-`build.sh` into a flat arm64 Image) whose event handling branches on input
-bytes — so input schedules drive divergent marker streams (proven in
-`test_explore_with_rust_guest`). **True code coverage landed**:
-`coverage.rs` single-steps the vCPU (`KVM_GUESTDBG_SINGLESTEP`) collecting
-executed guest PCs — zero guest instrumentation; MMIO instructions are
-counted and skipped (aarch64 fixed width; x86_64 errors honestly —
-variable-length skip unimplemented). Proven on metal: replay-identical
-coverage sets, divergent guests diverge. It is the ground-truth signal for
-small workloads and the validation reference for a future fast
-instrumentor. Remaining: the fast instrumentor (coverage.rs is its
-  validation reference).
-  **Linux-guest SDK transport landed**: `theseus_sdk::linux::TtyChannel` —
-  the control channel over the serial console (`THES:M:xx` markers out,
-  `THES:E:xx` events in) — no guest driver, works with stock kernels. e2e
-  proven with `e2e/agent` (static musl init binary): handshake-then-events
-  (input before guest UART init is dropped — the ready-marker handshake is
-  the protocol fix, not a workaround).
+Turn the current virtual-time caveat into a tested support contract.
 
----
+- Run a real-KVM matrix on supported amd64 and arm64 metal: TSC/kvmclock,
+  timer deadlines, serial/network barriers, snapshots, and lifecycle restarts.
+- Add a deterministic-runtime probe suite that deliberately detects clock,
+  timerfd, entropy, and host-fd leaks. Fail closed for configurations that
+  cannot meet the stated contract.
+- Publish an explicit support profile with measured repeatability bounds and
+  attach its result to releases.
 
-## 3. Roadmap
+**Exit criteria:** supported hardware/configuration pairs have a reproducible
+certification artifact; unsupported configurations are rejected or labelled
+honestly. Escalate to kernel/KVM work if the quantum tail causes real replay
+divergence.
 
-- **Phase 0 — Baseline.** Linux + KVM host (bare metal; macOS dev machine can only
-  `cargo check --target x86_64-unknown-linux-gnu`). Build Firecracker, boot a guest,
-  run its test suite. Set up remote metal or a KVM-capable VM for the dev loop.
-- **Phase 1 — Door + seed.** Seeded virtio-rng (2.1), PIO control device (2.2a),
-  event-log skeleton. Proves guest↔host channel end-to-end.
-  **Status: DONE — including the first on-metal e2e proof.** `e2e/run.sh`
-  boots a real microVM (aarch64 KVM in the dev container, CI kernel +
-  custom initramfs) three times: seed 42 twice, seed 1337 once.
-  **Superseded by the standard-random-device work:** on aarch64, the
-  Theseus kernel module consumes the FDT seed before CRNG initialization, so
-  `/dev/random` and `/dev/urandom` are byte-identical for the same seed and
-  differ for different seeds. The module and exact matching kernel must ship
-  together; this is not a generic out-of-tree kernel-module ABI. **Status:
-  DONE — control channel now works on aarch64 too.** The device
-  moved from x86-only PIO to **MMIO on both architectures**
-  (`devices/pseudo/theseus.rs`, fixed platform slot, verified through the
-  MMIO bus on real KVM **and** by a live bare-metal guest — see Phase 4).
-  MAGIC register handles per-byte reads at any window offset (fixed during
-  guest bring-up). Rate limiters are host-timerfd based — a determinism
-  leak: `validate_deterministic_config` in builder.rs rejects rate limiters
-  when virtual time is enabled. Fixed the known upstream flake:
-  `test_token_bucket_auto_replenish_one` is now deterministic via the new
-  `TokenBucket::auto_replenish_at(now)` seam + synthetic clock (also the
-  future hook for virtual-time-driven replenishment, if rate limiters are
-  ever allowed in deterministic mode).
-- **Phase 2 — Simulated net.** Drop tap, deterministic switch + fault schedule (2.3).
-  First "interesting" faults (partition, delay).
-  **Status: DONE (device level).** `NetBackend::{Tap, Sim}` — the virtio-net
-  frontend is unchanged, the backend swaps: `PUT /network-interfaces` accepts a
-  `sim` object (`seed`, `loopback`, `drop_ppm`, `partitioned`). Sim backend:
-  loopback FIFO, total-partition toggle, seeded per-frame drops. RX pumped
-  synchronously after TX (no host fd); tap event registration skipped for sim.
-  Snapshot carries the sim config; in-flight frames intentionally dropped
-  (orchestrator re-drives traffic per branch). Frame *delay* deferred to
-  Phase 3 (needs virtual time). Multi-VM interconnection waits for the
-  orchestrator (Phase 5). Unit-tested on x86_64 via qemu-user; upstream
-  net-suite failures in container are tap/KVM-absent only (verified vs.
-  baseline).
-- **Phase 3 — Virtual time (B′).** Bounded quanta + tick-stepped kvmclock/TSC (2.5).
-  Validate replay using the tick-delta instrumentation; escalate to the KVM patch
-  only if measured divergence demands it.
-  **Status: PLUMBED END-TO-END (unit-verified).** `vstate/vclock.rs`
-  (`VirtualClock`, tested); KVM wrappers (`KvmVm::set_virtual_clock_ns`,
-  `KvmVcpu::set_tsc`); **exit-counted quanta** in the vCPU run loop
-  (`maybe_tick` on every handled exit — no ticker thread; see 2.5 for why);
-  config: `machine-config.virtual_time = {tick_ns, exits_per_tick}` (default
-  1ms / 1024 exits); anchoring at VM build; bookkeeping saved/restored in
-  `VcpuState.vclock`/`vclock_exits` (guest-visible clock rides existing TSC
-  MSR + kvmclock snapshot paths). Remaining (needs `/dev/kvm`): boot a guest
-  and measure replay divergence; validate TSC-write/kvmclock consistency and
-  TSC-deadline timer behavior on metal; disable/quantize host timerfds (rate
-  limiters) in deterministic mode.
-- **Phase 4 — First branch.** memfd snapshot + uffd CoW: one VM forks into 2
-  timelines with different seeds (2.6). The minimal multiverse.
-  **Status: PROVEN ON METAL (aarch64 KVM).** `branch.rs` `BranchPoint::capture`
-  + `orchestrator::spawn_child`, proven by a live test
-  (`orchestrator::spawn::tests::test_branch_children_diverge_only_by_seed`):
-  boot parent (entropy seed 42) → pause → capture (MicrovmState + memfd RAM)
-  → spawn two children → assert each child's entropy stream equals a fresh
-  ChaCha stream of its derived child seed (and they differ from each other)
-  → both resume and run cleanly. Eager RAM copy per branch; uffd/MAP_PRIVATE
-  CoW remains the optimization.
-- **Phase 5 — Orchestrator.** N-core fleet, branch tree, coverage-guided search (2.7).
-  **Status: LIVE LOOP PROVEN ON METAL (aarch64 KVM), WITH A REACTIVE GUEST.**
-  `orchestrator/explorer.rs`: `Explorer::explore` — boot root (seeded
-  entropy), run, push control-channel events, pause, capture branch point
-  with an **entropy probe** (per-node replay fingerprint), spawn children,
-  recurse DFS. `test_explore_is_deterministic` runs the whole loop twice and
-  asserts identical tree shape, seeds, and probes at every node, and that
-  each child's probe equals a fresh ChaCha stream of its own seed.
-  `test_explore_with_reactive_guest` drives the bare-metal Theseus guest
-  through a rendezvous protocol (guest: boot marker → setup-complete →
-  event-echo loop with 0x00 terminator + 0xFF done marker per round, looping
-  forever so branches resume into the wait state): root markers =
-  [0x42, events, 0xFF], child markers = [events, suffix, 0xFF], fully
-  deterministic across runs.   Protocol lesson encoded: branch suffixes start
-  at 1 because 0x00 is the terminator. Fault injection as a second branch
-  axis: `FaultStrategy` + `spawn_child` overrides sim-net config in the
-  captured state (proven: per-child drop_ppm/partition, deterministic).
-  Dirty-page fingerprints (`Vmm::dirty_page_count`, KVM dirty bitmap) are a
-  third replay fingerprint — memory-footprint coverage, proven deterministic
-  across runs.   Novelty-guided expansion order
-  (marker novelty, then seed) implemented. **True code coverage landed**:
-  `coverage.rs` single-steps the vCPU (`KVM_GUESTDBG_SINGLESTEP`) collecting
-  executed guest PCs — zero guest instrumentation; MMIO instructions are
-  counted and skipped (aarch64 fixed width; x86_64 errors honestly —
-  variable-length skip unimplemented). Proven on metal: replay-identical
-  coverage sets, divergent guests diverge. It is the ground-truth signal for
-  small workloads and the validation reference for a future fast
-  instrumentor. The guest SDK and Linux serial transport are now available;
-  parallel fan-out is implemented as scoped threads. Remaining: turn this
-  library machinery into a stable user-facing test runner.
+### P15 — zero-copy whole-topology checkpoints
 
-### 3.1 Productization roadmap
+Make branching economical at the data-plane level, not just at the operation
+history level.
 
-The core primitives above are deliberately separate from the product layer.
-Early PRs established those seams. Product work now lands as complete vertical
-slices: a user-facing workflow, locked artifacts, replay, reduction, report,
-and a runnable self-contained tutorial together. Every PR below must have a
-runnable example and acceptance tests.
+- Replace per-prefix snapshot-file copying with a retained, shared memory
+  backing and kernel COW children for every service in a topology.
+- Keep switch state, UART transcripts, storage state, scheduler cursors, and
+  virtual clock state atomic with the VM memory barrier.
+- Bound cache lifetime and account for resident/shared/private pages without
+  making host timing part of replay evidence.
+- Benchmark topology fan-out by deterministic work counts and separately
+  publish non-authoritative wall-clock measurements.
 
-| Order | One PR | Delivers | Explicitly does not deliver |
-|---|---|---|---|
-| P6.1 | **`cli: add Theseus test manifest v1`** | **DONE (PR #14).** A published `theseus` CLI; `theseus validate` and `theseus test --dry-run`; a versioned, self-contained `theseus.toml` that resolves artifact paths relative to its directory and produces a canonical run plan (kernel/initramfs, seed, virtual-time settings, events, and simulated-network settings). | Compose/Kubernetes, property evaluation, UI, or automatic input generation. A dry run must never require KVM. |
-| P6.2 | **`cli: execute and replay one timeline`** | **DONE (PR #15).** `theseus test` launches one Firecracker timeline from that manifest, records its immutable replay bundle (artifact digests, resolved config, seed, events, faults, guest serial log), and `theseus replay <bundle>` reruns it. | Branch fan-out, minimization, or a distributed topology. |
-| P6.3 | **`checks: add built-in and custom properties`** | **DONE (PR #16).** Explicit test outcomes: no guest crash, bounded completion/liveness, serial/marker expectations, and named user checks. Results are part of the replay bundle. | Assertion cataloging across languages or a hosted reporting service. |
-| P6.4 | **`runner: add Docker Compose topology`** | **DONE (PR #17).** A small, documented Compose subset mapped to deterministic Theseus guests and simulated links, with per-service logs and artifact locking. | Kubernetes and unrestricted Docker compatibility. |
-| P6.5 | **`faults: add lifecycle and clock schedules`** | **DONE (PR #18).** Declarative, replayable service pause/restart and virtual-clock-jump schedules, scoped to one service. | Storage corruption/torn writes, arbitrary host process faults, or thread scheduling controls. |
-| P6.6 | **`faults: add deterministic storage faults`** | **DONE (PR #19).** The simulated block backend exposes errors, latency, torn writes, and corrupt reads through the same manifest/replay format. | Real host-disk fault injection. |
-| P6.7 | **`explorer: make search guidance product-facing`** | **DONE (PR #20).** Branch budgets, coverage/marker novelty controls, failure preservation, and deterministic test reports through the CLI. | RL training infrastructure or a graphical multiverse debugger. |
-| P6.8 | **`reports: add local timeline inspection`** | **DONE (PR #21).** A local static report with timeline tree, faults, logs, checks, coverage summaries, and copy-paste replay commands. | A hosted multi-user UI or causality analysis equivalent. |
-| P6.9 | **`replay: make every result bundle self-contained`** | **DONE (PR #22).** Locked Compose and exploration bundles replay through the CLI without their source Compose file or manifest. | Cross-version replay guarantees or search minimization. |
-| P7.0 | **`entropy: isolate host randomness per timeline`** | **DONE (PR #23).** VM-owned host-side ChaCha streams across parallel exploration timelines. | A distributed coordinator or randomness outside Theseus VM execution. |
-| P7.1 | **`explorer: evaluate marker properties per timeline`** | **DONE (PR #24).** Marker pass/fail properties for every captured timeline, retained in locked exploration results and reports. | Serial-log properties in the headless explorer, automatic minimization, or a fast code-coverage instrumentor. |
-| P7.2 | **`replay: reproduce one exploration timeline`** | **DONE (PR #25).** Replay one recorded root-to-node seed path without rebuilding its sibling subtrees. | Automatic minimization, snapshot export, or a fast code-coverage instrumentor. |
-| P7.3 | **`minimize: reduce a failing exploration path`** | **DONE (PR #26).** A locked, deterministic 1-minimal `explore.events` sequence preserving the same named failed properties. | Global minimization, seed/fault minimization, or a fast code-coverage instrumentor. |
-| P7.4 | **`snapshot: export one exploration timeline`** | **DONE (PR #27).** Export one recorded seed path as a self-contained Firecracker state-and-memory snapshot with locked-artifact provenance and node fingerprints. | Snapshot loading or mutation, a debugger UI, serial-log collection, or a fast code-coverage instrumentor. |
-| P7.5 | **`replay: verify one exploration timeline`** | **DONE (PR #28).** Compare a targeted replay's recorded entropy, marker, and dirty-page fingerprints before accepting it as reproduced. | Whole-tree comparison, cross-version replay guarantees, serial-log collection, or a fast code-coverage instrumentor. |
-| P7.6 | **`explorer: capture serial logs per timeline`** | **DONE (PR #29).** Per-seed serial logs in exploration bundles and serial properties evaluated across every captured timeline. | Serial input events, whole-tree replay verification, or a fast code-coverage instrumentor. |
-| P7.7 | **`replay: verify the complete exploration tree`** | **DONE (PR #30).** Rebuild a locked exploration and compare every recorded seed path and fingerprint, rejecting any shape or behavior change. | Cross-version replay guarantees, serial-input replay, or a fast code-coverage instrumentor. |
-| P7.8 | **`replay: fingerprint exploration serial logs`** | **DONE (PR #31).** Per-timeline serial-log digests are part of targeted and whole-tree replay verification when a bundle has serial logs. | Serial-input replay, cross-version replay guarantees, or a fast code-coverage instrumentor. |
-| P7.9 | **`explorer: replay deterministic serial input`** | **DONE (PR #32).** Manifest `[[events]]` are injected directly into each timeline's emulated UART after its SDK rendezvous, so root and child timelines receive the same deterministic serial input without sharing host stdin. | Arbitrary serial schedules, input before SDK rendezvous, or exploration of a guest without the SDK control-channel protocol. |
-| P8.0 | **`replay: pin the exploration executor`** | **DONE (PR #33).** Lock the published `theseus-explorer` binary, including its digest, into every new exploration bundle; replay, minimization, and snapshot export use that locked executor instead of silently using a newer installed one. | Compose-runner pinning, arbitrary backwards compatibility, or execution of legacy bundles without their original runtime. |
-| P8.1 | **`replay: pin the topology executor`** | **DONE (PR #34).** Lock the published `theseus-topology` binary into every new Compose bundle and use its verified bundle-local copy for replay. | Cross-version guarantees for other executors or legacy bundles without their original runtime. |
-| P8.2 | **`topology: inject deterministic serial input`** | **DONE (PR #35).** Deliver each Compose service's manifest `[[events]]` directly to its VM-local UART, including deterministic restarts. | Cross-service input schedules or input after a guest-controlled ready handshake. |
-| P8.3 | **`topology: wait for serial readiness`** | **DONE (PR #36).** Deliver Compose serial events only after each service emits the standard `THES:M:42` ready marker; include a runnable UART-input topology tutorial. | Arbitrary later input schedules or a new guest protocol. |
-| P8.4 | **`replay: verify Compose serial logs`** | **DONE (PR #37).** Record SHA-256 digests for every service serial log and reject a Compose replay when any rerun log differs from the original bundle. | Cross-version replay guarantees, non-serial service-state fingerprints, or partial-log comparison. |
-| P8.5 | **`replay: verify Compose fault application`** | **DONE (PR #38).** Record a per-service SHA-256 fingerprint of applied lifecycle and clock faults, then reject a replay if the applied sequence changes. | Cross-version replay guarantees, network or storage state fingerprints, or partial fault comparison. |
-| P8.6 | **`replay: verify Compose network topology`** | **DONE (PR #39).** Record the sorted simulated-switch port membership and reject a replay when the instantiated deterministic network topology changes. | Packet-level traffic fingerprints, storage state fingerprints, or cross-version replay guarantees. |
-| P8.7 | **`replay: verify Compose storage state`** | **DONE (PR #40).** Record every simulated drive's final SHA-256 digest and reject a replay when its guest-written storage bytes differ. | Packet-level traffic fingerprints, cross-version replay guarantees, or host-file-backed storage. |
-| P8.8 | **`replay: verify Compose network traffic`** | **DONE (PR #41).** Record deterministic per-service simulated-NIC TX/RX/drop counters, including planned restarts, and reject a replay when the traffic changes. | Packet payload capture, packet-by-packet traces, or cross-version replay guarantees. |
-| P8.9 | **`network: add deterministic frame delay`** | **DONE (PR #42).** Delay each simulated frame by a configured number of scheduler rounds, shared consistently by all services in a topology. | Wall-clock timers, packet reordering, bandwidth limits, or jitter. |
-| P8.10 | **`replay: verify Compose virtual time`** | **DONE (PR #43).** Record each service's final per-vCPU virtual-clock values and reject a replay when they differ. | Instruction-level clock virtualization, wall-clock behavior, or cross-version replay guarantees. |
-| P8.11 | **`network: add deterministic frame jitter`** | **DONE (PR #44).** Add a seeded, per-frame scheduler-round delay that can reorder simulated-network delivery without using host time. | Wall-clock timers, bandwidth limits, or random host scheduling. |
-| P8.12 | **`network: add deterministic bandwidth`** | **DONE (PR #45).** Limit each simulated NIC's outbound bytes per scheduler round with a deterministic transmit queue. | Host-time rate limiters, congestion control, or packet fragmentation. |
-| P8.13 | **`network: add deterministic frame duplication`** | **DONE (PR #46).** Duplicate selected simulated frames from a seeded per-frame stream, using the same bandwidth and delivery queue as their originals. | Packet corruption, protocol-aware faults, or host traffic. |
-| P8.14 | **`replay: fingerprint Compose network payloads`** | **DONE (PR #47).** Record length-delimited SHA-256 fingerprints of simulated NIC TX/RX frame streams and reject a replay when content changes at the same traffic volume. | Packet capture export, packet corruption, or cross-version replay guarantees. |
-| P8.15 | **`network: add deterministic frame corruption`** | **DONE (PR #48).** Select nonempty simulated frames from a seeded per-frame stream and flip one bit before link delivery, recording corruption counts in Compose replay traffic. | Packet capture export, protocol-aware faults, or host traffic. |
-| P8.16 | **`network: export deterministic Compose frame traces`** | **DONE (PR #49).** Record the first 64 TX/RX frames per simulated NIC, with scheduler round and payload hex, in each Compose service result. | PCAP compatibility, unbounded capture, or host traffic. |
-| P8.17 | **`network: add deterministic MTU drops`** | **DONE (PR #50).** Drop simulated frames larger than an explicit per-NIC MTU before they enter the link. | Fragmentation, PMTU discovery, or host traffic. |
-| P8.18 | **`network: bound deterministic transmit queues`** | **DONE (PR #51).** Drop simulated frames when an explicit per-NIC outbound queue limit is full. | TCP congestion control, packet fragmentation, or host traffic. |
-| P8.19 | **`network: trace deterministic drops`** | **DONE (PR #52).** Export bounded simulated-NIC drop frames with the reason they were discarded. | PCAP compatibility, unbounded capture, or host traffic. |
-| P8.20 | **`network: bound deterministic receive queues`** | **DONE (PR #53).** Drop simulated frames when an explicit per-NIC receive queue limit is full. | TCP congestion control, packet fragmentation, or host traffic. |
-| P9.0 | **`product: autonomous Compose campaigns`** | **DONE (PR #54).** `theseus compose explore` drives a designated service through UART operation barriers, combines bounded operation histories with lifecycle/clock fault candidates, evaluates `always`/`sometimes`/`reachable`/`unreachable` serial properties across retained topology timelines, reports marker novelty, and reduces an individual violation to one self-contained Compose replay bundle. Includes a three-service no-SDK tutorial. | Dynamic topology actions, whole-topology snapshots, instruction-exact time, or large-scale RL guidance. |
-| P9.1 | **`product: barrier-triggered topology faults`** | **DONE (PR #55).** Campaign candidates can `partition` or `heal` every simulated NIC on one named Compose network, or apply deterministic error/latency/torn-write/read-corruption settings to one simulated drive, immediately after a named UART operation checkpoint. Action history is retained in campaign results, static replay plans, minimization, and replay comparison; tutorial 10 uses both forms. | Directed-link rules, whole-topology snapshots, instruction-exact time, or large-scale RL guidance. |
-| P9.2 | **`product: directed Compose link faults`** | **DONE (PR #56).** Campaign candidates can `link_partition` or `link_heal` one source-to-destination service path on a named simulated network after an operation barrier. The switch drops only the selected direction, records `link_partition` frame traces, and carries action evidence through reports, minimization, and replay verification. | Fault sequences, whole-topology snapshots, packet-match rules, storage recovery actions, instruction-exact time, or large-scale RL guidance. |
-| P9.3 | **`product: bounded campaign fault sequences`** | **DONE (PR #57).** Campaigns combine compatible candidates in stable declaration order, up to `max_faults_per_run` (default 2; cap 4) and then apply `max_runs` to the complete corpus. Campaign results, reports, minimization, and legacy single-fault bundles all preserve or read the full sequence. | Copy-on-write whole-topology VM snapshots, unconstrained/coverage-guided sequence search, packet-match rules, storage recovery actions, instruction-exact time, or large-scale RL guidance. |
-| P9.4 | **`product: barrier-triggered packet conditions`** | **DONE (PR #58).** Campaign candidates can set selected simulated-network drop, delay, jitter, duplication, corruption, bandwidth, MTU, and queue conditions after a UART operation barrier, then restore each service's declared conditions with `network_recover`. Applied action history stays in campaign reports, minimization, and replay verification. | Packet-match rules, copy-on-write whole-topology VM snapshots, unconstrained/coverage-guided sequence search, storage recovery actions, instruction-exact time, or large-scale RL guidance. |
-| P9.5 | **`product: barrier-triggered storage recovery`** | **DONE (PR #59).** Campaign candidates can restore one simulated drive's declared error, latency, torn-write, and read-corruption settings with `storage_recover`, while retaining its guest-written bytes, queued work, and seeded I/O stream. Applied action history stays in campaign reports, minimization, and replay verification. | Packet-match rules, copy-on-write whole-topology VM snapshots, unconstrained/coverage-guided sequence search, instruction-exact time, or large-scale RL guidance. |
-| P9.6 | **`product: EtherType-matched campaign packet loss`** | **DONE (PR #60).** Campaign candidates can apply deterministic packet loss only to Ethernet frames matching one declared EtherType, then remove that rule with `packet_recover` without disturbing ordinary packet conditions, partitions, links, traffic evidence, queues, or seeded state. Actions stay in reports, minimization, and replay verification. | Directed packet-match rules, IP/TCP/payload filters, copy-on-write whole-topology VM snapshots, unconstrained/coverage-guided sequence search, instruction-exact time, or large-scale RL guidance. |
-| P9.7 | **`product: directed EtherType campaign packet loss`** | **DONE (PR #61).** `packet_fault` and `packet_recover` can target one source-to-destination service path with `from` and `to`. The switch gives every rule an independent seed-derived decision stream, records selected drops, and leaves other paths and packet rules intact. | IP/TCP/payload filters, copy-on-write whole-topology VM snapshots, unconstrained/coverage-guided sequence search, instruction-exact time, or large-scale RL guidance. |
-| P9.8 | **`product: IPv4 transport campaign packet loss`** | **DONE (PR #62).** Packet campaigns can match IPv4 protocol and TCP/UDP source or destination ports, with narrower selectors taking precedence over broad EtherType rules. | IPv6, payload filters, copy-on-write whole-topology VM snapshots, or coverage-guided sequence search. |
-| P9.9 | **`product: IPv6 transport campaign packet loss`** | **DONE (PR #63).** Packet campaigns apply the same protocol and TCP/UDP port selectors to IPv6 Ethernet frames, including directed rules and replay evidence. | IPv6 extension-header traversal, payload filters, copy-on-write whole-topology VM snapshots, or coverage-guided sequence search. |
-| P10.0 | **`campaigns: restore reusable whole-topology checkpoints`** | **DONE (PR #64).** Boot and quiesce the complete Compose topology once, snapshot every Firecracker VM to immutable `MAP_PRIVATE` memory files, and restore every campaign/minimization child from that shared branch point. Preserve VM state, serial transcript prefixes, scheduler cursors, simulated-block state, simulated-NIC queues/RNG/counters, and simulated-switch queues/rules/rounds; reattach restored NICs to fresh runner-owned switches before resuming. | Prefix-tree checkpointing after arbitrary operation barriers, UFFD-backed CoW memory, cross-host snapshot compatibility, or coverage-guided campaign selection. |
-| P10.1 | **`campaigns: checkpoint operation-prefix trees`** | **DONE (PR #65).** Materialize one whole-topology checkpoint after every distinct campaign operation/action prefix, then restore each schedule and minimization attempt from its nearest prefix node. Prefix keys include serial input and applied barrier actions, so faulted and unfaulted histories remain isolated. Report the tree's node and reuse counts while keeping every leaf replay bundle a normal self-contained event plan. | UFFD-backed CoW memory, cross-host snapshot compatibility, coverage-guided campaign selection, or prefix sharing across different lifecycle schedules. |
-| P10.2 | **`campaigns: guide selection by serial-marker coverage`** | **DONE (PR #66).** Generate the complete bounded corpus, execute a deterministic seed leaf, then prioritize untried schedules that extend prefixes producing new UART markers or failures. Keep stable breadth-first ordering for ties, retain every selection reason in campaign reports, and preserve the full generated-candidate count. | Topology-state coverage, guest-PC coverage, probabilistic/RL guidance, UFFD-backed CoW memory, or prefix sharing across different lifecycle schedules. |
-| P10.3 | **`campaigns: guide selection by topology-state coverage`** | **DONE (PR #67).** Add deterministic final-state signatures from simulated-drive digests, simulated-network traffic/payload fingerprints, and virtual clocks. Prioritize continuations that reach a previously unseen state even when UART markers are unchanged; keep serial and applied-fault evidence separate so routine output and declared faults do not create false novelty. Report state novelty per timeline and aggregate unique-state coverage. | Guest-PC coverage, probabilistic/RL guidance, UFFD-backed CoW memory, or prefix sharing across different lifecycle schedules. |
-| P10.4 | **`replay: lock adaptive campaign decisions`** | **DONE (PR #68).** Record the selected operation/fault corpus order, selection reasons, marker novelty, topology-state signatures, action evidence, and final status; campaign replay restores and executes that exact recorded corpus instead of re-searching. Reject a replay when any recorded decision or coverage outcome diverges, while retaining compatibility with older bundles that lack newer evidence fields. | Guest-PC coverage, probabilistic/RL guidance, UFFD-backed CoW memory, or prefix sharing across different lifecycle schedules. |
-| P10.5 | **`campaigns: minimize selected fault sequences`** | **DONE (PR #69).** After reducing a failing campaign's operation history, independently remove each selected fault while the same property still fails. Reuse the operation/action checkpoint tree for every attempt and record the original and minimized operation and fault sequences in the self-contained replay bundle. | General delta debugging, guest-PC coverage, probabilistic/RL guidance, UFFD-backed CoW memory, or prefix sharing across different lifecycle schedules. |
-| P10.6 | **`campaigns: delta-debug campaign sequences`** | **DONE (PR #70).** Use coarse-to-fine contiguous deletion passes for operation and fault sequences, preserving 1-minimal counterexamples while removing long irrelevant ranges in fewer replays. Record per-pass replay counts and render the reduction evidence in the offline report. | Generalized predicates, guest-PC coverage, probabilistic/RL guidance, UFFD-backed CoW memory, or prefix sharing across different lifecycle schedules. |
-| P10.7 | **`campaigns: explore bounded operation sequences`** | **DONE (PR #71).** Explore every ordered UART operation history, including repetitions, through an explicit bounded depth. Keep stable breadth-first generation, fault applicability, adaptive selection, exact replay, minimization, checkpoints, and reports working over the expanded corpus. | Generalized operation grammar, guest-PC coverage, probabilistic/RL guidance, UFFD-backed CoW memory, or prefix sharing across different lifecycle schedules. |
-| P10.8 | **`campaigns: constrain operation histories with preconditions`** | **DONE (PR #72).** Let operations require named earlier operations; reject unknown, duplicate, and cyclic requirements during Compose normalization, and generate only reachable histories while preserving deterministic breadth-first coverage, faults, replay, minimization, checkpoints, and reports. | Generalized operation grammar, data-dependent preconditions, guest-PC coverage, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.9 | **`campaigns: model operation state rules`** | **DONE (PR #73).** Operations can exclude named prior operations and cap their own use count. Compose validates declarative state rules and campaigns generate only histories satisfying requirements, exclusions, and bounds while preserving deterministic coverage, faults, replay, minimization, checkpoints, reports, and the self-contained tutorial. | Generalized operation grammar, marker/data-dependent guards, guest-PC coverage, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.10 | **`campaigns: guard operations on observed markers`** | **DONE (PR #74).** Operations can require or exclude markers actually emitted before their parent checkpoints. Theseus validates guards, restores and inspects exact prefix state before extending it, skips impossible leaves without campaign-run budget, locks selected histories for replay, and renders the dynamic model in reports and the self-contained tutorial. | Generalized operation grammar, guest-PC coverage, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.11 | **`campaigns: add checkpoint guest-PC state coverage`** | **DONE (PR #75).** Read every paused KVM vCPU program counter at each whole-topology checkpoint, fold that zero-instrumentation state into campaign novelty and replay fingerprints, and render per-service PC samples in reports. This is checkpoint-state coverage, not the existing slow single-step instruction coverage. | Generalized operation grammar, full instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.12 | **`campaigns: order operation histories by stages`** | **DONE (PR #76).** Operations can belong to named stages. Campaign histories may repeat operations or remain in a stage, but can never return to an earlier stage. Compose validates the declaration, candidate generation preserves the order, and reports render the stage model. | Generalized operation grammar, compound serial predicates, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.13 | **`campaigns: compose serial property predicates`** | **DONE (PR #77).** Campaign properties can require and forbid companion serial evidence. Theseus validates predicates, evaluates them within one service transcript for every selected timeline, and retains the full predicate through minimization and scoped replay checks. | Alternative serial evidence, general predicate expressions, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.14 | **`campaigns: admit alternative serial property evidence`** | **DONE (PR #78).** Campaign properties can require one of several serial markers alongside required and forbidden evidence. Theseus validates the declaration and preserves the full predicate in reports, minimization, replay checks, and the self-contained Compose tutorial. | Nested Boolean expressions, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.15 | **`campaigns: compose nested serial predicates`** | **DONE (PR #79).** Campaign properties accept recursive `all`, `any`, and `none` serial-predicate groups. Theseus normalizes and validates the expression tree, evaluates it per service transcript, and locks it into minimization, replay checks, and the self-contained Compose tutorial. | Regex or structured-event predicates, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.16 | **`campaigns: match serial predicates with regex`** | **DONE (PR #80).** Nested serial predicates accept validated Rust-regex leaves, evaluated against raw transcript bytes in campaigns, reports, minimization, and replay checks. The self-contained Compose tutorial demonstrates a regex leaf. | Structured-event predicates, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.17 | **`campaigns: match structured serial events`** | **DONE (PR #81).** JSON-lines predicate leaves require exact JSON-Pointer values on one complete serial event. Theseus validates pointers and preserves the predicates through campaigns, reports, minimization, replay checks, and the self-contained Compose tutorial. | Rich event schemas, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.18 | **`campaigns: query structured serial events`** | **DONE (PR #82).** JSON-lines leaves support validated JSON-Pointer equality, regex, numeric comparison, and presence queries with same-event semantics through campaigns, reports, minimization, replay checks, and the self-contained Compose tutorial. | Arrays/quantifiers, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.19 | **`campaigns: guard operations with structured serial evidence`** | **DONE (PR #83).** Operations can require or exclude a nested serial predicate against the driver’s restored transcript. Theseus validates, prunes prefix trees, preserves replay/minimization behavior, reports rejected guards, and demonstrates the feature in the self-contained Compose tutorial. | Cross-service event joins, temporal event sequences, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.20 | **`campaigns: join operation guards across service transcripts`** | **DONE (PR #84).** Operation serial guards can name any topology service while retaining driver-default compatibility. Theseus validates the service, evaluates its restored transcript during prefix pruning, preserves replay/minimization/reporting, and demonstrates an auditor join in the self-contained Compose tutorial. | Multi-service predicate conjunctions, temporal event sequences, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.21 | **`campaigns: compose cross-service operation guards`** | **DONE (PR #85).** Operations can require all of several serial guards or reject when any guard matches, including joins across restored service transcripts. Strict validation, checkpoint-prefix pruning, replay/minimization/reporting, and the self-contained Compose tutorial preserve the complete guard decision. | Temporal event sequences, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.22 | **`campaigns: require ordered serial-event sequences`** | **DONE (PR #86).** A direct `sequence` predicate matches serial text, regex, and JSON-lines leaves in transcript order. It is validated and retained by properties and operation guards through checkpoint pruning, replay/minimization/reporting, and the self-contained Compose tutorial. | Event quantifiers, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.23 | **`campaigns: quantify serial evidence`** | **DONE (PR #87).** An `occurs` predicate counts text, regex, or JSON-lines leaves with exact or bounded conditions. Validation and execution stay identical in properties and operation guards through checkpoint pruning, replay/minimization/reporting, and the self-contained Compose tutorial. | Cross-service properties, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.24 | **`campaigns: join multi-service property evidence`** | **DONE (PR #88).** Campaign properties can require all or any, and exclude any, service-scoped serial guards. Every service is validated and the evidence stays identical through results, minimization, replay, report detail, and the self-contained Compose tutorial. | Structured array queries, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.25 | **`campaigns: query structured event arrays`** | **DONE (PR #89).** JSON-lines serial predicates require that any, all, or none of the records at a JSON Pointer array match a nested JSON predicate. Strict recursive validation, property/guard evaluation, replay/minimization/reporting, and the self-contained Compose tutorial preserve the query. | Event correlation, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.26 | **`campaigns: correlate ordered JSON events`** | **DONE (PR #90).** JSON-lines sequence items capture a JSON Pointer value and require a later event pointer to equal that capture. Strict ordering and capture validation, backtracking sequence evaluation, property/guard behavior, replay/minimization/reporting, and the self-contained Compose tutorial preserve transaction correlation. | Cross-service event correlation, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.27 | **`campaigns: correlate structured events across services`** | **DONE (PR #91).** Campaign properties require a JSON Pointer value captured from one service event to equal a pointer in another service event. Strict endpoint/service/pointer validation, property evaluation, replay/minimization/reporting, and the self-contained Compose tutorial prove an API-to-auditor transaction join. | N-way event joins, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.28 | **`campaigns: join JSON events across service sets`** | **DONE (PR #92).** A property requires one JSON Pointer value to occur in every endpoint of an arbitrary service set. Strict endpoint-count/service/pointer validation, common-value semantics, replay/minimization/reporting, and the self-contained Compose tutorial join API, replica, and auditor transaction events. | Operation-level JSON joins, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.29 | **`campaigns: guard operations with JSON service joins`** | **DONE (PR #93).** Operations require or exclude a common JSON Pointer value across multiple restored service transcripts before expanding a candidate. Strict validation, prefix pruning, replay/minimization/reporting, and the self-contained Compose tutorial preserve the retry guard. | Composite JSON join keys, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.30 | **`campaigns: join structured events on composite keys`** | **DONE (PR #94).** JSON correlation and join endpoints require a shared tuple of JSON Pointer values, not just one value. Backward-compatible replay reads, strict pointer-set validation, property/operation join evaluation, reporting, and the self-contained Compose tutorial join request ID plus attempt. | Boolean cross-service evidence expressions, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.31 | **`campaigns: compose cross-service serial evidence`** | **DONE (PR #95).** Recursive `all`/`any`/`none` expressions combine service-scoped serial guards, JSON correlations, and composite JSON joins. Required and excluded expressions apply consistently to properties and operation checkpoint pruning; replay/minimization/reporting and the self-contained Compose flow preserve the complete tree. | Cross-service JSON value relations, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.32 | **`campaigns: relate structured event values`** | **DONE (PR #96).** JSON endpoint relations in serial-evidence trees support equality/inequality for scalar or composite keys and numeric ordering for scalar values. Property evaluation and operation checkpoint pruning share the same existential semantics, strict arity validation, reporting, and self-contained Compose tutorial. | Reusable named evidence, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.33 | **`campaigns: reuse named serial evidence`** | **DONE (PR #97).** Named recursive serial-evidence trees are defined once per campaign and expanded through `use: name` from properties, operation checkpoint guards, and nested definitions. Unknown and cyclic definitions are rejected before Theseus locks expanded self-contained replay plans. | Universal JSON joins, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.34 | **`campaigns: require every structured event join`** | **DONE (PR #98).** JSON joins accept `quantifier: every` so every key selected from the first endpoint must occur at every peer endpoint, while preserving `any` as the backward-compatible existential default. Properties, operation checkpoint pruning, reports, replay, and the self-contained Compose tutorial preserve the complete rule. | Cardinality-aware structured evidence, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.35 | **`campaigns: quantify structured evidence matches`** | **DONE (PR #99).** JSON joins and relations accept `occurs` bounds, and relations accept `quantifier: every`. Theseus counts distinct first/left endpoint values consistently in properties and operation checkpoint pruning, with normalized replay plans, reports, and the self-contained Compose tutorial preserving the rule. | Ordered structured evidence, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.36 | **`campaigns: order structured relation evidence`** | **DONE (PR #100).** JSON relations accept strict `order: before` and `order: after` within one serial transcript. Value comparison, quantifiers, cardinality, property evaluation, operation checkpoint pruning, reports, replay plans, and the self-contained Compose tutorial preserve the complete rule. | Keyed JSON event paths, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.37 | **`campaigns: require keyed JSON event paths`** | **DONE (PR #101).** `path` evidence requires one or every distinct key from a first JSON event through one or more ordered later events in one service transcript. Composite keys, cardinality, properties, operation checkpoint pruning, reports, replay plans, and the self-contained Compose tutorial preserve the rule. | Cross-service keyed workflows, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.38 | **`campaigns: require cross-service keyed workflows`** | **DONE (PR #102).** `workflow` evidence requires each key through ordered local stages at multiple explicitly named services, without claiming global ordering between independent serial transcripts. Cardinality, properties, operation checkpoint pruning, reports, replay plans, and the self-contained Compose tutorial preserve the complete rule. | Service-local workflow key mappings, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.39 | **`campaigns: map workflow keys across schemas`** | **DONE (PR #103).** Every workflow stage can override the JSON pointers used for its shared key while requiring equal tuple width. Local path ordering, cardinality, properties, operation checkpoint pruning, reports, replay plans, and the self-contained Compose tutorial preserve the mapping. | Operation input matrices, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.40 | **`campaigns: explore named operation input matrices`** | **DONE (PR #104).** One logical operation can declare named UART input cases. Theseus explores each case with stable breadth-first scheduling while keeping requirements, stages, use limits, fault barriers, checkpoint reuse, reports, minimization, and locked replay attached to the logical operation. | Case-aware operation transitions, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.41 | **`campaigns: constrain input-case transitions`** | **DONE (PR #105).** Named input cases can require or exclude a logical operation or one exact earlier case, and cap their own repetitions. Theseus validates references and unreachable case graphs while preserving stable scheduling, checkpoints, reports, minimization, locked replay, and the self-contained Compose tutorial. | Exact case fault barriers, generalized operation grammars, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.42 | **`campaigns: target faults at exact input cases`** | **DONE (PR #106).** Topology fault barriers can name a logical operation or one exact named input case. Fault applicability, action evidence, checkpoint reuse, reports, minimization, locked replay, legacy plans, and the self-contained Compose tutorial preserve the barrier identity. | Declarative campaign state machines, generalized operation grammars, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.43 | **`campaigns: model protocol state machines`** | **DONE (PR #107).** A campaign declares finite initial state; operations and input cases can require values and set new values. State keys are validated and survive deterministic scheduling, case specialization, fault barriers, checkpoints, reports, minimization, replay, and the self-contained Compose tutorial. | Finite input grammars, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.44 | **`campaigns: expand finite input grammars`** | **DONE (PR #108).** One logical operation declares a bounded product of named input choices, generating stable UART leaves that accept case rules. Exact replay bytes, scheduling, state transitions, fault barriers, reports, minimization, and the self-contained Compose tutorial retain both grammar source and concrete leaves. | Checkpoint-captured input values, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.45 | **`campaigns: render checkpoint-captured inputs`** | **DONE (PR #109).** An operation renders a UART input template from scalar JSON values in the latest matching restored serial event. Capture sources and placeholders validate; concrete per-run replay bytes, checkpoint reuse, reports, minimization, and the self-contained Compose tutorial preserve the result. | Captured values in finite input grammars, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.46 | **`campaigns: combine captured and grammar inputs`** | **DONE (PR #110).** Finite input grammars combine stable named choices with checkpoint-captured JSON values. Bounded case expansion, source validation, exact rendered replay bytes, state transitions, fault barriers, reports, minimization, and the self-contained Compose tutorial preserve both layers. | Typed captured-value encodings, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.47 | **`campaigns: encode captured input values`** | **DONE (PR #111).** Captured scalar values render as text, JSON literals, or hexadecimal text. The selected representation remains locked through checkpoint rendering, reports, replay, minimization, and the self-contained Compose tutorial. | Structured JSON input values, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.48 | **`campaigns: render structured JSON inputs`** | **DONE (PR #112).** JSON-encoded captures render complete arrays, objects, and null values while text and hex stay scalar-only. Deterministic checkpoint selection, rendered replay bytes, reports, minimization, and the self-contained Compose tutorial preserve the value. | Select a captured occurrence, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.49 | **`campaigns: select captured input occurrences`** | **DONE (PR #113).** Captured inputs explicitly select the first or latest matching restored event, with latest retained as the compatible default. Validation, rendered replay bytes, reports, minimization, and the self-contained Compose tutorial preserve the selection. | Composable JSON event predicates, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.50 | **`campaigns: compose JSON event predicates`** | **DONE (PR #114).** Every structured serial predicate, including captured inputs, combines same-event JSON branches with `all`, `any`, and `none`. Recursive validation, checkpoint input rendering, properties, operation guards, reports, replay, minimization, and the self-contained Compose tutorial preserve the expression. | Ordered captured-input transactions, arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.51 | **`campaigns: capture ordered JSON transactions`** | **DONE (PR #115).** Captured inputs select a value from the final JSON event of a correlated ordered sequence. Source validation, checkpoint rendering, reports, replay, minimization, and the self-contained Compose tutorial preserve the transaction. | Arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.52 | **`campaigns: capture cross-service workflows`** | **DONE (PR #116).** Captured inputs select a terminal value only when a keyed transaction completes ordered stages across named services. Source validation, checkpoint rendering, reports, replay, minimization, and the self-contained Compose tutorial preserve the workflow. | Arbitrary query languages, instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.53 | **`campaigns: query JSON events with JSONPath`** | **DONE (PR #117).** Every structured JSON event predicate can require an RFC 9535 JSONPath query to select a node from the same event. Strict source validation, properties, operation guards, captured inputs, reports, replay, minimization, and the self-contained Compose tutorial preserve the query. | Instruction coverage for live Compose guests, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P10.54 | **`campaigns: guide with live guest instruction locations`** | **DONE (PR #118).** Use deterministic paused-vCPU program-counter samples as per-service instruction-location coverage when selecting campaign extensions. Preserve selection reasons, replay verification, reports, and the self-contained Compose tutorial without claiming a full instruction trace. | Adaptive empirical guidance or UFFD-backed CoW memory. |
-| P10.55 | **`campaigns: adapt to observed operation yield`** | **DONE (PR #119).** Add an opt-in deterministic adaptive policy that combines prefix coverage with each operation case's observed marker, instruction-location, topology-state, and failure yield, plus a declining exploration bonus. Lock policy and exact reasons into reports and replay; demonstrate it in the self-contained Compose tutorial. | Full instruction traces, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P11.0 | **`release: verify runtime artifact layout`** | **DONE (PR #120).** Make the published runtime image copy Cargo's actual per-crate output paths and assert every required runtime executable before the image reaches its final stage, so architecture images and release bundles cannot fail later on a missing binary. | Build-cache reuse and release smoke tests against published images. |
-| P11.1 | **`release: smoke-test published runtime artifacts`** | **DONE (PR #121).** Execute the pushed architecture image's supported binary checks before packaging it, then inspect and checksum-verify each generated archive so releases prove their published container and fat-binary contents before the GitHub Release is created. | Build-cache reuse and a post-publish external consumer smoke test. |
-| P11.2 | **`release: select only distributable artifacts`** | **DONE (PR #122).** Download only architecture runtime archives and the macOS CLI archive into the release staging directory, excluding buildx's internal `.dockerbuild` records so manifest publication reaches SDK packaging and GitHub Release creation. | Post-publish external consumer smoke test. |
-| P11.3 | **`release: make archive checksums portable`** | **DONE (PR #123).** Generate Linux and macOS `SHA256SUMS` from inside each bundle so paths are valid after extraction, and keep the release's archive verification as a consumer would run it. | Post-publish external consumer smoke test. |
-| P11.4 | **`release: consume every published artifact`** | **DONE (PR #124).** Upload a top-level asset checksum manifest to a draft release, then use clean native consumers to pull the multi-architecture container, download each Linux and macOS archive from GitHub Releases, verify both layers of checksums, execute supported binaries, and compile a fresh application against the downloaded SDK crate before publishing it. | Release retention and provenance attestations. |
-| P11.5 | **`release: attest provenance at every consumer boundary`** | **DONE (PR #125).** Create signed GitHub/Sigstore provenance attestations for each architecture image, the multi-architecture manifest, and every release asset; make clean consumers verify the signer workflow and main-branch source ref before execution, so checksums alone never establish trust. | SBOMs and release retention policy. |
-| P11.6 | **`release: bootstrap the fresh SDK consumer`** | **DONE (PR #126).** Make the clean SDK-consumer workspace create its nested application source directory, so the release gate reaches actual package extraction, provenance verification, and compilation rather than failing during temporary-directory setup. | SBOMs and release retention policy. |
-| P11.7 | **`release: authenticate OCI provenance consumers`** | **DONE (PR #127).** Give every runtime consumer the workflow token before it verifies the bare multi-architecture image's provenance, rather than only before later GitHub Release downloads. | SBOMs and release retention policy. |
-| P11.8 | **`release: ship and verify SBOMs`** | **DONE (PR #128).** Generate SPDX SBOM assets for each native runtime image, the macOS CLI bundle, and the SDK crate; include them in the signed release set and make clean consumers checksum-, provenance-, and schema-verify the matching inventory before they execute its artifact. | Release retention policy. |
-| P11.9 | **`release: retain only verified deliverables`** | **DONE (PR #129).** Keep only one day of transient Actions archives, publish a draft only after its release assets exist, and delete that draft plus its tag whenever any clean consumer rejects it; public Releases remain the durable verified record. | Reproducible build caching. |
-| P11.10 | **`release: cache native runtime builds`** | **DONE (PR #130).** Reuse isolated GitHub Actions BuildKit caches for each native runtime architecture, export full dependency layers after successful builds, and tolerate cache-service outages without compromising publication. | Reproducible binary timestamps. |
-| P11.11 | **`release: normalize reproducible artifact timestamps`** | **DONE (PR #131).** Derive a release-wide source date from the signed commit; apply it to Rust, kernel, module, gzip, tar, and SDK packaging; pin the runtime kernel's upstream commit; and use one portable archive writer so Linux and macOS archives have ordered paths and normalized ownership. | Prove whole-image bit reproducibility. |
-| P11.12 | **`release: prove runtime image reproducibility`** | **DONE (PR #132).** Pin Docker frontends, multi-architecture base images, APT snapshots, and kernel source; set BuildKit's source date at export; and provide an on-demand no-cache dual rebuild that byte-compares OCI layouts on amd64 and arm64. | Release provenance transparency and independent reproduction. |
-| P11.13 | **`release: publish reproducible build inputs`** | **DONE (PR #133).** Ship a signed, checksummed JSON inventory of immutable runtime inputs and published image digests; make clean runtime consumers verify it; and document an independent no-cache OCI digest reproduction from a public SHA release. | External rebuild witnesses and broader source-dependency pinning. |
-| P11.14 | **`release: pin workflow action dependencies`** | **DONE (PR #134).** Resolve every CI, release, and reproducibility workflow action to an immutable Git commit and make CI reject mutable action references. | External rebuild witnesses and broader source-dependency pinning. |
-| P11.15 | **`release: attest independent rebuild witnesses`** | **DONE (PR #135).** Let an external GitHub repository verify the official signed input record, rebuild each native runtime twice without cache, compare it to the published digest, and sign a retained witness artifact. | Broader source-dependency pinning. |
-| P12.0 | **`report: hand deterministic failures to people and CI`** | **DONE (PR #136).** Render every locked single-timeline, exploration, topology, and autonomous-campaign result as an offline browser report, Markdown issue summary, stable machine JSON, or JUnit XML without re-running a VM. Preserve the exact replay recipe, property outcomes, minimization evidence, campaign choices, faults, and logs across formats; make files safe for CI artifacts and explain the complete handoff in the self-contained report tutorial. | GitHub issue creation, hosted result storage, source-aware instruction locations, full instruction traces, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P12.1 | **`campaigns: explain instruction-location coverage`** | **DONE (PR #137).** Resolve each deterministic paused-vCPU PC sample once from the service's bundle-local kernel ELF, retain its raw address as replay identity, verify rendered location evidence on replay, and show `address → function + offset` in browser, Markdown, and machine JSON reports. Preserve raw-address fallback for stripped/non-ELF/unmatched kernels. | Source lines, full instruction traces, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P12.2 | **`campaigns: point coverage at source`** | **DONE (PR #138).** Resolve campaign PC samples through bundle-local DWARF when it exists; preserve raw replay addresses, verify the source evidence on replay, and render `function + offset · file:line` in browser, Markdown, and machine JSON reports. Scrub absolute build paths and keep source-free fallback for stripped kernels. | Full instruction traces, probabilistic/RL guidance, or UFFD-backed CoW memory. |
-| P12.3 | **`campaigns: rank actions from evidence`** | **DONE (PR #139).** Add deterministic posterior guidance: use a Beta prior over each action's observed coverage/failure yield, prefer exact operation-context evidence with global fallback, preserve conservative exploration for weak evidence, record every estimate in the locked campaign result, replay-check it, and render it in browser, Markdown, and machine JSON reports. | Full instruction traces, RL guidance, or UFFD-backed CoW memory. |
-| P12.4 | **`campaigns: preserve operation-boundary timelines`** | **DONE (PR #141).** Record each campaign operation's paused checkpoint as compact evidence: operation-local topology actions, markers, paused-PC locations, symbol/source explanations, and per-service serial hashes. Derive deterministic deltas against the preceding checkpoint (new markers and changed serial/PC services), keep the serial logs and VM snapshots in the locked run directory, replay-check the exact timeline, and render it in browser, Markdown, and machine JSON reports without treating intermediate entries as new coverage. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.5 | **`campaigns: show serial evidence at operation boundaries`** | **DONE (PR #142).** Record a deterministic per-service serial-byte delta at every operation boundary, with an escaped bounded excerpt, byte count, and full-delta hash. Replay-check it and render it beside the existing checkpoint evidence, so people can see what changed without opening raw logs while every byte remains auditable in the locked bundle. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.6 | **`campaigns: show topology effects at operation boundaries`** | **DONE (PR #143).** Record per-service simulated-network counter deltas at every operation boundary. Replay-check and render TX, RX, drop, duplicate, and corruption effects beside serial and paused-PC evidence, so an operation's external topology effect is visible without reconstructing it from raw logs. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.7 | **`campaigns: identify every operation checkpoint`** | **DONE (PR #144).** Hash the complete compact checkpoint evidence at every operation boundary so a report row can be independently compared across deterministic replays without searching raw snapshots. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.8 | **`campaigns: show deterministic scheduler progress`** | **DONE (PR #145).** Record the scheduler round for every operation boundary and include it in the checkpoint identity and portable report, so timing progress remains explicit without relying on host wall time. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.9 | **`campaigns: show complete boundary state effects`** | **DONE (PR #146).** Capture storage fingerprints and virtual-clock state at every checkpoint; render changed drives and per-vCPU virtual-time deltas beside serial, instruction, and network evidence. Preserve all fields in the replay-checked boundary timeline. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.10 | **`campaigns: complete browser boundary evidence`** | **DONE (PR #147).** Render the scheduler round, changed storage, virtual-time delta, and checkpoint state hash in the offline browser report, matching the complete Markdown and machine-JSON timeline while retaining safe defaults for older result files. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.11 | **`campaigns: target declared property evidence`** | **DONE (PR #148).** Add deterministic property-directed campaign guidance: seed every operation, then prioritize actions whose earlier executions produced reachable/sometimes witnesses or always/unreachable counterexamples. Record witnesses per run, render them in portable reports, and replay-check the selection and evidence. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.12 | **`campaigns: drive multiple services`** | **DONE (PR #149).** Let each logical campaign operation target one declared service instead of forcing every UART input through the designated driver. Preserve service-owned checkpoints, default guards and captures, prefix reuse, minimization, locked replay, and portable reports. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.13 | **`campaigns: make operation targets auditable`** | **DONE (PR #150).** Record each operation's UART target in its replay-checked boundary evidence, render it inline in portable reports, retain compatibility with older bundles, and exercise a non-driver operation in the self-contained Compose tutorial. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.14 | **`campaigns: preserve delivered input evidence`** | **DONE (PR #151).** Record a bounded, escaped excerpt, byte count, and full hash of each operation's exact UART input beside its replay-checked target boundary. Render it in portable reports, retain older-bundle compatibility, and explain the direct delivery record in the self-contained Compose tutorial. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.15 | **`campaigns: prove UART operation delivery`** | **DONE (PR #152).** Record each operation's all-or-nothing UART acceptance, guest FIFO reads, queued bytes before and after, and awaited marker barrier beside its replay-checked boundary. Render the receipt in portable reports, retain older-bundle compatibility, and explain it in the self-contained Compose tutorial. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.16 | **`campaigns: prove UART barriers are causal`** | **DONE (PR #153).** Start every campaign barrier after its input is accepted, reject historical marker matches, and retain the exact post-input serial response through the matched marker. Replay-check and render the marker offset, bounded response, and hash in portable reports. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.17 | **`campaigns: drive UART barriers by topology rounds`** | **DONE (PR #154).** Advance every simulated NIC and switch through a bounded deterministic round budget while waiting for an operation response. Record the response round with the causal UART barrier, so network-dependent operations can reach their checkpoints without a host-time deadline. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.18 | **`topology: bound execution by scheduler rounds`** | **DONE (PR #155).** Let each service declare a bounded `max_rounds` execution budget and stop topology runs at the shared deterministic round limit rather than host elapsed time. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.19 | **`topology: retain scheduler budget evidence`** | **DONE (PR #156).** Record the final scheduler round and shared round budget in topology results, so a locked run proves whether it stopped naturally or at its deterministic execution limit. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.20 | **`topology: schedule campaign startup by rounds`** | **DONE (PR #158).** Drive simulated devices and networks through the shared deterministic round budget while waiting for campaign-driver readiness, then retain that startup round in the root checkpoint instead of using a host-time deadline. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.21 | **`topology: schedule event readiness by rounds`** | **DONE (PR #159).** Drive every service's initial UART readiness through the shared deterministic scheduler budget before injecting normal topology events, removing host-time polling from the regular topology path. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.22 | **`topology: schedule event barriers by rounds`** | **DONE (PR #160).** Advance simulated devices and networks through the shared round budget after every ordinary topology UART input until its checkpoint marker appears, removing the final host-time operation barrier path. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.23 | **`topology: schedule restart readiness by rounds`** | **DONE (PR #161).** Drive a replacement service's simulated devices and networks through its deterministic round budget before re-delivering its locked initial events, removing host-time polling from lifecycle restarts. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.24 | **`topology: schedule restart event barriers by rounds`** | **DONE (PR #162).** Re-deliver restart events through causal, post-input serial barriers driven by deterministic service and network rounds. Remove the last host-time serial polling path from normal topology execution. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.25 | **`topology: drive restart barriers across peers`** | **DONE (PR #163).** Advance the replacement service and every live peer through the same deterministic topology round while waiting for restart readiness and event barriers, so lifecycle progress can depend on simulated network responses. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.26 | **`topology: retain restart barrier evidence`** | **DONE (PR #164).** Record the deterministic topology rounds spent reaching a replacement's ready marker and replayed UART event barriers. Render that lifecycle evidence in portable reports and explain it in the autonomous Compose tutorial. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.27 | **`topology: share the restart barrier budget`** | **DONE (PR #165).** Spend each replacement service's deterministic round budget across readiness and every replayed UART barrier, rather than granting each barrier a fresh full allowance. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.28 | **`topology: retain lifecycle round totals`** | **DONE (PR #166).** Record the deterministic rounds spent inside lifecycle restart barriers in topology results and show that total beside the scheduler budget in portable reports. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.29 | **`topology: charge lifecycle work to the global budget`** | **DONE (PR #167).** Make restart readiness and replayed UART barriers consume the remaining topology-wide round budget, so lifecycle work cannot extend execution beyond the declared bound. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.30 | **`topology: replay-check lifecycle rounds`** | **DONE (PR #168).** Verify each replay's lifecycle barrier round total against the recorded topology result, so the global scheduling budget is durable replay evidence. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
-| P12.31 | **`topology: retain one global lifecycle replay check`** | **CURRENT PR.** Attach the topology-wide lifecycle-round replay check once, instead of duplicating the same global evidence on every service result. | Hardware instruction tracing, RL guidance, or UFFD-backed CoW memory. |
+**Exit criteria:** sibling topology leaves share immutable memory pages; branch
+isolation and replay are proven under multi-service network/storage faults;
+cache reclamation cannot invalidate a locked replay bundle.
 
-The manifest is an execution contract, not a second
-Firecracker configuration language. Keep its first version intentionally
-small, reject unknown fields, resolve every relative path from the manifest
-directory, and record a normalized form so the runner can execute exactly what
-the manifest validation accepted. The CLI consumes released Theseus runtime artifacts; it does
-not shell out to a source checkout.
+### P16 — usable execution coverage and search guidance
 
-## 4. Working agreements
+Replace checkpoint-PC sampling as the main coverage signal.
 
-- **License:** Apache-2.0 — fork freely; keep `NOTICE`/attribution; track upstream
-  as a remote for security fixes (shallow clone now → full fetch when hacking starts).
-- **Unsafe policy:** reuse existing iovec/queue/memory abstractions wherever
-  possible; new `unsafe` only where measured (guest-memory fast path, uffd CoW,
-  io_uring); every block documented (lint already enforces this).
-- **Dev platform reality:** **KVM is available**: Docker Desktop on Apple
-  Silicon exposes `/dev/kvm` (aarch64) in `--privileged` containers — the full
-  vmm suite (786 tests incl. tap/network/KVM) runs green natively. x86_64-only
-  paths (control channel, virtual time) cross-compile and run unit tests under
-  qemu-user; their KVM ioctls still need x86 metal.
-- **Scope discipline:** VMM changes minimal; exploration logic in the orchestrator
-  crate; no QEMU-style feature creep (Firecracker's charter is our ally).
+- Build a low-overhead coverage collector that can run with normal devices and
+  captures stable execution-location identities across a complete service
+  topology.
+- Validate it against the existing single-step collector on small guests.
+- Feed novelty into the corpus scheduler with deterministic tie breaks; retain
+  the complete choice evidence and replay-check it.
+- Add an evaluation workload where marker-only, checkpoint-PC, and execution
+  coverage select materially different histories.
 
-## 5. Key references
+**Exit criteria:** coverage works on practical campaign workloads without
+single stepping; its identity, corpus choice, and replay behavior are stable.
 
-- Antithesis deterministic-hypervisor design (bhyve fork, virtual clock via PMC,
-  VMCALL channel): antithesis.com/blog/deterministic_hypervisor/
-- dhyve — open-source deterministic bhyve fork: github.com/pgraug/dhyve-src
-- rust-vmm crates (if we ever need pieces Firecracker doesn't expose)
+### P17 — ordinary workload integration
+
+Make Theseus useful without a bespoke guest protocol.
+
+- Define a container/service driver contract that can wrap an existing
+  integration test, HTTP/gRPC client, or shell workload.
+- Keep serial/TTY as a supported low-level path, but provide first-class
+  readiness, operation, assertion, and correlation adapters for normal
+  services.
+- Package examples that require only released Theseus artifacts and their own
+  tutorial directory.
+
+**Exit criteria:** an unmodified multi-container integration workload can be
+run as a deterministic campaign with properties, faults, minimization, and
+replay.
+
+### P18 — multiverse debugging
+
+Turn a replay bundle into an investigation surface.
+
+- Add timeline/event queries across service logs, fault actions, topology
+  state, properties, and coverage.
+- Support comparing a failing leaf with a passing sibling and explain their
+  first causal divergence.
+- Retain all debugger input in the portable bundle; do not require a hosted
+  service to understand a failure.
+
+**Exit criteria:** a user can answer “what changed before this failure?” from a
+bundle without manually diffing serial logs or snapshots.
+
+### P19 — public capability evaluation
+
+Prove the platform on real distributed-system failures.
+
+- Maintain a small, versioned suite of public multi-service workloads and
+  seeded injected faults with expected properties.
+- Report replay rate, unique states/coverage, checkpoint work, reduction
+  quality, and investigation time. Compare against conventional chaos runs;
+  describe Antithesis differences without unsupported claims.
+
+**Exit criteria:** a reproducible public evaluation demonstrates bugs or
+failure modes that ordinary repeated integration tests miss.
+
+## Rules for future PRs
+
+- Work by capability tranche, not one field or one edge case per PR.
+- A product-facing change includes execution, locked replay evidence, report,
+  tutorial/example, and tests in the same PR.
+- Never use host wall time as a test oracle, scheduler input, or replay proof.
+  Host-time metrics are optional diagnostics and must be marked as such.
+- Preserve backwards reading of old replay bundles when safe; never silently
+  weaken verification of a newly written bundle.
+- Keep tutorials self-contained. Their directory is their working directory;
+  they may depend only on published Theseus binaries or images.

@@ -32,6 +32,8 @@ grep -a '"kind": "storage_fault"' theseus-compose-campaign/campaign-result.json
 grep -a '"faults": \[' theseus-compose-campaign/campaign-result.json
 grep -a '"marker_guard_rejections":' theseus-compose-campaign/campaign-result.json
 grep -a '"serial_guard_rejections":' theseus-compose-campaign/campaign-result.json
+grep -a '"checkpoint": {' theseus-compose-campaign/campaign-result.json
+grep -a '"guidance_ledger": {' theseus-compose-campaign/campaign-result.json
 grep -a '"operation": "replica_probe"' theseus-compose-campaign/campaign-result.json
 grep -a '"service": "replica"' theseus-compose-campaign/campaign-result.json
 if theseus compose explore --minimize theseus-compose-campaign --output stale-read-replay; then

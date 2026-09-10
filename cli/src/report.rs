@@ -301,6 +301,8 @@ struct CampaignResult {
     #[serde(default)]
     unique_instruction_locations: usize,
     #[serde(default)]
+    search: Option<CampaignSearchEvidence>,
+    #[serde(default)]
     replay_verification: Option<ReplayVerification>,
     #[serde(default)]
     runs: Vec<CampaignRun>,
@@ -320,6 +322,8 @@ struct CampaignRun {
     actions: Vec<CampaignAction>,
     #[serde(default)]
     selection: String,
+    #[serde(default)]
+    guidance_ledger: CampaignGuidanceLedger,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     guidance_evidence: Option<CampaignPosteriorEvidence>,
     #[serde(default)]
@@ -337,6 +341,44 @@ struct CampaignRun {
     status: String,
     #[serde(default)]
     novelty: Vec<String>,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+struct CampaignCheckpointEconomics {
+    #[serde(default)]
+    root_captures: usize,
+    #[serde(default)]
+    prefix_captures: usize,
+    #[serde(default)]
+    checkpoint_nodes: usize,
+    #[serde(default)]
+    prefix_reuses: usize,
+    #[serde(default)]
+    prefix_restores: usize,
+    #[serde(default)]
+    leaf_restores: usize,
+    #[serde(default)]
+    topology_restores: usize,
+    #[serde(default)]
+    avoided_prefix_recomputations: usize,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+struct CampaignSearchEvidence {
+    #[serde(default)]
+    checkpoint: CampaignCheckpointEconomics,
+    #[serde(default)]
+    guidance_observations: usize,
+    #[serde(default)]
+    guidance_sha256: String,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+struct CampaignGuidanceLedger {
+    #[serde(default)]
+    observations: usize,
+    #[serde(default)]
+    sha256: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -865,6 +907,22 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         "property" => "declared-property and coverage guidance",
         _ => "marker, instruction-location, and topology-state coverage",
     };
+    let checkpoint = result
+        .search
+        .as_ref()
+        .map(|search| &search.checkpoint)
+        .cloned()
+        .unwrap_or_else(|| CampaignCheckpointEconomics {
+            checkpoint_nodes: result.checkpoint_nodes,
+            prefix_reuses: result.checkpoint_reuses,
+            ..CampaignCheckpointEconomics::default()
+        });
+    let guidance_ledger = result.search.as_ref().map(|search| {
+        format!(
+            "; guidance ledger: {} observations, sha256 {}",
+            search.guidance_observations, search.guidance_sha256
+        )
+    });
     Ok(ReportModel {
         title: "Autonomous Compose campaign".to_owned(),
         kind: format!("deterministic topology search driven by {}", result.driver),
@@ -885,15 +943,22 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         coverage: Some(Coverage {
             label: "Campaign corpus".to_owned(),
             summary: format!(
-                "{} of {} deterministic candidates selected by {guidance}; {} marker-guard leaves and {} serial-guard leaves skipped; {} unique instruction locations; {} unique topology states; {} reusable checkpoint nodes, {} prefix reuses",
+                "{} of {} deterministic candidates selected by {guidance}; {} marker-guard leaves and {} serial-guard leaves skipped; {} unique instruction locations; {} unique topology states; {} root captures, {} reusable checkpoint nodes, {} prefix captures, {} prefix reuses ({} avoided recomputations), {} topology restores ({} prefix materializations + {} leaf replays){}",
                 result.runs.len(),
                 result.generated_candidates,
                 result.marker_guard_rejections,
                 result.serial_guard_rejections,
                 result.unique_instruction_locations,
                 result.unique_topology_states,
-                result.checkpoint_nodes,
-                result.checkpoint_reuses,
+                checkpoint.root_captures,
+                checkpoint.checkpoint_nodes,
+                checkpoint.prefix_captures,
+                checkpoint.prefix_reuses,
+                checkpoint.avoided_prefix_recomputations,
+                checkpoint.topology_restores,
+                checkpoint.prefix_restores,
+                checkpoint.leaf_restores,
+                guidance_ledger.unwrap_or_default(),
             ),
         }),
         minimization: None,
@@ -1022,7 +1087,7 @@ if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.sum
 if(Object.keys(m.campaign_state).length){{const s=section('Campaign state machine');s.append(el('pre',JSON.stringify(m.campaign_state)));const rows=[];m.campaign_operations.forEach(o=>{{if(Object.keys(o.requires_state).length||Object.keys(o.sets_state).length)rows.push([o.name,JSON.stringify(o.requires_state),JSON.stringify(o.sets_state)]);o.inputs.forEach(i=>{{if(Object.keys(i.requires_state).length||Object.keys(i.sets_state).length)rows.push([o.name+'['+i.name+']',JSON.stringify(i.requires_state),JSON.stringify(i.sets_state)]);}});}});if(rows.length)s.append(table(rows,['Transition','Requires state','Sets state']));}}
 if(m.campaign_operations.length){{const predicate=p=>p?JSON.stringify(p):'none',predicates=ps=>ps.length?JSON.stringify(ps):'none',ref=r=>r.operation+(r.input?'['+r.input+']':''),capture=(n,c)=>n+'@'+(c.service||'driver')+':'+c.pointer+' · '+JSON.stringify(c.json||c.workflow||{{sequence:c.sequence}})+' ('+(c.encoding||'text')+', '+(c.select||'latest')+')',input=i=>{{const rules=i.requires.length||i.excludes.length||i.max_uses!==null?' ('+[i.requires.length?'after '+i.requires.map(ref).join(' + '):'',i.excludes.length?'without '+i.excludes.map(ref).join(' + '):'',i.max_uses===null?'':'at most '+i.max_uses].filter(Boolean).join('; ')+')':'';const captures=i.input_template?' ← '+i.input_template+' · '+Object.entries(i.input_captures).map(([n,c])=>capture(n,c)).join(', '):'';return i.name+rules+captures}},grammar=o=>o.input_grammar?(o.input_grammar.name_template+' ← '+o.input_grammar.template+' · '+Object.entries(o.input_grammar.choices).map(([v,c])=>v+'='+Object.keys(c).join('/')).join(', ')+(Object.keys(o.input_grammar.input_captures).length?' · '+Object.entries(o.input_grammar.input_captures).map(([n,c])=>capture(n,c)).join(', '):'')):'literal cases',s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,grammar(o),o.inputs.map(input).join(' + ')||'default',o.stage||'any',o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',predicate(o.requires_serial),predicate(o.excludes_serial),predicates(o.requires_serial_all),predicates(o.excludes_serial_any),predicates(o.requires_serial_joins),predicates(o.excludes_serial_joins),predicate(o.requires_serial_evidence),predicate(o.excludes_serial_evidence),o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Input grammar','Input cases','Stage','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Requires serial predicate','Excludes serial predicate','Requires all serial guards','Excludes any serial guard','Requires JSON joins','Excludes JSON joins','Requires serial evidence','Excludes serial evidence','Maximum uses']));}}
 if(m.campaign_operations.some(o=>o.service)){{const s=section('Operation targets');s.append(el('p','Each operation sends its UART input to this service. Operations without a target in older bundles use the designated campaign driver.'));s.append(table(m.campaign_operations.filter(o=>o.service).map(o=>[o.name,o.service]),['Operation','Service']));}}
-if(m.campaign_runs.length){{const location=l=>{{if(typeof l==='string')return l;const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},locations=r=>Object.entries(r.program_counters).map(([service,pcs])=>service+': '+((r.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',posterior=r=>{{const p=r.guidance_evidence;return p.scope+' · '+p.successes+' yield(s), '+p.misses+' miss(es) · mean '+p.mean_per_mille+'‰ + '+p.uncertainty_per_mille+'‰'}},hasPosterior=m.campaign_runs.some(r=>r.guidance_evidence),rows=m.campaign_runs.map(r=>{{const row=[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed'];if(hasPosterior)row.push(posterior(r));row.push(r.state_novel?'new':'seen',locations(r),r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none');return row}}),heads=['Run','Operations','Candidates','Selection'];if(hasPosterior)heads.push('Posterior evidence');heads.push('Topology state','Instruction locations','Applied actions','Status','New markers');const s=section('Generated timelines');s.append(table(rows,heads));}}
+if(m.campaign_runs.length){{const location=l=>{{if(typeof l==='string')return l;const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},locations=r=>Object.entries(r.program_counters).map(([service,pcs])=>service+': '+((r.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',ledger=r=>r.guidance_ledger&&r.guidance_ledger.sha256?r.guidance_ledger.observations+' observations · '+r.guidance_ledger.sha256:'unrecorded (legacy)',posterior=r=>{{const p=r.guidance_evidence;return p.scope+' · '+p.successes+' yield(s), '+p.misses+' miss(es) · mean '+p.mean_per_mille+'‰ + '+p.uncertainty_per_mille+'‰'}},hasPosterior=m.campaign_runs.some(r=>r.guidance_evidence),rows=m.campaign_runs.map(r=>{{const row=[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',ledger(r)];if(hasPosterior)row.push(posterior(r));row.push(r.state_novel?'new':'seen',locations(r),r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none');return row}}),heads=['Run','Operations','Candidates','Selection','Guidance ledger'];if(hasPosterior)heads.push('Posterior evidence');heads.push('Topology state','Instruction locations','Applied actions','Status','New markers');const s=section('Generated timelines');s.append(table(rows,heads));}}
 if(m.campaign_runs.some(r=>r.property_witnesses.length)){{const rows=m.campaign_runs.filter(r=>r.property_witnesses.length).map(r=>[String(r.index),r.operations.join(' → ')||'none',r.property_witnesses.join(', ')]),s=section('Property witnesses');s.append(el('p','These declared properties produced useful evidence in this timeline. A reachable or sometimes match is a witness; an always or unreachable witness is a counterexample.'));s.append(table(rows,['Run','Operations','Property witnesses']));}}
 if(m.campaign_runs.some(r=>r.timeline.length)){{
 const location=l=>{{const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},
@@ -1739,7 +1804,7 @@ mod tests {
         );
         write_json(
             &directory.path().join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","guidance":"posterior","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"marker_guard_rejections":2,"serial_guard_rejections":1,"unique_topology_states":3,"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","guidance_evidence":{"action":"read","context":["write"],"scope":"exact context","successes":2,"misses":1,"mean_per_mille":600,"uncertainty_per_mille":100,"score":44800},"timeline":[{"operation":"write","round":7,"markers":["42"],"new_markers":["42"],"changed_program_counters":["api"],"changed_serial":["api"],"program_counters":{"api":["0x7000"]},"instruction_locations":{"api":[{"address":"0x7000","symbol":"write","offset":0}]},"actions":[{"kind":"partition","target":"network:backplane"}],"serial_sha256":{"api":"abc123"},"serial_delta":{"api":{"bytes":16,"sha256":"write-hash","excerpt":"write\\ncomplete\\n","omitted_bytes":0}},"network_traffic_delta":{"api":{"backplane":{"tx_frames":2,"rx_frames":1,"dropped":1,"duplicated":0,"corrupted":0}}},"changed_storage":["api:data"],"virtual_time_delta_ns":{"api":[1000]},"state_sha256":"boundary-write"},{"operation":"read","service":"worker","input":{"bytes":5,"sha256":"input-hash","excerpt":"read\\n","omitted_bytes":0},"delivery":{"recorded":true,"accepted_bytes":5,"pending_before":1,"pending_after":0,"guest_read_bytes":6,"checkpoint":"THES:M:read"},"barrier":{"recorded":true,"checkpoint":"THES:M:read","marker_offset":6,"response":{"bytes":17,"sha256":"barrier-hash","excerpt":"reply THES:M:read","omitted_bytes":0}},"round":9,"markers":["42","a1"],"new_markers":["a1"],"changed_program_counters":["api"],"changed_serial":["api"],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"serial_sha256":{"api":"def456"},"serial_delta":{"api":{"bytes":11,"sha256":"read-hash","excerpt":"read\\nready\\n","omitted_bytes":0}},"network_traffic_delta":{"api":{"backplane":{"tx_frames":0,"rx_frames":2,"dropped":0,"duplicated":1,"corrupted":0}}},"changed_storage":[],"virtual_time_delta_ns":{"api":[2000,3000]},"state_sha256":"boundary-read"}],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","guidance":"posterior","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"marker_guard_rejections":2,"serial_guard_rejections":1,"unique_topology_states":3,"search":{"checkpoint":{"root_captures":1,"prefix_captures":3,"checkpoint_nodes":4,"prefix_reuses":7,"prefix_restores":3,"leaf_restores":1,"topology_restores":4,"avoided_prefix_recomputations":7},"guidance_observations":1,"guidance_sha256":"ledger-hash"},"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","guidance_ledger":{"observations":1,"sha256":"ledger-hash"},"guidance_evidence":{"action":"read","context":["write"],"scope":"exact context","successes":2,"misses":1,"mean_per_mille":600,"uncertainty_per_mille":100,"score":44800},"timeline":[{"operation":"write","round":7,"markers":["42"],"new_markers":["42"],"changed_program_counters":["api"],"changed_serial":["api"],"program_counters":{"api":["0x7000"]},"instruction_locations":{"api":[{"address":"0x7000","symbol":"write","offset":0}]},"actions":[{"kind":"partition","target":"network:backplane"}],"serial_sha256":{"api":"abc123"},"serial_delta":{"api":{"bytes":16,"sha256":"write-hash","excerpt":"write\\ncomplete\\n","omitted_bytes":0}},"network_traffic_delta":{"api":{"backplane":{"tx_frames":2,"rx_frames":1,"dropped":1,"duplicated":0,"corrupted":0}}},"changed_storage":["api:data"],"virtual_time_delta_ns":{"api":[1000]},"state_sha256":"boundary-write"},{"operation":"read","service":"worker","input":{"bytes":5,"sha256":"input-hash","excerpt":"read\\n","omitted_bytes":0},"delivery":{"recorded":true,"accepted_bytes":5,"pending_before":1,"pending_after":0,"guest_read_bytes":6,"checkpoint":"THES:M:read"},"barrier":{"recorded":true,"checkpoint":"THES:M:read","marker_offset":6,"response":{"bytes":17,"sha256":"barrier-hash","excerpt":"reply THES:M:read","omitted_bytes":0}},"round":9,"markers":["42","a1"],"new_markers":["a1"],"changed_program_counters":["api"],"changed_serial":["api"],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"serial_sha256":{"api":"def456"},"serial_delta":{"api":{"bytes":11,"sha256":"read-hash","excerpt":"read\\nready\\n","omitted_bytes":0}},"network_traffic_delta":{"api":{"backplane":{"tx_frames":0,"rx_frames":2,"dropped":0,"duplicated":1,"corrupted":0}}},"changed_storage":[],"virtual_time_delta_ns":{"api":[2000,3000]},"state_sha256":"boundary-read"}],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
         );
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
@@ -1751,7 +1816,9 @@ mod tests {
         assert!(html.contains("Applied actions"));
         assert!(html.contains("network:backplane"));
         assert!(html.contains("consistent_read"));
-        assert!(html.contains("4 reusable checkpoint nodes, 7 prefix reuses"));
+        assert!(html.contains(
+            "1 root captures, 4 reusable checkpoint nodes, 3 prefix captures, 7 prefix reuses (7 avoided recomputations), 4 topology restores (3 prefix materializations + 1 leaf replays); guidance ledger: 1 observations, sha256 ledger-hash"
+        ));
         assert!(html.contains(
             "1 of 12 deterministic candidates selected by posterior coverage and action-yield guidance"
         ));
@@ -1761,6 +1828,10 @@ mod tests {
             html.contains("extends 1-operation prefix with 2 new marker(s) and new topology state")
         );
         assert!(html.contains("Topology state"));
+        assert!(html.contains("Guidance ledger"));
+        assert!(
+            html.contains("\"guidance_ledger\":{\"observations\":1,\"sha256\":\"ledger-hash\"}")
+        );
         assert!(html.contains("Instruction locations"));
         assert!(html.contains("Operation boundaries"));
         assert!(html.contains("Target"));

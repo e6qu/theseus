@@ -255,9 +255,19 @@ result is one ordinary Compose replay bundle. For a compound property, Theseus
 re-evaluates the complete predicate against its locked serial transcript after
 every reduction attempt and in the final bundle.
 
-The campaign report shows checkpoint-node and prefix-reuse counts. They are
-execution details only: each run's `replay-plan.json` still contains the full
-operation history and replays independently.
+The campaign report shows the **checkpoint economics** for the entire search:
+one root capture, unique prefix captures, prefix reuse, and the logical
+topology restores spent materializing prefixes and replaying leaves. The
+`avoided_prefix_recomputations` count is the work skipped because schedules
+shared a captured history. These are deterministic work counters, not host
+timings, so they replay on any supported machine.
+
+Each generated timeline also carries a **guidance ledger**: the number and
+SHA-256 of completed observations that the scheduler saw before selecting that
+timeline. This makes the selection auditable without embedding every earlier
+observation repeatedly. Replaying a new bundle verifies both each ledger and
+the final search-wide economics. Each run's `replay-plan.json` still contains
+the full operation history and replays independently.
 
 The report shows the operation model, including earlier-operation rules and
 observed-marker and serial guards. It also counts both kinds of guard leaf skipped before a
