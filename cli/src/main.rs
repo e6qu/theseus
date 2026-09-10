@@ -6,9 +6,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use theseus_cli::{
-    explore, explore_compose, load_compose_plan, load_plan, minimize_compose_campaign,
-    minimize_exploration_path, replay, replay_compose, replay_exploration, replay_exploration_path,
-    report, report_file, report_text, snapshot_exploration_path, test, test_compose, ReportFormat,
+    compare_campaigns, explore, explore_compose, load_compose_plan, load_plan,
+    minimize_compose_campaign, minimize_exploration_path, replay, replay_compose,
+    replay_exploration, replay_exploration_path, report, report_file, report_text,
+    snapshot_exploration_path, test, test_compose, ReportFormat,
 };
 
 const USAGE: &str = "Usage:
@@ -22,6 +23,7 @@ const USAGE: &str = "Usage:
   theseus explore --snapshot exploration-dir --seed-path seed,... [--output snapshot-dir]
   theseus report [--output report-dir] result-dir
   theseus report --format markdown|json|junit [--output file] result-dir
+  theseus compare left-campaign-dir right-campaign-dir
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
@@ -137,6 +139,15 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let index =
                 report(&input, input.join("theseus-report")).map_err(|error| error.to_string())?;
             println!("report: {}", index.display());
+            Ok(())
+        }
+        [command, left, right] if command == "compare" => {
+            let comparison = compare_campaigns(left, right).map_err(|error| error.to_string())?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&comparison)
+                    .map_err(|error| format!("cannot encode comparison: {error}"))?
+            );
             Ok(())
         }
         [command, minimize, bundle, path_flag, path, output_flag, output]

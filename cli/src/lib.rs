@@ -6,12 +6,14 @@
 //! P6.1 deliberately stops at validation and planning. The returned run plan
 //! is what the executor and replay bundle will consume in P6.2.
 
+mod compare;
 mod compose;
 mod explore;
 mod manifest;
 mod report;
 mod runner;
 
+pub use compare::{compare_campaigns, CampaignComparison, CompareError};
 pub use compose::{
     explore_compose, load_compose_plan, minimize_compose_campaign, replay_compose, test_compose,
     ComposeError, ComposePlan,
