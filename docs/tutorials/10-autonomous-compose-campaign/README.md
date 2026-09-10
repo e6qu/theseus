@@ -244,9 +244,11 @@ theseus compose replay stale-read-replay --output stale-read-rerun
 ```
 
 Theseus boots the complete topology once, then restores every candidate and
-every minimization attempt from that same checkpoint. Theseus also snapshots
-each distinct operation prefix after its UART barrier. Schedules that share a
-prefix restore that node instead of re-running its earlier operations. The
+every minimization attempt from that same checkpoint. Theseus also captures
+each distinct operation prefix after its UART barrier in an in-memory branch.
+Schedules that share a prefix restore that node instead of re-running its
+earlier operations. Linux shares its clean guest-memory pages and copies only
+pages a child writes. The
 reducer removes large contiguous chunks first, then narrows to individual
 operations and selected topology faults while the same property still fails.
 `minimization.json` records both sequences and the replay attempts used for
@@ -256,11 +258,11 @@ re-evaluates the complete predicate against its locked serial transcript after
 every reduction attempt and in the final bundle.
 
 The campaign report shows the **checkpoint economics** for the entire search:
-one root capture, unique prefix captures, prefix reuse, and the logical
-topology restores spent materializing prefixes and replaying leaves. The
-`avoided_prefix_recomputations` count is the work skipped because schedules
-shared a captured history. These are deterministic work counters, not host
-timings, so they replay on any supported machine.
+root and prefix captures, prefix reuse, logical topology restores, retained
+immutable memory, logical COW-mapped bytes, dirty pages at capture barriers,
+and zero snapshot-file bytes. `avoided_prefix_recomputations` is the work
+skipped because schedules shared a captured history. These are deterministic
+work counters, not host timings, so they replay on any supported machine.
 
 Each generated timeline also carries a **guidance ledger**: the number and
 SHA-256 of completed observations that the scheduler saw before selecting that

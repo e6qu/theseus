@@ -361,6 +361,14 @@ struct CampaignCheckpointEconomics {
     topology_restores: usize,
     #[serde(default)]
     avoided_prefix_recomputations: usize,
+    #[serde(default)]
+    retained_memory_bytes: u64,
+    #[serde(default)]
+    shared_cow_restore_bytes: u64,
+    #[serde(default)]
+    private_dirty_pages: u64,
+    #[serde(default)]
+    snapshot_file_bytes: u64,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -943,7 +951,7 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         coverage: Some(Coverage {
             label: "Campaign corpus".to_owned(),
             summary: format!(
-                "{} of {} deterministic candidates selected by {guidance}; {} marker-guard leaves and {} serial-guard leaves skipped; {} unique instruction locations; {} unique topology states; {} root captures, {} reusable checkpoint nodes, {} prefix captures, {} prefix reuses ({} avoided recomputations), {} topology restores ({} prefix materializations + {} leaf replays){}",
+                "{} of {} deterministic candidates selected by {guidance}; {} marker-guard leaves and {} serial-guard leaves skipped; {} unique instruction locations; {} unique topology states; {} root captures, {} reusable checkpoint nodes, {} prefix captures, {} prefix reuses ({} avoided recomputations), {} topology restores ({} prefix materializations + {} leaf replays); {} retained immutable bytes, {} logical COW-mapped restore bytes, {} dirty pages at capture barriers, {} snapshot-file bytes{}",
                 result.runs.len(),
                 result.generated_candidates,
                 result.marker_guard_rejections,
@@ -958,6 +966,10 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
                 checkpoint.topology_restores,
                 checkpoint.prefix_restores,
                 checkpoint.leaf_restores,
+                checkpoint.retained_memory_bytes,
+                checkpoint.shared_cow_restore_bytes,
+                checkpoint.private_dirty_pages,
+                checkpoint.snapshot_file_bytes,
                 guidance_ledger.unwrap_or_default(),
             ),
         }),
@@ -1804,7 +1816,7 @@ mod tests {
         );
         write_json(
             &directory.path().join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","guidance":"posterior","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"marker_guard_rejections":2,"serial_guard_rejections":1,"unique_topology_states":3,"search":{"checkpoint":{"root_captures":1,"prefix_captures":3,"checkpoint_nodes":4,"prefix_reuses":7,"prefix_restores":3,"leaf_restores":1,"topology_restores":4,"avoided_prefix_recomputations":7},"guidance_observations":1,"guidance_sha256":"ledger-hash"},"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","guidance_ledger":{"observations":1,"sha256":"ledger-hash"},"guidance_evidence":{"action":"read","context":["write"],"scope":"exact context","successes":2,"misses":1,"mean_per_mille":600,"uncertainty_per_mille":100,"score":44800},"timeline":[{"operation":"write","round":7,"markers":["42"],"new_markers":["42"],"changed_program_counters":["api"],"changed_serial":["api"],"program_counters":{"api":["0x7000"]},"instruction_locations":{"api":[{"address":"0x7000","symbol":"write","offset":0}]},"actions":[{"kind":"partition","target":"network:backplane"}],"serial_sha256":{"api":"abc123"},"serial_delta":{"api":{"bytes":16,"sha256":"write-hash","excerpt":"write\\ncomplete\\n","omitted_bytes":0}},"network_traffic_delta":{"api":{"backplane":{"tx_frames":2,"rx_frames":1,"dropped":1,"duplicated":0,"corrupted":0}}},"changed_storage":["api:data"],"virtual_time_delta_ns":{"api":[1000]},"state_sha256":"boundary-write"},{"operation":"read","service":"worker","input":{"bytes":5,"sha256":"input-hash","excerpt":"read\\n","omitted_bytes":0},"delivery":{"recorded":true,"accepted_bytes":5,"pending_before":1,"pending_after":0,"guest_read_bytes":6,"checkpoint":"THES:M:read"},"barrier":{"recorded":true,"checkpoint":"THES:M:read","marker_offset":6,"response":{"bytes":17,"sha256":"barrier-hash","excerpt":"reply THES:M:read","omitted_bytes":0}},"round":9,"markers":["42","a1"],"new_markers":["a1"],"changed_program_counters":["api"],"changed_serial":["api"],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"serial_sha256":{"api":"def456"},"serial_delta":{"api":{"bytes":11,"sha256":"read-hash","excerpt":"read\\nready\\n","omitted_bytes":0}},"network_traffic_delta":{"api":{"backplane":{"tx_frames":0,"rx_frames":2,"dropped":0,"duplicated":1,"corrupted":0}}},"changed_storage":[],"virtual_time_delta_ns":{"api":[2000,3000]},"state_sha256":"boundary-read"}],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"api","guidance":"posterior","checkpoint_nodes":4,"checkpoint_reuses":7,"generated_candidates":12,"marker_guard_rejections":2,"serial_guard_rejections":1,"unique_topology_states":3,"search":{"checkpoint":{"root_captures":1,"prefix_captures":3,"checkpoint_nodes":4,"prefix_reuses":7,"prefix_restores":3,"leaf_restores":1,"topology_restores":4,"avoided_prefix_recomputations":7,"retained_memory_bytes":1048576,"shared_cow_restore_bytes":4194304,"private_dirty_pages":12,"snapshot_file_bytes":0},"guidance_observations":1,"guidance_sha256":"ledger-hash"},"replay_verification":{"status":"passed","detail":"1 recorded campaign timelines reproduced"},"runs":[{"index":0,"operations":["write","read"],"faults":["backplane:partition@write","backplane:heal@read"],"selection":"extends 1-operation prefix with 2 new marker(s) and new topology state","guidance_ledger":{"observations":1,"sha256":"ledger-hash"},"guidance_evidence":{"action":"read","context":["write"],"scope":"exact context","successes":2,"misses":1,"mean_per_mille":600,"uncertainty_per_mille":100,"score":44800},"timeline":[{"operation":"write","round":7,"markers":["42"],"new_markers":["42"],"changed_program_counters":["api"],"changed_serial":["api"],"program_counters":{"api":["0x7000"]},"instruction_locations":{"api":[{"address":"0x7000","symbol":"write","offset":0}]},"actions":[{"kind":"partition","target":"network:backplane"}],"serial_sha256":{"api":"abc123"},"serial_delta":{"api":{"bytes":16,"sha256":"write-hash","excerpt":"write\\ncomplete\\n","omitted_bytes":0}},"network_traffic_delta":{"api":{"backplane":{"tx_frames":2,"rx_frames":1,"dropped":1,"duplicated":0,"corrupted":0}}},"changed_storage":["api:data"],"virtual_time_delta_ns":{"api":[1000]},"state_sha256":"boundary-write"},{"operation":"read","service":"worker","input":{"bytes":5,"sha256":"input-hash","excerpt":"read\\n","omitted_bytes":0},"delivery":{"recorded":true,"accepted_bytes":5,"pending_before":1,"pending_after":0,"guest_read_bytes":6,"checkpoint":"THES:M:read"},"barrier":{"recorded":true,"checkpoint":"THES:M:read","marker_offset":6,"response":{"bytes":17,"sha256":"barrier-hash","excerpt":"reply THES:M:read","omitted_bytes":0}},"round":9,"markers":["42","a1"],"new_markers":["a1"],"changed_program_counters":["api"],"changed_serial":["api"],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"serial_sha256":{"api":"def456"},"serial_delta":{"api":{"bytes":11,"sha256":"read-hash","excerpt":"read\\nready\\n","omitted_bytes":0}},"network_traffic_delta":{"api":{"backplane":{"tx_frames":0,"rx_frames":2,"dropped":0,"duplicated":1,"corrupted":0}}},"changed_storage":[],"virtual_time_delta_ns":{"api":[2000,3000]},"state_sha256":"boundary-read"}],"program_counters":{"api":["0x8000"]},"instruction_locations":{"api":[{"address":"0x8000","symbol":"checkpoint","offset":7,"source":{"file":"kernel/init/main.c","line":812,"column":4}}]},"state_novel":true,"actions":[{"kind":"partition","target":"network:backplane"}],"status":"failed","novelty":["42","a1"]}],"properties":[{"name":"consistent_read","kind":"always","status":"failed","detail":"0 of 1 retained timelines contained \"pass\""}]}"#,
         );
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
@@ -1817,7 +1829,7 @@ mod tests {
         assert!(html.contains("network:backplane"));
         assert!(html.contains("consistent_read"));
         assert!(html.contains(
-            "1 root captures, 4 reusable checkpoint nodes, 3 prefix captures, 7 prefix reuses (7 avoided recomputations), 4 topology restores (3 prefix materializations + 1 leaf replays); guidance ledger: 1 observations, sha256 ledger-hash"
+            "1 root captures, 4 reusable checkpoint nodes, 3 prefix captures, 7 prefix reuses (7 avoided recomputations), 4 topology restores (3 prefix materializations + 1 leaf replays); 1048576 retained immutable bytes, 4194304 logical COW-mapped restore bytes, 12 dirty pages at capture barriers, 0 snapshot-file bytes; guidance ledger: 1 observations, sha256 ledger-hash"
         ));
         assert!(html.contains(
             "1 of 12 deterministic candidates selected by posterior coverage and action-yield guidance"

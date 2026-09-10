@@ -21,13 +21,14 @@ use serde::{Deserialize, Serialize};
 use serde_json_path::JsonPath;
 use sha2::{Digest, Sha256};
 use theseus_engine::simnet::{SharedSimSwitch, SimSwitch, SimSwitchState};
+use theseus_orchestrator::branch::BranchPoint;
 use vmm::builder::build_microvm_for_boot;
 use vmm::devices::virtio::block::device::Block;
 use vmm::devices::virtio::block::virtio::device::SimulatedBlockConfig;
 use vmm::devices::virtio::net::{
     Net, SimNetConfig, SimNetDropReason, SimNetFrameDirection, SimNetPacketSelector, SimNetState,
 };
-use vmm::persist::{create_snapshot, restore_from_snapshot, VmInfo};
+use vmm::persist::{restore_from_microvm_state, VmInfo};
 use vmm::rate_limiter::RateLimiter;
 use vmm::resources::VmResources;
 use vmm::seccomp::get_empty_filters;
@@ -36,8 +37,7 @@ use vmm::vmm_config::entropy::EntropyDeviceConfig;
 use vmm::vmm_config::instance_info::InstanceInfo;
 use vmm::vmm_config::machine_config::{MachineConfigUpdate, VirtualTimeConfig};
 use vmm::vmm_config::snapshot::{
-    CreateSnapshotParams, LoadSnapshotParams, MemBackendConfig, MemBackendType,
-    SnapshotLoadHugePageConfig, SnapshotType,
+    LoadSnapshotParams, MemBackendConfig, MemBackendType, SnapshotLoadHugePageConfig,
 };
 use vmm::{EventManager, FcExitCode, Vmm};
 
@@ -796,6 +796,18 @@ struct CampaignCheckpointEconomics {
     leaf_restores: usize,
     topology_restores: usize,
     avoided_prefix_recomputations: usize,
+    /// Immutable memfds retained for this campaign. These bytes replace
+    /// per-checkpoint `memory.snap` files and are released with the tree.
+    retained_memory_bytes: u64,
+    /// Logical bytes mapped from immutable memfds by prefix and leaf restores.
+    /// Linux MAP_PRIVATE shares clean pages and COWs writes per child.
+    shared_cow_restore_bytes: u64,
+    /// KVM dirty-page footprint sampled at capture barriers. This is a stable
+    /// logical write-set measure, not host RSS accounting.
+    private_dirty_pages: u64,
+    /// Always zero for in-memory branch checkpoints; retained so reports can
+    /// prove no campaign snapshot files were materialized.
+    snapshot_file_bytes: u64,
 }
 
 /// Global proof that the checkpoint tree and the inputs to guidance were the
@@ -1338,8 +1350,11 @@ struct ServiceVm {
 
 #[derive(Clone)]
 struct ServiceVmCheckpoint {
-    snapshot_path: PathBuf,
-    memory_path: PathBuf,
+    /// One immutable memory image in a memfd. Every restored child maps this
+    /// file MAP_PRIVATE, so the kernel shares untouched pages and isolates
+    /// writes with COW instead of copying a snapshot file per sibling.
+    branch: Arc<BranchPoint>,
+    memory_bytes: u64,
     networks: BTreeMap<String, SimNetState>,
 }
 
@@ -1355,6 +1370,7 @@ struct ServiceSchedulerCheckpoint {
     network_trace: BTreeMap<String, Vec<NetworkFrame>>,
     storage_sha256: BTreeMap<String, String>,
     virtual_time_ns: Option<Vec<u64>>,
+    private_dirty_pages: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -1365,11 +1381,10 @@ struct CampaignCheckpoint {
     round: u64,
 }
 
-/// One materialized node in a campaign operation-prefix tree. The VMM state
-/// is deliberately not serialized into the result JSON: its immutable
-/// Firecracker snapshots already live under `checkpoints/` and are consumed
-/// only by this invocation. The locked replay bundle remains a normal,
-/// self-contained event plan.
+/// One materialized node in a campaign operation-prefix tree. VMM state lives
+/// only in retained immutable memfds and is deliberately absent from result
+/// JSON. Dropping this tree drops every retained branch; the locked replay
+/// bundle remains a normal, self-contained event plan.
 #[derive(Clone)]
 struct CampaignPrefixCheckpoint {
     checkpoint: CampaignCheckpoint,
@@ -1410,6 +1425,25 @@ struct CampaignCheckpointTree {
     reuses: usize,
     prefix_captures: usize,
     prefix_restores: usize,
+    prefix_cow_restore_bytes: u64,
+    retained_memory_bytes: u64,
+    retained_private_dirty_pages: u64,
+}
+
+impl CampaignCheckpoint {
+    fn memory_bytes(&self) -> u64 {
+        self.services
+            .values()
+            .map(|service| service.memory_bytes)
+            .sum()
+    }
+
+    fn private_dirty_pages(&self) -> u64 {
+        self.scheduler
+            .values()
+            .filter_map(|service| service.private_dirty_pages)
+            .sum()
+    }
 }
 
 impl ServiceVm {
@@ -1839,29 +1873,25 @@ impl ServiceVm {
             .collect()
     }
 
-    fn snapshot(&mut self, directory: &Path) -> Result<ServiceVmCheckpoint, String> {
-        fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    fn snapshot(&mut self, seed: u64) -> Result<ServiceVmCheckpoint, String> {
         let networks = self.save_network_states()?;
-        let snapshot_path = directory.join("state.snap");
-        let memory_path = directory.join("memory.snap");
         let mut vmm = self.vmm.lock().expect("VMM lock poisoned");
         let vm_info = VmInfo::from(&*vmm);
-        create_snapshot(
-            &mut vmm,
-            &vm_info,
-            &CreateSnapshotParams {
-                snapshot_type: SnapshotType::Full,
-                snapshot_path: snapshot_path.clone(),
-                mem_file_path: memory_path.clone(),
-                sync_snapshot_files: true,
-            },
-        )
-        .map_err(|error| error.to_string())?;
+        let branch = Arc::new(
+            BranchPoint::capture(&mut vmm, &vm_info, seed).map_err(|error| error.to_string())?,
+        );
         Ok(ServiceVmCheckpoint {
-            snapshot_path,
-            memory_path,
+            memory_bytes: branch.mem_size(),
+            branch,
             networks,
         })
+    }
+
+    fn dirty_page_count(&self) -> Option<u64> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .dirty_page_count()
     }
 
     fn paused_program_counters(&self) -> Result<Vec<u64>, String> {
@@ -1931,9 +1961,7 @@ fn capture_campaign_checkpoint(
             let virtual_time_ns = service.vm.virtual_time_ns()?;
             snapshots.insert(
                 name.clone(),
-                service
-                    .vm
-                    .snapshot(&directory.join("services").join(name))?,
+                service.vm.snapshot(topology.services[name].run.run.seed)?,
             );
             scheduler.insert(
                 name.clone(),
@@ -1948,6 +1976,7 @@ fn capture_campaign_checkpoint(
                     network_trace: service.network_trace.clone(),
                     storage_sha256,
                     virtual_time_ns,
+                    private_dirty_pages: service.vm.dirty_page_count(),
                 },
             );
         }
@@ -1995,12 +2024,17 @@ fn restore_campaign_serial_logs(
 
 impl CampaignCheckpointTree {
     fn new(root: CampaignCheckpoint) -> Self {
+        let retained_memory_bytes = root.memory_bytes();
+        let retained_private_dirty_pages = root.private_dirty_pages();
         Self {
             root,
             prefixes: BTreeMap::new(),
             reuses: 0,
             prefix_captures: 0,
             prefix_restores: 0,
+            prefix_cow_restore_bytes: 0,
+            retained_memory_bytes,
+            retained_private_dirty_pages,
         }
     }
 
@@ -2054,10 +2088,19 @@ impl CampaignCheckpointTree {
                 topology,
                 &parent.checkpoint,
                 &prefix[prefix.len() - 1],
-                &directory.join("checkpoints").join(&key),
+                &directory.join("prefix-work").join(&key),
             )?;
             self.prefix_restores += 1;
             self.prefix_captures += 1;
+            self.prefix_cow_restore_bytes = self
+                .prefix_cow_restore_bytes
+                .saturating_add(parent.checkpoint.memory_bytes());
+            self.retained_memory_bytes = self
+                .retained_memory_bytes
+                .saturating_add(checkpoint.memory_bytes());
+            self.retained_private_dirty_pages = self
+                .retained_private_dirty_pages
+                .saturating_add(checkpoint.private_dirty_pages());
             let mut actions = parent.actions.clone();
             actions.extend(applied.clone());
             let mut boundaries = parent.boundaries.clone();
@@ -2085,7 +2128,11 @@ impl CampaignCheckpointTree {
         campaign_checkpoint_boundary(&self.root, Vec::new())
     }
 
-    fn economics(&self, leaf_restores: usize) -> CampaignCheckpointEconomics {
+    fn economics(
+        &self,
+        leaf_restores: usize,
+        leaf_cow_restore_bytes: u64,
+    ) -> CampaignCheckpointEconomics {
         CampaignCheckpointEconomics {
             root_captures: 1,
             prefix_captures: self.prefix_captures,
@@ -2095,6 +2142,12 @@ impl CampaignCheckpointTree {
             leaf_restores,
             topology_restores: self.prefix_restores.saturating_add(leaf_restores),
             avoided_prefix_recomputations: self.reuses,
+            retained_memory_bytes: self.retained_memory_bytes,
+            shared_cow_restore_bytes: self
+                .prefix_cow_restore_bytes
+                .saturating_add(leaf_cow_restore_bytes),
+            private_dirty_pages: self.retained_private_dirty_pages,
+            snapshot_file_bytes: 0,
         }
     }
 }
@@ -2105,7 +2158,7 @@ fn campaign_prefix_key(events: &[CampaignEvent]) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(encoded)))
 }
 
-/// Resume a parent topology snapshot just long enough to execute one service
+/// Restore a parent topology branch just long enough to execute one service
 /// operation. Its UART checkpoint is the fork barrier. We then stop every
 /// vCPU and capture the complete resulting topology, so sibling operations
 /// begin from byte-identical VM, disk, network, serial, and scheduler state.
@@ -2571,6 +2624,7 @@ fn execute_campaign(
     let mut replay_mismatches = Vec::new();
     let mut marker_guard_rejections = 0_usize;
     let mut serial_guard_rejections = 0_usize;
+    let mut leaf_cow_restore_bytes = 0_u64;
     while runs.len()
         < replay_schedules
             .as_ref()
@@ -2640,6 +2694,8 @@ fn execute_campaign(
         .map_err(|error| format!("cannot decode campaign tail plan: {error}"))?;
         clear_campaign_events(&mut run);
         let run_dir = output.join("runs").join(format!("{index:03}"));
+        leaf_cow_restore_bytes =
+            leaf_cow_restore_bytes.saturating_add(prefix.checkpoint.memory_bytes());
         let status = execute(
             run,
             &run_dir,
@@ -2731,7 +2787,12 @@ fn execute_campaign(
         return Err("campaign produced no schedules after marker guards".to_owned());
     }
     let properties = evaluate_campaign_properties(&campaign, output, &runs)?;
-    let search = CampaignSearchEvidence::from_search(&checkpoints, runs.len(), &observations);
+    let search = CampaignSearchEvidence::from_search(
+        &checkpoints,
+        runs.len(),
+        leaf_cow_restore_bytes,
+        &observations,
+    );
     let passed = runs.iter().all(|run| run.status == "passed")
         && properties
             .iter()
@@ -4166,11 +4227,12 @@ impl CampaignSearchEvidence {
     fn from_search(
         checkpoints: &CampaignCheckpointTree,
         leaf_restores: usize,
+        leaf_cow_restore_bytes: u64,
         observations: &[CampaignGuidanceObservation],
     ) -> Self {
         let ledger = CampaignGuidanceLedger::from_observations(observations);
         Self {
-            checkpoint: checkpoints.economics(leaf_restores),
+            checkpoint: checkpoints.economics(leaf_restores, leaf_cow_restore_bytes),
             guidance_observations: ledger.observations,
             guidance_sha256: ledger.sha256,
         }
@@ -8606,6 +8668,10 @@ fn service_resources(
         .update_machine_config(&MachineConfigUpdate {
             vcpu_count: Some(service.run.run.vcpu_count),
             mem_size_mib: Some(service.run.run.mem_size_mib as usize),
+            // Retain the deterministic dirty-page footprint at every branch
+            // barrier. This is logical COW accounting, never a host-time
+            // measurement.
+            track_dirty_pages: Some(true),
             virtual_time: service
                 .run
                 .run
@@ -8745,17 +8811,22 @@ fn restore_service(
         .map(|storage| storage.id.clone())
         .collect();
     let mut event_manager = EventManager::new().map_err(|error| error.to_string())?;
-    let vmm = restore_from_snapshot(
+    let microvm_state = checkpoint
+        .branch
+        .microvm_state()
+        .map_err(|error| format!("cannot restore in-memory checkpoint: {error}"))?;
+    let vmm = restore_from_microvm_state(
         &InstanceInfo::default(),
         &mut event_manager,
         &get_empty_filters(),
+        microvm_state,
         &LoadSnapshotParams {
-            snapshot_path: checkpoint.snapshot_path.clone(),
+            snapshot_path: PathBuf::new(),
             mem_backend: MemBackendConfig {
-                backend_path: checkpoint.memory_path.clone(),
+                backend_path: PathBuf::from(checkpoint.branch.memory_fd_path()),
                 backend_type: MemBackendType::File,
             },
-            track_dirty_pages: false,
+            track_dirty_pages: true,
             resume_vm: false,
             network_overrides: Vec::new(),
             vsock_override: None,
@@ -8916,6 +8987,7 @@ mod tests {
                     network_trace: BTreeMap::new(),
                     storage_sha256: BTreeMap::new(),
                     virtual_time_ns: None,
+                    private_dirty_pages: None,
                 },
             )]),
             round: 0,
@@ -9005,6 +9077,7 @@ mod tests {
                     network_trace: BTreeMap::new(),
                     storage_sha256: BTreeMap::new(),
                     virtual_time_ns: None,
+                    private_dirty_pages: None,
                 },
             )]),
             round: 0,
@@ -9107,6 +9180,7 @@ mod tests {
                         network_trace: BTreeMap::new(),
                         storage_sha256: BTreeMap::new(),
                         virtual_time_ns: None,
+                        private_dirty_pages: None,
                     },
                 ),
                 (
@@ -9122,6 +9196,7 @@ mod tests {
                         network_trace: BTreeMap::new(),
                         storage_sha256: BTreeMap::new(),
                         virtual_time_ns: None,
+                        private_dirty_pages: None,
                     },
                 ),
             ]),
@@ -9772,6 +9847,7 @@ mod tests {
                     network_trace: BTreeMap::new(),
                     storage_sha256: BTreeMap::new(),
                     virtual_time_ns: None,
+                    private_dirty_pages: None,
                 },
             )]),
             round: 0,
@@ -9794,6 +9870,7 @@ mod tests {
                     network_trace: BTreeMap::new(),
                     storage_sha256: BTreeMap::new(),
                     virtual_time_ns: None,
+                    private_dirty_pages: None,
                     },
                 ),
                 (
@@ -9812,6 +9889,7 @@ mod tests {
                         network_trace: BTreeMap::new(),
                         storage_sha256: BTreeMap::new(),
                         virtual_time_ns: None,
+                        private_dirty_pages: None,
                     },
                 ),
             ]),
@@ -10208,6 +10286,7 @@ mod tests {
                 network_trace: BTreeMap::new(),
                 storage_sha256: BTreeMap::new(),
                 virtual_time_ns: None,
+                private_dirty_pages: None,
             },
         );
         assert!(campaign_operation_serial_guards_are_ready(
@@ -10319,6 +10398,7 @@ mod tests {
             network_trace: BTreeMap::new(),
             storage_sha256: BTreeMap::new(),
             virtual_time_ns: None,
+            private_dirty_pages: None,
         };
         let checkpoint = CampaignCheckpoint {
             services: BTreeMap::new(),
@@ -11232,10 +11312,13 @@ mod tests {
             reuses: 5,
             prefix_captures: 3,
             prefix_restores: 3,
+            prefix_cow_restore_bytes: 3_072,
+            retained_memory_bytes: 8_192,
+            retained_private_dirty_pages: 9,
         };
 
         assert_eq!(
-            tree.economics(4),
+            tree.economics(4, 4_096),
             CampaignCheckpointEconomics {
                 root_captures: 1,
                 prefix_captures: 3,
@@ -11245,6 +11328,10 @@ mod tests {
                 leaf_restores: 4,
                 topology_restores: 7,
                 avoided_prefix_recomputations: 5,
+                retained_memory_bytes: 8_192,
+                shared_cow_restore_bytes: 7_168,
+                private_dirty_pages: 9,
+                snapshot_file_bytes: 0,
             }
         );
     }
