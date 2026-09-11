@@ -161,8 +161,9 @@ fn evaluate_summarizes_a_locked_public_corpus_without_kvm() {
     fs::create_dir(&bundle).unwrap();
     fs::write(
         directory.path().join("theseus-evaluation.toml"),
-        r#"version = 1
+        r#"version = 2
 name = "public corpus"
+lockfile = "theseus-evaluation.lock"
 [[workloads]]
 name = "counter"
 bundle = "bundle"
@@ -173,11 +174,18 @@ status = "failed"
 "#,
     )
     .unwrap();
+
     fs::write(
         bundle.join("campaign-result.json"),
         r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","generated_candidates":4,"unique_topology_states":2,"unique_instruction_locations":3,"replay_verification":{"status":"passed"},"runs":[{"timeline":[{}]}],"properties":[{"name":"consistent_read","status":"failed"}]}"#,
     )
     .unwrap();
+    let lock = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["evaluate", "lock", "theseus-evaluation.toml"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(lock.status.success(), "{lock:?}");
 
     let output = Command::new(env!("CARGO_BIN_EXE_theseus"))
         .args([
@@ -193,6 +201,7 @@ status = "failed"
     let output = String::from_utf8(output.stdout).unwrap();
     assert!(output.contains("Theseus public evaluation: public corpus"));
     assert!(output.contains("Replay verification: 1/1 bundles"));
+    assert!(output.contains("Locked artifacts: verified (1 files"));
 }
 
 #[test]
@@ -259,4 +268,5 @@ fn help_lists_bundle_local_replay_commands() {
     assert!(help.contains("report --format markdown|json|junit"));
     assert!(help.contains("compare --query /json/pointer"));
     assert!(help.contains("evaluate [--format json|markdown]"));
+    assert!(help.contains("evaluate lock [theseus-evaluation.toml]"));
 }

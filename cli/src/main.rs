@@ -9,7 +9,7 @@ use theseus_cli::{
     compare_campaigns, evaluate, explore, explore_compose, load_compose_plan, load_plan,
     minimize_compose_campaign, minimize_exploration_path, query_campaigns, replay, replay_compose,
     replay_exploration, replay_exploration_path, report, report_file, report_text,
-    snapshot_exploration_path, test, test_compose, ReportFormat,
+    snapshot_exploration_path, test, test_compose, write_evaluation_lock, ReportFormat,
 };
 
 const USAGE: &str = "Usage:
@@ -27,6 +27,7 @@ const USAGE: &str = "Usage:
   theseus compare --format json|markdown left-campaign-dir right-campaign-dir
   theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
+  theseus evaluate lock [theseus-evaluation.toml]
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
@@ -159,6 +160,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let index =
                 report(&input, input.join("theseus-report")).map_err(|error| error.to_string())?;
             println!("report: {}", index.display());
+            Ok(())
+        }
+        [command, lock] if command == "evaluate" && lock == "lock" => {
+            let path = write_evaluation_lock("theseus-evaluation.toml")
+                .map_err(|error| error.to_string())?;
+            println!("evaluation lock: {}", path.display());
+            Ok(())
+        }
+        [command, lock, input] if command == "evaluate" && lock == "lock" => {
+            let path = write_evaluation_lock(input).map_err(|error| error.to_string())?;
+            println!("evaluation lock: {}", path.display());
             Ok(())
         }
         [command] if command == "evaluate" => {

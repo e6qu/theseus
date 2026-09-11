@@ -1,0 +1,14 @@
+format = "theseus-evaluation-lock-v1"
+
+[[bundles]]
+bundle = "stale-read-campaign"
+
+[[bundles.files]]
+path = "campaign-result.json"
+sha256 = "ed3d46fec77aa315ce70254b5bd3ac45d1a816bd379c22e942b830fab555439e"
+bytes = 682
+
+[[bundles.files]]
+path = "minimization.json"
+sha256 = "de6bb5c27f203d79f9ee3e85bed787c721ceb9e62e2bc570cdb1cf9077446056"
+bytes = 312
