@@ -258,6 +258,8 @@ struct ContainerService {
     #[serde(default)]
     assertions: Vec<HttpAssertion>,
     #[serde(default)]
+    operations: Vec<HttpOperation>,
+    #[serde(default)]
     grpc_ready: Option<GrpcHealth>,
     #[serde(default)]
     grpc_assertions: Vec<GrpcAssertion>,
@@ -282,6 +284,31 @@ struct HttpAssertion {
     expect_status: u16,
     #[serde(default)]
     body_contains: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HttpOperation {
+    name: String,
+    #[serde(default)]
+    method: HttpMethod,
+    url: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default = "default_http_status")]
+    expect_status: u16,
+    #[serde(default)]
+    body_contains: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpMethod {
+    #[default]
+    Get,
+    Post,
+    Put,
+    Delete,
 }
 
 #[derive(Debug, Deserialize)]
@@ -485,6 +512,8 @@ pub struct ContainerServicePlan {
     pub ready: Option<HttpReadyPlan>,
     #[serde(default)]
     pub assertions: Vec<HttpAssertionPlan>,
+    #[serde(default)]
+    pub operations: Vec<HttpOperationPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grpc_ready: Option<GrpcHealthPlan>,
     #[serde(default)]
@@ -502,6 +531,18 @@ pub struct HttpReadyPlan {
 pub struct HttpAssertionPlan {
     pub name: String,
     pub url: String,
+    pub expect_status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_contains: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HttpOperationPlan {
+    pub name: String,
+    pub method: HttpMethod,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
     pub expect_status: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_contains: Option<String>,
@@ -776,6 +817,31 @@ fn container_service_plan(
             body_contains: assertion.body_contains,
         });
     }
+    let mut operations = Vec::with_capacity(service.operations.len());
+    for operation in service.operations {
+        validate_service_assertion_name(&mut names, &operation.name)?;
+        validate_http_url("container_service.operations.url", &operation.url)?;
+        if !(100..=599).contains(&operation.expect_status) {
+            return Err(LoadError::InvalidCheck(format!(
+                "container_service operation {:?} has invalid expect_status",
+                operation.name
+            )));
+        }
+        if operation.body_contains.as_deref() == Some("") {
+            return Err(LoadError::InvalidCheck(format!(
+                "container_service operation {:?} body_contains must not be empty",
+                operation.name
+            )));
+        }
+        operations.push(HttpOperationPlan {
+            name: operation.name,
+            method: operation.method,
+            url: operation.url,
+            body: operation.body,
+            expect_status: operation.expect_status,
+            body_contains: operation.body_contains,
+        });
+    }
     let mut grpc_assertions = Vec::with_capacity(service.grpc_assertions.len());
     for assertion in service.grpc_assertions {
         validate_service_assertion_name(&mut names, &assertion.name)?;
@@ -790,6 +856,7 @@ fn container_service_plan(
     Ok(Some(ContainerServicePlan {
         ready,
         assertions,
+        operations,
         grpc_ready,
         grpc_assertions,
     }))
@@ -1281,6 +1348,14 @@ name = "health"
 url = "http://127.0.0.1:8080/health"
 expect_status = 200
 body_contains = "ok"
+
+[[container_service.operations]]
+name = "create_item"
+method = "post"
+url = "http://127.0.0.1:8080/items"
+body = "item"
+expect_status = 201
+body_contains = "created"
 "#,
         );
         let test = directory.path().join("test");
@@ -1297,6 +1372,7 @@ body_contains = "ok"
         let service = plan.container_service.unwrap();
         assert_eq!(service.ready.unwrap().attempts, 3);
         assert_eq!(service.assertions[0].name, "health");
+        assert_eq!(service.operations[0].method, HttpMethod::Post);
     }
 
     #[test]

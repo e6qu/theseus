@@ -36,6 +36,8 @@ struct ContainerService {
     #[serde(default)]
     assertions: Vec<HttpAssertion>,
     #[serde(default)]
+    operations: Vec<HttpOperation>,
+    #[serde(default)]
     grpc_ready: Option<GrpcHealth>,
     #[serde(default)]
     grpc_assertions: Vec<GrpcAssertion>,
@@ -55,6 +57,27 @@ struct HttpAssertion {
     expect_status: u16,
     #[serde(default)]
     body_contains: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct HttpOperation {
+    name: String,
+    method: HttpMethod,
+    url: String,
+    #[serde(default)]
+    body: Option<String>,
+    expect_status: u16,
+    #[serde(default)]
+    body_contains: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum HttpMethod {
+    Get,
+    Post,
+    Put,
+    Delete,
 }
 
 #[derive(serde::Deserialize)]
@@ -174,7 +197,7 @@ fn parse_http_url(value: &str) -> Result<HttpUrl, String> {
     })
 }
 
-fn http_get(url: &str) -> Result<(u16, Vec<u8>), String> {
+fn http_request(method: &str, url: &str, body: Option<&str>) -> Result<(u16, Vec<u8>), String> {
     let url = parse_http_url(url)?;
     let address = (url.host.as_str(), url.port)
         .to_socket_addrs()
@@ -186,14 +209,18 @@ fn http_get(url: &str) -> Result<(u16, Vec<u8>), String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(1)))
         .map_err(|error| format!("cannot set read timeout: {error}"))?;
+    let body = body.unwrap_or("");
     stream
         .write_all(
             format!(
-                "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-                url.path, url.host
+                "{method} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                url.path,
+                url.host,
+                body.len(),
             )
             .as_bytes(),
         )
+        .and_then(|()| stream.write_all(body.as_bytes()))
         .map_err(|error| format!("cannot send request: {error}"))?;
     let mut response = Vec::new();
     stream
@@ -220,6 +247,10 @@ fn http_get(url: &str) -> Result<(u16, Vec<u8>), String> {
     Ok((status, body))
 }
 
+fn http_get(url: &str) -> Result<(u16, Vec<u8>), String> {
+    http_request("GET", url, None)
+}
+
 fn wait_for_ready(ready: &HttpReady) -> Result<(), String> {
     let mut last_error = "endpoint did not respond".to_owned();
     for attempt in 0..ready.attempts {
@@ -244,6 +275,31 @@ fn assert_http(assertion: &HttpAssertion) -> Result<(), String> {
         ));
     }
     if let Some(expected) = &assertion.body_contains {
+        if !body
+            .windows(expected.len())
+            .any(|window| window == expected.as_bytes())
+        {
+            return Err(format!("response body does not contain {expected:?}"));
+        }
+    }
+    Ok(())
+}
+
+fn run_http_operation(operation: &HttpOperation) -> Result<(), String> {
+    let method = match operation.method {
+        HttpMethod::Get => "GET",
+        HttpMethod::Post => "POST",
+        HttpMethod::Put => "PUT",
+        HttpMethod::Delete => "DELETE",
+    };
+    let (status, body) = http_request(method, &operation.url, operation.body.as_deref())?;
+    if status != operation.expect_status {
+        return Err(format!(
+            "expected HTTP {}, got HTTP {status}",
+            operation.expect_status
+        ));
+    }
+    if let Some(expected) = &operation.body_contains {
         if !body
             .windows(expected.len())
             .any(|window| window == expected.as_bytes())
@@ -505,6 +561,12 @@ fn main() {
         }
     }
     channel.marker(MARKER_BOOT).expect("boot marker");
+    for operation in &service.operations {
+        match run_http_operation(operation) {
+            Ok(()) => println!("THES:HTTP:operation:{}:PASS", operation.name),
+            Err(error) => eprintln!("THES:HTTP:operation:{}:FAIL {error}", operation.name),
+        }
+    }
     for assertion in &service.assertions {
         match assert_http(assertion) {
             Ok(()) => println!("THES:HTTP:{}:PASS", assertion.name),

@@ -713,6 +713,24 @@ fn evaluate_checks(
                 )
             });
         }
+        for operation in &service.operations {
+            let expected = format!("THES:HTTP:operation:{}:PASS", operation.name);
+            let found = contains(&serial, expected.as_bytes());
+            let name = format!("container_service.operation.{}", operation.name);
+            checks.push(if found {
+                passed(
+                    &name,
+                    "http_operation",
+                    format!("HTTP operation {:?} passed", operation.name),
+                )
+            } else {
+                failed(
+                    &name,
+                    "http_operation",
+                    format!("HTTP operation {:?} did not pass", operation.name),
+                )
+            });
+        }
         if service.grpc_ready.is_some() {
             let ready = b"THES:GRPC:ready:PASS";
             let found = contains(&serial, ready);
@@ -992,6 +1010,28 @@ fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
                 return Err(RunError::InvalidBundle {
                     path: path.to_path_buf(),
                     reason: "container_service assertion names must be unique and safe".to_owned(),
+                });
+            }
+        }
+        for operation in &service.operations {
+            if operation.name == "ready"
+                || !operation
+                    .name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                || !assertion_names.insert(&operation.name)
+            {
+                return Err(RunError::InvalidBundle {
+                    path: path.to_path_buf(),
+                    reason: "container_service operation names must be unique and safe".to_owned(),
+                });
+            }
+            if !(100..=599).contains(&operation.expect_status)
+                || operation.body_contains.as_deref() == Some("")
+            {
+                return Err(RunError::InvalidBundle {
+                    path: path.to_path_buf(),
+                    reason: "container_service operation contract is invalid".to_owned(),
                 });
             }
         }

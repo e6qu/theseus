@@ -47,6 +47,26 @@ check for each result, then stops the service. The regular test, Compose, and
 replay paths then use that locked image; the lower-level Rust API remains
 `orchestrator::oci::flatten`.
 
+## Drive an HTTP operation
+
+Run named requests after readiness and before the final assertions. Theseus
+records each result as a check, so a failed request remains visible in the
+replay bundle:
+
+```toml
+[[container_service.operations]]
+name = "create_item"
+method = "post"
+url = "http://127.0.0.1:8080/items"
+body = "{\"name\":\"item-42\"}"
+expect_status = 201
+body_contains = "created"
+```
+
+`method` is `get`, `post`, `put`, or `delete`; `get` is the default. Request
+bodies are literal UTF-8 text. Keep operation names unique across HTTP and
+gRPC assertions.
+
 `ready.attempts` defaults to 50 and `ready.interval_millis` defaults to 100.
 Use `http://` URLs with a host, optional port, and path.
 

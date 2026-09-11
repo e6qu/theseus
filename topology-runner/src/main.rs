@@ -9145,6 +9145,7 @@ mod tests {
                         interval_millis: 10,
                     }),
                     assertions: Vec::new(),
+                    operations: Vec::new(),
                     grpc_ready: None,
                     grpc_assertions: Vec::new(),
                 }),
