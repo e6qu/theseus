@@ -198,10 +198,10 @@ and replay use the same path. `container_service` adds boot-time HTTP GET
 readiness and status/body assertions: the injected PID 1 reports each result
 as a normal Theseus check and stops the service after the contract completes.
 It also supports the standard clear-text gRPC health service for readiness and
-serving-status assertions.
+serving-status assertions. Named HTTP operations can drive a ready service
+with GET, POST, PUT, or DELETE requests before assertions run.
 
-**Next:** add declarative service operations, then image-backed
-exploration/campaign execution.
+**Next:** make image-backed exploration and campaign execution first-class.
 
 ### P18 — multiverse debugging
 

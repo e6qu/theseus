@@ -20,6 +20,11 @@ loopback = false
 [container_service.ready]
 url = "http://127.0.0.1:8080/health"
 
+[[container_service.operations]]
+name = "read_health"
+url = "http://127.0.0.1:8080/health"
+body_contains = "ok"
+
 [[container_service.assertions]]
 name = "health"
 url = "http://127.0.0.1:8080/health"

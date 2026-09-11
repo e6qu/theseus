@@ -60,6 +60,8 @@ pub struct ContainerServiceContract {
     pub ready: Option<HttpReady>,
     #[serde(default)]
     pub assertions: Vec<HttpAssertion>,
+    #[serde(default)]
+    pub operations: Vec<HttpOperation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grpc_ready: Option<GrpcHealth>,
     #[serde(default)]
@@ -80,6 +82,28 @@ pub struct HttpAssertion {
     pub expect_status: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_contains: Option<String>,
+}
+
+/// One HTTP request issued after service readiness and before assertions.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct HttpOperation {
+    pub name: String,
+    pub method: HttpMethod,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    pub expect_status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_contains: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpMethod {
+    Get,
+    Post,
+    Put,
+    Delete,
 }
 
 /// A clear-text gRPC health probe. The pivot uses HTTP/2 prior knowledge and
@@ -444,6 +468,14 @@ mod tests {
                 expect_status: 200,
                 body_contains: Some("ok".to_owned()),
             }],
+            operations: vec![HttpOperation {
+                name: "create".to_owned(),
+                method: HttpMethod::Post,
+                url: "http://127.0.0.1:8080/items".to_owned(),
+                body: Some("item".to_owned()),
+                expect_status: 201,
+                body_contains: Some("created".to_owned()),
+            }],
             grpc_ready: Some(GrpcHealth {
                 url: "http://127.0.0.1:50051".to_owned(),
                 service: "example.Api".to_owned(),
@@ -462,6 +494,7 @@ mod tests {
         assert!(text.contains("container_service"));
         assert!(text.contains("127.0.0.1:8080/health"));
         assert!(text.contains("body_contains"));
+        assert!(text.contains("operations"));
         assert!(text.contains("grpc_assertions"));
     }
 

@@ -15,9 +15,9 @@ sh ./run.sh
 ```
 
 `Dockerfile` is an ordinary BusyBox HTTP service. `theseus.toml` names its
-Docker archive as `guest.image`, then declares a readiness endpoint and an
-HTTP assertion. Theseus starts the service, waits for readiness, checks
-`/health`, records the result, and stops the service.
+Docker archive as `guest.image`, then declares a readiness endpoint, an HTTP
+operation, and an assertion. Theseus starts the service, waits for readiness,
+requests `/health`, records the result, and stops the service.
 
 Replace `Dockerfile` with your own image. Change the URLs and assertions in
 `theseus.toml` to match it. Keep the service dependencies in the image; no
