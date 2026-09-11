@@ -201,7 +201,10 @@ It also supports the standard clear-text gRPC health service for readiness and
 serving-status assertions. Named HTTP operations can drive a ready service
 with GET, POST, PUT, or DELETE requests before assertions run.
 
-**Next:** make image-backed exploration and campaign execution first-class.
+**Current execution support:** image-backed test, Compose, campaigns, and
+exploration lock the image, adapter, service contract, and derived initramfs
+together. Replays boot the recorded initramfs while retaining the source image
+evidence.
 
 ### P18 — multiverse debugging
 
