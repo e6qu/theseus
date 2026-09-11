@@ -13,7 +13,9 @@ mod manifest;
 mod report;
 mod runner;
 
-pub use compare::{compare_campaigns, CampaignComparison, CompareError};
+pub use compare::{
+    compare_campaigns, query_campaigns, CampaignComparison, CampaignQuery, CompareError,
+};
 pub use compose::{
     explore_compose, load_compose_plan, minimize_compose_campaign, replay_compose, test_compose,
     ComposeError, ComposePlan,

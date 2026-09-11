@@ -1,0 +1,41 @@
+{
+  "format": "theseus-compose-campaign-result-v1",
+  "status": "failed",
+  "runs": [
+    {
+      "index": 0,
+      "operations": ["write", "read"],
+      "faults": ["network:partition@write"],
+      "actions": [{"kind": "partition", "target": "network:backplane"}],
+      "state_sha256": "topology-after-read-after",
+      "timeline": [
+        {
+          "operation": "write",
+          "service": "api",
+          "state_sha256": "topology-after-write",
+          "actions": [{"kind": "partition", "target": "network:backplane"}],
+          "markers": ["write"],
+          "serial_sha256": {"api": "write-serial"},
+          "program_counters": {"api": ["0x8000"]},
+          "instruction_locations": {"api": [{"address": "0x8000", "symbol": "write"}]}
+        },
+        {
+          "operation": "read",
+          "service": "api",
+          "state_sha256": "topology-read-after",
+          "markers": ["write", "read", "stale"],
+          "serial_sha256": {"api": "read-serial-after"},
+          "program_counters": {"api": ["0x8020"]},
+          "instruction_locations": {"api": [{"address": "0x8020", "symbol": "stale_read"}]}
+        }
+      ],
+      "program_counters": {"api": ["0x8020"]},
+      "instruction_locations": {"api": [{"address": "0x8020", "symbol": "stale_read"}]},
+      "instruction_novelty": ["api:0x8020"],
+      "property_witnesses": ["consistent_read"]
+    }
+  ],
+  "properties": [
+    {"name": "consistent_read", "kind": "always", "status": "failed", "detail": "stale read after partition"}
+  ]
+}

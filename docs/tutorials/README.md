@@ -1,12 +1,13 @@
 # Tutorials
 
-Each directory is complete: make it
-your working directory and use the published Theseus image named in its
-README. No tutorial needs a Theseus source checkout.
+Each directory is complete: make it your working directory and use the
+published Theseus artifact named in its README. No tutorial needs a Theseus
+source checkout.
 
-All runners need Linux with KVM and Docker. Tutorials 1 and 2 currently use
-the arm64 runtime, because that is where the matching deterministic-CRNG
-kernel module is shipped.
+Tutorials 1–8 and 10–11 need Linux with KVM and Docker. Tutorials 9 and 12
+read recorded bundles with only the published binary. Tutorials 1 and 2
+currently use the arm64 runtime, because that is where the matching
+deterministic-CRNG kernel module is shipped.
 
 1. [Replay `/dev/urandom`](01-replay-by-seed/) — replay ordinary Linux random
    devices with a seed.
@@ -31,6 +32,8 @@ kernel module is shipped.
     intentional runtime-property failure.
 11. [Certify a deterministic runtime](11-certify-runtime/) — run a fixed KVM
     topology twice and save its machine-readable repeatability witness.
+12. [Investigate two campaign bundles](12-investigate-campaign/) — find the
+    first causal divergence and query retained evidence without a VM.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

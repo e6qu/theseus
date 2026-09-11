@@ -62,6 +62,26 @@ theseus report theseus-replay
 open theseus-replay/theseus-report/index.html
 ```
 
+### Investigate two campaign results
+
+Compare two locked Compose campaign directories without starting a VM or
+opening a snapshot. Theseus stops at the first causal difference: selected
+operation or fault, applied fault action, operation-boundary topology state,
+serial evidence, coverage, or property outcome.
+
+```sh
+theseus compare campaign-before campaign-after
+theseus compare --format markdown campaign-before campaign-after > investigation.md
+theseus compare --query /runs/0/timeline/1/serial_sha256 \
+  campaign-before campaign-after
+```
+
+`--query` accepts an RFC 6901 JSON Pointer and returns that retained field from
+both `campaign-result.json` files. Use it for a specific operation boundary,
+fault action, topology hash, serial digest, coverage location, or property
+verdict. The comparison and its Markdown form contain no VM memory or external
+service dependency, so attach them with the two locked result directories.
+
 The report shows checks and serial logs for one timeline, service checks and
 applied faults for a topology, and the search tree plus dirty-page coverage
 proxy for an exploration. Every report includes a copy-paste command that
