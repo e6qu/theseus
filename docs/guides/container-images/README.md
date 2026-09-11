@@ -29,9 +29,17 @@ Export it in Docker's image-tar format:
 docker save myimage > /tmp/image.tar
 ```
 
-The current Rust API is `orchestrator::oci::flatten`. It returns bootable
-initramfs bytes and the image's command, environment, and working directory.
-Use the resulting initramfs in the normal `PUT /boot-source` request.
+The published Linux runtime exposes the same adapter as `theseus-image`:
+
+```sh
+theseus-image flatten /tmp/image.tar --output guest/initramfs.cpio
+```
+
+It writes a bootable initramfs and prints the locked image command,
+environment, and working directory as JSON. Point a normal Theseus manifest
+at that `guest/initramfs.cpio`; the regular test, Compose, campaign,
+minimization, and replay paths then lock it like any other guest artifact.
+The lower-level Rust API remains `orchestrator::oci::flatten`.
 
 Static and dynamically linked images work when their dependencies are inside
 the image. Use the simulated network for deterministic networking.

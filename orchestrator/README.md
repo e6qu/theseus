@@ -16,8 +16,8 @@ Depends on `vmm` one-way (no cycles). AGPL-3.0-or-later (see
 | `orchestrator/explorer` | `Explorer`: the live loop — rendezvous protocol, parallel fan-out on scoped threads, novelty-guided expansion, per-node fingerprints |
 
 The `pivot/` subdirectory builds the static PID-1 binary embedded in
-flattened images (pivot.bin is committed prebuilt, like the test guest
-images in the fork).
+flattened images. Runtime-image builds regenerate it for their own CPU
+architecture before compiling the image adapter.
 
 ## Documentation
 
