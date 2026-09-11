@@ -31,9 +31,14 @@ struct InitSpec {
 
 #[derive(serde::Deserialize)]
 struct ContainerService {
-    ready: HttpReady,
+    #[serde(default)]
+    ready: Option<HttpReady>,
     #[serde(default)]
     assertions: Vec<HttpAssertion>,
+    #[serde(default)]
+    grpc_ready: Option<GrpcHealth>,
+    #[serde(default)]
+    grpc_assertions: Vec<GrpcAssertion>,
 }
 
 #[derive(serde::Deserialize)]
@@ -50,6 +55,31 @@ struct HttpAssertion {
     expect_status: u16,
     #[serde(default)]
     body_contains: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct GrpcHealth {
+    url: String,
+    service: String,
+    attempts: u32,
+    interval_millis: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct GrpcAssertion {
+    name: String,
+    url: String,
+    service: String,
+    expect_status: GrpcServingStatus,
+}
+
+#[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum GrpcServingStatus {
+    Unknown,
+    Serving,
+    NotServing,
+    ServiceUnknown,
 }
 
 fn mount(source: &str, target: &str, fstype: &str) {
@@ -224,6 +254,187 @@ fn assert_http(assertion: &HttpAssertion) -> Result<(), String> {
     Ok(())
 }
 
+fn h2_frame(
+    stream: &mut TcpStream,
+    kind: u8,
+    flags: u8,
+    stream_id: u32,
+    payload: &[u8],
+) -> Result<(), String> {
+    if payload.len() > 0x00ff_ffff {
+        return Err("HTTP/2 frame is too large".to_owned());
+    }
+    let length = payload.len() as u32;
+    stream
+        .write_all(&[
+            (length >> 16) as u8,
+            (length >> 8) as u8,
+            length as u8,
+            kind,
+            flags,
+            ((stream_id >> 24) & 0x7f) as u8,
+            (stream_id >> 16) as u8,
+            (stream_id >> 8) as u8,
+            stream_id as u8,
+        ])
+        .and_then(|()| stream.write_all(payload))
+        .map_err(|error| format!("cannot send HTTP/2 frame: {error}"))
+}
+
+fn hpack_integer(out: &mut Vec<u8>, value: usize, prefix: u8, first: u8) {
+    let maximum = (1usize << prefix) - 1;
+    if value < maximum {
+        out.push(first | value as u8);
+        return;
+    }
+    out.push(first | maximum as u8);
+    let mut remaining = value - maximum;
+    while remaining >= 128 {
+        out.push((remaining as u8 & 0x7f) | 0x80);
+        remaining >>= 7;
+    }
+    out.push(remaining as u8);
+}
+
+fn hpack_string(out: &mut Vec<u8>, value: &str) -> Result<(), String> {
+    if value.len() >= 127 {
+        return Err("gRPC URL or service name is too long".to_owned());
+    }
+    out.push(value.len() as u8);
+    out.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn hpack_literal(out: &mut Vec<u8>, name_index: usize, value: &str) -> Result<(), String> {
+    // Literal header without indexing. The static table supplies the name.
+    hpack_integer(out, name_index, 4, 0);
+    hpack_string(out, value)
+}
+
+fn grpc_headers(authority: &str) -> Result<Vec<u8>, String> {
+    let mut headers = Vec::new();
+    // :method POST and :scheme http are fully indexed in HPACK's static table.
+    headers.extend_from_slice(&[0x83, 0x86]);
+    hpack_literal(&mut headers, 4, "/grpc.health.v1.Health/Check")?;
+    hpack_literal(&mut headers, 1, authority)?;
+    hpack_literal(&mut headers, 31, "application/grpc")?;
+    hpack_literal(&mut headers, 57, "trailers")?;
+    Ok(headers)
+}
+
+fn protobuf_varint(out: &mut Vec<u8>, mut value: usize) {
+    while value >= 128 {
+        out.push((value as u8 & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+
+fn grpc_health(url: &str, service: &str) -> Result<GrpcServingStatus, String> {
+    let url = parse_http_url(url)?;
+    let address = (url.host.as_str(), url.port)
+        .to_socket_addrs()
+        .map_err(|error| format!("cannot resolve {}: {error}", url.host))?
+        .next()
+        .ok_or_else(|| format!("cannot resolve {}", url.host))?;
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(1))
+        .map_err(|error| format!("cannot connect: {error}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(1))))
+        .map_err(|error| format!("cannot configure connection: {error}"))?;
+    stream
+        .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+        .map_err(|error| format!("cannot send HTTP/2 preface: {error}"))?;
+    h2_frame(&mut stream, 4, 0, 0, &[])?;
+    let authority = format!("{}:{}", url.host, url.port);
+    h2_frame(&mut stream, 1, 0x4, 1, &grpc_headers(&authority)?)?;
+    let mut message = Vec::with_capacity(service.len() + 2);
+    if !service.is_empty() {
+        message.push(0x0a);
+        protobuf_varint(&mut message, service.len());
+        message.extend_from_slice(service.as_bytes());
+    }
+    let mut request = Vec::with_capacity(message.len() + 5);
+    request.push(0);
+    request.extend_from_slice(&(message.len() as u32).to_be_bytes());
+    request.extend_from_slice(&message);
+    h2_frame(&mut stream, 0, 0x1, 1, &request)?;
+
+    let mut grpc_payload = Vec::new();
+    loop {
+        let mut header = [0u8; 9];
+        stream
+            .read_exact(&mut header)
+            .map_err(|error| format!("cannot read HTTP/2 frame: {error}"))?;
+        let length =
+            ((header[0] as usize) << 16) | ((header[1] as usize) << 8) | header[2] as usize;
+        let kind = header[3];
+        let flags = header[4];
+        let stream_id = u32::from_be_bytes([header[5] & 0x7f, header[6], header[7], header[8]]);
+        let mut payload = vec![0; length];
+        stream
+            .read_exact(&mut payload)
+            .map_err(|error| format!("cannot read HTTP/2 frame body: {error}"))?;
+        match kind {
+            4 if flags & 0x1 == 0 => h2_frame(&mut stream, 4, 0x1, 0, &[])?,
+            0 if stream_id == 1 => {
+                grpc_payload.extend_from_slice(&payload);
+                if flags & 0x1 != 0 {
+                    break;
+                }
+            }
+            1 if stream_id == 1 && flags & 0x1 != 0 => break,
+            3 if stream_id == 1 => return Err("gRPC server reset the health request".to_owned()),
+            _ => {}
+        }
+    }
+    if grpc_payload.len() < 7 || grpc_payload[0] != 0 {
+        return Err("gRPC health response has no uncompressed message".to_owned());
+    }
+    let length = u32::from_be_bytes(grpc_payload[1..5].try_into().unwrap()) as usize;
+    let message = grpc_payload
+        .get(5..5 + length)
+        .ok_or_else(|| "gRPC health response is truncated".to_owned())?;
+    if message.len() < 2 || message[0] != 0x08 {
+        return Err("gRPC health response has no serving status".to_owned());
+    }
+    match message[1] {
+        0 => Ok(GrpcServingStatus::Unknown),
+        1 => Ok(GrpcServingStatus::Serving),
+        2 => Ok(GrpcServingStatus::NotServing),
+        3 => Ok(GrpcServingStatus::ServiceUnknown),
+        status => Err(format!("gRPC health response has unknown status {status}")),
+    }
+}
+
+fn wait_for_grpc_ready(ready: &GrpcHealth) -> Result<(), String> {
+    let mut last_error = "endpoint did not respond".to_owned();
+    for attempt in 0..ready.attempts {
+        match grpc_health(&ready.url, &ready.service) {
+            Ok(GrpcServingStatus::Serving) => return Ok(()),
+            Ok(status) => last_error = format!("health status is {status:?}"),
+            Err(error) => last_error = error,
+        }
+        if attempt + 1 < ready.attempts {
+            thread::sleep(Duration::from_millis(ready.interval_millis));
+        }
+    }
+    Err(last_error)
+}
+
+fn assert_grpc(assertion: &GrpcAssertion) -> Result<(), String> {
+    let actual = grpc_health(&assertion.url, &assertion.service)?;
+    if actual == assertion.expect_status {
+        Ok(())
+    } else {
+        Err(format!(
+            "expected {:?}, got {actual:?}",
+            assertion.expect_status
+        ))
+    }
+}
+
 fn stop_service(pid: libc::pid_t) {
     unsafe {
         libc::kill(pid, libc::SIGTERM);
@@ -273,21 +484,37 @@ fn main() {
         power_off();
     }
 
-    match wait_for_ready(&service.ready) {
-        Ok(()) => {
-            println!("THES:HTTP:ready:PASS");
-            channel.marker(MARKER_BOOT).expect("boot marker");
-        }
-        Err(error) => {
-            eprintln!("THES:HTTP:ready:FAIL {error}");
-            stop_service(pid);
-            power_off();
+    if let Some(ready) = &service.ready {
+        match wait_for_ready(ready) {
+            Ok(()) => println!("THES:HTTP:ready:PASS"),
+            Err(error) => {
+                eprintln!("THES:HTTP:ready:FAIL {error}");
+                stop_service(pid);
+                power_off();
+            }
         }
     }
+    if let Some(ready) = &service.grpc_ready {
+        match wait_for_grpc_ready(ready) {
+            Ok(()) => println!("THES:GRPC:ready:PASS"),
+            Err(error) => {
+                eprintln!("THES:GRPC:ready:FAIL {error}");
+                stop_service(pid);
+                power_off();
+            }
+        }
+    }
+    channel.marker(MARKER_BOOT).expect("boot marker");
     for assertion in &service.assertions {
         match assert_http(assertion) {
             Ok(()) => println!("THES:HTTP:{}:PASS", assertion.name),
             Err(error) => eprintln!("THES:HTTP:{}:FAIL {error}", assertion.name),
+        }
+    }
+    for assertion in &service.grpc_assertions {
+        match assert_grpc(assertion) {
+            Ok(()) => println!("THES:GRPC:{}:PASS", assertion.name),
+            Err(error) => eprintln!("THES:GRPC:{}:FAIL {error}", assertion.name),
         }
     }
     stop_service(pid);

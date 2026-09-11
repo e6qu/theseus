@@ -56,9 +56,14 @@ pub struct ImageSpec {
 /// the image adapter the single producer of the pivot's on-disk contract.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub struct ContainerServiceContract {
-    pub ready: HttpReady,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready: Option<HttpReady>,
     #[serde(default)]
     pub assertions: Vec<HttpAssertion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grpc_ready: Option<GrpcHealth>,
+    #[serde(default)]
+    pub grpc_assertions: Vec<GrpcAssertion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
@@ -75,6 +80,33 @@ pub struct HttpAssertion {
     pub expect_status: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_contains: Option<String>,
+}
+
+/// A clear-text gRPC health probe. The pivot uses HTTP/2 prior knowledge and
+/// the standard `grpc.health.v1.Health/Check` RPC, so no guest SDK is needed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct GrpcHealth {
+    pub url: String,
+    pub service: String,
+    pub attempts: u32,
+    pub interval_millis: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct GrpcAssertion {
+    pub name: String,
+    pub url: String,
+    pub service: String,
+    pub expect_status: GrpcServingStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrpcServingStatus {
+    Unknown,
+    Serving,
+    NotServing,
+    ServiceUnknown,
 }
 
 #[derive(Deserialize)]
@@ -401,16 +433,28 @@ mod tests {
     #[test]
     fn flatten_injects_the_container_service_contract() {
         let service = ContainerServiceContract {
-            ready: HttpReady {
+            ready: Some(HttpReady {
                 url: "http://127.0.0.1:8080/health".to_owned(),
                 attempts: 3,
                 interval_millis: 10,
-            },
+            }),
             assertions: vec![HttpAssertion {
                 name: "health".to_owned(),
                 url: "http://127.0.0.1:8080/health".to_owned(),
                 expect_status: 200,
                 body_contains: Some("ok".to_owned()),
+            }],
+            grpc_ready: Some(GrpcHealth {
+                url: "http://127.0.0.1:50051".to_owned(),
+                service: "example.Api".to_owned(),
+                attempts: 3,
+                interval_millis: 10,
+            }),
+            grpc_assertions: vec![GrpcAssertion {
+                name: "grpc_health".to_owned(),
+                url: "http://127.0.0.1:50051".to_owned(),
+                service: String::new(),
+                expect_status: GrpcServingStatus::Serving,
             }],
         };
         let (cpio, _) = flatten_with_service(&test_image(), Some(&service)).unwrap();
@@ -418,6 +462,7 @@ mod tests {
         assert!(text.contains("container_service"));
         assert!(text.contains("127.0.0.1:8080/health"));
         assert!(text.contains("body_contains"));
+        assert!(text.contains("grpc_assertions"));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload

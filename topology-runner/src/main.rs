@@ -9139,12 +9139,14 @@ mod tests {
                 events: Vec::new(),
                 checks: Vec::new(),
                 container_service: Some(theseus_orchestrator::oci::ContainerServiceContract {
-                    ready: theseus_orchestrator::oci::HttpReady {
+                    ready: Some(theseus_orchestrator::oci::HttpReady {
                         url: "http://127.0.0.1:8080/health".to_owned(),
                         attempts: 3,
                         interval_millis: 10,
-                    },
+                    }),
                     assertions: Vec::new(),
+                    grpc_ready: None,
+                    grpc_assertions: Vec::new(),
                 }),
             },
             networks: Vec::new(),

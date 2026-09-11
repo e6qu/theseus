@@ -197,9 +197,11 @@ environment, and working directory without application changes. Compose test
 and replay use the same path. `container_service` adds boot-time HTTP GET
 readiness and status/body assertions: the injected PID 1 reports each result
 as a normal Theseus check and stops the service after the contract completes.
+It also supports the standard clear-text gRPC health service for readiness and
+serving-status assertions.
 
-**Next:** add gRPC readiness/assertions, declarative service operations, and
-image-backed exploration/campaign execution.
+**Next:** add declarative service operations, then image-backed
+exploration/campaign execution.
 
 ### P18 — multiverse debugging
 
