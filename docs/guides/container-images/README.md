@@ -9,6 +9,9 @@ under the same service API. Your image does not need a Theseus guest driver.
 Start with [tutorial 14](../../tutorials/14-container-image/). It uses only a
 published Theseus runtime image and the files in its own directory.
 
+For a deterministic operation campaign against an unmodified image, continue
+with [tutorial 15](../../tutorials/15-container-campaign/).
+
 ## 2. Prepare your image
 
 Export it in Docker's image-tar format:

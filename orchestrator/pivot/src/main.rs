@@ -32,6 +32,8 @@ struct InitSpec {
 #[derive(serde::Deserialize)]
 struct ContainerService {
     #[serde(default)]
+    campaign: bool,
+    #[serde(default)]
     ready: Option<HttpReady>,
     #[serde(default)]
     assertions: Vec<HttpAssertion>,
@@ -61,6 +63,20 @@ struct HttpAssertion {
 
 #[derive(serde::Deserialize)]
 struct HttpOperation {
+    name: String,
+    method: HttpMethod,
+    url: String,
+    #[serde(default)]
+    body: Option<String>,
+    expect_status: u16,
+    #[serde(default)]
+    body_contains: Option<String>,
+}
+
+/// A host sends this JSON after the boot marker. It is generated from a
+/// locked Compose operation; applications never need to implement it.
+#[derive(serde::Deserialize)]
+struct CampaignHttpOperation {
     name: String,
     method: HttpMethod,
     url: String,
@@ -308,6 +324,17 @@ fn run_http_operation(operation: &HttpOperation) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn run_campaign_http_operation(operation: CampaignHttpOperation) -> Result<(), String> {
+    run_http_operation(&HttpOperation {
+        name: operation.name,
+        method: operation.method,
+        url: operation.url,
+        body: operation.body,
+        expect_status: operation.expect_status,
+        body_contains: operation.body_contains,
+    })
 }
 
 fn h2_frame(
@@ -561,6 +588,31 @@ fn main() {
         }
     }
     channel.marker(MARKER_BOOT).expect("boot marker");
+    if service.campaign {
+        loop {
+            let command = match channel.next_command("THES:HTTP:operation:") {
+                Ok(command) => command,
+                Err(error) => {
+                    eprintln!("THES:HTTP:operation:FAIL cannot read campaign command: {error}");
+                    stop_service(pid);
+                    power_off();
+                }
+            };
+            let operation: CampaignHttpOperation = match serde_json::from_str(&command) {
+                Ok(operation) => operation,
+                Err(error) => {
+                    eprintln!("THES:HTTP:operation:FAIL invalid campaign command: {error}");
+                    continue;
+                }
+            };
+            let name = operation.name.clone();
+            match run_campaign_http_operation(operation) {
+                Ok(()) => println!("THES:HTTP:operation:{name}:PASS"),
+                Err(error) => eprintln!("THES:HTTP:operation:{name}:FAIL {error}"),
+            }
+            channel.checkpoint(&name).expect("campaign operation checkpoint");
+        }
+    }
     for operation in &service.operations {
         match run_http_operation(operation) {
             Ok(()) => println!("THES:HTTP:operation:{}:PASS", operation.name),

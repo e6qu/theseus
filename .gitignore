@@ -24,5 +24,8 @@ docs/tutorials/04-fault-hunting/driver/target/
 docs/tutorials/04-fault-hunting/guest/target/
 docs/tutorials/13-public-evaluation/evaluation.json
 docs/tutorials/13-public-evaluation/evaluation.md
+docs/tutorials/15-container-campaign/api/work/
+docs/tutorials/15-container-campaign/campaign/
+docs/tutorials/15-container-campaign/rerun/
 
 orchestrator/pivot/target/

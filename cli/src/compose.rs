@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json_path::JsonPath;
 use sha2::{Digest, Sha256};
 
+use crate::manifest::HttpMethod;
 use crate::{load_plan, ArtifactPlan, LoadError, RunPlan};
 
 #[derive(Debug)]
@@ -121,6 +122,10 @@ struct ComposeOperation {
     inputs: Vec<ComposeOperationInput>,
     #[serde(default)]
     input_grammar: Option<ComposeOperationInputGrammar>,
+    /// A declared request for an image-backed service. Theseus encodes this
+    /// into its pivot protocol, rather than requiring the image to read UART.
+    #[serde(default)]
+    http: Option<ComposeHttpOperation>,
     #[serde(default)]
     stage: Option<String>,
     #[serde(default)]
@@ -153,6 +158,20 @@ struct ComposeOperation {
     requires_state: BTreeMap<String, String>,
     #[serde(default)]
     sets_state: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeHttpOperation {
+    #[serde(default)]
+    method: HttpMethod,
+    url: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default = "default_http_status")]
+    expect_status: u16,
+    #[serde(default)]
+    body_contains: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1222,7 +1241,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         );
     }
 
-    let campaign = campaign_plan(compose.theseus, &services)?;
+    let campaign = campaign_plan(compose.theseus, &mut services)?;
     let networks = memberships
         .into_iter()
         .map(|(name, services)| (name, services.into_iter().collect()))
@@ -1242,6 +1261,10 @@ fn default_campaign_runs() -> u16 {
     32
 }
 
+fn default_http_status() -> u16 {
+    200
+}
+
 fn default_campaign_faults_per_run() -> u8 {
     2
 }
@@ -1252,7 +1275,7 @@ fn default_campaign_operations_per_run() -> u8 {
 
 fn campaign_plan(
     campaign: Option<ComposeTheseus>,
-    services: &BTreeMap<String, ComposeServicePlan>,
+    services: &mut BTreeMap<String, ComposeServicePlan>,
 ) -> Result<Option<CampaignPlan>, ComposeError> {
     let Some(campaign) = campaign.and_then(|theseus| theseus.campaign) else {
         return Ok(None);
@@ -1304,16 +1327,61 @@ fn campaign_plan(
                 operation.name
             )));
         }
+        let http = operation.http;
         let input_forms = usize::from(operation.input.is_some())
             + usize::from(operation.input_template.is_some())
             + usize::from(!operation.inputs.is_empty())
-            + usize::from(operation.input_grammar.is_some());
+            + usize::from(operation.input_grammar.is_some())
+            + usize::from(http.is_some());
         if input_forms > 1 {
             return Err(ComposeError::Invalid(format!(
-                "campaign operation {:?} must use exactly one of input, input_template, inputs, or input_grammar",
+                "campaign operation {:?} must use exactly one of input, input_template, inputs, or input_grammar (or http)",
                 operation.name
             )));
         }
+        let http_input = if let Some(http) = http {
+            if !http.url.starts_with("http://")
+                || !(100..=599).contains(&http.expect_status)
+                || http.body_contains.as_deref() == Some("")
+            {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} has an invalid HTTP contract",
+                    operation.name
+                )));
+            }
+            let Some(container) = services
+                .get_mut(&service)
+                .and_then(|service| service.run.container_service.as_mut())
+            else {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} HTTP target {:?} needs container_service",
+                    operation.name, service
+                )));
+            };
+            container.campaign = true;
+            let command = serde_json::json!({
+                "name": operation.name.clone(),
+                "method": http.method,
+                "url": http.url,
+                "body": http.body,
+                "expect_status": http.expect_status,
+                "body_contains": http.body_contains,
+            });
+            let command = serde_json::to_string(&command).expect("HTTP command is serializable");
+            Some(OperationInputPlan {
+                name: "default".to_owned(),
+                input_hex: hex(format!("THES:HTTP:operation:{command}\n").as_bytes()),
+                input_template: None,
+                input_captures: BTreeMap::new(),
+                requires: Vec::new(),
+                excludes: Vec::new(),
+                max_uses: None,
+                requires_state: BTreeMap::new(),
+                sets_state: BTreeMap::new(),
+            })
+        } else {
+            None
+        };
         let grammar = operation.input_grammar;
         let input_grammar = grammar
             .as_ref()
@@ -1333,14 +1401,16 @@ fn campaign_plan(
                 operation.name
             )));
         }
-        let inputs = match operation.input {
-            Some(input) if input.is_empty() => {
+        let inputs = match (http_input, operation.input) {
+            (Some(input), None) => vec![input],
+            (Some(_), Some(_)) => unreachable!("HTTP input forms were validated"),
+            (None, Some(input)) if input.is_empty() => {
                 return Err(ComposeError::Invalid(format!(
                     "campaign operation {:?} has empty input",
                     operation.name
                 )));
             }
-            Some(input) => vec![OperationInputPlan {
+            (None, Some(input)) => vec![OperationInputPlan {
                 name: "default".to_owned(),
                 input_hex: hex(input.as_bytes()),
                 requires: Vec::new(),
@@ -1351,16 +1421,17 @@ fn campaign_plan(
                 input_template: None,
                 input_captures: BTreeMap::new(),
             }],
-            None if operation.inputs.is_empty()
-                && input_grammar.is_none()
-                && input_template.is_none() =>
+            (None, None)
+                if operation.inputs.is_empty()
+                    && input_grammar.is_none()
+                    && input_template.is_none() =>
             {
                 return Err(ComposeError::Invalid(format!(
                     "campaign operation {:?} needs input, input_template, inputs, or input_grammar",
                     operation.name
                 )));
             }
-            None if input_template.is_some() => {
+            (None, None) if input_template.is_some() => {
                 let (template, captures) = input_template
                     .as_ref()
                     .expect("input template was normalized");
@@ -1376,12 +1447,12 @@ fn campaign_plan(
                     sets_state: BTreeMap::new(),
                 }]
             }
-            None if input_grammar.is_some() => input_grammar
+            (None, None) if input_grammar.is_some() => input_grammar
                 .as_ref()
                 .expect("input grammar was normalized")
                 .inputs
                 .clone(),
-            None => {
+            (None, None) => {
                 let mut input_names = BTreeSet::new();
                 operation
                     .inputs
@@ -4255,6 +4326,47 @@ mod tests {
         assert_eq!(plan.format, "theseus-compose-plan-v1");
         assert_eq!(plan.networks["backplane"], ["api", "worker"]);
         assert_eq!(plan.services["api"].run.guest.kernel.sha256.len(), 64);
+    }
+
+    #[test]
+    fn locks_a_declared_http_operation_for_an_image_campaign_driver() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: create\n        http:\n          method: post\n          url: http://127.0.0.1:8080/items\n          body: item\n          expect_status: 201\n          body_contains: created\n    faults: []\n",
+        );
+        let root = directory.path().join("api");
+        fs::write(root.join("runtime/theseus-image"), b"image adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            root.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(root.join("guest/service.tar"), b"image").unwrap();
+        fs::write(
+            root.join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'guest/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n[container_service.ready]\nurl = 'http://127.0.0.1:8080/health'\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert!(
+            plan.services["api"]
+                .run
+                .container_service
+                .as_ref()
+                .unwrap()
+                .campaign
+        );
+        let input = &plan.campaign.as_ref().unwrap().operations[0].inputs[0].input_hex;
+        let bytes = input
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        let command = String::from_utf8(bytes).unwrap();
+        assert!(command.starts_with("THES:HTTP:operation:"));
+        assert!(command.contains("\"method\":\"post\""));
+        assert!(command.contains("\"expect_status\":201"));
     }
 
     #[test]

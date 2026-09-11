@@ -56,6 +56,8 @@ pub struct ImageSpec {
 /// the image adapter the single producer of the pivot's on-disk contract.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub struct ContainerServiceContract {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub campaign: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ready: Option<HttpReady>,
     #[serde(default)]
@@ -457,6 +459,7 @@ mod tests {
     #[test]
     fn flatten_injects_the_container_service_contract() {
         let service = ContainerServiceContract {
+            campaign: false,
             ready: Some(HttpReady {
                 url: "http://127.0.0.1:8080/health".to_owned(),
                 attempts: 3,
