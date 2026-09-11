@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json_path::JsonPath;
 use sha2::{Digest, Sha256};
 
-use crate::manifest::HttpMethod;
+use crate::manifest::{GrpcServingStatus, HttpMethod};
 use crate::{load_plan, ArtifactPlan, LoadError, RunPlan};
 
 #[derive(Debug)]
@@ -126,6 +126,10 @@ struct ComposeOperation {
     /// into its pivot protocol, rather than requiring the image to read UART.
     #[serde(default)]
     http: Option<ComposeHttpOperation>,
+    /// A standard gRPC health check for an image-backed service. As with HTTP
+    /// operations, the pivot owns the protocol; the application sees no UART.
+    #[serde(default)]
+    grpc_health: Option<ComposeGrpcHealthOperation>,
     #[serde(default)]
     stage: Option<String>,
     #[serde(default)]
@@ -172,6 +176,16 @@ struct ComposeHttpOperation {
     expect_status: u16,
     #[serde(default)]
     body_contains: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeGrpcHealthOperation {
+    url: String,
+    #[serde(default)]
+    service: String,
+    #[serde(default = "default_grpc_status")]
+    expect_status: GrpcServingStatus,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1265,6 +1279,10 @@ fn default_http_status() -> u16 {
     200
 }
 
+fn default_grpc_status() -> GrpcServingStatus {
+    GrpcServingStatus::Serving
+}
+
 fn default_campaign_faults_per_run() -> u8 {
     2
 }
@@ -1328,14 +1346,16 @@ fn campaign_plan(
             )));
         }
         let http = operation.http;
+        let grpc_health = operation.grpc_health;
         let input_forms = usize::from(operation.input.is_some())
             + usize::from(operation.input_template.is_some())
             + usize::from(!operation.inputs.is_empty())
             + usize::from(operation.input_grammar.is_some())
-            + usize::from(http.is_some());
+            + usize::from(http.is_some())
+            + usize::from(grpc_health.is_some());
         if input_forms > 1 {
             return Err(ComposeError::Invalid(format!(
-                "campaign operation {:?} must use exactly one of input, input_template, inputs, or input_grammar (or http)",
+                "campaign operation {:?} must use exactly one of input, input_template, inputs, or input_grammar (or http or grpc_health)",
                 operation.name
             )));
         }
@@ -1379,6 +1399,41 @@ fn campaign_plan(
                 requires_state: BTreeMap::new(),
                 sets_state: BTreeMap::new(),
             })
+        } else if let Some(grpc_health) = grpc_health {
+            if !grpc_health.url.starts_with("http://") {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} has an invalid gRPC health contract",
+                    operation.name
+                )));
+            }
+            let Some(container) = services
+                .get_mut(&service)
+                .and_then(|service| service.run.container_service.as_mut())
+            else {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} gRPC health target {:?} needs container_service",
+                    operation.name, service
+                )));
+            };
+            container.campaign = true;
+            let command = serde_json::json!({
+                "name": operation.name.clone(),
+                "url": grpc_health.url,
+                "service": grpc_health.service,
+                "expect_status": grpc_health.expect_status,
+            });
+            let command = serde_json::to_string(&command).expect("gRPC command is serializable");
+            Some(OperationInputPlan {
+                name: "default".to_owned(),
+                input_hex: hex(format!("THES:GRPC:operation:{command}\n").as_bytes()),
+                input_template: None,
+                input_captures: BTreeMap::new(),
+                requires: Vec::new(),
+                excludes: Vec::new(),
+                max_uses: None,
+                requires_state: BTreeMap::new(),
+                sets_state: BTreeMap::new(),
+            })
         } else {
             None
         };
@@ -1403,7 +1458,7 @@ fn campaign_plan(
         }
         let inputs = match (http_input, operation.input) {
             (Some(input), None) => vec![input],
-            (Some(_), Some(_)) => unreachable!("HTTP input forms were validated"),
+            (Some(_), Some(_)) => unreachable!("service operation input forms were validated"),
             (None, Some(input)) if input.is_empty() => {
                 return Err(ComposeError::Invalid(format!(
                     "campaign operation {:?} has empty input",
@@ -4367,6 +4422,47 @@ mod tests {
         assert!(command.starts_with("THES:HTTP:operation:"));
         assert!(command.contains("\"method\":\"post\""));
         assert!(command.contains("\"expect_status\":201"));
+    }
+
+    #[test]
+    fn locks_a_declared_grpc_health_operation_for_an_image_campaign_driver() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: check_health\n        grpc_health:\n          url: http://127.0.0.1:50051\n          service: example.Api\n          expect_status: serving\n    faults: []\n",
+        );
+        let root = directory.path().join("api");
+        fs::write(root.join("runtime/theseus-image"), b"image adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            root.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(root.join("guest/service.tar"), b"image").unwrap();
+        fs::write(
+            root.join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'guest/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n[container_service.grpc_ready]\nurl = 'http://127.0.0.1:50051'\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert!(
+            plan.services["api"]
+                .run
+                .container_service
+                .as_ref()
+                .unwrap()
+                .campaign
+        );
+        let input = &plan.campaign.as_ref().unwrap().operations[0].inputs[0].input_hex;
+        let bytes = input
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        let command = String::from_utf8(bytes).unwrap();
+        assert!(command.starts_with("THES:GRPC:operation:"));
+        assert!(command.contains("\"service\":\"example.Api\""));
+        assert!(command.contains("\"expect_status\":\"serving\""));
     }
 
     #[test]

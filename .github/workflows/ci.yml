@@ -28,6 +28,7 @@ jobs:
           cargo check --manifest-path sdk/Cargo.toml
           cargo check --manifest-path engine/Cargo.toml
           cargo check --manifest-path orchestrator/Cargo.toml
+          cargo check --manifest-path orchestrator/pivot/Cargo.toml
           cargo check --manifest-path cli/Cargo.toml --locked
           cargo check --manifest-path topology-runner/Cargo.toml --locked
           cargo check --manifest-path image-runner/Cargo.toml --locked
@@ -81,6 +82,8 @@ jobs:
           sh -n docs/tutorials/15-container-campaign/run-in-runtime.sh
           sh -n docs/tutorials/16-public-campaign/run.sh
           sh -n docs/tutorials/16-public-campaign/run-in-runtime.sh
+          sh -n docs/tutorials/17-grpc-campaign/run.sh
+          sh -n docs/tutorials/17-grpc-campaign/run-in-runtime.sh
           ! rg -n '/dev/hwrng|(^|[[:space:]])/theseus/|\.\./\.\./\.\.' docs/tutorials
 
       - name: Check reproducible release archives

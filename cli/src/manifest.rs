@@ -265,6 +265,8 @@ struct ContainerService {
     grpc_ready: Option<GrpcHealth>,
     #[serde(default)]
     grpc_assertions: Vec<GrpcAssertion>,
+    #[serde(default)]
+    grpc_operations: Vec<GrpcOperation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -328,6 +330,20 @@ struct GrpcHealth {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GrpcAssertion {
+    name: String,
+    url: String,
+    #[serde(default)]
+    service: String,
+    #[serde(default = "default_grpc_status")]
+    expect_status: GrpcServingStatus,
+}
+
+/// A standard gRPC health request performed after boot readiness. It uses the
+/// same narrow health protocol as assertions, but its named result becomes a
+/// deterministic operation boundary in the image service contract.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrpcOperation {
     name: String,
     url: String,
     #[serde(default)]
@@ -511,7 +527,8 @@ pub struct CheckPlan {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ContainerServicePlan {
     /// Keep the image process alive after readiness so a Compose campaign can
-    /// drive declared HTTP operations through the injected pivot.
+    /// drive declared HTTP or gRPC health operations through the injected
+    /// pivot.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub campaign: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -524,6 +541,8 @@ pub struct ContainerServicePlan {
     pub grpc_ready: Option<GrpcHealthPlan>,
     #[serde(default)]
     pub grpc_assertions: Vec<GrpcAssertionPlan>,
+    #[serde(default)]
+    pub grpc_operations: Vec<GrpcOperationPlan>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -564,6 +583,14 @@ pub struct GrpcHealthPlan {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GrpcAssertionPlan {
+    pub name: String,
+    pub url: String,
+    pub service: String,
+    pub expect_status: GrpcServingStatus,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GrpcOperationPlan {
     pub name: String,
     pub url: String,
     pub service: String,
@@ -859,6 +886,17 @@ fn container_service_plan(
             expect_status: assertion.expect_status,
         });
     }
+    let mut grpc_operations = Vec::with_capacity(service.grpc_operations.len());
+    for operation in service.grpc_operations {
+        validate_service_assertion_name(&mut names, &operation.name)?;
+        validate_http_url("container_service.grpc_operations.url", &operation.url)?;
+        grpc_operations.push(GrpcOperationPlan {
+            name: operation.name,
+            url: operation.url,
+            service: operation.service,
+            expect_status: operation.expect_status,
+        });
+    }
     Ok(Some(ContainerServicePlan {
         campaign: service.campaign,
         ready,
@@ -866,6 +904,7 @@ fn container_service_plan(
         operations,
         grpc_ready,
         grpc_assertions,
+        grpc_operations,
     }))
 }
 
@@ -1428,6 +1467,12 @@ interval_millis = 10
 name = "health"
 url = "http://127.0.0.1:50051"
 expect_status = "serving"
+
+[[container_service.grpc_operations]]
+name = "recheck"
+url = "http://127.0.0.1:50051"
+service = "example.Api"
+expect_status = "serving"
 "#,
         );
         let test = directory.path().join("test");
@@ -1448,6 +1493,7 @@ expect_status = "serving"
             service.grpc_assertions[0].expect_status,
             GrpcServingStatus::Serving
         );
+        assert_eq!(service.grpc_operations[0].name, "recheck");
     }
 
     #[test]

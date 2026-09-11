@@ -766,6 +766,24 @@ fn evaluate_checks(
                 )
             });
         }
+        for operation in &service.grpc_operations {
+            let expected = format!("THES:GRPC:operation:{}:PASS", operation.name);
+            let found = contains(&serial, expected.as_bytes());
+            let name = format!("container_service.operation.{}", operation.name);
+            checks.push(if found {
+                passed(
+                    &name,
+                    "grpc_operation",
+                    format!("gRPC health operation {:?} passed", operation.name),
+                )
+            } else {
+                failed(
+                    &name,
+                    "grpc_operation",
+                    format!("gRPC health operation {:?} did not pass", operation.name),
+                )
+            });
+        }
     }
     for check in &plan.checks {
         let (kind, expected, found) = match &check.kind {
@@ -1049,6 +1067,20 @@ fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
                 });
             }
         }
+        for operation in &service.grpc_operations {
+            if operation.name == "ready"
+                || !operation
+                    .name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                || !assertion_names.insert(&operation.name)
+            {
+                return Err(RunError::InvalidBundle {
+                    path: path.to_path_buf(),
+                    reason: "container_service operation names must be unique and safe".to_owned(),
+                });
+            }
+        }
     }
     if plan.run.vcpu_count == 0 || plan.run.mem_size_mib == 0 || plan.run.timeout_secs == 0 {
         return Err(RunError::InvalidBundle {
@@ -1179,7 +1211,7 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
 mod tests {
     use super::*;
     use crate::load_plan;
-    use crate::manifest::CheckPlan;
+    use crate::manifest::{CheckPlan, ContainerServicePlan, GrpcOperationPlan, GrpcServingStatus};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
 
@@ -1408,5 +1440,32 @@ body_contains = "ok"
         assert!(execution.checks[2..]
             .iter()
             .all(|check| check.status == "passed"));
+    }
+
+    #[test]
+    fn recognizes_a_grpc_health_operation_in_serial_evidence() {
+        let directory = fixture();
+        let mut plan = load_plan(directory.path().join("theseus.toml")).unwrap();
+        plan.container_service = Some(ContainerServicePlan {
+            campaign: false,
+            ready: None,
+            assertions: Vec::new(),
+            operations: Vec::new(),
+            grpc_ready: None,
+            grpc_assertions: Vec::new(),
+            grpc_operations: vec![GrpcOperationPlan {
+                name: "api_health".to_owned(),
+                url: "http://127.0.0.1:50051".to_owned(),
+                service: "example.Api".to_owned(),
+                expect_status: GrpcServingStatus::Serving,
+            }],
+        });
+        let serial_log = directory.path().join("serial.log");
+        fs::write(&serial_log, b"THES:GRPC:operation:api_health:PASS\n").unwrap();
+
+        let execution = evaluate_checks(&plan, &serial_log, Terminal::TimedOut).unwrap();
+        assert!(execution.checks.iter().any(|check| {
+            check.name == "container_service.operation.api_health" && check.status == "passed"
+        }));
     }
 }
