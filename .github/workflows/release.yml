@@ -80,6 +80,7 @@ jobs:
             test -s /opt/theseus/vmlinux
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
+            /usr/local/bin/theseus-image --help >/dev/null
           '
 
       - name: Package the matching runtime bundle
@@ -343,6 +344,7 @@ jobs:
             test -s /opt/theseus/vmlinux
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
+            /usr/local/bin/theseus-image --help >/dev/null
           '
 
       - name: Consume the published runtime archive
@@ -399,6 +401,7 @@ jobs:
             test -s vmlinux
             ./firecracker --version
             ./theseus --help >/dev/null
+            ./theseus-image --help >/dev/null
           )
 
   cli-release-consumer:

@@ -36,6 +36,8 @@ deterministic-CRNG kernel module is shipped.
     first causal divergence and query retained evidence without a VM.
 13. [Read a public evaluation](13-public-evaluation/) — summarize replay,
     coverage, reduction, and conventional-baseline evidence without KVM.
+14. [Run a container image](14-container-image/) — convert, test, and replay
+    an unmodified service image with the published Linux runtime.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),
