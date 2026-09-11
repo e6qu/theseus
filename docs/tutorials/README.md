@@ -38,6 +38,8 @@ deterministic-CRNG kernel module is shipped.
     coverage, reduction, and conventional-baseline evidence without KVM.
 14. [Run a container image](14-container-image/) — convert, test, and replay
     an unmodified service image with the published Linux runtime.
+15. [Campaign an unmodified container service](15-container-campaign/) — drive
+    a declared HTTP operation, retain its checkpoint, and replay it.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

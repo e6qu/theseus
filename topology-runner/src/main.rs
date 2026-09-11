@@ -9139,6 +9139,7 @@ mod tests {
                 events: Vec::new(),
                 checks: Vec::new(),
                 container_service: Some(theseus_orchestrator::oci::ContainerServiceContract {
+                    campaign: false,
                     ready: Some(theseus_orchestrator::oci::HttpReady {
                         url: "http://127.0.0.1:8080/health".to_owned(),
                         attempts: 3,

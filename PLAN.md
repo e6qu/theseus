@@ -201,6 +201,13 @@ It also supports the standard clear-text gRPC health service for readiness and
 serving-status assertions. Named HTTP operations can drive a ready service
 with GET, POST, PUT, or DELETE requests before assertions run.
 
+**Campaign operations:** Compose campaigns also accept a declarative `http`
+operation for an image-backed service. Theseus locks its JSON request command
+into the campaign input, executes it through the injected pivot after the
+normal boot barrier, records the HTTP result, and emits the ordinary operation
+checkpoint used by faults, minimization, and replay. Tutorial 15 demonstrates
+the path with an unmodified container image.
+
 **Current execution support:** image-backed test, Compose, campaigns, and
 exploration lock the image, adapter, service contract, and derived initramfs
 together. Replays boot the recorded initramfs while retaining the source image

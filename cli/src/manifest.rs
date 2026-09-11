@@ -254,6 +254,8 @@ struct Check {
 #[serde(deny_unknown_fields)]
 struct ContainerService {
     #[serde(default)]
+    campaign: bool,
+    #[serde(default)]
     ready: Option<HttpReady>,
     #[serde(default)]
     assertions: Vec<HttpAssertion>,
@@ -508,6 +510,10 @@ pub struct CheckPlan {
 /// Declarative service checks injected into an image-backed guest.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ContainerServicePlan {
+    /// Keep the image process alive after readiness so a Compose campaign can
+    /// drive declared HTTP operations through the injected pivot.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub campaign: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ready: Option<HttpReadyPlan>,
     #[serde(default)]
@@ -854,6 +860,7 @@ fn container_service_plan(
         });
     }
     Ok(Some(ContainerServicePlan {
+        campaign: service.campaign,
         ready,
         assertions,
         operations,

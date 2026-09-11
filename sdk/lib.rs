@@ -204,6 +204,25 @@ pub mod linux {
             }
         }
 
+        /// Read the next host command with a stable line prefix. Image-backed
+        /// service adapters use this after their boot barrier to receive a
+        /// declared campaign operation without application instrumentation.
+        /// Unrelated console traffic is ignored just as it is for events.
+        pub fn next_command(&mut self, prefix: &str) -> io::Result<String> {
+            loop {
+                let mut line = String::new();
+                if self.input.read_line(&mut line)? == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "console closed",
+                    ));
+                }
+                if let Some(command) = line.strip_prefix(prefix) {
+                    return Ok(String::from(command.trim_end_matches(['\r', '\n'])));
+                }
+            }
+        }
+
         /// The standard event round: echo events as markers until the
         /// terminator, then emit MARKER_DONE.
         pub fn event_round(&mut self) -> io::Result<()> {
