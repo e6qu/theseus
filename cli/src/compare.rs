@@ -57,6 +57,10 @@ struct Boundary {
     service: String,
     #[serde(default)]
     state_sha256: String,
+    #[serde(default)]
+    serial_sha256: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    markers: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -127,6 +131,21 @@ pub fn compare_campaigns(
                         right: format!(
                             "{}@{} state={}",
                             right.operation, right.service, right.state_sha256
+                        ),
+                    });
+                }
+                if left.serial_sha256 != right.serial_sha256 || left.markers != right.markers {
+                    return Some(CampaignDivergence {
+                        run,
+                        boundary: Some(boundary),
+                        reason: "first operation-boundary evidence differs".to_owned(),
+                        left: format!(
+                            "markers={:?}; serial={:?}",
+                            left.markers, left.serial_sha256
+                        ),
+                        right: format!(
+                            "markers={:?}; serial={:?}",
+                            right.markers, right.serial_sha256
                         ),
                     });
                 }
