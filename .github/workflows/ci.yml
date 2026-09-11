@@ -30,6 +30,7 @@ jobs:
           cargo check --manifest-path orchestrator/Cargo.toml
           cargo check --manifest-path cli/Cargo.toml --locked
           cargo check --manifest-path topology-runner/Cargo.toml --locked
+          cargo check --manifest-path image-runner/Cargo.toml --locked
           cargo check --manifest-path explorer-runner/Cargo.toml --locked
 
       - name: Theseus crate tests
@@ -38,6 +39,7 @@ jobs:
           cargo test --manifest-path orchestrator/Cargo.toml -- branch::tests orchestrator::tree
           cargo test --manifest-path cli/Cargo.toml --locked
           cargo test --manifest-path topology-runner/Cargo.toml --locked
+          cargo test --manifest-path image-runner/Cargo.toml --locked
           cargo test --manifest-path explorer-runner/Cargo.toml --locked
 
       - name: Deterministic unit suites

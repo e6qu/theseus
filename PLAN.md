@@ -190,6 +190,15 @@ Make Theseus useful without a bespoke guest protocol.
 run as a deterministic campaign with properties, faults, minimization, and
 replay.
 
+**Current implementation:** the published Linux runtime now includes
+`theseus-image flatten image.tar --output initramfs.cpio`. It converts a
+standard `docker save` archive into the bootable initramfs artifact consumed
+by ordinary Theseus manifests, preserving the image entrypoint, environment,
+and working directory without application changes. The resulting artifact
+uses the same locked test, Compose, campaign, minimization, and replay paths.
+First-class HTTP/gRPC readiness and assertion adapters remain work for this
+tranche.
+
 ### P18 — multiverse debugging
 
 Turn a replay bundle into an investigation surface.

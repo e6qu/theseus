@@ -1,0 +1,10 @@
+/Users/zardoz/projects/theseus/image-runner/target/debug/deps/linux_loader-90d60017d51916ac.d: /Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/lib.rs /Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/cmdline/mod.rs /Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/configurator/mod.rs /Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/configurator/fdt.rs /Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/loader/mod.rs /Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/loader/pe/mod.rs
+
+/Users/zardoz/projects/theseus/image-runner/target/debug/deps/liblinux_loader-90d60017d51916ac.rmeta: /Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/lib.rs /Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/cmdline/mod.rs /Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/configurator/mod.rs /Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/configurator/fdt.rs /Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/loader/mod.rs /Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/loader/pe/mod.rs
+
+/Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/lib.rs:
+/Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/cmdline/mod.rs:
+/Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/configurator/mod.rs:
+/Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/configurator/fdt.rs:
+/Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/loader/mod.rs:
+/Users/zardoz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-loader-0.14.0/src/loader/pe/mod.rs:

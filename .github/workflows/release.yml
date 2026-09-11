@@ -76,6 +76,7 @@ jobs:
             test -x /usr/local/bin/theseus
             test -x /usr/local/bin/theseus-topology
             test -x /usr/local/bin/theseus-explorer
+            test -x /usr/local/bin/theseus-image
             test -s /opt/theseus/vmlinux
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
@@ -92,6 +93,7 @@ jobs:
           docker cp "$container:/usr/local/bin/theseus" "theseus-${TAG}-linux-${{ matrix.arch }}/theseus"
           docker cp "$container:/usr/local/bin/theseus-topology" "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-topology"
           docker cp "$container:/usr/local/bin/theseus-explorer" "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-explorer"
+          docker cp "$container:/usr/local/bin/theseus-image" "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-image"
           docker cp "$container:/opt/theseus/vmlinux" "theseus-${TAG}-linux-${{ matrix.arch }}/vmlinux"
           docker cp "$container:/opt/theseus/." "theseus-${TAG}-linux-${{ matrix.arch }}/"
           docker rm "$container"
@@ -99,6 +101,7 @@ jobs:
           chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/theseus"
           chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-topology"
           chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-explorer"
+          chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-image"
           (
             cd "theseus-${TAG}-linux-${{ matrix.arch }}"
             sha256sum ./* > SHA256SUMS
@@ -336,6 +339,7 @@ jobs:
             test -x /usr/local/bin/theseus
             test -x /usr/local/bin/theseus-topology
             test -x /usr/local/bin/theseus-explorer
+            test -x /usr/local/bin/theseus-image
             test -s /opt/theseus/vmlinux
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
@@ -391,6 +395,7 @@ jobs:
             test -x theseus
             test -x theseus-topology
             test -x theseus-explorer
+            test -x theseus-image
             test -s vmlinux
             ./firecracker --version
             ./theseus --help >/dev/null

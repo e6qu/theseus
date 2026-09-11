@@ -1,0 +1,14 @@
+[package]
+name = "theseus-image-runner"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Linux runtime adapter that turns OCI images into Theseus initramfs artifacts"
+
+[[bin]]
+name = "theseus-image"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1.0.150"
+theseus-orchestrator = { path = "../orchestrator" }

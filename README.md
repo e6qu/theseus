@@ -65,6 +65,18 @@ and boots it — no guest driver, no image modification, no Dockerfile
 changes. The image's entrypoint runs unchanged. See
 [docs/guides/container-images/](docs/guides/container-images/).
 
+On Linux, the published runtime also includes `theseus-image`. Use it to turn
+a `docker save` archive into the initramfs artifact that a normal Theseus
+manifest locks and replays:
+
+```sh
+docker save my-service > service.tar
+theseus-image flatten service.tar --output guest/initramfs.cpio
+```
+
+The image entrypoint, environment, and working directory are written to the
+initramfs by the adapter. The service itself stays unmodified.
+
 ## Requirements for the system under test
 
 A system must satisfy the following to be tested with full replay:
