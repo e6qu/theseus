@@ -48,9 +48,30 @@ replay paths then use that locked image; the lower-level Rust API remains
 `orchestrator::oci::flatten`.
 
 `ready.attempts` defaults to 50 and `ready.interval_millis` defaults to 100.
-Use `http://` URLs with a host, optional port, and path. The first adapter is
-deliberately small: it supports GET readiness and status/body assertions;
-gRPC and scripted operations are separate next steps.
+Use `http://` URLs with a host, optional port, and path.
+
+## gRPC health checks
+
+For an unmodified gRPC service, use the standard health service instead of an
+HTTP endpoint:
+
+```toml
+[container_service.grpc_ready]
+url = "http://127.0.0.1:50051"
+service = "example.Api"
+
+[[container_service.grpc_assertions]]
+name = "api_is_serving"
+url = "http://127.0.0.1:50051"
+service = "example.Api"
+expect_status = "serving"
+```
+
+Theseus speaks clear-text HTTP/2 prior knowledge and calls
+`grpc.health.v1.Health/Check`. `expect_status` is one of `unknown`, `serving`,
+`not_serving`, or `service_unknown`. Use this path for a service that exposes
+the standard gRPC health protocol; TLS, reflection, and arbitrary RPC calls
+are not part of this small adapter.
 
 Static and dynamically linked images work when their dependencies are inside
 the image. Use the simulated network for deterministic networking.

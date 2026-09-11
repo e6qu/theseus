@@ -678,21 +678,23 @@ fn evaluate_checks(
         source,
     })?;
     if let Some(service) = &plan.container_service {
-        let ready = b"THES:HTTP:ready:PASS";
-        let found = contains(&serial, ready);
-        checks.push(if found {
-            passed(
-                "container_service.ready",
-                "http_ready",
-                "service reported HTTP readiness",
-            )
-        } else {
-            failed(
-                "container_service.ready",
-                "http_ready",
-                "service did not report HTTP readiness",
-            )
-        });
+        if service.ready.is_some() {
+            let ready = b"THES:HTTP:ready:PASS";
+            let found = contains(&serial, ready);
+            checks.push(if found {
+                passed(
+                    "container_service.ready",
+                    "http_ready",
+                    "service reported HTTP readiness",
+                )
+            } else {
+                failed(
+                    "container_service.ready",
+                    "http_ready",
+                    "service did not report HTTP readiness",
+                )
+            });
+        }
         for assertion in &service.assertions {
             let expected = format!("THES:HTTP:{}:PASS", assertion.name);
             let found = contains(&serial, expected.as_bytes());
@@ -708,6 +710,41 @@ fn evaluate_checks(
                     &name,
                     "http_assertion",
                     format!("HTTP assertion {:?} did not pass", assertion.name),
+                )
+            });
+        }
+        if service.grpc_ready.is_some() {
+            let ready = b"THES:GRPC:ready:PASS";
+            let found = contains(&serial, ready);
+            checks.push(if found {
+                passed(
+                    "container_service.grpc_ready",
+                    "grpc_ready",
+                    "service reported gRPC readiness",
+                )
+            } else {
+                failed(
+                    "container_service.grpc_ready",
+                    "grpc_ready",
+                    "service did not report gRPC readiness",
+                )
+            });
+        }
+        for assertion in &service.grpc_assertions {
+            let expected = format!("THES:GRPC:{}:PASS", assertion.name);
+            let found = contains(&serial, expected.as_bytes());
+            let name = format!("container_service.{}", assertion.name);
+            checks.push(if found {
+                passed(
+                    &name,
+                    "grpc_assertion",
+                    format!("gRPC assertion {:?} passed", assertion.name),
+                )
+            } else {
+                failed(
+                    &name,
+                    "grpc_assertion",
+                    format!("gRPC assertion {:?} did not pass", assertion.name),
                 )
             });
         }
@@ -923,7 +960,21 @@ fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
                 reason: "container_service requires guest.image".to_owned(),
             });
         }
-        if service.ready.attempts == 0 || service.ready.interval_millis == 0 {
+        if service.ready.is_none() && service.grpc_ready.is_none() {
+            return Err(RunError::InvalidBundle {
+                path: path.to_path_buf(),
+                reason: "container_service needs ready or grpc_ready".to_owned(),
+            });
+        }
+        if service
+            .ready
+            .as_ref()
+            .is_some_and(|ready| ready.attempts == 0 || ready.interval_millis == 0)
+            || service
+                .grpc_ready
+                .as_ref()
+                .is_some_and(|ready| ready.attempts == 0 || ready.interval_millis == 0)
+        {
             return Err(RunError::InvalidBundle {
                 path: path.to_path_buf(),
                 reason: "container_service readiness settings must be greater than zero".to_owned(),
@@ -931,6 +982,20 @@ fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
         }
         let mut assertion_names = HashSet::new();
         for assertion in &service.assertions {
+            if assertion.name == "ready"
+                || !assertion
+                    .name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                || !assertion_names.insert(&assertion.name)
+            {
+                return Err(RunError::InvalidBundle {
+                    path: path.to_path_buf(),
+                    reason: "container_service assertion names must be unique and safe".to_owned(),
+                });
+            }
+        }
+        for assertion in &service.grpc_assertions {
             if assertion.name == "ready"
                 || !assertion
                     .name

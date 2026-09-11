@@ -253,9 +253,14 @@ struct Check {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContainerService {
-    ready: HttpReady,
+    #[serde(default)]
+    ready: Option<HttpReady>,
     #[serde(default)]
     assertions: Vec<HttpAssertion>,
+    #[serde(default)]
+    grpc_ready: Option<GrpcHealth>,
+    #[serde(default)]
+    grpc_assertions: Vec<GrpcAssertion>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -277,6 +282,38 @@ struct HttpAssertion {
     expect_status: u16,
     #[serde(default)]
     body_contains: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrpcHealth {
+    url: String,
+    #[serde(default)]
+    service: String,
+    #[serde(default = "default_grpc_attempts")]
+    attempts: u32,
+    #[serde(default = "default_grpc_interval_millis")]
+    interval_millis: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrpcAssertion {
+    name: String,
+    url: String,
+    #[serde(default)]
+    service: String,
+    #[serde(default = "default_grpc_status")]
+    expect_status: GrpcServingStatus,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GrpcServingStatus {
+    Unknown,
+    Serving,
+    NotServing,
+    ServiceUnknown,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -444,9 +481,14 @@ pub struct CheckPlan {
 /// Declarative service checks injected into an image-backed guest.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ContainerServicePlan {
-    pub ready: HttpReadyPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready: Option<HttpReadyPlan>,
     #[serde(default)]
     pub assertions: Vec<HttpAssertionPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grpc_ready: Option<GrpcHealthPlan>,
+    #[serde(default)]
+    pub grpc_assertions: Vec<GrpcAssertionPlan>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -463,6 +505,22 @@ pub struct HttpAssertionPlan {
     pub expect_status: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_contains: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GrpcHealthPlan {
+    pub url: String,
+    pub service: String,
+    pub attempts: u32,
+    pub interval_millis: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GrpcAssertionPlan {
+    pub name: String,
+    pub url: String,
+    pub service: String,
+    pub expect_status: GrpcServingStatus,
 }
 
 pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
@@ -681,42 +739,23 @@ fn container_service_plan(
             "container_service requires guest.image".to_owned(),
         ));
     }
-    validate_http_url("container_service.ready.url", &service.ready.url)?;
-    if service.ready.attempts == 0 {
-        return Err(LoadError::InvalidRunConfig(
-            "container_service.ready.attempts must be greater than zero".to_owned(),
-        ));
-    }
-    if service.ready.interval_millis == 0 {
-        return Err(LoadError::InvalidRunConfig(
-            "container_service.ready.interval_millis must be greater than zero".to_owned(),
+    let ready = service
+        .ready
+        .map(|ready| http_ready_plan("container_service.ready", ready))
+        .transpose()?;
+    let grpc_ready = service
+        .grpc_ready
+        .map(|ready| grpc_ready_plan("container_service.grpc_ready", ready))
+        .transpose()?;
+    if ready.is_none() && grpc_ready.is_none() {
+        return Err(LoadError::InvalidGuest(
+            "container_service needs ready or grpc_ready".to_owned(),
         ));
     }
     let mut names = HashSet::new();
     let mut assertions = Vec::with_capacity(service.assertions.len());
     for assertion in service.assertions {
-        if assertion.name.trim().is_empty() {
-            return Err(LoadError::InvalidCheck(
-                "container_service assertion name must not be empty".to_owned(),
-            ));
-        }
-        if assertion.name == "ready"
-            || !assertion
-                .name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-        {
-            return Err(LoadError::InvalidCheck(format!(
-                "container_service assertion name {:?} must use letters, digits, '-' or '_' and cannot be 'ready'",
-                assertion.name
-            )));
-        }
-        if !names.insert(assertion.name.clone()) {
-            return Err(LoadError::InvalidCheck(format!(
-                "container_service assertion {:?} appears more than once",
-                assertion.name
-            )));
-        }
+        validate_service_assertion_name(&mut names, &assertion.name)?;
         validate_http_url("container_service.assertions.url", &assertion.url)?;
         if !(100..=599).contains(&assertion.expect_status) {
             return Err(LoadError::InvalidCheck(format!(
@@ -737,14 +776,78 @@ fn container_service_plan(
             body_contains: assertion.body_contains,
         });
     }
+    let mut grpc_assertions = Vec::with_capacity(service.grpc_assertions.len());
+    for assertion in service.grpc_assertions {
+        validate_service_assertion_name(&mut names, &assertion.name)?;
+        validate_http_url("container_service.grpc_assertions.url", &assertion.url)?;
+        grpc_assertions.push(GrpcAssertionPlan {
+            name: assertion.name,
+            url: assertion.url,
+            service: assertion.service,
+            expect_status: assertion.expect_status,
+        });
+    }
     Ok(Some(ContainerServicePlan {
-        ready: HttpReadyPlan {
-            url: service.ready.url,
-            attempts: service.ready.attempts,
-            interval_millis: service.ready.interval_millis,
-        },
+        ready,
         assertions,
+        grpc_ready,
+        grpc_assertions,
     }))
+}
+
+fn http_ready_plan(field: &str, ready: HttpReady) -> Result<HttpReadyPlan, LoadError> {
+    validate_http_url(&format!("{field}.url"), &ready.url)?;
+    if ready.attempts == 0 || ready.interval_millis == 0 {
+        return Err(LoadError::InvalidRunConfig(format!(
+            "{field}.attempts and {field}.interval_millis must be greater than zero"
+        )));
+    }
+    Ok(HttpReadyPlan {
+        url: ready.url,
+        attempts: ready.attempts,
+        interval_millis: ready.interval_millis,
+    })
+}
+
+fn grpc_ready_plan(field: &str, ready: GrpcHealth) -> Result<GrpcHealthPlan, LoadError> {
+    validate_http_url(&format!("{field}.url"), &ready.url)?;
+    if ready.attempts == 0 || ready.interval_millis == 0 {
+        return Err(LoadError::InvalidRunConfig(format!(
+            "{field}.attempts and {field}.interval_millis must be greater than zero"
+        )));
+    }
+    Ok(GrpcHealthPlan {
+        url: ready.url,
+        service: ready.service,
+        attempts: ready.attempts,
+        interval_millis: ready.interval_millis,
+    })
+}
+
+fn validate_service_assertion_name(
+    names: &mut HashSet<String>,
+    name: &str,
+) -> Result<(), LoadError> {
+    if name.trim().is_empty() {
+        return Err(LoadError::InvalidCheck(
+            "container_service assertion name must not be empty".to_owned(),
+        ));
+    }
+    if name == "ready"
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Err(LoadError::InvalidCheck(format!(
+            "container_service assertion name {name:?} must use letters, digits, '-' or '_' and cannot be 'ready'"
+        )));
+    }
+    if !names.insert(name.to_owned()) {
+        return Err(LoadError::InvalidCheck(format!(
+            "container_service assertion {name:?} appears more than once"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_http_url(field: &str, value: &str) -> Result<(), LoadError> {
@@ -911,6 +1014,18 @@ fn default_http_interval_millis() -> u64 {
 
 fn default_http_status() -> u16 {
     200
+}
+
+fn default_grpc_attempts() -> u32 {
+    50
+}
+
+fn default_grpc_interval_millis() -> u64 {
+    100
+}
+
+fn default_grpc_status() -> GrpcServingStatus {
+    GrpcServingStatus::Serving
 }
 
 fn default_max_rounds() -> u64 {
@@ -1180,7 +1295,7 @@ body_contains = "ok"
 
         let plan = load_plan(test.join("theseus.toml")).unwrap();
         let service = plan.container_service.unwrap();
-        assert_eq!(service.ready.attempts, 3);
+        assert_eq!(service.ready.unwrap().attempts, 3);
         assert_eq!(service.assertions[0].name, "health");
     }
 
@@ -1205,6 +1320,51 @@ url = "http://127.0.0.1:8080/health"
             .unwrap_err()
             .to_string()
             .contains("requires guest.image"));
+    }
+
+    #[test]
+    fn accepts_a_grpc_health_contract_without_http_readiness() {
+        let directory = fixture(
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+image_adapter = "runtime/theseus-image"
+[guest]
+kernel = "guest/vmlinux"
+image = "guest/service.tar"
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+[container_service.grpc_ready]
+url = "http://127.0.0.1:50051"
+service = "example.Api"
+attempts = 3
+interval_millis = 10
+[[container_service.grpc_assertions]]
+name = "health"
+url = "http://127.0.0.1:50051"
+expect_status = "serving"
+"#,
+        );
+        let test = directory.path().join("test");
+        fs::write(test.join("runtime/theseus-image"), b"adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            test.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(test.join("guest/service.tar"), b"image").unwrap();
+
+        let plan = load_plan(test.join("theseus.toml")).unwrap();
+        let service = plan.container_service.unwrap();
+        assert!(service.ready.is_none());
+        assert_eq!(service.grpc_ready.unwrap().service, "example.Api");
+        assert_eq!(
+            service.grpc_assertions[0].expect_status,
+            GrpcServingStatus::Serving
+        );
     }
 
     #[test]
