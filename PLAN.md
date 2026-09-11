@@ -228,6 +228,18 @@ Prove the platform on real distributed-system failures.
 **Exit criteria:** a reproducible public evaluation demonstrates bugs or
 failure modes that ordinary repeated integration tests miss.
 
+**Current implementation:** `theseus evaluate [--format json|markdown]`
+validates a versioned evaluation contract against only its locked campaign
+bundles. It reports replay verification, selected and retained work, topology
+and instruction-location coverage, checkpoint work, minimization work, and
+retained operation-boundary evidence. Suites can record a conventional-chaos
+baseline and a manually observed investigation duration, but both are clearly
+informational rather than replay verdicts. `evaluations/replicated-counter/`
+is the first public corpus entry: it records the minimized stale-read failure
+from the three-service replicated-counter topology and its expected failed
+property. Add real public workloads and independently reproducible baseline
+observations before making comparative performance claims.
+
 ## Rules for future PRs
 
 - Work by capability tranche, not one field or one edge case per PR.

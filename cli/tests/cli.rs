@@ -155,6 +155,94 @@ fn compare_queries_and_reports_campaign_evidence_without_kvm() {
 }
 
 #[test]
+fn evaluate_summarizes_a_locked_public_corpus_without_kvm() {
+    let directory = tempfile::tempdir().unwrap();
+    let bundle = directory.path().join("bundle");
+    fs::create_dir(&bundle).unwrap();
+    fs::write(
+        directory.path().join("theseus-evaluation.toml"),
+        r#"version = 1
+name = "public corpus"
+[[workloads]]
+name = "counter"
+bundle = "bundle"
+expected_status = "failed"
+[[workloads.properties]]
+name = "consistent_read"
+status = "failed"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("campaign-result.json"),
+        r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","generated_candidates":4,"unique_topology_states":2,"unique_instruction_locations":3,"replay_verification":{"status":"passed"},"runs":[{"timeline":[{}]}],"properties":[{"name":"consistent_read","status":"failed"}]}"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "evaluate",
+            "--format",
+            "markdown",
+            "theseus-evaluation.toml",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let output = String::from_utf8(output.stdout).unwrap();
+    assert!(output.contains("Theseus public evaluation: public corpus"));
+    assert!(output.contains("Replay verification: 1/1 bundles"));
+}
+
+#[test]
+fn versioned_replicated_counter_evaluation_stays_replay_verified() {
+    let evaluation = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../evaluations/replicated-counter/theseus-evaluation.toml");
+    let output = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["evaluate", evaluation.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["status"], "passed");
+    assert_eq!(report["replay"]["verified"], 1);
+    assert_eq!(report["conventional_baseline"]["counterexamples"], 0);
+}
+
+#[test]
+fn evaluate_fails_its_contract_when_replay_evidence_is_missing() {
+    let directory = tempfile::tempdir().unwrap();
+    let bundle = directory.path().join("bundle");
+    fs::create_dir(&bundle).unwrap();
+    fs::write(
+        directory.path().join("theseus-evaluation.toml"),
+        r#"version = 1
+name = "missing replay"
+[[workloads]]
+name = "counter"
+bundle = "bundle"
+expected_status = "failed"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("campaign-result.json"),
+        r#"{"format":"theseus-compose-campaign-result-v1","status":"failed"}"#,
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["evaluate", "theseus-evaluation.toml"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8(output.stdout)
+        .unwrap()
+        .contains("\"status\": \"failed\""));
+}
+
+#[test]
 fn help_lists_bundle_local_replay_commands() {
     let output = Command::new(env!("CARGO_BIN_EXE_theseus"))
         .arg("--help")
@@ -170,4 +258,5 @@ fn help_lists_bundle_local_replay_commands() {
     assert!(help.contains("compose replay replay-dir"));
     assert!(help.contains("report --format markdown|json|junit"));
     assert!(help.contains("compare --query /json/pointer"));
+    assert!(help.contains("evaluate [--format json|markdown]"));
 }

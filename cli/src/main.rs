@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use theseus_cli::{
-    compare_campaigns, explore, explore_compose, load_compose_plan, load_plan,
+    compare_campaigns, evaluate, explore, explore_compose, load_compose_plan, load_plan,
     minimize_compose_campaign, minimize_exploration_path, query_campaigns, replay, replay_compose,
     replay_exploration, replay_exploration_path, report, report_file, report_text,
     snapshot_exploration_path, test, test_compose, ReportFormat,
@@ -26,6 +26,7 @@ const USAGE: &str = "Usage:
   theseus compare left-campaign-dir right-campaign-dir
   theseus compare --format json|markdown left-campaign-dir right-campaign-dir
   theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
+  theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
@@ -57,6 +58,23 @@ fn seed_path(value: &str) -> Result<Vec<u64>, String> {
         return Err(USAGE.to_owned());
     }
     Ok(path)
+}
+
+fn print_evaluation(summary: theseus_cli::EvaluationSummary, format: &str) -> Result<(), String> {
+    match format {
+        "json" => println!(
+            "{}",
+            serde_json::to_string_pretty(&summary)
+                .map_err(|error| format!("cannot encode evaluation: {error}"))?
+        ),
+        "markdown" => print!("{}", summary.markdown()),
+        _ => return Err("evaluation format must be json or markdown".to_owned()),
+    }
+    if summary.status == "passed" {
+        Ok(())
+    } else {
+        Err("evaluation did not satisfy its replay or expected-outcome contract".to_owned())
+    }
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
@@ -142,6 +160,18 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 report(&input, input.join("theseus-report")).map_err(|error| error.to_string())?;
             println!("report: {}", index.display());
             Ok(())
+        }
+        [command] if command == "evaluate" => {
+            let summary = evaluate("theseus-evaluation.toml").map_err(|error| error.to_string())?;
+            print_evaluation(summary, "json")
+        }
+        [command, input] if command == "evaluate" => {
+            let summary = evaluate(input).map_err(|error| error.to_string())?;
+            print_evaluation(summary, "json")
+        }
+        [command, flag, format, input] if command == "evaluate" && flag == "--format" => {
+            let summary = evaluate(input).map_err(|error| error.to_string())?;
+            print_evaluation(summary, format)
         }
         [command, left, right] if command == "compare" => {
             let comparison = compare_campaigns(left, right).map_err(|error| error.to_string())?;

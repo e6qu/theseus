@@ -82,6 +82,22 @@ fault action, topology hash, serial digest, coverage location, or property
 verdict. The comparison and its Markdown form contain no VM memory or external
 service dependency, so attach them with the two locked result directories.
 
+### Summarize a public evaluation
+
+A versioned evaluation names campaign bundles within its own directory and
+states the expected campaign and property outcomes. Summarize it without KVM:
+
+```sh
+theseus evaluate evaluations/replicated-counter/theseus-evaluation.toml
+theseus evaluate --format markdown evaluations/replicated-counter/theseus-evaluation.toml
+```
+
+The result counts replay verification, corpus and coverage evidence,
+checkpoint work, reduction work, and retained operation boundaries. A suite
+may include a conventional-chaos baseline and manually observed investigation
+seconds, but Theseus labels those informational: neither affects a replay
+verdict or proves a comparison with another product.
+
 The report shows checks and serial logs for one timeline, service checks and
 applied faults for a topology, and the search tree plus dirty-page coverage
 proxy for an exploration. Every report includes a copy-paste command that

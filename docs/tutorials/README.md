@@ -4,8 +4,8 @@ Each directory is complete: make it your working directory and use the
 published Theseus artifact named in its README. No tutorial needs a Theseus
 source checkout.
 
-Tutorials 1–8 and 10–11 need Linux with KVM and Docker. Tutorials 9 and 12
-read recorded bundles with only the published binary. Tutorials 1 and 2
+Tutorials 1–8 and 10–11 need Linux with KVM and Docker. Tutorials 9, 12, and
+13 read recorded bundles with only the published binary. Tutorials 1 and 2
 currently use the arm64 runtime, because that is where the matching
 deterministic-CRNG kernel module is shipped.
 
@@ -34,6 +34,8 @@ deterministic-CRNG kernel module is shipped.
     topology twice and save its machine-readable repeatability witness.
 12. [Investigate two campaign bundles](12-investigate-campaign/) — find the
     first causal divergence and query retained evidence without a VM.
+13. [Read a public evaluation](13-public-evaluation/) — summarize replay,
+    coverage, reduction, and conventional-baseline evidence without KVM.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),
