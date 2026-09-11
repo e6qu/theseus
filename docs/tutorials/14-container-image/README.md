@@ -15,9 +15,10 @@ sh ./run.sh
 ```
 
 `Dockerfile` is an ordinary BusyBox service image. The runner saves it in
-Docker's standard image-tar format. The published Theseus runtime runs
-`theseus-image flatten`, then `theseus test` and `theseus replay` using the
-same generated initramfs.
+Docker's standard image-tar format. `theseus.toml` names that archive as
+`guest.image` and names the published adapter as `runtime.image_adapter`.
+`theseus test` converts the image, locks the image and adapter in its replay
+bundle, then boots it. `theseus replay` converts the locked image again.
 
 Replace `Dockerfile` with your service image. Keep its dependencies in the
 image. Theseus preserves its entrypoint, environment, and working directory;

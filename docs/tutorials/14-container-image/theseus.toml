@@ -2,10 +2,11 @@ version = 1
 
 [runtime]
 firecracker = "work/runtime/firecracker"
+image_adapter = "work/runtime/theseus-image"
 
 [guest]
 kernel = "work/guest/vmlinux"
-initramfs = "work/guest/initramfs.cpio"
+image = "work/service.tar"
 
 [run]
 seed = 42

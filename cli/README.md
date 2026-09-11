@@ -29,7 +29,7 @@ normalized plan, including SHA-256 digests. It does not need KVM and does not
 start a VM.
 
 `test` runs one Linux+KVM Firecracker timeline. It copies the runtime binary,
-kernel, and initramfs into an immutable replay directory before booting, then
+kernel, and selected guest input into an immutable replay directory before booting, then
 writes the resolved source plan, bundle-local replay plan, serial log,
 Firecracker log, and result there. The default output is
 `theseus-replay/` beside the manifest; pass `--output` to choose another empty
@@ -147,16 +147,19 @@ P6.8 will add the static timeline viewer.
 ## Test directory
 
 Keep the manifest, extracted published Theseus runtime bundle, kernel, and
-initramfs in one directory. Paths in the manifest are relative to that
-directory; paths that escape it are rejected.
+one guest input in one directory. The guest input is either an initramfs or a
+Docker `save` archive. Paths in the manifest are relative to that directory;
+paths that escape it are rejected.
 
 ```text
 my-test/
 ├── theseus.toml
-├── runtime/firecracker
+├── runtime/
+│   ├── firecracker
+│   └── theseus-image
 └── guest/
     ├── vmlinux
-    └── initramfs.cpio.gz
+    └── service.tar
 ```
 
 Use the Firecracker binary from an extracted, SHA-addressed Theseus release
@@ -167,10 +170,11 @@ version = 1
 
 [runtime]
 firecracker = "runtime/firecracker"
+image_adapter = "runtime/theseus-image"
 
 [guest]
 kernel = "guest/vmlinux"
-initramfs = "guest/initramfs.cpio.gz"
+image = "guest/service.tar"
 
 [run]
 seed = 42
@@ -223,6 +227,11 @@ kind = "marker_seen"
 value = "ff"
 ```
 
+For a prebuilt guest, omit `runtime.image_adapter` and use
+`initramfs = "guest/initramfs.cpio.gz"`. `image` and `initramfs` are mutually
+exclusive. Image replay locks both the original archive and adapter binary;
+it does not rely on a host Docker daemon.
+
 `events.data` is an even-length hexadecimal byte string. Version 1 has one
 delivery point: `ready`, after the guest announces that it can receive input.
 The replay bundle preserves the resulting plan verbatim. The runner delivers
@@ -247,7 +256,7 @@ either topology feature.
 
 Use a small, strict Compose subset to describe a set of Theseus test
 directories. Each service names its own `theseus.toml`; the plan locks the
-runtime, kernel, and initramfs digest for every service. It accepts only named
+runtime, kernel, and selected guest-input digest for every service. It accepts only named
 networks and `x-theseus.manifest`. Docker images, ports, volumes, host
 networks, `depends_on`, and other host-oriented Compose features are rejected.
 
@@ -289,7 +298,7 @@ theseus compose test
 membership. It also records each memory-only simulated storage device and its
 derived seed. `compose test` uses the `theseus-topology` executor included in a
 published Linux runtime bundle. It copies and re-checks each service’s
-Firecracker, kernel, and initramfs before booting; then it connects service
+Firecracker, kernel, and selected guest input before booting; then it connects service
 NICs through an in-process deterministic switch and pumps them in sorted
 service-name order. `at_round` is a global scheduler round, not elapsed host
 time. Faults are scoped to the service that declares them and must be strictly
