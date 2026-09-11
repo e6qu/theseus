@@ -12,6 +12,7 @@ use std::env;
 use std::fs;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use addr2line::Loader;
@@ -996,11 +997,16 @@ struct RunPlan {
 #[derive(Debug, Deserialize, Serialize)]
 struct RuntimePlan {
     firecracker: Artifact,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image_adapter: Option<Artifact>,
 }
 #[derive(Debug, Deserialize, Serialize)]
 struct GuestPlan {
     kernel: Artifact,
-    initramfs: Artifact,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initramfs: Option<Artifact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image: Option<Artifact>,
 }
 #[derive(Debug, Deserialize, Serialize)]
 struct Artifact {
@@ -2244,7 +2250,7 @@ fn checkpoint_campaign_operation(
             0,
             service,
             Path::new(&service.run.guest.kernel.path),
-            Path::new(&service.run.guest.initramfs.path),
+            service_initramfs(service)?,
             serial,
             &switches,
             scheduler.execution_locations.as_deref(),
@@ -2959,32 +2965,13 @@ fn boot_campaign_checkpoint(
     }
     let names = topology.services.keys().cloned().collect::<Vec<_>>();
     for name in &names {
-        let service = &topology.services[name];
         let service_dir = directory.join("services").join(name);
         fs::create_dir_all(service_dir.join("artifacts")).map_err(|error| error.to_string())?;
-        let kernel = lock_artifact(&service_dir, "kernel", &service.run.guest.kernel)?;
-        let initramfs = lock_artifact(&service_dir, "initramfs", &service.run.guest.initramfs)?;
-        let runtime = lock_artifact(
-            &service_dir,
-            "firecracker",
-            &service.run.runtime.firecracker,
-        )?;
         let service = topology
             .services
             .get_mut(name)
             .expect("topology service missing");
-        service.run.runtime.firecracker.path = fs::canonicalize(runtime)
-            .map_err(|error| error.to_string())?
-            .display()
-            .to_string();
-        service.run.guest.kernel.path = fs::canonicalize(kernel)
-            .map_err(|error| error.to_string())?
-            .display()
-            .to_string();
-        service.run.guest.initramfs.path = fs::canonicalize(initramfs)
-            .map_err(|error| error.to_string())?
-            .display()
-            .to_string();
+        lock_service_inputs(&service_dir, service)?;
     }
     fs::write(
         directory.join("replay-plan.json"),
@@ -3005,7 +2992,7 @@ fn boot_campaign_checkpoint(
             0,
             service,
             Path::new(&service.run.guest.kernel.path),
-            Path::new(&service.run.guest.initramfs.path),
+            service_initramfs(service)?,
             &serial,
             &mut switches,
         )?;
@@ -7233,32 +7220,13 @@ fn execute(
     let names = topology.services.keys().cloned().collect::<Vec<_>>();
     if checkpoint.is_none() {
         for name in &names {
-            let service = &topology.services[name];
             let service_dir = output.join("services").join(name);
             fs::create_dir_all(service_dir.join("artifacts")).map_err(|error| error.to_string())?;
-            let kernel = lock_artifact(&service_dir, "kernel", &service.run.guest.kernel)?;
-            let initramfs = lock_artifact(&service_dir, "initramfs", &service.run.guest.initramfs)?;
-            let runtime = lock_artifact(
-                &service_dir,
-                "firecracker",
-                &service.run.runtime.firecracker,
-            )?;
             let locked = topology
                 .services
                 .get_mut(name)
                 .expect("topology service missing");
-            locked.run.runtime.firecracker.path = fs::canonicalize(runtime)
-                .map_err(|error| error.to_string())?
-                .display()
-                .to_string();
-            locked.run.guest.kernel.path = fs::canonicalize(kernel)
-                .map_err(|error| error.to_string())?
-                .display()
-                .to_string();
-            locked.run.guest.initramfs.path = fs::canonicalize(initramfs)
-                .map_err(|error| error.to_string())?
-                .display()
-                .to_string();
+            lock_service_inputs(&service_dir, locked)?;
         }
     }
     fs::write(
@@ -7286,7 +7254,7 @@ fn execute(
                     0,
                     service,
                     Path::new(&service.run.guest.kernel.path),
-                    Path::new(&service.run.guest.initramfs.path),
+                    service_initramfs(service)?,
                     serial,
                     &switches,
                     scheduler.execution_locations.as_deref(),
@@ -7311,7 +7279,7 @@ fn execute(
                         0,
                         service,
                         Path::new(&service.run.guest.kernel.path),
-                        Path::new(&service.run.guest.initramfs.path),
+                        service_initramfs(service)?,
                         &serial,
                         &mut switches,
                     )?,
@@ -9009,9 +8977,167 @@ fn lock_artifact(service_dir: &Path, name: &str, artifact: &Artifact) -> Result<
     Ok(target)
 }
 
+fn artifact_at(path: PathBuf) -> Result<Artifact, String> {
+    let path = fs::canonicalize(path).map_err(|error| error.to_string())?;
+    let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+    Ok(Artifact {
+        path: path.display().to_string(),
+        sha256: format!("{:x}", Sha256::digest(bytes)),
+    })
+}
+
+fn lock_service_inputs(service_dir: &Path, service: &mut ServicePlan) -> Result<(), String> {
+    let runtime = lock_artifact(service_dir, "firecracker", &service.run.runtime.firecracker)?;
+    let kernel = lock_artifact(service_dir, "kernel", &service.run.guest.kernel)?;
+    service.run.runtime.firecracker = artifact_at(runtime)?;
+    service.run.guest.kernel = artifact_at(kernel)?;
+
+    match (&service.run.guest.initramfs, &service.run.guest.image) {
+        (None, None) => {
+            return Err("guest must contain exactly one of initramfs or image".to_owned());
+        }
+        // A replay plan keeps the original image and adapter beside the
+        // already materialized initramfs. Re-lock all three inputs; replay
+        // itself boots the exact cpio artifact recorded by the first run.
+        (Some(initramfs), Some(image)) => {
+            let adapter = service
+                .run
+                .runtime
+                .image_adapter
+                .as_ref()
+                .ok_or_else(|| "guest.image requires runtime.image_adapter".to_owned())?;
+            service.run.guest.initramfs = Some(artifact_at(lock_artifact(
+                service_dir,
+                "initramfs",
+                initramfs,
+            )?)?);
+            service.run.guest.image = Some(artifact_at(lock_artifact(
+                service_dir,
+                "image.tar",
+                image,
+            )?)?);
+            service.run.runtime.image_adapter = Some(artifact_at(lock_artifact(
+                service_dir,
+                "theseus-image",
+                adapter,
+            )?)?);
+        }
+        (Some(initramfs), None) => {
+            service.run.guest.initramfs = Some(artifact_at(lock_artifact(
+                service_dir,
+                "initramfs",
+                initramfs,
+            )?)?);
+        }
+        (None, Some(image)) => {
+            let adapter = service
+                .run
+                .runtime
+                .image_adapter
+                .as_ref()
+                .ok_or_else(|| "guest.image requires runtime.image_adapter".to_owned())?;
+            let image = lock_artifact(service_dir, "image.tar", image)?;
+            let adapter = lock_artifact(service_dir, "theseus-image", adapter)?;
+            let initramfs = service_dir.join("artifacts/initramfs");
+            let status = Command::new(&adapter)
+                .arg("flatten")
+                .arg(&image)
+                .arg("--output")
+                .arg(&initramfs)
+                .status()
+                .map_err(|error| format!("cannot start {}: {error}", adapter.display()))?;
+            if !status.success() {
+                return Err(format!("container image adapter exited with {status}"));
+            }
+            service.run.guest.image = Some(artifact_at(image)?);
+            service.run.runtime.image_adapter = Some(artifact_at(adapter)?);
+            service.run.guest.initramfs = Some(artifact_at(initramfs)?);
+        }
+    }
+    Ok(())
+}
+
+fn service_initramfs(service: &ServicePlan) -> Result<&Path, String> {
+    service
+        .run
+        .guest
+        .initramfs
+        .as_ref()
+        .map(|artifact| Path::new(&artifact.path))
+        .ok_or_else(|| "service has no materialized initramfs".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn locks_and_materializes_a_container_image_service() {
+        let directory = std::env::temp_dir().join(format!(
+            "theseus-topology-image-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let artifacts = directory.join("artifacts");
+        fs::create_dir(&artifacts).unwrap();
+        let firecracker = directory.join("firecracker");
+        let kernel = directory.join("vmlinux");
+        let image = directory.join("service.tar");
+        let adapter = directory.join("theseus-image");
+        fs::write(&firecracker, b"firecracker").unwrap();
+        fs::write(&kernel, b"kernel").unwrap();
+        fs::write(&image, b"container image").unwrap();
+        fs::write(
+            &adapter,
+            "#!/bin/sh\n[ \"$1\" = flatten ] && [ \"$3\" = --output ]\ncp \"$2\" \"$4\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut service = ServicePlan {
+            manifest: "theseus.toml".to_owned(),
+            run: RunPlan {
+                format: "theseus-run-plan-v1".to_owned(),
+                manifest: "theseus.toml".to_owned(),
+                runtime: RuntimePlan {
+                    firecracker: artifact_at(firecracker).unwrap(),
+                    image_adapter: Some(artifact_at(adapter).unwrap()),
+                },
+                guest: GuestPlan {
+                    kernel: artifact_at(kernel).unwrap(),
+                    initramfs: None,
+                    image: Some(artifact_at(image).unwrap()),
+                },
+                run: RunConfig {
+                    seed: 1,
+                    vcpu_count: 1,
+                    mem_size_mib: 128,
+                    timeout_secs: 1,
+                    max_rounds: 1,
+                    virtual_time: None,
+                },
+                network: NetworkConfig::default(),
+                storage: Vec::new(),
+                events: Vec::new(),
+                checks: Vec::new(),
+            },
+            networks: Vec::new(),
+            faults: Vec::new(),
+        };
+
+        lock_service_inputs(&directory, &mut service).unwrap();
+        assert_eq!(
+            fs::read(service_initramfs(&service).unwrap()).unwrap(),
+            b"container image"
+        );
+        assert!(service.run.guest.image.is_some());
+        assert!(service.run.runtime.image_adapter.is_some());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn certification_requires_virtual_time_for_every_service() {

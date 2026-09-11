@@ -291,7 +291,13 @@ fn locked_replay_plan(bundle: impl AsRef<Path>) -> Result<RunPlan, ExploreError>
         })?;
     plan.runtime.firecracker = locked_artifact(&bundle, "firecracker", &plan.runtime.firecracker)?;
     plan.guest.kernel = locked_artifact(&bundle, "kernel", &plan.guest.kernel)?;
-    plan.guest.initramfs = locked_artifact(&bundle, "initramfs", &plan.guest.initramfs)?;
+    let initramfs = plan.guest.initramfs.as_ref().ok_or_else(|| {
+        ExploreError::Invalid(
+            "container-image exploration is not available yet; use theseus test or compose test"
+                .to_owned(),
+        )
+    })?;
+    plan.guest.initramfs = Some(locked_artifact(&bundle, "initramfs", initramfs)?);
     if let Some(runner) = &plan.runtime.explorer_runner {
         plan.runtime.explorer_runner = Some(locked_artifact(&bundle, "theseus-explorer", runner)?);
     }
@@ -451,6 +457,12 @@ fn validate(plan: &RunPlan) -> Result<(), ExploreError> {
     if plan.explore.is_none() {
         return Err(ExploreError::Invalid(
             "manifest has no [explore] section".to_owned(),
+        ));
+    }
+    if plan.guest.image.is_some() {
+        return Err(ExploreError::Invalid(
+            "container-image exploration is not available yet; use theseus test or compose test"
+                .to_owned(),
         ));
     }
     if !plan.storage.is_empty()

@@ -30,6 +30,7 @@ pub enum LoadError {
     InvalidNetworkDuplicateRate(u32),
     InvalidNetworkCorruptionRate(u32),
     InvalidRunConfig(String),
+    InvalidGuest(String),
     InvalidExplore(String),
     InvalidStorage(String),
     InvalidCheck(String),
@@ -81,6 +82,7 @@ impl fmt::Display for LoadError {
                 )
             }
             Self::InvalidRunConfig(reason) => write!(formatter, "run: {reason}"),
+            Self::InvalidGuest(reason) => write!(formatter, "guest: {reason}"),
             Self::InvalidExplore(reason) => write!(formatter, "explore: {reason}"),
             Self::InvalidStorage(reason) => write!(formatter, "storage: {reason}"),
             Self::InvalidCheck(reason) => write!(formatter, "checks: {reason}"),
@@ -117,13 +119,18 @@ struct Manifest {
 #[serde(deny_unknown_fields)]
 struct Runtime {
     firecracker: PathBuf,
+    #[serde(default)]
+    image_adapter: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Guest {
     kernel: PathBuf,
-    initramfs: PathBuf,
+    #[serde(default)]
+    initramfs: Option<PathBuf>,
+    #[serde(default)]
+    image: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -271,6 +278,9 @@ pub struct ArtifactPlan {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RuntimePlan {
     pub firecracker: ArtifactPlan,
+    /// Linux adapter that turns a Docker image archive into an initramfs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_adapter: Option<ArtifactPlan>,
     /// The Linux exploration executor published beside the CLI. It is added
     /// by `theseus explore`, not by a user manifest, then locked into an
     /// exploration bundle so replay does not silently change executors.
@@ -281,7 +291,12 @@ pub struct RuntimePlan {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GuestPlan {
     pub kernel: ArtifactPlan,
-    pub initramfs: ArtifactPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initramfs: Option<ArtifactPlan>,
+    /// A Docker `save` archive. The locked image adapter materializes it at
+    /// execution time, so the bundle retains the original application input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ArtifactPlan>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -483,7 +498,41 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
     )?;
     ensure_executable("runtime.firecracker", Path::new(&firecracker.path))?;
     let kernel = artifact(manifest_dir, "guest.kernel", &manifest.guest.kernel)?;
-    let initramfs = artifact(manifest_dir, "guest.initramfs", &manifest.guest.initramfs)?;
+    let (initramfs, image) = match (&manifest.guest.initramfs, &manifest.guest.image) {
+        (Some(initramfs), None) => (
+            Some(artifact(manifest_dir, "guest.initramfs", initramfs)?),
+            None,
+        ),
+        (None, Some(image)) => (None, Some(artifact(manifest_dir, "guest.image", image)?)),
+        (None, None) => {
+            return Err(LoadError::InvalidGuest(
+                "set exactly one of initramfs or image".to_owned(),
+            ));
+        }
+        (Some(_), Some(_)) => {
+            return Err(LoadError::InvalidGuest(
+                "initramfs and image cannot both be set".to_owned(),
+            ));
+        }
+    };
+    let image_adapter = match (&manifest.runtime.image_adapter, &image) {
+        (Some(adapter), Some(_)) => {
+            let adapter = artifact(manifest_dir, "runtime.image_adapter", adapter)?;
+            ensure_executable("runtime.image_adapter", Path::new(&adapter.path))?;
+            Some(adapter)
+        }
+        (None, Some(_)) => {
+            return Err(LoadError::InvalidGuest(
+                "image requires runtime.image_adapter".to_owned(),
+            ));
+        }
+        (Some(_), None) => {
+            return Err(LoadError::InvalidGuest(
+                "runtime.image_adapter requires guest.image".to_owned(),
+            ));
+        }
+        (None, None) => None,
+    };
 
     let events = manifest
         .events
@@ -506,9 +555,14 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
         manifest: manifest_path.display().to_string(),
         runtime: RuntimePlan {
             firecracker,
+            image_adapter,
             explorer_runner: None,
         },
-        guest: GuestPlan { kernel, initramfs },
+        guest: GuestPlan {
+            kernel,
+            initramfs,
+            image,
+        },
         run: RunPlanConfig {
             seed: manifest.run.seed,
             vcpu_count: manifest.run.vcpu_count,
@@ -857,6 +911,73 @@ corrupt_read_xor = 1
             plan.runtime.firecracker.sha256,
             "c2d872a13438b3768c94bc023684e6dc78a5fe5fe4c629a9eee8396aa6cba742"
         );
+    }
+
+    #[test]
+    fn accepts_a_container_image_with_a_locked_adapter() {
+        let directory = fixture(
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+image_adapter = "runtime/theseus-image"
+[guest]
+kernel = "guest/vmlinux"
+image = "guest/service.tar"
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+"#,
+        );
+        let test = directory.path().join("test");
+        fs::write(test.join("runtime/theseus-image"), b"adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            test.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(test.join("guest/service.tar"), b"image").unwrap();
+
+        let plan = load_plan(test.join("theseus.toml")).unwrap();
+        assert!(plan.guest.initramfs.is_none());
+        assert_eq!(
+            plan.guest.image.unwrap().path,
+            fs::canonicalize(test.join("guest/service.tar"))
+                .unwrap()
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            plan.runtime.image_adapter.unwrap().path,
+            fs::canonicalize(test.join("runtime/theseus-image"))
+                .unwrap()
+                .display()
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn rejects_an_ambiguous_guest_input() {
+        let directory = fixture(
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+[guest]
+kernel = "guest/vmlinux"
+initramfs = "guest/initramfs.cpio"
+image = "guest/service.tar"
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+"#,
+        );
+        fs::write(directory.path().join("test/guest/service.tar"), b"image").unwrap();
+        assert!(load_plan(directory.path().join("test/theseus.toml"))
+            .unwrap_err()
+            .to_string()
+            .contains("cannot both be set"));
     }
 
     #[test]

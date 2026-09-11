@@ -65,13 +65,16 @@ and boots it — no guest driver, no image modification, no Dockerfile
 changes. The image's entrypoint runs unchanged. See
 [docs/guides/container-images/](docs/guides/container-images/).
 
-On Linux, the published runtime also includes `theseus-image`. Use it to turn
-a `docker save` archive into the initramfs artifact that a normal Theseus
-manifest locks and replays:
+On Linux, the published runtime includes `theseus-image`. Point a manifest at
+the Docker archive and adapter; Theseus converts it before booting and locks
+both inputs for replay:
 
-```sh
-docker save my-service > service.tar
-theseus-image flatten service.tar --output guest/initramfs.cpio
+```toml
+[runtime]
+image_adapter = "runtime/theseus-image"
+
+[guest]
+image = "guest/service.tar"
 ```
 
 The image entrypoint, environment, and working directory are written to the

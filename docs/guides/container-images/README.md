@@ -4,42 +4,37 @@ Use this path when your system already ships as a container image. Theseus
 flattens the image into an initramfs, adds its pivot as `/init`, then boots it
 under the same service API. Your image does not need a Theseus guest driver.
 
-## 1. Run the repository proof
+## 1. Run a working image
 
-Use the Linux+KVM container from tutorial 1, then run:
-
-```sh
-cd /theseus/orchestrator
-cargo test --lib oci::tests::test_boot_container_image
-```
-
-The test builds a small image, flattens it, boots it, and checks the serial
-output:
-
-```text
-THES:M:42
-CONTAINER-PAYLOAD-OK
-```
+Start with [tutorial 14](../../tutorials/14-container-image/). It uses only a
+published Theseus runtime image and the files in its own directory.
 
 ## 2. Prepare your image
 
 Export it in Docker's image-tar format:
 
 ```sh
-docker save myimage > /tmp/image.tar
+docker save myimage > guest/service.tar
 ```
 
-The published Linux runtime exposes the same adapter as `theseus-image`:
+The published Linux runtime exposes the adapter as `theseus-image`. Add the
+image and adapter to the same test directory as your manifest:
 
-```sh
-theseus-image flatten /tmp/image.tar --output guest/initramfs.cpio
+```toml
+[runtime]
+firecracker = "runtime/firecracker"
+image_adapter = "runtime/theseus-image"
+
+[guest]
+kernel = "guest/vmlinux"
+image = "guest/service.tar"
 ```
 
-It writes a bootable initramfs and prints the locked image command,
-environment, and working directory as JSON. Point a normal Theseus manifest
-at that `guest/initramfs.cpio`; the regular test, Compose, campaign,
-minimization, and replay paths then lock it like any other guest artifact.
-The lower-level Rust API remains `orchestrator::oci::flatten`.
+`theseus test` writes the bootable initramfs in its run directory and locks
+both source artifacts in the replay bundle. It preserves the image command,
+environment, and working directory. The regular test, Compose, and replay
+paths then use that locked image; the lower-level Rust API remains
+`orchestrator::oci::flatten`.
 
 Static and dynamically linked images work when their dependencies are inside
 the image. Use the simulated network for deterministic networking.

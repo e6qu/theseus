@@ -622,11 +622,15 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 fn resources_from_plan(plan: &RunPlan, serial_log: Option<PathBuf>) -> Result<VmResources, String> {
+    let initramfs = plan.guest.initramfs.as_ref().ok_or_else(|| {
+        "container-image exploration is not available yet; use theseus test or compose test"
+            .to_owned()
+    })?;
     let mut resources = VmResources::default();
     resources
         .build_boot_source(BootSourceConfig {
             kernel_image_path: plan.guest.kernel.path.clone(),
-            initrd_path: Some(plan.guest.initramfs.path.clone()),
+            initrd_path: Some(initramfs.path.clone()),
             boot_args: Some("console=ttyS0 reboot=k panic=-1".to_owned()),
         })
         .map_err(|error| error.to_string())?;
@@ -713,7 +717,11 @@ fn lock_plan(mut plan: RunPlan, output: &Path) -> Result<RunPlan, String> {
         plan.runtime.explorer_runner = Some(lock_artifact(output, "theseus-explorer", runner)?);
     }
     plan.guest.kernel = lock_artifact(output, "kernel", &plan.guest.kernel)?;
-    plan.guest.initramfs = lock_artifact(output, "initramfs", &plan.guest.initramfs)?;
+    let initramfs = plan.guest.initramfs.as_ref().ok_or_else(|| {
+        "container-image exploration is not available yet; use theseus test or compose test"
+            .to_owned()
+    })?;
+    plan.guest.initramfs = Some(lock_artifact(output, "initramfs", initramfs)?);
     Ok(plan)
 }
 

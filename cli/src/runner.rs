@@ -3,8 +3,8 @@
 
 //! One-timeline execution and replay bundles.
 //!
-//! A bundle is deliberately self-contained. It contains copies of the three
-//! executable inputs, the source plan, a plan whose artifact paths are local
+//! A bundle is deliberately self-contained. It contains copies of every
+//! executable and guest input, the source plan, a plan whose artifact paths are local
 //! to the bundle, logs, and the final result. Replaying never reads the test
 //! directory that created the bundle.
 
@@ -64,6 +64,10 @@ pub enum RunError {
     Spawn {
         path: PathBuf,
         source: std::io::Error,
+    },
+    ImageAdapter {
+        path: PathBuf,
+        reason: String,
     },
     Api {
         endpoint: &'static str,
@@ -134,6 +138,9 @@ impl fmt::Display for RunError {
                     "cannot start Firecracker at {}: {source}",
                     path.display()
                 )
+            }
+            Self::ImageAdapter { path, reason } => {
+                write!(formatter, "container image adapter {}: {reason}", path.display())
             }
             Self::Api { endpoint, reason } => {
                 write!(formatter, "Firecracker API {endpoint}: {reason}")
@@ -288,13 +295,29 @@ impl Bundle {
             &artifacts.join("firecracker"),
         )?;
         copy_artifact(&source_plan.guest.kernel, &artifacts.join("vmlinux"))?;
-        copy_artifact(&source_plan.guest.initramfs, &artifacts.join("initramfs"))?;
+        if let Some(initramfs) = &source_plan.guest.initramfs {
+            copy_artifact(initramfs, &artifacts.join("initramfs"))?;
+        }
+        if let Some(image) = &source_plan.guest.image {
+            copy_artifact(image, &artifacts.join("image.tar"))?;
+        }
+        if let Some(adapter) = &source_plan.runtime.image_adapter {
+            copy_artifact(adapter, &artifacts.join("theseus-image"))?;
+        }
 
         let mut replay_plan = source_plan.clone();
         replay_plan.manifest = "manifest.toml".to_owned();
         replay_plan.runtime.firecracker.path = "artifacts/firecracker".to_owned();
+        if let Some(adapter) = &mut replay_plan.runtime.image_adapter {
+            adapter.path = "artifacts/theseus-image".to_owned();
+        }
         replay_plan.guest.kernel.path = "artifacts/vmlinux".to_owned();
-        replay_plan.guest.initramfs.path = "artifacts/initramfs".to_owned();
+        if let Some(initramfs) = &mut replay_plan.guest.initramfs {
+            initramfs.path = "artifacts/initramfs".to_owned();
+        }
+        if let Some(image) = &mut replay_plan.guest.image {
+            image.path = "artifacts/image.tar".to_owned();
+        }
         write_json(&root.join("replay-plan.json"), &replay_plan)?;
 
         Ok(Self {
@@ -349,12 +372,12 @@ fn execute(
     }
     verify_artifact(artifact_base, &plan.runtime.firecracker)?;
     verify_artifact(artifact_base, &plan.guest.kernel)?;
-    verify_artifact(artifact_base, &plan.guest.initramfs)?;
 
     fs::create_dir_all(run_directory).map_err(|source| RunError::Create {
         path: run_directory.to_path_buf(),
         source,
     })?;
+    let initramfs = materialize_initramfs(plan, artifact_base, run_directory)?;
     let socket = run_directory.join("firecracker.sock");
     let serial_log = run_directory.join("serial.log");
     let firecracker_log = run_directory.join("firecracker.log");
@@ -388,7 +411,14 @@ fn execute(
             source,
         })?;
 
-    let result = configure_and_wait(&mut child, plan, artifact_base, &socket, &serial_log);
+    let result = configure_and_wait(
+        &mut child,
+        plan,
+        artifact_base,
+        &initramfs,
+        &socket,
+        &serial_log,
+    );
     if result.is_err() {
         let _ = child.kill();
         let _ = child.wait();
@@ -397,16 +427,73 @@ fn execute(
     result
 }
 
+fn materialize_initramfs(
+    plan: &RunPlan,
+    artifact_base: &Path,
+    run_directory: &Path,
+) -> Result<PathBuf, RunError> {
+    if let Some(initramfs) = &plan.guest.initramfs {
+        verify_artifact(artifact_base, initramfs)?;
+        return Ok(resolved_path(artifact_base, &initramfs.path));
+    }
+
+    let image = plan
+        .guest
+        .image
+        .as_ref()
+        .ok_or_else(|| RunError::InvalidBundle {
+            path: run_directory.to_path_buf(),
+            reason: "guest must contain an initramfs or image".to_owned(),
+        })?;
+    let adapter = plan
+        .runtime
+        .image_adapter
+        .as_ref()
+        .ok_or_else(|| RunError::InvalidBundle {
+            path: run_directory.to_path_buf(),
+            reason: "guest.image requires a locked runtime.image_adapter".to_owned(),
+        })?;
+    verify_artifact(artifact_base, image)?;
+    verify_artifact(artifact_base, adapter)?;
+    let image = resolved_path(artifact_base, &image.path);
+    let adapter = resolved_path(artifact_base, &adapter.path);
+    let output = run_directory.join("container-image-initramfs.cpio");
+    let status = Command::new(&adapter)
+        .arg("flatten")
+        .arg(&image)
+        .arg("--output")
+        .arg(&output)
+        .status()
+        .map_err(|source| RunError::ImageAdapter {
+            path: adapter.clone(),
+            reason: source.to_string(),
+        })?;
+    if !status.success() {
+        return Err(RunError::ImageAdapter {
+            path: adapter,
+            reason: format!("exited with {status}"),
+        });
+    }
+    if !output.is_file() {
+        return Err(RunError::ImageAdapter {
+            path: adapter,
+            reason: format!("did not create {}", output.display()),
+        });
+    }
+    Ok(output)
+}
+
 fn configure_and_wait(
     child: &mut Child,
     plan: &RunPlan,
     artifact_base: &Path,
+    initramfs: &Path,
     socket: &Path,
     serial_log: &Path,
 ) -> Result<Execution, RunError> {
     wait_for_socket(socket, child)?;
     let kernel = path_text(&resolved_path(artifact_base, &plan.guest.kernel.path))?;
-    let initramfs = path_text(&resolved_path(artifact_base, &plan.guest.initramfs.path))?;
+    let initramfs = path_text(initramfs)?;
     let serial_log_text = path_text(serial_log)?;
     api_put(
         socket,
@@ -759,17 +846,35 @@ fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
             reason: format!("unsupported plan format {}", plan.format),
         });
     }
-    for artifact in [
-        &plan.runtime.firecracker,
-        &plan.guest.kernel,
-        &plan.guest.initramfs,
-    ] {
+    let mut artifacts = vec![&plan.runtime.firecracker, &plan.guest.kernel];
+    if let Some(initramfs) = &plan.guest.initramfs {
+        artifacts.push(initramfs);
+    }
+    if let Some(image) = &plan.guest.image {
+        artifacts.push(image);
+    }
+    if let Some(adapter) = &plan.runtime.image_adapter {
+        artifacts.push(adapter);
+    }
+    for artifact in artifacts {
         if Path::new(&artifact.path).is_absolute() || artifact.path.contains("..") {
             return Err(RunError::InvalidBundle {
                 path: path.to_path_buf(),
                 reason: "artifact path must remain inside the replay bundle".to_owned(),
             });
         }
+    }
+    if plan.guest.initramfs.is_some() == plan.guest.image.is_some() {
+        return Err(RunError::InvalidBundle {
+            path: path.to_path_buf(),
+            reason: "guest must contain exactly one of initramfs or image".to_owned(),
+        });
+    }
+    if plan.guest.image.is_some() != plan.runtime.image_adapter.is_some() {
+        return Err(RunError::InvalidBundle {
+            path: path.to_path_buf(),
+            reason: "guest.image and runtime.image_adapter must be locked together".to_owned(),
+        });
     }
     if plan.run.vcpu_count == 0 || plan.run.mem_size_mib == 0 || plan.run.timeout_secs == 0 {
         return Err(RunError::InvalidBundle {
@@ -953,6 +1058,91 @@ mem_size_mib = 128
             b"firecracker"
         );
         validate_replay_plan(&output.join("replay-plan.json"), &bundle.replay_plan).unwrap();
+    }
+
+    #[test]
+    fn bundle_locks_a_container_image_and_its_adapter() {
+        let directory = fixture();
+        let root = directory.path();
+        let adapter = root.join("runtime/theseus-image");
+        fs::write(&adapter, b"adapter").unwrap();
+        fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(root.join("guest/service.tar"), b"container image").unwrap();
+        fs::write(
+            root.join("theseus.toml"),
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+image_adapter = "runtime/theseus-image"
+[guest]
+kernel = "guest/vmlinux"
+image = "guest/service.tar"
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+"#,
+        )
+        .unwrap();
+        let plan = load_plan(root.join("theseus.toml")).unwrap();
+        let output = root.join("replay");
+        let bundle = Bundle::create(&output, root.join("theseus.toml").as_path(), &plan).unwrap();
+
+        assert_eq!(
+            fs::read(output.join("artifacts/image.tar")).unwrap(),
+            b"container image"
+        );
+        assert_eq!(
+            bundle.replay_plan.guest.image.as_ref().unwrap().path,
+            "artifacts/image.tar"
+        );
+        assert_eq!(
+            bundle
+                .replay_plan
+                .runtime
+                .image_adapter
+                .as_ref()
+                .unwrap()
+                .path,
+            "artifacts/theseus-image"
+        );
+        validate_replay_plan(&output.join("replay-plan.json"), &bundle.replay_plan).unwrap();
+    }
+
+    #[test]
+    fn materializes_a_container_image_with_its_locked_adapter() {
+        let directory = fixture();
+        let root = directory.path();
+        let adapter = root.join("runtime/theseus-image");
+        fs::write(
+            &adapter,
+            "#!/bin/sh\n[ \"$1\" = flatten ] && [ \"$3\" = --output ]\ncp \"$2\" \"$4\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(root.join("guest/service.tar"), b"flattened image").unwrap();
+        fs::write(
+            root.join("theseus.toml"),
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+image_adapter = "runtime/theseus-image"
+[guest]
+kernel = "guest/vmlinux"
+image = "guest/service.tar"
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+"#,
+        )
+        .unwrap();
+        let plan = load_plan(root.join("theseus.toml")).unwrap();
+        let output = root.join("run");
+        fs::create_dir(&output).unwrap();
+
+        let initramfs = materialize_initramfs(&plan, root, &output).unwrap();
+        assert_eq!(fs::read(initramfs).unwrap(), b"flattened image");
     }
 
     #[test]
