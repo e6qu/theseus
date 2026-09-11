@@ -204,6 +204,12 @@ Turn a replay bundle into an investigation surface.
 **Exit criteria:** a user can answer “what changed before this failure?” from a
 bundle without manually diffing serial logs or snapshots.
 
+**Current implementation:** `theseus compare <left> <right>` begins the
+portable investigation surface by reporting the first campaign run whose
+operations, faults, or topology-state hash differs. It reads only the two
+locked result bundles and emits stable JSON; boundary-level causality and
+general event queries remain next.
+
 ### P19 — public capability evaluation
 
 Prove the platform on real distributed-system failures.
