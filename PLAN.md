@@ -190,14 +190,16 @@ Make Theseus useful without a bespoke guest protocol.
 run as a deterministic campaign with properties, faults, minimization, and
 replay.
 
-**Current implementation:** the published Linux runtime now includes
-`guest.image` plus `runtime.image_adapter` now makes a standard `docker save`
-archive a first-class manifest input. Theseus materializes it only to boot,
-but locks the source image and adapter into the replay bundle, preserving the
-image entrypoint, environment, and working directory without application
-changes. Compose test and replay use the same path. First-class HTTP/gRPC
-readiness and assertion adapters, plus image-backed exploration and campaigns,
-remain work for this tranche.
+**Current implementation:** the published Linux runtime accepts a standard
+`docker save` archive as `guest.image` with `runtime.image_adapter`. It locks
+the image and adapter into replay, preserving the image entrypoint,
+environment, and working directory without application changes. Compose test
+and replay use the same path. `container_service` adds boot-time HTTP GET
+readiness and status/body assertions: the injected PID 1 reports each result
+as a normal Theseus check and stops the service after the contract completes.
+
+**Next:** add gRPC readiness/assertions, declarative service operations, and
+image-backed exploration/campaign execution.
 
 ### P18 — multiverse debugging
 

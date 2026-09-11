@@ -458,16 +458,21 @@ fn materialize_initramfs(
     let image = resolved_path(artifact_base, &image.path);
     let adapter = resolved_path(artifact_base, &adapter.path);
     let output = run_directory.join("container-image-initramfs.cpio");
-    let status = Command::new(&adapter)
+    let mut command = Command::new(&adapter);
+    command
         .arg("flatten")
         .arg(&image)
         .arg("--output")
-        .arg(&output)
-        .status()
-        .map_err(|source| RunError::ImageAdapter {
-            path: adapter.clone(),
-            reason: source.to_string(),
-        })?;
+        .arg(&output);
+    if let Some(service) = &plan.container_service {
+        let contract = run_directory.join("container-service.json");
+        write_json(&contract, service)?;
+        command.arg("--service").arg(contract);
+    }
+    let status = command.status().map_err(|source| RunError::ImageAdapter {
+        path: adapter.clone(),
+        reason: source.to_string(),
+    })?;
     if !status.success() {
         return Err(RunError::ImageAdapter {
             path: adapter,
@@ -672,6 +677,41 @@ fn evaluate_checks(
         path: serial_log.to_path_buf(),
         source,
     })?;
+    if let Some(service) = &plan.container_service {
+        let ready = b"THES:HTTP:ready:PASS";
+        let found = contains(&serial, ready);
+        checks.push(if found {
+            passed(
+                "container_service.ready",
+                "http_ready",
+                "service reported HTTP readiness",
+            )
+        } else {
+            failed(
+                "container_service.ready",
+                "http_ready",
+                "service did not report HTTP readiness",
+            )
+        });
+        for assertion in &service.assertions {
+            let expected = format!("THES:HTTP:{}:PASS", assertion.name);
+            let found = contains(&serial, expected.as_bytes());
+            let name = format!("container_service.{}", assertion.name);
+            checks.push(if found {
+                passed(
+                    &name,
+                    "http_assertion",
+                    format!("HTTP assertion {:?} passed", assertion.name),
+                )
+            } else {
+                failed(
+                    &name,
+                    "http_assertion",
+                    format!("HTTP assertion {:?} did not pass", assertion.name),
+                )
+            });
+        }
+    }
     for check in &plan.checks {
         let (kind, expected, found) = match &check.kind {
             CheckKind::SerialContains => (
@@ -875,6 +915,35 @@ fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
             path: path.to_path_buf(),
             reason: "guest.image and runtime.image_adapter must be locked together".to_owned(),
         });
+    }
+    if let Some(service) = &plan.container_service {
+        if plan.guest.image.is_none() {
+            return Err(RunError::InvalidBundle {
+                path: path.to_path_buf(),
+                reason: "container_service requires guest.image".to_owned(),
+            });
+        }
+        if service.ready.attempts == 0 || service.ready.interval_millis == 0 {
+            return Err(RunError::InvalidBundle {
+                path: path.to_path_buf(),
+                reason: "container_service readiness settings must be greater than zero".to_owned(),
+            });
+        }
+        let mut assertion_names = HashSet::new();
+        for assertion in &service.assertions {
+            if assertion.name == "ready"
+                || !assertion
+                    .name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                || !assertion_names.insert(&assertion.name)
+            {
+                return Err(RunError::InvalidBundle {
+                    path: path.to_path_buf(),
+                    reason: "container_service assertion names must be unique and safe".to_owned(),
+                });
+            }
+        }
     }
     if plan.run.vcpu_count == 0 || plan.run.mem_size_mib == 0 || plan.run.timeout_secs == 0 {
         return Err(RunError::InvalidBundle {
@@ -1116,7 +1185,7 @@ mem_size_mib = 128
         let adapter = root.join("runtime/theseus-image");
         fs::write(
             &adapter,
-            "#!/bin/sh\n[ \"$1\" = flatten ] && [ \"$3\" = --output ]\ncp \"$2\" \"$4\"\n",
+            "#!/bin/sh\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ncp \"$2\" \"$4\"\n",
         )
         .unwrap();
         fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1134,6 +1203,14 @@ image = "guest/service.tar"
 seed = 42
 vcpu_count = 1
 mem_size_mib = 128
+
+[container_service.ready]
+url = "http://127.0.0.1:8080/health"
+
+[[container_service.assertions]]
+name = "health"
+url = "http://127.0.0.1:8080/health"
+body_contains = "ok"
 "#,
         )
         .unwrap();
@@ -1143,6 +1220,7 @@ mem_size_mib = 128
 
         let initramfs = materialize_initramfs(&plan, root, &output).unwrap();
         assert_eq!(fs::read(initramfs).unwrap(), b"flattened image");
+        assert!(output.join("container-service.json").is_file());
     }
 
     #[test]
