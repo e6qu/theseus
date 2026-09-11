@@ -14,12 +14,11 @@ Run the tutorial:
 sh ./run.sh
 ```
 
-`Dockerfile` is an ordinary BusyBox service image. The runner saves it in
-Docker's standard image-tar format. `theseus.toml` names that archive as
-`guest.image` and names the published adapter as `runtime.image_adapter`.
-`theseus test` converts the image, locks the image and adapter in its replay
-bundle, then boots it. `theseus replay` converts the locked image again.
+`Dockerfile` is an ordinary BusyBox HTTP service. `theseus.toml` names its
+Docker archive as `guest.image`, then declares a readiness endpoint and an
+HTTP assertion. Theseus starts the service, waits for readiness, checks
+`/health`, records the result, and stops the service.
 
-Replace `Dockerfile` with your service image. Keep its dependencies in the
-image. Theseus preserves its entrypoint, environment, and working directory;
-no guest SDK or Dockerfile instrumentation is needed.
+Replace `Dockerfile` with your own image. Change the URLs and assertions in
+`theseus.toml` to match it. Keep the service dependencies in the image; no
+guest SDK or Dockerfile instrumentation is needed.

@@ -28,13 +28,29 @@ image_adapter = "runtime/theseus-image"
 [guest]
 kernel = "guest/vmlinux"
 image = "guest/service.tar"
+
+[container_service.ready]
+url = "http://127.0.0.1:8080/health"
+
+[[container_service.assertions]]
+name = "health"
+url = "http://127.0.0.1:8080/health"
+expect_status = 200
+body_contains = "ok"
 ```
 
 `theseus test` writes the bootable initramfs in its run directory and locks
 both source artifacts in the replay bundle. It preserves the image command,
-environment, and working directory. The regular test, Compose, and replay
-paths then use that locked image; the lower-level Rust API remains
+environment, and working directory. With `container_service`, its injected
+PID 1 waits for the ready URL, performs each HTTP GET assertion, records a
+check for each result, then stops the service. The regular test, Compose, and
+replay paths then use that locked image; the lower-level Rust API remains
 `orchestrator::oci::flatten`.
+
+`ready.attempts` defaults to 50 and `ready.interval_millis` defaults to 100.
+Use `http://` URLs with a host, optional port, and path. The first adapter is
+deliberately small: it supports GET readiness and status/body assertions;
+gRPC and scripted operations are separate next steps.
 
 Static and dynamically linked images work when their dependencies are inside
 the image. Use the simulated network for deterministic networking.

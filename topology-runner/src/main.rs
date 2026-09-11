@@ -992,6 +992,8 @@ struct RunPlan {
     events: Vec<EventPlan>,
     #[serde(default)]
     checks: Vec<CheckPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    container_service: Option<theseus_orchestrator::oci::ContainerServiceContract>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -9039,11 +9041,23 @@ fn lock_service_inputs(service_dir: &Path, service: &mut ServicePlan) -> Result<
             let image = lock_artifact(service_dir, "image.tar", image)?;
             let adapter = lock_artifact(service_dir, "theseus-image", adapter)?;
             let initramfs = service_dir.join("artifacts/initramfs");
-            let status = Command::new(&adapter)
+            let mut command = Command::new(&adapter);
+            command
                 .arg("flatten")
                 .arg(&image)
                 .arg("--output")
-                .arg(&initramfs)
+                .arg(&initramfs);
+            if let Some(contract) = &service.run.container_service {
+                let contract_path = service_dir.join("container-service.json");
+                fs::write(
+                    &contract_path,
+                    serde_json::to_vec_pretty(contract)
+                        .map_err(|error| format!("cannot serialize service contract: {error}"))?,
+                )
+                .map_err(|error| format!("cannot write {}: {error}", contract_path.display()))?;
+                command.arg("--service").arg(contract_path);
+            }
+            let status = command
                 .status()
                 .map_err(|error| format!("cannot start {}: {error}", adapter.display()))?;
             if !status.success() {
@@ -9094,7 +9108,7 @@ mod tests {
         fs::write(&image, b"container image").unwrap();
         fs::write(
             &adapter,
-            "#!/bin/sh\n[ \"$1\" = flatten ] && [ \"$3\" = --output ]\ncp \"$2\" \"$4\"\n",
+            "#!/bin/sh\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ncp \"$2\" \"$4\"\n",
         )
         .unwrap();
         fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
@@ -9124,6 +9138,14 @@ mod tests {
                 storage: Vec::new(),
                 events: Vec::new(),
                 checks: Vec::new(),
+                container_service: Some(theseus_orchestrator::oci::ContainerServiceContract {
+                    ready: theseus_orchestrator::oci::HttpReady {
+                        url: "http://127.0.0.1:8080/health".to_owned(),
+                        attempts: 3,
+                        interval_millis: 10,
+                    },
+                    assertions: Vec::new(),
+                }),
             },
             networks: Vec::new(),
             faults: Vec::new(),

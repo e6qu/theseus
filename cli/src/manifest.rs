@@ -113,6 +113,8 @@ struct Manifest {
     explore: Option<Explore>,
     #[serde(default)]
     checks: Vec<Check>,
+    #[serde(default)]
+    container_service: Option<ContainerService>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,6 +245,40 @@ struct Check {
     value: String,
 }
 
+/// A boot-time HTTP contract for an image-backed service.
+///
+/// Theseus injects this contract into the image's PID 1. It waits until the
+/// ready endpoint responds, evaluates each assertion, then stops the service
+/// so the VM can report a finite result.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContainerService {
+    ready: HttpReady,
+    #[serde(default)]
+    assertions: Vec<HttpAssertion>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HttpReady {
+    url: String,
+    #[serde(default = "default_http_attempts")]
+    attempts: u32,
+    #[serde(default = "default_http_interval_millis")]
+    interval_millis: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HttpAssertion {
+    name: String,
+    url: String,
+    #[serde(default = "default_http_status")]
+    expect_status: u16,
+    #[serde(default)]
+    body_contains: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckKind {
@@ -267,6 +303,8 @@ pub struct RunPlan {
     pub explore: Option<ExplorePlan>,
     #[serde(default)]
     pub checks: Vec<CheckPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_service: Option<ContainerServicePlan>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -403,6 +441,30 @@ pub struct CheckPlan {
     pub value: String,
 }
 
+/// Declarative service checks injected into an image-backed guest.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ContainerServicePlan {
+    pub ready: HttpReadyPlan,
+    #[serde(default)]
+    pub assertions: Vec<HttpAssertionPlan>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HttpReadyPlan {
+    pub url: String,
+    pub attempts: u32,
+    pub interval_millis: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HttpAssertionPlan {
+    pub name: String,
+    pub url: String,
+    pub expect_status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_contains: Option<String>,
+}
+
 pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
     let path = path.as_ref();
     let manifest_path = fs::canonicalize(path).map_err(|source| LoadError::Read {
@@ -477,6 +539,12 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
                 check.name
             )));
         }
+        if check.name.starts_with("container_service.") {
+            return Err(LoadError::InvalidCheck(format!(
+                "name {:?} is reserved for a container service check",
+                check.name
+            )));
+        }
         if !check_names.insert(&check.name) {
             return Err(LoadError::InvalidCheck(format!(
                 "name {:?} appears more than once",
@@ -533,6 +601,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
         }
         (None, None) => None,
     };
+    let container_service = container_service_plan(manifest.container_service, image.is_some())?;
 
     let events = manifest
         .events
@@ -596,7 +665,112 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
                 value: check.value,
             })
             .collect(),
+        container_service,
     })
+}
+
+fn container_service_plan(
+    service: Option<ContainerService>,
+    has_image: bool,
+) -> Result<Option<ContainerServicePlan>, LoadError> {
+    let Some(service) = service else {
+        return Ok(None);
+    };
+    if !has_image {
+        return Err(LoadError::InvalidGuest(
+            "container_service requires guest.image".to_owned(),
+        ));
+    }
+    validate_http_url("container_service.ready.url", &service.ready.url)?;
+    if service.ready.attempts == 0 {
+        return Err(LoadError::InvalidRunConfig(
+            "container_service.ready.attempts must be greater than zero".to_owned(),
+        ));
+    }
+    if service.ready.interval_millis == 0 {
+        return Err(LoadError::InvalidRunConfig(
+            "container_service.ready.interval_millis must be greater than zero".to_owned(),
+        ));
+    }
+    let mut names = HashSet::new();
+    let mut assertions = Vec::with_capacity(service.assertions.len());
+    for assertion in service.assertions {
+        if assertion.name.trim().is_empty() {
+            return Err(LoadError::InvalidCheck(
+                "container_service assertion name must not be empty".to_owned(),
+            ));
+        }
+        if assertion.name == "ready"
+            || !assertion
+                .name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        {
+            return Err(LoadError::InvalidCheck(format!(
+                "container_service assertion name {:?} must use letters, digits, '-' or '_' and cannot be 'ready'",
+                assertion.name
+            )));
+        }
+        if !names.insert(assertion.name.clone()) {
+            return Err(LoadError::InvalidCheck(format!(
+                "container_service assertion {:?} appears more than once",
+                assertion.name
+            )));
+        }
+        validate_http_url("container_service.assertions.url", &assertion.url)?;
+        if !(100..=599).contains(&assertion.expect_status) {
+            return Err(LoadError::InvalidCheck(format!(
+                "container_service assertion {:?} has invalid expect_status",
+                assertion.name
+            )));
+        }
+        if assertion.body_contains.as_deref() == Some("") {
+            return Err(LoadError::InvalidCheck(format!(
+                "container_service assertion {:?} body_contains must not be empty",
+                assertion.name
+            )));
+        }
+        assertions.push(HttpAssertionPlan {
+            name: assertion.name,
+            url: assertion.url,
+            expect_status: assertion.expect_status,
+            body_contains: assertion.body_contains,
+        });
+    }
+    Ok(Some(ContainerServicePlan {
+        ready: HttpReadyPlan {
+            url: service.ready.url,
+            attempts: service.ready.attempts,
+            interval_millis: service.ready.interval_millis,
+        },
+        assertions,
+    }))
+}
+
+fn validate_http_url(field: &str, value: &str) -> Result<(), LoadError> {
+    let Some(rest) = value.strip_prefix("http://") else {
+        return Err(LoadError::InvalidGuest(format!(
+            "{field} must start with http://"
+        )));
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.is_empty()
+        || authority.contains('@')
+        || authority.contains(char::is_whitespace)
+        || authority.starts_with(':')
+    {
+        return Err(LoadError::InvalidGuest(format!(
+            "{field} must contain a host and optional port"
+        )));
+    }
+    if let Some((_, port)) = authority.rsplit_once(':') {
+        if port.is_empty() || port.parse::<u16>().ok().filter(|port| *port > 0).is_none() {
+            return Err(LoadError::InvalidGuest(format!(
+                "{field} has an invalid port"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn explore_plan(explore: Option<Explore>) -> Result<Option<ExplorePlan>, LoadError> {
@@ -725,6 +899,18 @@ fn storage_plan(storage: Vec<Storage>, run_seed: u64) -> Result<Vec<StoragePlan>
 
 fn default_timeout_secs() -> u64 {
     30
+}
+
+fn default_http_attempts() -> u32 {
+    50
+}
+
+fn default_http_interval_millis() -> u64 {
+    100
+}
+
+fn default_http_status() -> u16 {
+    200
 }
 
 fn default_max_rounds() -> u64 {
@@ -955,6 +1141,70 @@ mem_size_mib = 128
                 .display()
                 .to_string()
         );
+    }
+
+    #[test]
+    fn accepts_an_http_contract_for_a_container_image() {
+        let directory = fixture(
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+image_adapter = "runtime/theseus-image"
+[guest]
+kernel = "guest/vmlinux"
+image = "guest/service.tar"
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+[container_service.ready]
+url = "http://127.0.0.1:8080/health"
+attempts = 3
+interval_millis = 10
+[[container_service.assertions]]
+name = "health"
+url = "http://127.0.0.1:8080/health"
+expect_status = 200
+body_contains = "ok"
+"#,
+        );
+        let test = directory.path().join("test");
+        fs::write(test.join("runtime/theseus-image"), b"adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            test.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(test.join("guest/service.tar"), b"image").unwrap();
+
+        let plan = load_plan(test.join("theseus.toml")).unwrap();
+        let service = plan.container_service.unwrap();
+        assert_eq!(service.ready.attempts, 3);
+        assert_eq!(service.assertions[0].name, "health");
+    }
+
+    #[test]
+    fn rejects_an_http_contract_without_a_container_image() {
+        let directory = fixture(
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+[guest]
+kernel = "guest/vmlinux"
+initramfs = "guest/initramfs.cpio"
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+[container_service.ready]
+url = "http://127.0.0.1:8080/health"
+"#,
+        );
+        assert!(load_plan(directory.path().join("test/theseus.toml"))
+            .unwrap_err()
+            .to_string()
+            .contains("requires guest.image"));
     }
 
     #[test]

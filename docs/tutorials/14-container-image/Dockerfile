@@ -1,3 +1,3 @@
 FROM busybox:1.36
-
-CMD ["sh", "-c", "echo 'container image booted'; poweroff -f"]
+RUN mkdir -p /www && printf 'ok\n' > /www/health
+CMD ["httpd", "-f", "-p", "8080", "-h", "/www"]

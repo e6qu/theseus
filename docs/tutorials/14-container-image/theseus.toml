@@ -17,7 +17,11 @@ timeout_secs = 30
 [network]
 loopback = false
 
-[[checks]]
-name = "container command ran"
-kind = "serial_contains"
-value = "container image booted"
+[container_service.ready]
+url = "http://127.0.0.1:8080/health"
+
+[[container_service.assertions]]
+name = "health"
+url = "http://127.0.0.1:8080/health"
+expect_status = 200
+body_contains = "ok"

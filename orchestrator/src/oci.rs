@@ -10,10 +10,10 @@
 //! root filesystem plus two injected files:
 //!
 //! - `/init` — the static pivot binary (mounts dev/proc/sys, reads the
-//!   init spec, reports a boot marker over the serial control channel,
-//!   and execs the image's entrypoint),
-//! - `/etc/theseus-init.json` — the entrypoint, environment, and working
-//!   directory from the image config.
+//!   init spec, and either execs the image entrypoint or evaluates an HTTP
+//!   service contract around it),
+//! - `/etc/theseus-init.json` — the entrypoint, environment, working
+//!   directory, and optional service contract from the image config.
 //!
 //! The image needs no Theseus code of its own; the pivot is the
 //! instrumentation.
@@ -50,6 +50,33 @@ pub struct ImageSpec {
     pub workdir: String,
 }
 
+/// The HTTP contract that the injected pivot evaluates around an image.
+///
+/// The CLI serializes this into the init specification; keeping it here makes
+/// the image adapter the single producer of the pivot's on-disk contract.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct ContainerServiceContract {
+    pub ready: HttpReady,
+    #[serde(default)]
+    pub assertions: Vec<HttpAssertion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct HttpReady {
+    pub url: String,
+    pub attempts: u32,
+    pub interval_millis: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct HttpAssertion {
+    pub name: String,
+    pub url: String,
+    pub expect_status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_contains: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct ManifestEntry {
     #[serde(rename = "Config")]
@@ -83,6 +110,14 @@ enum Entry {
 
 /// Flatten a `docker save` image tar into (cpio_bytes, image_spec).
 pub fn flatten(image_tar: &[u8]) -> Result<(Vec<u8>, ImageSpec), OciError> {
+    flatten_with_service(image_tar, None)
+}
+
+/// Flatten an image and inject an optional boot-time service contract.
+pub fn flatten_with_service(
+    image_tar: &[u8],
+    service: Option<&ContainerServiceContract>,
+) -> Result<(Vec<u8>, ImageSpec), OciError> {
     let mut archive = tar::Archive::new(image_tar);
 
     let mut manifest: Vec<ManifestEntry> = Vec::new();
@@ -145,6 +180,7 @@ pub fn flatten(image_tar: &[u8]) -> Result<(Vec<u8>, ImageSpec), OciError> {
         "argv": spec.argv,
         "env": spec.env,
         "workdir": spec.workdir,
+        "container_service": service,
     })
     .to_string();
 
@@ -168,13 +204,7 @@ pub fn flatten(image_tar: &[u8]) -> Result<(Vec<u8>, ImageSpec), OciError> {
         cpio_dir(&mut out, &mut ino, dir);
     }
 
-    cpio_file(
-        &mut out,
-        &mut ino,
-        "/init",
-        0o100755,
-        PIVOT,
-    );
+    cpio_file(&mut out, &mut ino, "/init", 0o100755, PIVOT);
     cpio_file(
         &mut out,
         &mut ino,
@@ -255,13 +285,7 @@ fn pad4(out: &mut Vec<u8>) {
     }
 }
 
-fn cpio_header(
-    out: &mut Vec<u8>,
-    ino: u64,
-    name: &str,
-    mode: u32,
-    filesize: u64,
-) {
+fn cpio_header(out: &mut Vec<u8>, ino: u64, name: &str, mode: u32, filesize: u64) {
     let namesize = (name.len() + 1) as u64;
     let header = format!(
         "070701{ino:08x}{mode:08x}{uid:08x}{gid:08x}{nlink:08x}{mtime:08x}{filesize:08x}{devmajor:08x}{devminor:08x}{rdevmajor:08x}{rdevminor:08x}{namesize:08x}{check:08x}",
@@ -319,19 +343,14 @@ mod tests {
             header.set_size(data.len() as u64);
             header.set_mode(0o644);
             header.set_cksum();
-            builder
-                .append_data(&mut header, name, *data)
-                .unwrap();
+            builder.append_data(&mut header, name, *data).unwrap();
         }
         builder.into_inner().unwrap()
     }
 
     fn test_image() -> Vec<u8> {
         let layer1 = tar_bytes(&[("app/hello.txt", b"hello")]);
-        let layer2 = tar_bytes(&[
-            ("app/.wh.hello.txt", b""),
-            ("bin/tool", b"\x7fELF-tool"),
-        ]);
+        let layer2 = tar_bytes(&[("app/.wh.hello.txt", b""), ("bin/tool", b"\x7fELF-tool")]);
         let manifest = serde_json::json!([{
             "Config": "config.json",
             "RepoTags": ["test:latest"],
@@ -377,6 +396,28 @@ mod tests {
         assert!(cpio.starts_with(b"070701"));
         assert!(cpio.windows(10).any(|w| w == b"TRAILER!!!"));
         assert_eq!(cpio.len() % 512, 0);
+    }
+
+    #[test]
+    fn flatten_injects_the_container_service_contract() {
+        let service = ContainerServiceContract {
+            ready: HttpReady {
+                url: "http://127.0.0.1:8080/health".to_owned(),
+                attempts: 3,
+                interval_millis: 10,
+            },
+            assertions: vec![HttpAssertion {
+                name: "health".to_owned(),
+                url: "http://127.0.0.1:8080/health".to_owned(),
+                expect_status: 200,
+                body_contains: Some("ok".to_owned()),
+            }],
+        };
+        let (cpio, _) = flatten_with_service(&test_image(), Some(&service)).unwrap();
+        let text = String::from_utf8_lossy(&cpio);
+        assert!(text.contains("container_service"));
+        assert!(text.contains("127.0.0.1:8080/health"));
+        assert!(text.contains("body_contains"));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload
@@ -448,7 +489,9 @@ int main(void) {
             header.set_size(data.len() as u64);
             header.set_mode(0o644);
             header.set_cksum();
-            image_builder.append_data(&mut header, name, &data[..]).unwrap();
+            image_builder
+                .append_data(&mut header, name, &data[..])
+                .unwrap();
         }
         let image_tar = image_builder.into_inner().unwrap();
 
@@ -475,13 +518,14 @@ int main(void) {
         let serial = std::env::temp_dir().join("theseus-oci-serial.log");
         let _ = std::fs::remove_file(&serial);
 
-        let resources: vmm::resources::VmResources = vmm::test_utils::mock_resources::MockVmResources::new()
-            .with_boot_source(vmm::vmm_config::boot_source::BootSourceConfig {
-                kernel_image_path: kernel.to_str().unwrap().to_string(),
-                initrd_path: Some(initramfs_path.to_str().unwrap().to_string()),
-                boot_args: Some("console=ttyS0 reboot=k panic=-1".to_string()),
-            })
-            .into();
+        let resources: vmm::resources::VmResources =
+            vmm::test_utils::mock_resources::MockVmResources::new()
+                .with_boot_source(vmm::vmm_config::boot_source::BootSourceConfig {
+                    kernel_image_path: kernel.to_str().unwrap().to_string(),
+                    initrd_path: Some(initramfs_path.to_str().unwrap().to_string()),
+                    boot_args: Some("console=ttyS0 reboot=k panic=-1".to_string()),
+                })
+                .into();
         let mut resources = resources;
         resources.serial_out_path = Some(serial.clone());
 
