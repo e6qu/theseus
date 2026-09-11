@@ -40,6 +40,8 @@ deterministic-CRNG kernel module is shipped.
     an unmodified service image with the published Linux runtime.
 15. [Campaign an unmodified container service](15-container-campaign/) — drive
     a declared HTTP operation, retain its checkpoint, and replay it.
+16. [Publish a public campaign](16-public-campaign/) — copy a completed
+    container campaign into a locked, offline-readable evaluation.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

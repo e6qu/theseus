@@ -22,6 +22,17 @@ The lock rejects changed, missing, unexpected, and symlinked bundle files. It
 is evidence integrity, not a signature or a claim that a host-time baseline is
 reproducible.
 
+Publish a completed KVM campaign without hand-copying its replay artifacts:
+
+```sh
+theseus evaluate capture campaign-dir --output public-evaluation --name "service failure"
+```
+
+Capture copies the complete replay directory, derives expected property
+outcomes from its recorded result, writes a version 2 contract, and locks every
+copied file. Add the conventional baseline only after its observation is
+independently reproducible.
+
 The machine report counts replay verification, generated candidates, retained
 runs, topology and instruction-location coverage, checkpoint work, reduction
 work, and retained operation boundaries. A manually recorded investigation

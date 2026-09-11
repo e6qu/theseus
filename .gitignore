@@ -27,5 +27,10 @@ docs/tutorials/13-public-evaluation/evaluation.md
 docs/tutorials/15-container-campaign/api/work/
 docs/tutorials/15-container-campaign/campaign/
 docs/tutorials/15-container-campaign/rerun/
+docs/tutorials/16-public-campaign/api/work/
+docs/tutorials/16-public-campaign/campaign/
+docs/tutorials/16-public-campaign/public-evaluation/
+docs/tutorials/16-public-campaign/rerun/
+docs/tutorials/16-public-campaign/evaluation.json
 
 orchestrator/pivot/target/

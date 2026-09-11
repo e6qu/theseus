@@ -267,6 +267,11 @@ from the three-service replicated-counter topology and its expected failed
 property. Add real public workloads and independently reproducible baseline
 observations before making comparative performance claims.
 
+`theseus evaluate capture campaign-dir --output evaluation-dir --name name`
+copies a complete KVM campaign replay bundle into a self-contained version 2
+public evaluation, derives its observed property contract, and locks every
+copied artifact. This is the publication path for new real workloads.
+
 ## Rules for future PRs
 
 - Work by capability tranche, not one field or one edge case per PR.

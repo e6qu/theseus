@@ -1,0 +1,27 @@
+name: public-campaign
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+
+networks:
+  backplane: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    max_runs: 1
+    max_operations_per_run: 1
+    faults: []
+    operations:
+      - name: read_health
+        http:
+          url: http://127.0.0.1:8080/health
+          body_contains: ok
+    properties:
+      - name: health_response
+        kind: always
+        service: api
+        contains: "THES:HTTP:operation:read_health:PASS"

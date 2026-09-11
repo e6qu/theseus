@@ -447,6 +447,99 @@ pub fn write_evaluation_lock(path: impl AsRef<Path>) -> Result<PathBuf, Evaluati
     Ok(output)
 }
 
+/// Copy one complete campaign replay bundle into a new, self-contained public
+/// evaluation and lock every copied artifact. This is the publication boundary
+/// for a campaign produced on a KVM runner.
+pub fn capture_evaluation(
+    campaign: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    name: &str,
+) -> Result<PathBuf, EvaluationError> {
+    let campaign = fs::canonicalize(campaign.as_ref()).map_err(|source| EvaluationError::Read {
+        path: campaign.as_ref().to_path_buf(),
+        source,
+    })?;
+    let result: CampaignResult = read_json(&campaign.join("campaign-result.json"))?;
+    if result.format != "theseus-compose-campaign-result-v1"
+        || !campaign.join("replay-plan.json").is_file()
+    {
+        return Err(EvaluationError::Invalid(
+            "capture needs a complete Compose campaign replay bundle".to_owned(),
+        ));
+    }
+    let output = output.as_ref();
+    if output.exists() {
+        return Err(EvaluationError::Invalid(format!(
+            "evaluation output already exists: {}",
+            output.display()
+        )));
+    }
+    fs::create_dir_all(output).map_err(|source| EvaluationError::Read {
+        path: output.to_path_buf(),
+        source,
+    })?;
+    let bundle = output.join("campaign");
+    copy_bundle(&campaign, &bundle)?;
+    let quote = |value: &str| serde_json::to_string(value).expect("strings serialize");
+    let mut spec = format!("version = 2\nname = {}\nlockfile = \"theseus-evaluation.lock\"\n\n[[workloads]]\nname = \"observed campaign\"\nbundle = \"campaign\"\nexpected_status = {}\n", quote(name), quote(&result.status));
+    for property in result.properties {
+        spec.push_str(&format!(
+            "\n[[workloads.properties]]\nname = {}\nstatus = {}\n",
+            quote(&property.name),
+            quote(&property.status)
+        ));
+    }
+    let path = output.join("theseus-evaluation.toml");
+    fs::write(&path, spec).map_err(|source| EvaluationError::Read {
+        path: path.clone(),
+        source,
+    })?;
+    write_evaluation_lock(&path)?;
+    Ok(path)
+}
+
+fn copy_bundle(source: &Path, destination: &Path) -> Result<(), EvaluationError> {
+    fs::create_dir_all(destination).map_err(|source| EvaluationError::Read {
+        path: destination.to_path_buf(),
+        source,
+    })?;
+    for entry in fs::read_dir(source).map_err(|error| EvaluationError::Read {
+        path: source.to_path_buf(),
+        source: error,
+    })? {
+        let entry = entry.map_err(|error| EvaluationError::Read {
+            path: source.to_path_buf(),
+            source: error,
+        })?;
+        let path = entry.path();
+        let target = destination.join(entry.file_name());
+        let metadata = fs::symlink_metadata(&path).map_err(|source| EvaluationError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(EvaluationError::Invalid(format!(
+                "campaign bundle cannot contain symlinks: {}",
+                path.display()
+            )));
+        }
+        if metadata.is_dir() {
+            copy_bundle(&path, &target)?;
+        } else if metadata.is_file() {
+            fs::copy(&path, &target).map_err(|source| EvaluationError::Read {
+                path: target,
+                source,
+            })?;
+        } else {
+            return Err(EvaluationError::Invalid(format!(
+                "campaign bundle can contain only regular files: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn load_evaluation(path: &Path) -> Result<(PathBuf, EvaluationSpec), EvaluationError> {
     let root = path
         .parent()
@@ -824,5 +917,31 @@ status = "failed"
             };
             assert!(error.to_string().contains("cannot contain symlinks"));
         }
+    }
+
+    #[test]
+    fn captures_a_complete_campaign_as_a_locked_public_evaluation() {
+        let directory = tempfile::tempdir().unwrap();
+        let campaign = directory.path().join("campaign");
+        fs::create_dir_all(campaign.join("services/api")).unwrap();
+        fs::write(
+            campaign.join("replay-plan.json"),
+            r#"{"format":"theseus-compose-plan-v1"}"#,
+        )
+        .unwrap();
+        fs::write(campaign.join("services/api/serial.log"), "evidence\n").unwrap();
+        fs::write(campaign.join("minimization.json"), "{}").unwrap();
+        fs::write(campaign.join("campaign-result.json"), r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","replay_verification":{"status":"passed"},"runs":[],"properties":[{"name":"consistent_read","status":"failed"}]}"#).unwrap();
+
+        let spec =
+            capture_evaluation(&campaign, directory.path().join("public"), "counter").unwrap();
+        let summary = evaluate(&spec).unwrap();
+        assert_eq!(summary.status, "passed");
+        assert_eq!(summary.artifact_verification.unwrap().files, 4);
+        assert!(spec
+            .parent()
+            .unwrap()
+            .join("campaign/replay-plan.json")
+            .is_file());
     }
 }
