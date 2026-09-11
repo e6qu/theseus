@@ -1,0 +1,18 @@
+version = 1
+name = "replicated counter stale-read"
+
+[baseline]
+method = "fixed fault schedule without corpus guidance"
+runs = 16
+counterexamples = 0
+note = "The baseline is a recorded conventional-chaos observation, not replay evidence."
+
+[[workloads]]
+name = "partitioned stale read"
+bundle = "stale-read-campaign"
+expected_status = "failed"
+investigation_seconds = 18
+
+[[workloads.properties]]
+name = "consistent_read"
+status = "failed"

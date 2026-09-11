@@ -8,6 +8,7 @@
 
 mod compare;
 mod compose;
+mod evaluation;
 mod explore;
 mod manifest;
 mod report;
@@ -20,6 +21,7 @@ pub use compose::{
     explore_compose, load_compose_plan, minimize_compose_campaign, replay_compose, test_compose,
     ComposeError, ComposePlan,
 };
+pub use evaluation::{evaluate, EvaluationError, EvaluationSummary};
 pub use explore::{
     explore, minimize_exploration_path, replay_exploration, replay_exploration_path,
     snapshot_exploration_path, ExploreError,

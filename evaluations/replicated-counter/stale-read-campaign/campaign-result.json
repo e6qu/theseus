@@ -1,0 +1,38 @@
+{
+  "format": "theseus-compose-campaign-result-v1",
+  "status": "failed",
+  "generated_candidates": 12,
+  "unique_topology_states": 3,
+  "unique_instruction_locations": 5,
+  "search": {
+    "checkpoint": {
+      "root_captures": 1,
+      "prefix_captures": 3,
+      "checkpoint_nodes": 4,
+      "prefix_reuses": 7,
+      "avoided_prefix_recomputations": 7
+    }
+  },
+  "replay_verification": {
+    "status": "passed",
+    "detail": "1 recorded campaign timeline reproduced"
+  },
+  "runs": [
+    {
+      "index": 0,
+      "operations": ["write", "read"],
+      "timeline": [
+        {"operation": "write", "service": "api", "state_sha256": "after-write"},
+        {"operation": "read", "service": "api", "state_sha256": "stale-read"}
+      ]
+    }
+  ],
+  "properties": [
+    {
+      "name": "consistent_read",
+      "kind": "always",
+      "status": "failed",
+      "detail": "partitioned replica returned stale data"
+    }
+  ]
+}

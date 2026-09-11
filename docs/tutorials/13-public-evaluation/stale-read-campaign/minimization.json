@@ -1,0 +1,9 @@
+{
+  "property": "consistent_read",
+  "original_operations": ["write", "retry", "read"],
+  "minimized_operations": ["write", "read"],
+  "original_faults": ["backplane:partition@write", "backplane:heal@read"],
+  "minimized_faults": ["backplane:partition@write"],
+  "operation_attempts": 4,
+  "fault_attempts": 2
+}

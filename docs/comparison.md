@@ -76,6 +76,17 @@ If you can pay for the product and want instruction-exact replay plus
 vendor support, use Antithesis. Theseus exists as an open,
 KVM-native, hackable engine in the same intellectual family.
 
+## Public evaluation evidence
+
+Theseus publishes versioned evaluation contracts and locked campaign evidence
+under [`evaluations/`](../evaluations/). `theseus evaluate` reports replay
+verification, corpus and coverage counts, checkpoint and reduction work, and
+retained investigation boundaries. A suite may place an ordinary
+fixed-chaos observation beside those metrics, but it is explicitly labelled as
+a baseline observation rather than a product comparison. Do not infer an
+Antithesis performance or bug-finding comparison from it: that needs the same
+public workload, budget, host class, and independently reproducible results.
+
 ## FoundationDB
 
 FoundationDB is where deterministic simulation testing was proven at
