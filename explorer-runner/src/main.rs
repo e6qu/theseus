@@ -6,6 +6,7 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use event_manager::EventManager;
 use serde::Serialize;
@@ -622,10 +623,11 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 fn resources_from_plan(plan: &RunPlan, serial_log: Option<PathBuf>) -> Result<VmResources, String> {
-    let initramfs = plan.guest.initramfs.as_ref().ok_or_else(|| {
-        "container-image exploration is not available yet; use theseus test or compose test"
-            .to_owned()
-    })?;
+    let initramfs = plan
+        .guest
+        .initramfs
+        .as_ref()
+        .ok_or_else(|| "exploration plan has no materialized initramfs".to_owned())?;
     let mut resources = VmResources::default();
     resources
         .build_boot_source(BootSourceConfig {
@@ -717,11 +719,48 @@ fn lock_plan(mut plan: RunPlan, output: &Path) -> Result<RunPlan, String> {
         plan.runtime.explorer_runner = Some(lock_artifact(output, "theseus-explorer", runner)?);
     }
     plan.guest.kernel = lock_artifact(output, "kernel", &plan.guest.kernel)?;
-    let initramfs = plan.guest.initramfs.as_ref().ok_or_else(|| {
-        "container-image exploration is not available yet; use theseus test or compose test"
-            .to_owned()
-    })?;
-    plan.guest.initramfs = Some(lock_artifact(output, "initramfs", initramfs)?);
+    if let Some(initramfs) = &plan.guest.initramfs {
+        plan.guest.initramfs = Some(lock_artifact(output, "initramfs", initramfs)?);
+    }
+    if let Some(image) = &plan.guest.image {
+        plan.guest.image = Some(lock_artifact(output, "image.tar", image)?);
+        let adapter = plan
+            .runtime
+            .image_adapter
+            .as_ref()
+            .ok_or_else(|| "guest.image requires runtime.image_adapter".to_owned())?;
+        plan.runtime.image_adapter = Some(lock_artifact(output, "theseus-image", adapter)?);
+        if plan.guest.initramfs.is_none() {
+            let image = plan.guest.image.as_ref().unwrap();
+            let adapter = plan.runtime.image_adapter.as_ref().unwrap();
+            let initramfs = output.join("artifacts/initramfs");
+            let mut command = Command::new(&adapter.path);
+            command
+                .arg("flatten")
+                .arg(&image.path)
+                .arg("--output")
+                .arg(&initramfs);
+            if let Some(service) = &plan.container_service {
+                let contract = output.join("container-service.json");
+                fs::write(&contract, serde_json::to_vec_pretty(service).unwrap())
+                    .map_err(|error| error.to_string())?;
+                command.arg("--service").arg(contract);
+            }
+            let status = command.status().map_err(|error| error.to_string())?;
+            if !status.success() {
+                return Err(format!("container image adapter exited with {status}"));
+            }
+            plan.guest.initramfs = Some(ArtifactPlan {
+                path: initramfs.display().to_string(),
+                sha256: hex(Sha256::digest(
+                    fs::read(&initramfs).map_err(|error| error.to_string())?,
+                )),
+            });
+        }
+    }
+    if plan.guest.initramfs.is_none() {
+        return Err("exploration plan has no initramfs or image".to_owned());
+    }
     Ok(plan)
 }
 
