@@ -3,11 +3,24 @@
 Each directory is a versioned, offline-readable evaluation. Its
 `theseus-evaluation.toml` names only bundles below that directory, states the
 expected property outcome, and records a conventional baseline separately from
-Theseus evidence. Run it with a published `theseus` binary:
+Theseus evidence. Version 2 contracts also name an artifact lock. Evaluation
+verifies the SHA-256 and size of every regular file in every referenced bundle
+before it reads the campaign result. Run it with a published `theseus` binary:
 
 ```sh
 theseus evaluate --format markdown replicated-counter/theseus-evaluation.toml
 ```
+
+When changing a version 2 corpus, regenerate and commit its lock after the
+bundle is complete:
+
+```sh
+theseus evaluate lock replicated-counter/theseus-evaluation.toml
+```
+
+The lock rejects changed, missing, unexpected, and symlinked bundle files. It
+is evidence integrity, not a signature or a claim that a host-time baseline is
+reproducible.
 
 The machine report counts replay verification, generated candidates, retained
 runs, topology and instruction-location coverage, checkpoint work, reduction

@@ -1,5 +1,6 @@
-version = 1
+version = 2
 name = "replicated counter stale-read"
+lockfile = "theseus-evaluation.lock"
 
 [baseline]
 method = "fixed fault schedule without corpus guidance"

@@ -246,8 +246,12 @@ failure modes that ordinary repeated integration tests miss.
 
 **Current implementation:** `theseus evaluate [--format json|markdown]`
 validates a versioned evaluation contract against only its locked campaign
-bundles. It reports replay verification, selected and retained work, topology
-and instruction-location coverage, checkpoint work, minimization work, and
+bundles. Version 2 contracts verify a committed SHA-256 and byte-size lock for
+every regular bundle file before reading a result; changed, missing,
+unexpected, and symlinked files fail evaluation. `theseus evaluate lock`
+regenerates that deterministic lock when a corpus changes. Evaluation reports
+replay verification, selected and retained work, topology and
+instruction-location coverage, checkpoint work, minimization work, and
 retained operation-boundary evidence. Suites can record a conventional-chaos
 baseline and a manually observed investigation duration, but both are clearly
 informational rather than replay verdicts. `evaluations/replicated-counter/`

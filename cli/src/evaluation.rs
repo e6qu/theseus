@@ -1,7 +1,9 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug)]
 pub enum EvaluationError {
@@ -38,6 +40,8 @@ struct EvaluationSpec {
     version: u8,
     name: String,
     #[serde(default)]
+    lockfile: Option<String>,
+    #[serde(default)]
     baseline: Option<Baseline>,
     workloads: Vec<WorkloadSpec>,
 }
@@ -71,6 +75,31 @@ struct WorkloadSpec {
 struct ExpectedProperty {
     name: String,
     status: String,
+}
+
+/// The lock is deliberately separate from the human-authored evaluation
+/// contract. It records every regular file in every referenced campaign
+/// bundle, so a public result cannot silently change underneath its contract.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct EvaluationLock {
+    format: String,
+    bundles: Vec<LockedBundle>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LockedBundle {
+    bundle: String,
+    files: Vec<LockedFile>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LockedFile {
+    path: String,
+    sha256: String,
+    bytes: u64,
 }
 
 #[derive(Deserialize)]
@@ -157,7 +186,16 @@ pub struct EvaluationSummary {
     pub reduction: ReductionMetric,
     pub investigation: InvestigationMetric,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_verification: Option<ArtifactVerification>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub conventional_baseline: Option<BaselineMetric>,
+}
+
+#[derive(Serialize)]
+pub struct ArtifactVerification {
+    pub status: &'static str,
+    pub lockfile: String,
+    pub files: usize,
 }
 
 #[derive(Serialize)]
@@ -238,6 +276,12 @@ impl EvaluationSummary {
             self.search.prefix_reuses,
             self.search.avoided_prefix_recomputations,
         ));
+        if let Some(verification) = &self.artifact_verification {
+            output.push_str(&format!(
+                "- Locked artifacts: {} ({} files from {})\n",
+                verification.status, verification.files, verification.lockfile
+            ));
+        }
         output.push_str(&format!(
             "\n## Reduction and investigation\n\n- Reduction: {} → {} operations; {} → {} faults; {} operation replays; {} fault replays\n- Retained operation boundaries: {}\n- Manually reported investigation seconds: {} (informational; never a replay verdict)\n",
             self.reduction.original_operations,
@@ -273,27 +317,13 @@ impl EvaluationSummary {
 }
 
 pub fn evaluate(path: impl AsRef<Path>) -> Result<EvaluationSummary, EvaluationError> {
-    let path = path.as_ref();
-    let root = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let root = fs::canonicalize(root).map_err(|source| EvaluationError::Read {
-        path: root.to_path_buf(),
-        source,
-    })?;
-    let spec: EvaluationSpec = read_toml(path)?;
-    if spec.version != 1 {
-        return Err(EvaluationError::Invalid(format!(
-            "evaluation version must be 1, got {}",
-            spec.version
-        )));
-    }
-    if spec.name.is_empty() || spec.workloads.is_empty() {
-        return Err(EvaluationError::Invalid(
-            "evaluation needs a name and at least one workload".to_owned(),
-        ));
-    }
+    let (root, spec) = load_evaluation(path.as_ref())?;
+    validate_spec(&spec)?;
+    let artifact_verification = if spec.version == 2 {
+        Some(verify_lock(&root, &spec)?)
+    } else {
+        None
+    };
 
     let mut workloads = Vec::with_capacity(spec.workloads.len());
     let mut replay = ReplayMetric {
@@ -370,6 +400,7 @@ pub fn evaluate(path: impl AsRef<Path>) -> Result<EvaluationSummary, EvaluationE
         search,
         reduction,
         investigation,
+        artifact_verification,
         conventional_baseline: spec.baseline.map(|baseline| BaselineMetric {
             method: baseline.method,
             runs: baseline.runs,
@@ -379,7 +410,230 @@ pub fn evaluate(path: impl AsRef<Path>) -> Result<EvaluationSummary, EvaluationE
     })
 }
 
-fn read_toml(path: &Path) -> Result<EvaluationSpec, EvaluationError> {
+/// Write a deterministic file-and-digest lock for a version 2 public
+/// evaluation. Commit this file with the evaluation contract and its bundles.
+pub fn write_evaluation_lock(path: impl AsRef<Path>) -> Result<PathBuf, EvaluationError> {
+    let (root, spec) = load_evaluation(path.as_ref())?;
+    validate_spec(&spec)?;
+    if spec.version != 2 {
+        return Err(EvaluationError::Invalid(format!(
+            "evaluation lock generation requires version 2, got {}",
+            spec.version
+        )));
+    }
+    let lockfile = spec.lockfile.as_deref().ok_or_else(|| {
+        EvaluationError::Invalid("version 2 evaluation needs a lockfile".to_owned())
+    })?;
+    let output = relative_path(&root, lockfile, "lockfile")?;
+    let mut bundles = Vec::with_capacity(spec.workloads.len());
+    for workload in &spec.workloads {
+        let bundle = resolve_bundle(&root, &workload.bundle)?;
+        bundles.push(LockedBundle {
+            bundle: workload.bundle.clone(),
+            files: bundle_files(&bundle)?,
+        });
+    }
+    let lock = EvaluationLock {
+        format: "theseus-evaluation-lock-v1".to_owned(),
+        bundles,
+    };
+    let contents = toml::to_string_pretty(&lock).map_err(|error| {
+        EvaluationError::Invalid(format!("cannot encode evaluation lock: {error}"))
+    })?;
+    fs::write(&output, contents).map_err(|source| EvaluationError::Read {
+        path: output.clone(),
+        source,
+    })?;
+    Ok(output)
+}
+
+fn load_evaluation(path: &Path) -> Result<(PathBuf, EvaluationSpec), EvaluationError> {
+    let root = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let root = fs::canonicalize(root).map_err(|source| EvaluationError::Read {
+        path: root.to_path_buf(),
+        source,
+    })?;
+    Ok((root, read_toml(path)?))
+}
+
+fn validate_spec(spec: &EvaluationSpec) -> Result<(), EvaluationError> {
+    if spec.version != 1 && spec.version != 2 {
+        return Err(EvaluationError::Invalid(format!(
+            "evaluation version must be 1 or 2, got {}",
+            spec.version
+        )));
+    }
+    if spec.name.is_empty() || spec.workloads.is_empty() {
+        return Err(EvaluationError::Invalid(
+            "evaluation needs a name and at least one workload".to_owned(),
+        ));
+    }
+    let mut names = BTreeSet::new();
+    let mut bundles = BTreeSet::new();
+    for workload in &spec.workloads {
+        if workload.name.is_empty() || workload.bundle.is_empty() {
+            return Err(EvaluationError::Invalid(
+                "each evaluation workload needs a name and bundle".to_owned(),
+            ));
+        }
+        if !names.insert(&workload.name) || !bundles.insert(&workload.bundle) {
+            return Err(EvaluationError::Invalid(
+                "evaluation workload names and bundles must be unique".to_owned(),
+            ));
+        }
+    }
+    if spec.version == 2 && spec.lockfile.as_deref().is_none_or(str::is_empty) {
+        return Err(EvaluationError::Invalid(
+            "version 2 evaluation needs a lockfile".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_lock(
+    root: &Path,
+    spec: &EvaluationSpec,
+) -> Result<ArtifactVerification, EvaluationError> {
+    let lockfile = spec.lockfile.as_deref().expect("version 2 was validated");
+    let lock_path = relative_path(root, lockfile, "lockfile")?;
+    let lock: EvaluationLock = read_toml(&lock_path)?;
+    if lock.format != "theseus-evaluation-lock-v1" {
+        return Err(EvaluationError::Invalid(format!(
+            "unsupported evaluation lock format {:?}",
+            lock.format
+        )));
+    }
+    let locked = lock
+        .bundles
+        .iter()
+        .map(|bundle| (bundle.bundle.as_str(), bundle))
+        .collect::<BTreeMap<_, _>>();
+    if locked.len() != lock.bundles.len() || locked.len() != spec.workloads.len() {
+        return Err(EvaluationError::Invalid(
+            "evaluation lock must contain each evaluation bundle exactly once".to_owned(),
+        ));
+    }
+    let mut files = 0;
+    for workload in &spec.workloads {
+        let expected = locked.get(workload.bundle.as_str()).ok_or_else(|| {
+            EvaluationError::Invalid(format!(
+                "evaluation lock has no bundle {:?}",
+                workload.bundle
+            ))
+        })?;
+        let bundle = resolve_bundle(root, &workload.bundle)?;
+        let actual = bundle_files(&bundle)?;
+        let expected_files = expected
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file))
+            .collect::<BTreeMap<_, _>>();
+        if expected_files.len() != expected.files.len() || expected_files.len() != actual.len() {
+            return Err(EvaluationError::Invalid(format!(
+                "locked files differ for bundle {:?}",
+                workload.bundle
+            )));
+        }
+        for file in actual {
+            let expected_file = expected_files.get(file.path.as_str()).ok_or_else(|| {
+                EvaluationError::Invalid(format!(
+                    "unlocked file {:?} in bundle {:?}",
+                    file.path, workload.bundle
+                ))
+            })?;
+            if expected_file.sha256 != file.sha256 || expected_file.bytes != file.bytes {
+                return Err(EvaluationError::Invalid(format!(
+                    "locked file changed: {}/{}",
+                    workload.bundle, file.path
+                )));
+            }
+            files += 1;
+        }
+    }
+    Ok(ArtifactVerification {
+        status: "verified",
+        lockfile: lockfile.to_owned(),
+        files,
+    })
+}
+
+fn relative_path(root: &Path, value: &str, label: &str) -> Result<PathBuf, EvaluationError> {
+    let path = Path::new(value);
+    if value.is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(EvaluationError::Invalid(format!(
+            "evaluation {label} must be a non-empty relative path: {value:?}"
+        )));
+    }
+    Ok(root.join(path))
+}
+
+fn bundle_files(bundle: &Path) -> Result<Vec<LockedFile>, EvaluationError> {
+    let mut paths = Vec::new();
+    collect_files(bundle, &mut paths)?;
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            let relative = path.strip_prefix(bundle).expect("file is below bundle");
+            let relative = relative.to_str().ok_or_else(|| {
+                EvaluationError::Invalid(format!("bundle file is not UTF-8: {}", path.display()))
+            })?;
+            let contents = fs::read(&path).map_err(|source| EvaluationError::Read {
+                path: path.clone(),
+                source,
+            })?;
+            Ok(LockedFile {
+                path: relative.replace(std::path::MAIN_SEPARATOR, "/"),
+                sha256: format!("{:x}", Sha256::digest(&contents)),
+                bytes: contents.len() as u64,
+            })
+        })
+        .collect()
+}
+
+fn collect_files(directory: &Path, paths: &mut Vec<PathBuf>) -> Result<(), EvaluationError> {
+    for entry in fs::read_dir(directory).map_err(|source| EvaluationError::Read {
+        path: directory.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| EvaluationError::Read {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|source| EvaluationError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(EvaluationError::Invalid(format!(
+                "evaluation bundle cannot contain symlinks: {}",
+                path.display()
+            )));
+        }
+        if metadata.is_dir() {
+            collect_files(&path, paths)?;
+        } else if metadata.is_file() {
+            paths.push(path);
+        } else {
+            return Err(EvaluationError::Invalid(format!(
+                "evaluation bundle contains a non-regular file: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn read_toml<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, EvaluationError> {
     let contents = fs::read_to_string(path).map_err(|source| EvaluationError::Read {
         path: path.to_path_buf(),
         source,
@@ -411,7 +665,17 @@ fn read_json_optional<T: for<'de> Deserialize<'de>>(
 }
 
 fn resolve_bundle(root: &Path, bundle: &str) -> Result<PathBuf, EvaluationError> {
-    let bundle = root.join(bundle);
+    let bundle = relative_path(root, bundle, "bundle")?;
+    let metadata = fs::symlink_metadata(&bundle).map_err(|source| EvaluationError::Read {
+        path: bundle.clone(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(EvaluationError::Invalid(format!(
+            "evaluation bundle cannot be a symlink: {}",
+            bundle.display()
+        )));
+    }
     let bundle = fs::canonicalize(&bundle).map_err(|source| EvaluationError::Read {
         path: bundle,
         source,
@@ -495,5 +759,70 @@ expected_status = "failed"
         let summary = evaluate(directory.path().join("theseus-evaluation.toml")).unwrap();
         assert_eq!(summary.status, "failed");
         assert_eq!(summary.replay.verified, 0);
+    }
+
+    #[test]
+    fn version_two_locks_every_bundle_file_and_rejects_drift() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("bundle")).unwrap();
+        fs::write(
+            directory.path().join("theseus-evaluation.toml"),
+            r#"version = 2
+name = "locked public corpus"
+lockfile = "theseus-evaluation.lock"
+[[workloads]]
+name = "counter"
+bundle = "bundle"
+expected_status = "failed"
+[[workloads.properties]]
+name = "consistent_read"
+status = "failed"
+"#,
+        )
+        .unwrap();
+        let result = r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","replay_verification":{"status":"passed"},"runs":[],"properties":[{"name":"consistent_read","status":"failed"}]}"#;
+        fs::write(directory.path().join("bundle/campaign-result.json"), result).unwrap();
+        fs::write(directory.path().join("bundle/minimization.json"), "{}").unwrap();
+
+        let lock = write_evaluation_lock(directory.path().join("theseus-evaluation.toml")).unwrap();
+        assert!(lock.is_file());
+        let summary = evaluate(directory.path().join("theseus-evaluation.toml")).unwrap();
+        assert_eq!(summary.artifact_verification.unwrap().files, 2);
+
+        fs::write(
+            directory.path().join("bundle/minimization.json"),
+            "{\"operation_attempts\":1}",
+        )
+        .unwrap();
+        let error = match evaluate(directory.path().join("theseus-evaluation.toml")) {
+            Ok(_) => panic!("changed locked file was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("locked file changed"));
+
+        fs::write(directory.path().join("bundle/unexpected.txt"), "drift").unwrap();
+        let error = match evaluate(directory.path().join("theseus-evaluation.toml")) {
+            Ok(_) => panic!("unexpected locked file was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("locked files differ"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            fs::remove_file(directory.path().join("bundle/unexpected.txt")).unwrap();
+            fs::remove_file(directory.path().join("bundle/minimization.json")).unwrap();
+            symlink(
+                "campaign-result.json",
+                directory.path().join("bundle/minimization.json"),
+            )
+            .unwrap();
+            let error = match evaluate(directory.path().join("theseus-evaluation.toml")) {
+                Ok(_) => panic!("symlinked locked file was accepted"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("cannot contain symlinks"));
+        }
     }
 }
