@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use theseus_cli::{
     compare_campaigns, explore, explore_compose, load_compose_plan, load_plan,
-    minimize_compose_campaign, minimize_exploration_path, replay, replay_compose,
+    minimize_compose_campaign, minimize_exploration_path, query_campaigns, replay, replay_compose,
     replay_exploration, replay_exploration_path, report, report_file, report_text,
     snapshot_exploration_path, test, test_compose, ReportFormat,
 };
@@ -24,6 +24,8 @@ const USAGE: &str = "Usage:
   theseus report [--output report-dir] result-dir
   theseus report --format markdown|json|junit [--output file] result-dir
   theseus compare left-campaign-dir right-campaign-dir
+  theseus compare --format json|markdown left-campaign-dir right-campaign-dir
+  theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
@@ -147,6 +149,27 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 "{}",
                 serde_json::to_string_pretty(&comparison)
                     .map_err(|error| format!("cannot encode comparison: {error}"))?
+            );
+            Ok(())
+        }
+        [command, flag, format, left, right] if command == "compare" && flag == "--format" => {
+            let comparison = compare_campaigns(left, right).map_err(|error| error.to_string())?;
+            match format.as_str() {
+                "json" => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&comparison)
+                        .map_err(|error| format!("cannot encode comparison: {error}"))?
+                ),
+                "markdown" => print!("{}", comparison.markdown()),
+                _ => return Err("compare format must be json or markdown".to_owned()),
+            }
+            Ok(())
+        }
+        [command, flag, pointer, left, right] if command == "compare" && flag == "--query" => {
+            let query = query_campaigns(left, right, pointer).map_err(|error| error.to_string())?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&query).map_err(|error| error.to_string())?
             );
             Ok(())
         }

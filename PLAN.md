@@ -204,11 +204,16 @@ Turn a replay bundle into an investigation surface.
 **Exit criteria:** a user can answer “what changed before this failure?” from a
 bundle without manually diffing serial logs or snapshots.
 
-**Current implementation:** `theseus compare <left> <right>` begins the
-portable investigation surface by reporting the first campaign run whose
-operations, faults, or topology-state hash differs. It reads only the two
-locked result bundles and emits stable JSON; boundary-level causality and
-general event queries remain next.
+**Current implementation:** `theseus compare <left> <right>` reads only two
+locked `campaign-result.json` bundles and identifies the first causal
+difference in selected operations and faults, applied fault actions,
+operation-boundary topology state, serial evidence, or coverage. It also
+compares retained property witnesses, accumulated coverage, final state, and
+property verdicts. `theseus compare --query /json/pointer <left> <right>`
+returns the same retained field from both bundles, including timeline actions,
+serial evidence, topology state, coverage, and properties. Use
+`theseus compare --format markdown` for a portable issue-ready divergence
+note. Tutorial 12 is a no-VM, self-contained investigation example.
 
 ### P19 — public capability evaluation
 

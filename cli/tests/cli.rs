@@ -100,6 +100,61 @@ fn report_writes_markdown_json_and_junit_without_kvm() {
 }
 
 #[test]
+fn compare_queries_and_reports_campaign_evidence_without_kvm() {
+    let directory = tempfile::tempdir().unwrap();
+    for (name, state, pc, property) in [
+        ("before", "before-state", "0x8010", "passed"),
+        ("after", "after-state", "0x8020", "failed"),
+    ] {
+        let campaign = directory.path().join(name);
+        fs::create_dir(&campaign).unwrap();
+        fs::write(
+            campaign.join("campaign-result.json"),
+            format!(
+                r#"{{"runs":[{{"index":0,"operations":["read"],"state_sha256":"{state}","timeline":[{{"operation":"read","service":"api","state_sha256":"{state}","program_counters":{{"api":["{pc}"]}}}}]}}],"properties":[{{"name":"consistent_read","kind":"always","status":"{property}"}}]}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    let compare = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["compare", "before", "after"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(compare.status.success(), "{compare:?}");
+    assert!(String::from_utf8(compare.stdout)
+        .unwrap()
+        .contains("first operation-boundary state differs"));
+
+    let markdown = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["compare", "--format", "markdown", "before", "after"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(markdown.status.success(), "{markdown:?}");
+    assert!(String::from_utf8(markdown.stdout)
+        .unwrap()
+        .contains("First causal divergence"));
+
+    let query = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "compare",
+            "--query",
+            "/runs/0/timeline/0/program_counters",
+            "before",
+            "after",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(query.status.success(), "{query:?}");
+    let query: serde_json::Value = serde_json::from_slice(&query.stdout).unwrap();
+    assert_eq!(query["left"]["api"][0], "0x8010");
+    assert_eq!(query["right"]["api"][0], "0x8020");
+}
+
+#[test]
 fn help_lists_bundle_local_replay_commands() {
     let output = Command::new(env!("CARGO_BIN_EXE_theseus"))
         .arg("--help")
@@ -114,4 +169,5 @@ fn help_lists_bundle_local_replay_commands() {
     assert!(help.contains("explore --snapshot exploration-dir"));
     assert!(help.contains("compose replay replay-dir"));
     assert!(help.contains("report --format markdown|json|junit"));
+    assert!(help.contains("compare --query /json/pointer"));
 }
