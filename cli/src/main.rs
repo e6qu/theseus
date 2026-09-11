@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use theseus_cli::{
-    compare_campaigns, evaluate, explore, explore_compose, load_compose_plan, load_plan,
-    minimize_compose_campaign, minimize_exploration_path, query_campaigns, replay, replay_compose,
-    replay_exploration, replay_exploration_path, report, report_file, report_text,
+    capture_evaluation, compare_campaigns, evaluate, explore, explore_compose, load_compose_plan,
+    load_plan, minimize_compose_campaign, minimize_exploration_path, query_campaigns, replay,
+    replay_compose, replay_exploration, replay_exploration_path, report, report_file, report_text,
     snapshot_exploration_path, test, test_compose, write_evaluation_lock, ReportFormat,
 };
 
@@ -28,6 +28,7 @@ const USAGE: &str = "Usage:
   theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
   theseus evaluate lock [theseus-evaluation.toml]
+  theseus evaluate capture campaign-dir --output evaluation-dir --name name
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
@@ -171,6 +172,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
         [command, lock, input] if command == "evaluate" && lock == "lock" => {
             let path = write_evaluation_lock(input).map_err(|error| error.to_string())?;
             println!("evaluation lock: {}", path.display());
+            Ok(())
+        }
+        [command, capture, campaign, output_flag, output, name_flag, name]
+            if command == "evaluate"
+                && capture == "capture"
+                && output_flag == "--output"
+                && name_flag == "--name" =>
+        {
+            let path =
+                capture_evaluation(campaign, output, name).map_err(|error| error.to_string())?;
+            println!("evaluation: {}", path.display());
             Ok(())
         }
         [command] if command == "evaluate" => {

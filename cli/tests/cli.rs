@@ -205,6 +205,53 @@ status = "failed"
 }
 
 #[test]
+fn evaluate_capture_publishes_a_complete_campaign_without_kvm() {
+    let directory = tempfile::tempdir().unwrap();
+    let campaign = directory.path().join("campaign");
+    fs::create_dir_all(campaign.join("services/api")).unwrap();
+    fs::write(
+        campaign.join("replay-plan.json"),
+        r#"{"format":"theseus-compose-plan-v1"}"#,
+    )
+    .unwrap();
+    fs::write(campaign.join("services/api/serial.log"), "evidence\n").unwrap();
+    fs::write(
+        campaign.join("campaign-result.json"),
+        r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","replay_verification":{"status":"passed"},"runs":[],"properties":[{"name":"consistent_read","status":"failed"}]}"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "evaluate",
+            "capture",
+            "campaign",
+            "--output",
+            "public",
+            "--name",
+            "counter failure",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(directory
+        .path()
+        .join("public/campaign/services/api/serial.log")
+        .is_file());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["evaluate", "public/theseus-evaluation.toml"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8(output.stdout)
+        .unwrap()
+        .contains("\"status\": \"passed\""));
+}
+
+#[test]
 fn versioned_replicated_counter_evaluation_stays_replay_verified() {
     let evaluation = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../evaluations/replicated-counter/theseus-evaluation.toml");
@@ -269,4 +316,5 @@ fn help_lists_bundle_local_replay_commands() {
     assert!(help.contains("compare --query /json/pointer"));
     assert!(help.contains("evaluate [--format json|markdown]"));
     assert!(help.contains("evaluate lock [theseus-evaluation.toml]"));
+    assert!(help.contains("evaluate capture campaign-dir --output evaluation-dir --name name"));
 }
