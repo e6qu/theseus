@@ -46,6 +46,17 @@ struct Run {
     faults: Vec<String>,
     #[serde(default)]
     state_sha256: String,
+    #[serde(default)]
+    timeline: Vec<Boundary>,
+}
+#[derive(Deserialize)]
+struct Boundary {
+    #[serde(default)]
+    operation: String,
+    #[serde(default)]
+    service: String,
+    #[serde(default)]
+    state_sha256: String,
 }
 
 #[derive(Serialize)]
@@ -60,6 +71,8 @@ pub struct CampaignComparison {
 #[derive(Serialize)]
 pub struct CampaignDivergence {
     pub run: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<usize>,
     pub reason: String,
     pub left: String,
     pub right: String,
@@ -82,12 +95,12 @@ pub fn compare_campaigns(
         .zip(&right.runs)
         .enumerate()
         .find_map(|(position, (left, right))| {
-            (left.operations != right.operations
-                || left.faults != right.faults
-                || left.state_sha256 != right.state_sha256)
-                .then(|| CampaignDivergence {
-                    run: left.index.min(right.index).max(position),
-                    reason: "first selected timeline differs".to_owned(),
+            let run = left.index.min(right.index).max(position);
+            if left.operations != right.operations || left.faults != right.faults {
+                return Some(CampaignDivergence {
+                    run,
+                    boundary: None,
+                    reason: "selected operation history differs".to_owned(),
                     left: format!(
                         "operations={:?}; faults={:?}; state={}",
                         left.operations, left.faults, left.state_sha256
@@ -96,11 +109,41 @@ pub fn compare_campaigns(
                         "operations={:?}; faults={:?}; state={}",
                         right.operations, right.faults, right.state_sha256
                     ),
+                });
+            }
+            for (boundary, (left, right)) in left.timeline.iter().zip(&right.timeline).enumerate() {
+                if left.operation != right.operation
+                    || left.service != right.service
+                    || left.state_sha256 != right.state_sha256
+                {
+                    return Some(CampaignDivergence {
+                        run,
+                        boundary: Some(boundary),
+                        reason: "first operation-boundary state differs".to_owned(),
+                        left: format!(
+                            "{}@{} state={}",
+                            left.operation, left.service, left.state_sha256
+                        ),
+                        right: format!(
+                            "{}@{} state={}",
+                            right.operation, right.service, right.state_sha256
+                        ),
+                    });
+                }
+            }
+            (left.timeline.len() != right.timeline.len() || left.state_sha256 != right.state_sha256)
+                .then(|| CampaignDivergence {
+                    run,
+                    boundary: None,
+                    reason: "final topology state differs".to_owned(),
+                    left: left.state_sha256.clone(),
+                    right: right.state_sha256.clone(),
                 })
         })
         .or_else(|| {
             (left.runs.len() != right.runs.len()).then(|| CampaignDivergence {
                 run: left.runs.len().min(right.runs.len()),
+                boundary: None,
                 reason: "campaign run count differs".to_owned(),
                 left: left.runs.len().to_string(),
                 right: right.runs.len().to_string(),
