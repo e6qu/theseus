@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage: theseus-image flatten image.tar --output initramfs.cpio [--service service.json] [--network network.json] [--environment environment.json] [--launch launch.json] [--configs configs.json] [--secrets secrets.json]";
+const USAGE: &str = "Usage: theseus-image flatten image.tar --output initramfs.cpio [--service service.json] [--network network.json] [--environment environment.json] [--launch launch.json] [--configs configs.json] [--secrets secrets.json] [--volumes volumes.json]";
 
 fn run(args: Vec<String>) -> Result<(), String> {
     match args.as_slice() {
@@ -28,6 +28,7 @@ fn flatten(args: Vec<String>) -> Result<(), String> {
     let mut launch = None;
     let mut configs: Option<Vec<theseus_orchestrator::oci::ContainerConfig>> = None;
     let mut secrets: Option<Vec<theseus_orchestrator::oci::ContainerConfig>> = None;
+    let mut volumes: Option<Vec<theseus_orchestrator::oci::ContainerVolume>> = None;
     let mut options = rest.iter();
     while let Some(flag) = options.next() {
         let Some(path) = options.next() else {
@@ -81,6 +82,14 @@ fn flatten(args: Vec<String>) -> Result<(), String> {
                         format!("cannot parse secret contract {path}: {error}")
                     })?);
             }
+            "--volumes" if volumes.is_none() => {
+                let bytes = fs::read(path)
+                    .map_err(|error| format!("cannot read volume contract {path}: {error}"))?;
+                volumes =
+                    Some(serde_json::from_slice(&bytes).map_err(|error| {
+                        format!("cannot parse volume contract {path}: {error}")
+                    })?);
+            }
             _ => return Err(USAGE.to_owned()),
         }
     }
@@ -93,6 +102,7 @@ fn flatten(args: Vec<String>) -> Result<(), String> {
         launch.as_ref(),
         configs.as_deref(),
         secrets.as_deref(),
+        volumes.as_deref(),
     )
     .map_err(|error| format!("cannot flatten image archive: {error}"))?;
     let output = PathBuf::from(output);
@@ -136,6 +146,7 @@ mod tests {
         let launch = directory.join("launch.json");
         let configs = directory.join("configs.json");
         let secrets = directory.join("secrets.json");
+        let volumes = directory.join("volumes.json");
         fs::write(&service, "{}").unwrap();
         fs::write(&network, r#"{"interfaces":[],"hosts":{}}"#).unwrap();
         fs::write(&environment, r#"{"MODE":"campaign"}"#).unwrap();
@@ -144,6 +155,11 @@ mod tests {
         fs::write(
             &secrets,
             r#"[{"target":"/run/secrets/token","data":[116]}]"#,
+        )
+        .unwrap();
+        fs::write(
+            &volumes,
+            r#"[{"target":"/var/lib/app","directories":["/var/lib/app"],"files":[{"target":"/var/lib/app/value","data":[118]}]}]"#,
         )
         .unwrap();
         let error = flatten(vec![
@@ -163,6 +179,8 @@ mod tests {
             configs.display().to_string(),
             "--secrets".to_owned(),
             secrets.display().to_string(),
+            "--volumes".to_owned(),
+            volumes.display().to_string(),
         ])
         .unwrap_err();
         assert!(error.contains("cannot read image archive"));

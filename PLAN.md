@@ -226,6 +226,10 @@ mount or host filesystem dependency.
 Local Compose `secrets` follow the same locked path with root-only file
 permissions. Their bytes remain in replay material, so secret-bearing bundles
 must be handled as sensitive artifacts.
+Local Compose bind-volume directories are also copied into derived image
+initramfses. They start from the same locked tree on every replay and are
+writable only inside each VM run; Docker named and shared volumes remain out
+of scope because they would add host-persistent state to a replay.
 
 **Campaign operations:** Compose campaigns also accept a declarative `http`
 operation for an image-backed service. Theseus locks its JSON request command

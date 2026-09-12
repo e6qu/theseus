@@ -70,6 +70,14 @@ pub struct ContainerConfig {
     pub data: Vec<u8>,
 }
 
+/// A writable image directory seeded from a locked local Compose bind source.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContainerVolume {
+    pub target: String,
+    pub directories: Vec<String>,
+    pub files: Vec<ContainerConfig>,
+}
+
 impl ContainerLaunch {
     pub fn is_empty(&self) -> bool {
         self.command.is_none() && self.entrypoint.is_none() && self.working_dir.is_none()
@@ -252,7 +260,7 @@ enum Entry {
 
 /// Flatten a `docker save` image tar into (cpio_bytes, image_spec).
 pub fn flatten(image_tar: &[u8]) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, None, None, None, None, None, None)
+    flatten_with_contracts(image_tar, None, None, None, None, None, None, None)
 }
 
 /// Flatten an image and inject an optional boot-time service contract.
@@ -260,7 +268,7 @@ pub fn flatten_with_service(
     image_tar: &[u8],
     service: Option<&ContainerServiceContract>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, service, None, None, None, None, None)
+    flatten_with_contracts(image_tar, service, None, None, None, None, None, None)
 }
 
 /// Flatten an image and inject optional service and network contracts.
@@ -273,12 +281,12 @@ pub fn flatten_with_service_and_network(
     service: Option<&ContainerServiceContract>,
     network: Option<&ContainerNetwork>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, service, network, None, None, None, None)
+    flatten_with_contracts(image_tar, service, network, None, None, None, None, None)
 }
 
-/// Flatten an image and inject optional service, network, environment, and
-/// launch contracts. Every override applies to the image entrypoint itself,
-/// not just to Theseus-driven shell operations.
+/// Flatten an image and inject optional service, network, image, and local
+/// bind-volume contracts. Every override applies to the image entrypoint
+/// itself, not just to Theseus-driven shell operations.
 pub fn flatten_with_contracts(
     image_tar: &[u8],
     service: Option<&ContainerServiceContract>,
@@ -287,6 +295,7 @@ pub fn flatten_with_contracts(
     launch: Option<&ContainerLaunch>,
     configs: Option<&[ContainerConfig]>,
     secrets: Option<&[ContainerConfig]>,
+    volumes: Option<&[ContainerVolume]>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
     let mut archive = tar::Archive::new(image_tar);
 
@@ -366,6 +375,21 @@ pub fn flatten_with_contracts(
             .ok_or_else(|| OciError::Tar(format!("missing layer {layer_name}")))?;
         apply_layer(layer, &mut files)?;
     }
+    if let Some(volumes) = volumes {
+        for volume in volumes {
+            let prefix = format!("{}/", volume.target.trim_end_matches('/'));
+            files.retain(|path, _| path != &volume.target && !path.starts_with(&prefix));
+            for directory in &volume.directories {
+                files.insert(directory.clone(), Entry::Dir);
+            }
+            for file in &volume.files {
+                files.insert(
+                    file.target.clone(),
+                    Entry::File(file.data.clone(), 0o100644),
+                );
+            }
+        }
+    }
     if let Some(configs) = configs {
         for config in configs {
             files.insert(
@@ -399,7 +423,10 @@ pub fn flatten_with_contracts(
     // The kernel's initramfs unpacker does not create parent directories
     // implicitly: every directory in every path needs an explicit entry.
     let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for path in files.keys() {
+    for (path, entry) in &files {
+        if matches!(entry, Entry::Dir) {
+            dirs.insert(path.clone());
+        }
         let mut parent = std::path::Path::new(path.as_str()).parent();
         while let Some(dir) = parent {
             if dir != std::path::Path::new("/") {
@@ -727,6 +754,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert!(spec.env.iter().any(|entry| entry == "MODE=campaign"));
@@ -745,9 +773,17 @@ mod tests {
             ]),
             working_dir: Some("/site".to_owned()),
         };
-        let (cpio, spec) =
-            flatten_with_contracts(&test_image(), None, None, None, Some(&launch), None, None)
-                .unwrap();
+        let (cpio, spec) = flatten_with_contracts(
+            &test_image(),
+            None,
+            None,
+            None,
+            Some(&launch),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             spec.argv,
             ["/bin/serve", "--port", "8080", "."].map(str::to_owned)
@@ -769,6 +805,7 @@ mod tests {
             Some(&command_only),
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(spec.argv, ["/bin/tool", "--foreground"].map(str::to_owned));
@@ -780,9 +817,17 @@ mod tests {
             target: "/app/hello.txt".to_owned(),
             data: b"configured\n".to_vec(),
         }];
-        let (cpio, _) =
-            flatten_with_contracts(&test_image(), None, None, None, None, Some(&configs), None)
-                .unwrap();
+        let (cpio, _) = flatten_with_contracts(
+            &test_image(),
+            None,
+            None,
+            None,
+            None,
+            Some(&configs),
+            None,
+            None,
+        )
+        .unwrap();
         let text = String::from_utf8_lossy(&cpio);
         assert!(text.contains("configured\n"));
         assert!(!text.contains("hello\0"));
@@ -794,13 +839,48 @@ mod tests {
             target: "/run/secrets/token".to_owned(),
             data: b"secret\n".to_vec(),
         }];
-        let (cpio, _) =
-            flatten_with_contracts(&test_image(), None, None, None, None, None, Some(&secrets))
-                .unwrap();
+        let (cpio, _) = flatten_with_contracts(
+            &test_image(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&secrets),
+            None,
+        )
+        .unwrap();
         let text = String::from_utf8_lossy(&cpio);
         assert!(text.contains("/run/secrets/token"));
         assert!(text.contains("secret\n"));
         assert!(text.contains("00008100"));
+    }
+
+    #[test]
+    fn flatten_replaces_an_image_directory_with_a_writable_compose_volume() {
+        let volumes = [ContainerVolume {
+            target: "/app".to_owned(),
+            directories: vec!["/app".to_owned(), "/app/state".to_owned()],
+            files: vec![ContainerConfig {
+                target: "/app/state/value".to_owned(),
+                data: b"seeded\n".to_vec(),
+            }],
+        }];
+        let (cpio, _) = flatten_with_contracts(
+            &test_image(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&volumes),
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&cpio);
+        assert!(text.contains("/app/state/value"));
+        assert!(text.contains("seeded\n"));
+        assert!(!text.contains("hello\0"));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload
