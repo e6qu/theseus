@@ -10,8 +10,10 @@ Start with [tutorial 14](../../tutorials/14-container-image/). It uses only a
 published Theseus runtime image and the files in its own directory.
 
 For a deterministic operation campaign against an unmodified image, continue
-with [tutorial 15](../../tutorials/15-container-campaign/) for HTTP or
-[tutorial 17](../../tutorials/17-grpc-campaign/) for standard gRPC health.
+with [tutorial 15](../../tutorials/15-container-campaign/) for HTTP,
+[tutorial 17](../../tutorials/17-grpc-campaign/) for standard gRPC health, or
+[tutorial 18](../../tutorials/18-container-command/) for an argv command in
+the image filesystem.
 
 ## 2. Prepare your image
 
@@ -111,7 +113,24 @@ service = "example.Api"
 expect_status = "serving"
 ```
 
-For a campaign, put the equivalent request in its Compose operation:
+## Run a command in the image
+
+Run an argv command after readiness when your normal integration check is a
+migration, diagnostics command, or client already present in the image:
+
+```toml
+[[container_service.shell_operations]]
+name = "check_schema"
+command = ["/app/migrate", "--check"]
+expect_exit = 0
+output_contains = "up to date"
+```
+
+Theseus calls the argv directly in the image working directory with the image
+environment. It captures bounded combined stdout and stderr to evaluate
+`output_contains`; it does not evaluate a shell string.
+
+For a gRPC-health campaign, put the equivalent request in its Compose operation:
 
 ```yaml
 - name: api_health
@@ -126,6 +145,20 @@ standard health endpoint through the image pivot, records
 `THES:GRPC:operation:<name>:PASS` or `FAIL`, and takes the usual operation
 checkpoint. The service does not need an SDK, reflection, TLS, or an arbitrary
 RPC adapter.
+
+For a command campaign, use `shell` instead:
+
+```yaml
+- name: check_schema
+  shell:
+    command: ["/app/migrate", "--check"]
+    expect_exit: 0
+    output_contains: up to date
+```
+
+Theseus locks this argv command into the campaign input, runs it after the
+boot barrier, records `THES:SHELL:operation:<name>:PASS` or `FAIL`, and takes
+the usual operation checkpoint.
 
 Static and dynamically linked images work when their dependencies are inside
 the image. Use the simulated network for deterministic networking.

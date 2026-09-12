@@ -267,6 +267,8 @@ struct ContainerService {
     grpc_assertions: Vec<GrpcAssertion>,
     #[serde(default)]
     grpc_operations: Vec<GrpcOperation>,
+    #[serde(default)]
+    shell_operations: Vec<ShellOperation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -350,6 +352,19 @@ struct GrpcOperation {
     service: String,
     #[serde(default = "default_grpc_status")]
     expect_status: GrpcServingStatus,
+}
+
+/// A command run inside the image after service readiness. Commands are argv
+/// arrays: Theseus never invokes a shell to evaluate them.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShellOperation {
+    name: String,
+    command: Vec<String>,
+    #[serde(default = "default_shell_exit")]
+    expect_exit: i32,
+    #[serde(default)]
+    output_contains: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -543,6 +558,8 @@ pub struct ContainerServicePlan {
     pub grpc_assertions: Vec<GrpcAssertionPlan>,
     #[serde(default)]
     pub grpc_operations: Vec<GrpcOperationPlan>,
+    #[serde(default)]
+    pub shell_operations: Vec<ShellOperationPlan>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -595,6 +612,16 @@ pub struct GrpcOperationPlan {
     pub url: String,
     pub service: String,
     pub expect_status: GrpcServingStatus,
+}
+
+/// An argv command evaluated inside an image-backed service VM.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ShellOperationPlan {
+    pub name: String,
+    pub command: Vec<String>,
+    pub expect_exit: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_contains: Option<String>,
 }
 
 pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
@@ -897,6 +924,17 @@ fn container_service_plan(
             expect_status: operation.expect_status,
         });
     }
+    let mut shell_operations = Vec::with_capacity(service.shell_operations.len());
+    for operation in service.shell_operations {
+        validate_service_assertion_name(&mut names, &operation.name)?;
+        validate_shell_operation("container_service.shell_operations", &operation)?;
+        shell_operations.push(ShellOperationPlan {
+            name: operation.name,
+            command: operation.command,
+            expect_exit: operation.expect_exit,
+            output_contains: operation.output_contains,
+        });
+    }
     Ok(Some(ContainerServicePlan {
         campaign: service.campaign,
         ready,
@@ -905,7 +943,28 @@ fn container_service_plan(
         grpc_ready,
         grpc_assertions,
         grpc_operations,
+        shell_operations,
     }))
+}
+
+fn validate_shell_operation(field: &str, operation: &ShellOperation) -> Result<(), LoadError> {
+    if operation.command.is_empty()
+        || !operation.command[0].starts_with('/')
+        || operation
+            .command
+            .iter()
+            .any(|argument| argument.is_empty() || argument.contains('\0'))
+    {
+        return Err(LoadError::InvalidGuest(format!(
+            "{field} command must be a non-empty argv with an absolute program and no empty or NUL arguments"
+        )));
+    }
+    if operation.output_contains.as_deref() == Some("") {
+        return Err(LoadError::InvalidCheck(format!(
+            "{field} output_contains must not be empty"
+        )));
+    }
+    Ok(())
 }
 
 fn http_ready_plan(field: &str, ready: HttpReady) -> Result<HttpReadyPlan, LoadError> {
@@ -1139,6 +1198,10 @@ fn default_grpc_interval_millis() -> u64 {
 
 fn default_grpc_status() -> GrpcServingStatus {
     GrpcServingStatus::Serving
+}
+
+fn default_shell_exit() -> i32 {
+    0
 }
 
 fn default_max_rounds() -> u64 {
@@ -1473,6 +1536,11 @@ name = "recheck"
 url = "http://127.0.0.1:50051"
 service = "example.Api"
 expect_status = "serving"
+
+[[container_service.shell_operations]]
+name = "read_health"
+command = ["/bin/cat", "/health"]
+output_contains = "ok"
 "#,
         );
         let test = directory.path().join("test");
@@ -1494,6 +1562,81 @@ expect_status = "serving"
             GrpcServingStatus::Serving
         );
         assert_eq!(service.grpc_operations[0].name, "recheck");
+        assert_eq!(service.shell_operations[0].command, ["/bin/cat", "/health"]);
+    }
+
+    #[test]
+    fn rejects_an_empty_shell_operation_command() {
+        let directory = fixture(
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+image_adapter = "runtime/theseus-image"
+[guest]
+kernel = "guest/vmlinux"
+image = "guest/service.tar"
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+[container_service.ready]
+url = "http://127.0.0.1:8080/health"
+[[container_service.shell_operations]]
+name = "empty"
+command = []
+"#,
+        );
+        let test = directory.path().join("test");
+        fs::write(test.join("runtime/theseus-image"), b"adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            test.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(test.join("guest/service.tar"), b"image").unwrap();
+
+        assert!(load_plan(test.join("theseus.toml"))
+            .unwrap_err()
+            .to_string()
+            .contains("non-empty argv"));
+    }
+
+    #[test]
+    fn rejects_a_shell_operation_without_an_absolute_program() {
+        let directory = fixture(
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+image_adapter = "runtime/theseus-image"
+[guest]
+kernel = "guest/vmlinux"
+image = "guest/service.tar"
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+[container_service.ready]
+url = "http://127.0.0.1:8080/health"
+[[container_service.shell_operations]]
+name = "relative"
+command = ["cat", "/health"]
+"#,
+        );
+        let test = directory.path().join("test");
+        fs::write(test.join("runtime/theseus-image"), b"adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            test.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(test.join("guest/service.tar"), b"image").unwrap();
+
+        assert!(load_plan(test.join("theseus.toml"))
+            .unwrap_err()
+            .to_string()
+            .contains("absolute program"));
     }
 
     #[test]

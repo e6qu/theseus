@@ -130,6 +130,10 @@ struct ComposeOperation {
     /// operations, the pivot owns the protocol; the application sees no UART.
     #[serde(default)]
     grpc_health: Option<ComposeGrpcHealthOperation>,
+    /// An argv command run in the image after readiness. This is an ordinary
+    /// image workload, not a guest UART protocol.
+    #[serde(default)]
+    shell: Option<ComposeShellOperation>,
     #[serde(default)]
     stage: Option<String>,
     #[serde(default)]
@@ -186,6 +190,16 @@ struct ComposeGrpcHealthOperation {
     service: String,
     #[serde(default = "default_grpc_status")]
     expect_status: GrpcServingStatus,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeShellOperation {
+    command: Vec<String>,
+    #[serde(default = "default_shell_exit")]
+    expect_exit: i32,
+    #[serde(default)]
+    output_contains: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1283,6 +1297,10 @@ fn default_grpc_status() -> GrpcServingStatus {
     GrpcServingStatus::Serving
 }
 
+fn default_shell_exit() -> i32 {
+    0
+}
+
 fn default_campaign_faults_per_run() -> u8 {
     2
 }
@@ -1347,15 +1365,17 @@ fn campaign_plan(
         }
         let http = operation.http;
         let grpc_health = operation.grpc_health;
+        let shell = operation.shell;
         let input_forms = usize::from(operation.input.is_some())
             + usize::from(operation.input_template.is_some())
             + usize::from(!operation.inputs.is_empty())
             + usize::from(operation.input_grammar.is_some())
             + usize::from(http.is_some())
-            + usize::from(grpc_health.is_some());
+            + usize::from(grpc_health.is_some())
+            + usize::from(shell.is_some());
         if input_forms > 1 {
             return Err(ComposeError::Invalid(format!(
-                "campaign operation {:?} must use exactly one of input, input_template, inputs, or input_grammar (or http or grpc_health)",
+                "campaign operation {:?} must use exactly one of input, input_template, inputs, or input_grammar (or http, grpc_health, or shell)",
                 operation.name
             )));
         }
@@ -1426,6 +1446,48 @@ fn campaign_plan(
             Some(OperationInputPlan {
                 name: "default".to_owned(),
                 input_hex: hex(format!("THES:GRPC:operation:{command}\n").as_bytes()),
+                input_template: None,
+                input_captures: BTreeMap::new(),
+                requires: Vec::new(),
+                excludes: Vec::new(),
+                max_uses: None,
+                requires_state: BTreeMap::new(),
+                sets_state: BTreeMap::new(),
+            })
+        } else if let Some(shell) = shell {
+            if shell.command.is_empty()
+                || !shell.command[0].starts_with('/')
+                || shell
+                    .command
+                    .iter()
+                    .any(|argument| argument.is_empty() || argument.contains('\0'))
+                || shell.output_contains.as_deref() == Some("")
+            {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} has an invalid shell contract",
+                    operation.name
+                )));
+            }
+            let Some(container) = services
+                .get_mut(&service)
+                .and_then(|service| service.run.container_service.as_mut())
+            else {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} shell target {:?} needs container_service",
+                    operation.name, service
+                )));
+            };
+            container.campaign = true;
+            let command = serde_json::json!({
+                "name": operation.name.clone(),
+                "command": shell.command,
+                "expect_exit": shell.expect_exit,
+                "output_contains": shell.output_contains,
+            });
+            let command = serde_json::to_string(&command).expect("shell command is serializable");
+            Some(OperationInputPlan {
+                name: "default".to_owned(),
+                input_hex: hex(format!("THES:SHELL:operation:{command}\n").as_bytes()),
                 input_template: None,
                 input_captures: BTreeMap::new(),
                 requires: Vec::new(),
@@ -4463,6 +4525,47 @@ mod tests {
         assert!(command.starts_with("THES:GRPC:operation:"));
         assert!(command.contains("\"service\":\"example.Api\""));
         assert!(command.contains("\"expect_status\":\"serving\""));
+    }
+
+    #[test]
+    fn locks_a_declared_shell_operation_for_an_image_campaign_driver() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: read_health\n        shell:\n          command: [/bin/cat, /health]\n          output_contains: ok\n    faults: []\n",
+        );
+        let root = directory.path().join("api");
+        fs::write(root.join("runtime/theseus-image"), b"image adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            root.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(root.join("guest/service.tar"), b"image").unwrap();
+        fs::write(
+            root.join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'guest/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n[container_service.ready]\nurl = 'http://127.0.0.1:8080/health'\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert!(
+            plan.services["api"]
+                .run
+                .container_service
+                .as_ref()
+                .unwrap()
+                .campaign
+        );
+        let input = &plan.campaign.as_ref().unwrap().operations[0].inputs[0].input_hex;
+        let bytes = input
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        let command = String::from_utf8(bytes).unwrap();
+        assert!(command.starts_with("THES:SHELL:operation:"));
+        assert!(command.contains("\"command\":[\"/bin/cat\",\"/health\"]"));
+        assert!(command.contains("\"expect_exit\":0"));
     }
 
     #[test]
