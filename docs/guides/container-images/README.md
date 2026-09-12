@@ -233,3 +233,29 @@ control transport.
 
 See [the control channel](../../control-channel.md) and
 [determinism](../../determinism.md).
+
+## Change an image launch with Compose
+
+Use argv lists to replace an image command or entrypoint, and `working_dir` to
+set the image process directory:
+
+```yaml
+services:
+  worker:
+    entrypoint: [/bin/worker]
+    command: [--listen, 8080]
+    working_dir: /srv/worker
+```
+
+`command` replaces the image `Cmd` and retains its image `Entrypoint`. An
+explicit `entrypoint` replaces the image entrypoint and drops the image `Cmd`;
+the supplied `command` then supplies its arguments. Theseus supports only argv
+lists, never shell strings. A Compose `entrypoint` program and `working_dir`
+must be absolute paths. All three values are locked into the derived initramfs
+and reused by replay. They apply only to image-backed services.
+
+A bare program in an image or Compose `command`, such as `httpd`, resolves
+through the locked image `PATH`, as it does under Docker. No host `PATH` is
+consulted.
+
+See [tutorial 20](../../tutorials/20-compose-image-launch/).

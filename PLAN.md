@@ -216,6 +216,10 @@ deterministic boot barriers; `service_healthy` uses the existing image-service
 readiness contract rather than host-time polling.
 Literal Compose `environment` values are also locked into the image entrypoint
 contract; host-environment inheritance is rejected.
+Compose `command`, `entrypoint`, and `working_dir` are likewise locked while
+the image becomes an initramfs. Theseus accepts argv lists rather than shell
+strings, so replay receives the exact process contract rather than a
+host-dependent expansion.
 
 **Campaign operations:** Compose campaigns also accept a declarative `http`
 operation for an image-backed service. Theseus locks its JSON request command

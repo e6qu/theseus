@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage: theseus-image flatten image.tar --output initramfs.cpio [--service service.json] [--network network.json] [--environment environment.json]";
+const USAGE: &str = "Usage: theseus-image flatten image.tar --output initramfs.cpio [--service service.json] [--network network.json] [--environment environment.json] [--launch launch.json]";
 
 fn run(args: Vec<String>) -> Result<(), String> {
     match args.as_slice() {
@@ -25,6 +25,7 @@ fn flatten(args: Vec<String>) -> Result<(), String> {
     let mut service = None;
     let mut network = None;
     let mut environment = None;
+    let mut launch = None;
     let mut options = rest.iter();
     while let Some(flag) = options.next() {
         let Some(path) = options.next() else {
@@ -54,6 +55,14 @@ fn flatten(args: Vec<String>) -> Result<(), String> {
                     format!("cannot parse environment contract {path}: {error}")
                 })?);
             }
+            "--launch" if launch.is_none() => {
+                let bytes = fs::read(path)
+                    .map_err(|error| format!("cannot read launch contract {path}: {error}"))?;
+                launch =
+                    Some(serde_json::from_slice(&bytes).map_err(|error| {
+                        format!("cannot parse launch contract {path}: {error}")
+                    })?);
+            }
             _ => return Err(USAGE.to_owned()),
         }
     }
@@ -63,6 +72,7 @@ fn flatten(args: Vec<String>) -> Result<(), String> {
         service.as_ref(),
         network.as_ref(),
         environment.as_ref(),
+        launch.as_ref(),
     )
     .map_err(|error| format!("cannot flatten image archive: {error}"))?;
     let output = PathBuf::from(output);
@@ -91,7 +101,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn accepts_service_and_network_contracts_in_either_order() {
+    fn accepts_image_contracts_in_either_order() {
         let directory = std::env::temp_dir().join(format!(
             "theseus-image-options-{}",
             SystemTime::now()
@@ -103,9 +113,11 @@ mod tests {
         let service = directory.join("service.json");
         let network = directory.join("network.json");
         let environment = directory.join("environment.json");
+        let launch = directory.join("launch.json");
         fs::write(&service, "{}").unwrap();
         fs::write(&network, r#"{"interfaces":[],"hosts":{}}"#).unwrap();
         fs::write(&environment, r#"{"MODE":"campaign"}"#).unwrap();
+        fs::write(&launch, r#"{"command":["--serve"],"working_dir":"/srv"}"#).unwrap();
         let error = flatten(vec![
             "flatten".to_owned(),
             directory.join("missing.tar").display().to_string(),
@@ -117,6 +129,8 @@ mod tests {
             service.display().to_string(),
             "--environment".to_owned(),
             environment.display().to_string(),
+            "--launch".to_owned(),
+            launch.display().to_string(),
         ])
         .unwrap_err();
         assert!(error.contains("cannot read image archive"));

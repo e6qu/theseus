@@ -1,0 +1,30 @@
+name: compose-image-launch
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    depends_on: [worker]
+    networks: [backplane]
+  worker:
+    x-theseus:
+      manifest: worker/theseus.toml
+    command: [.]
+    working_dir: /site/alternate
+    networks: [backplane]
+
+networks:
+  backplane: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    max_runs: 1
+    max_operations_per_run: 1
+    faults: []
+    operations:
+      - name: read_alternate_identity
+        shell:
+          command: [/bin/busybox, wget, -qO-, http://worker:8080/identity]
+          expect_exit: 0
+          output_contains: alternate directory from Compose

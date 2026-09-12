@@ -724,6 +724,15 @@ struct ComposeService {
     depends_on: Option<ComposeDependencies>,
     #[serde(default)]
     environment: Option<ComposeEnvironment>,
+    /// The Compose launch fields are intentionally an argv-only subset. A
+    /// shell string would add image-specific parsing rules to the locked
+    /// topology, whereas an argv is the exact execve contract.
+    #[serde(default)]
+    command: Option<Vec<String>>,
+    #[serde(default)]
+    entrypoint: Option<Vec<String>>,
+    #[serde(default)]
+    working_dir: Option<String>,
 }
 
 /// Literal Compose environment values. Host-environment inheritance is
@@ -822,7 +831,21 @@ pub struct ComposeServicePlan {
     pub depends_on: Vec<DependencyPlan>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<ImageLaunchPlan>,
     pub faults: Vec<FaultPlan>,
+}
+
+/// Literal image launch overrides from a Compose service. They become part of
+/// the derived initramfs contract, never a host-side command.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageLaunchPlan {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1271,6 +1294,12 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         validate_name("service", &name)?;
         let depends_on = dependency_plan(&name, service.depends_on)?;
         let environment = environment_plan(&name, service.environment)?;
+        let launch = image_launch_plan(
+            &name,
+            service.command,
+            service.entrypoint,
+            service.working_dir,
+        )?;
         if service.networks.is_empty() {
             return Err(ComposeError::Invalid(format!(
                 "service {name:?} must join at least one named network"
@@ -1308,6 +1337,11 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
             service: name.clone(),
             source: Box::new(source),
         })?;
+        if launch.is_some() && run.guest.image.is_none() {
+            return Err(ComposeError::Invalid(format!(
+                "service {name:?} uses command, entrypoint, or working_dir but its manifest has no guest.image"
+            )));
+        }
         let faults = validate_faults(
             &name,
             service.theseus.faults,
@@ -1321,6 +1355,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
                 networks: networks.into_iter().collect(),
                 depends_on,
                 environment,
+                launch,
                 faults,
             },
         );
@@ -1342,6 +1377,57 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         campaign,
         topology_runner: None,
     })
+}
+
+fn image_launch_plan(
+    service: &str,
+    command: Option<Vec<String>>,
+    entrypoint: Option<Vec<String>>,
+    working_dir: Option<String>,
+) -> Result<Option<ImageLaunchPlan>, ComposeError> {
+    for (field, values) in [
+        ("command", command.as_ref()),
+        ("entrypoint", entrypoint.as_ref()),
+    ] {
+        let Some(values) = values else {
+            continue;
+        };
+        for value in values {
+            if value.contains('\0') {
+                return Err(ComposeError::Invalid(format!(
+                    "service {service:?} {field} contains a NUL byte"
+                )));
+            }
+        }
+    }
+    if entrypoint
+        .as_ref()
+        .is_some_and(|values| !values.is_empty() && !values[0].starts_with('/'))
+    {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} entrypoint program must be an absolute path"
+        )));
+    }
+    if let Some(directory) = &working_dir {
+        if directory.contains('\0') {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} working_dir contains a NUL byte"
+            )));
+        }
+        if !directory.starts_with('/') {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} working_dir must be an absolute path"
+            )));
+        }
+    }
+    if command.is_none() && entrypoint.is_none() && working_dir.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(ImageLaunchPlan {
+        command,
+        entrypoint,
+        working_dir,
+    }))
 }
 
 fn environment_plan(
@@ -4685,6 +4771,78 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("host-environment inheritance"));
+    }
+
+    #[test]
+    fn locks_literal_image_launch_without_a_shell_or_host_paths() {
+        let launch = image_launch_plan(
+            "worker",
+            Some(vec![".".to_owned()]),
+            Some(vec![
+                "/bin/busybox".to_owned(),
+                "httpd".to_owned(),
+                "-f".to_owned(),
+            ]),
+            Some("/site".to_owned()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(launch.command, Some(vec![".".to_owned()]));
+        assert_eq!(launch.entrypoint.as_ref().unwrap()[0], "/bin/busybox");
+        assert_eq!(launch.working_dir.as_deref(), Some("/site"));
+
+        assert!(
+            image_launch_plan("worker", None, Some(vec!["busybox".to_owned()]), None,)
+                .unwrap_err()
+                .to_string()
+                .contains("absolute path")
+        );
+        assert!(
+            image_launch_plan("worker", None, None, Some("relative".to_owned()),)
+                .unwrap_err()
+                .to_string()
+                .contains("absolute path")
+        );
+    }
+
+    #[test]
+    fn records_compose_launch_on_an_image_service_only() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    command: [--serve]\n    entrypoint: [/bin/worker]\n    working_dir: /srv\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        let api = directory.path().join("api");
+        fs::write(api.join("runtime/theseus-image"), b"adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            api.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(api.join("guest/image.tar"), b"image").unwrap();
+        fs::write(
+            api.join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'guest/image.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let launch = plan.services["api"].launch.as_ref().unwrap();
+        assert_eq!(
+            launch.command.as_ref().unwrap(),
+            &vec!["--serve".to_owned()]
+        );
+        assert_eq!(
+            launch.entrypoint.as_ref().unwrap(),
+            &vec!["/bin/worker".to_owned()]
+        );
+        assert_eq!(launch.working_dir.as_deref(), Some("/srv"));
+
+        let raw_guest = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    command: [--serve]\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        assert!(load_compose_plan(raw_guest.path().join("compose.yaml"))
+            .unwrap_err()
+            .to_string()
+            .contains("no guest.image"));
     }
 
     #[test]

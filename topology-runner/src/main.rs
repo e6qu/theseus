@@ -959,6 +959,8 @@ struct ServicePlan {
     depends_on: Vec<DependencyPlan>,
     #[serde(default)]
     environment: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch: Option<theseus_orchestrator::oci::ContainerLaunch>,
     #[serde(default)]
     faults: Vec<FaultPlan>,
 }
@@ -9245,6 +9247,19 @@ fn lock_service_inputs(service_dir: &Path, service: &mut ServicePlan) -> Result<
                 .map_err(|error| format!("cannot write {}: {error}", environment_path.display()))?;
                 command.arg("--environment").arg(environment_path);
             }
+            if let Some(launch) = &service.launch {
+                if !launch.is_empty() {
+                    let launch_path = service_dir.join("container-launch.json");
+                    fs::write(
+                        &launch_path,
+                        serde_json::to_vec_pretty(launch).map_err(|error| {
+                            format!("cannot serialize image launch contract: {error}")
+                        })?,
+                    )
+                    .map_err(|error| format!("cannot write {}: {error}", launch_path.display()))?;
+                    command.arg("--launch").arg(launch_path);
+                }
+            }
             let status = command
                 .status()
                 .map_err(|error| format!("cannot start {}: {error}", adapter.display()))?;
@@ -9296,7 +9311,7 @@ mod tests {
         fs::write(&image, b"container image").unwrap();
         fs::write(
             &adapter,
-            "#!/bin/sh\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ] && [ \"$7\" = --network ] && [ \"$9\" = --environment ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ngrep -q '10.1.0.10' \"$8\"\ngrep -q 'MODE' \"$10\"\ncp \"$2\" \"$4\"\n",
+            "#!/bin/sh\nset -eu\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ] && [ \"$7\" = --network ] && [ \"$9\" = --environment ] && [ \"${11}\" = --launch ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ngrep -q '10.1.0.10' \"$8\"\ngrep -q 'MODE' \"${10}\"\ngrep -q 'working_dir' \"${12}\"\ncp \"$2\" \"$4\"\n",
         )
         .unwrap();
         fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
@@ -9353,6 +9368,11 @@ mod tests {
             networks: Vec::new(),
             depends_on: Vec::new(),
             environment: BTreeMap::from([("MODE".to_owned(), "campaign".to_owned())]),
+            launch: Some(theseus_orchestrator::oci::ContainerLaunch {
+                command: Some(vec!["--serve".to_owned()]),
+                entrypoint: None,
+                working_dir: Some("/srv".to_owned()),
+            }),
             faults: Vec::new(),
         };
 

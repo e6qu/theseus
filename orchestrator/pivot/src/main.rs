@@ -276,12 +276,48 @@ fn exec_argv(
         }
     }
 
-    let program = CString::new(program.as_str()).map_err(|_| "command contains NUL".to_owned())?;
-    let rc = unsafe { libc::execve(program.as_ptr(), argv_ptrs.as_ptr(), env_ptrs.as_ptr()) };
+    let paths = executable_paths(program, &entries);
+    let mut last_error = None;
+    for path in paths {
+        let executable =
+            CString::new(path.as_str()).map_err(|_| "command contains NUL".to_owned())?;
+        let rc = unsafe { libc::execve(executable.as_ptr(), argv_ptrs.as_ptr(), env_ptrs.as_ptr()) };
+        let error = std::io::Error::last_os_error();
+        // Docker resolves a bare JSON-form command through PATH. Continue
+        // searching only when this directory has no matching executable.
+        if error.raw_os_error().is_some_and(|code| code == libc::ENOENT || code == libc::ENOTDIR)
+        {
+            last_error = Some(error);
+            continue;
+        }
+        return Err(format!(
+            "failed to exec {executable:?} (rc={rc}, err={error})"
+        ));
+    }
     Err(format!(
-        "failed to exec {program:?} (rc={rc}, err={})",
-        std::io::Error::last_os_error()
+        "failed to find command {program:?} in PATH: {}",
+        last_error.unwrap_or_else(std::io::Error::last_os_error)
     ))
+}
+
+fn executable_paths(program: &str, environment: &[String]) -> Vec<String> {
+    if program.contains('/') {
+        return vec![program.to_owned()];
+    }
+    let path = environment
+        .iter()
+        .rev()
+        .find_map(|entry| entry.strip_prefix("PATH="))
+        .unwrap_or("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+    path.split(':')
+        .map(|directory| {
+            if directory.is_empty() {
+                program.to_owned()
+            } else {
+                format!("{directory}/{program}")
+            }
+        })
+        .collect()
 }
 
 fn exec_image(spec: &InitSpec) -> ! {
@@ -1080,4 +1116,21 @@ fn main() {
     }
     stop_service(pid);
     power_off();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_a_bare_image_command_with_the_locked_path() {
+        assert_eq!(
+            executable_paths("httpd", &["PATH=/custom/bin:/bin".to_owned()]),
+            ["/custom/bin/httpd", "/bin/httpd"]
+        );
+        assert_eq!(
+            executable_paths("/bin/httpd", &[]),
+            ["/bin/httpd"]
+        );
+    }
 }
