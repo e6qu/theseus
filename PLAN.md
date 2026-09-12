@@ -210,7 +210,7 @@ campaign properties can inspect structured diagnostics without a guest SDK.
 For image-backed Compose services, the locked topology now assigns stable IPv4
 addresses, configures each guest NIC before the image starts, and supplies
 peer Compose names through `/etc/hosts`; images need no DHCP client, `ip`
-binary, sidecar, or Theseus code.
+binary, sidecar, Theseus code, or `container_service` contract.
 
 **Campaign operations:** Compose campaigns also accept a declarative `http`
 operation for an image-backed service. Theseus locks its JSON request command

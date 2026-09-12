@@ -11,6 +11,8 @@ sh ./run.sh
 The two Dockerfiles are ordinary BusyBox HTTP services. `compose.yaml` puts
 them on `backplane`. Theseus gives each image a deterministic IPv4 address and
 writes Compose service names into `/etc/hosts` before starting its entrypoint.
+Only `api` declares a readiness check; `worker` demonstrates that plain image
+services receive this network setup too.
 
 The `read_worker` command runs inside `api` and requests
 `http://worker:8080/identity`. Neither image configures a NIC, runs DHCP, or

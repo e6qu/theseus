@@ -86,6 +86,8 @@ jobs:
           sh -n docs/tutorials/17-grpc-campaign/run-in-runtime.sh
           sh -n docs/tutorials/18-container-command/run.sh
           sh -n docs/tutorials/18-container-command/run-in-runtime.sh
+          sh -n docs/tutorials/19-compose-image-network/run.sh
+          sh -n docs/tutorials/19-compose-image-network/run-in-runtime.sh
           ! rg -n '/dev/hwrng|(^|[[:space:]])/theseus/|\.\./\.\./\.\.' docs/tutorials
 
       - name: Check reproducible release archives

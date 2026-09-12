@@ -226,13 +226,26 @@ enum Entry {
 
 /// Flatten a `docker save` image tar into (cpio_bytes, image_spec).
 pub fn flatten(image_tar: &[u8]) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_service(image_tar, None)
+    flatten_with_service_and_network(image_tar, None, None)
 }
 
 /// Flatten an image and inject an optional boot-time service contract.
 pub fn flatten_with_service(
     image_tar: &[u8],
     service: Option<&ContainerServiceContract>,
+) -> Result<(Vec<u8>, ImageSpec), OciError> {
+    flatten_with_service_and_network(image_tar, service, None)
+}
+
+/// Flatten an image and inject optional service and network contracts.
+///
+/// Networking is deliberately separate from the service contract: a normal
+/// image can join a Compose network without opting into readiness checks or
+/// Theseus-driven operations.
+pub fn flatten_with_service_and_network(
+    image_tar: &[u8],
+    service: Option<&ContainerServiceContract>,
+    network: Option<&ContainerNetwork>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
     let mut archive = tar::Archive::new(image_tar);
 
@@ -297,6 +310,7 @@ pub fn flatten_with_service(
         "env": spec.env,
         "workdir": spec.workdir,
         "container_service": service,
+        "network": network,
     })
     .to_string();
 
@@ -585,6 +599,24 @@ mod tests {
         assert!(text.contains("CHECK_MODE"));
         assert!(text.contains("10.1.0.10"));
         assert!(text.contains("worker"));
+    }
+
+    #[test]
+    fn flatten_injects_network_without_a_service_contract() {
+        let network = ContainerNetwork {
+            interfaces: vec![ContainerNetworkInterface {
+                name: "eth0".to_owned(),
+                address: "10.1.0.10".to_owned(),
+                prefix_len: 24,
+            }],
+            hosts: BTreeMap::from([("worker".to_owned(), "10.1.0.11".to_owned())]),
+        };
+        let (cpio, _) =
+            flatten_with_service_and_network(&test_image(), None, Some(&network)).unwrap();
+        let text = String::from_utf8_lossy(&cpio);
+        assert!(text.contains("\"container_service\":null"));
+        assert!(text.contains("\"network\""));
+        assert!(text.contains("10.1.0.10"));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload

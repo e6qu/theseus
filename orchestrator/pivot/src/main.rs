@@ -29,6 +29,8 @@ struct InitSpec {
     workdir: String,
     #[serde(default)]
     container_service: Option<ContainerService>,
+    #[serde(default)]
+    network: Option<ContainerNetwork>,
 }
 
 #[derive(serde::Deserialize)]
@@ -59,6 +61,12 @@ struct ContainerNetwork {
     interfaces: Vec<NetworkInterface>,
     #[serde(default)]
     hosts: BTreeMap<String, String>,
+}
+
+impl ContainerNetwork {
+    fn is_empty(&self) -> bool {
+        self.interfaces.is_empty() && self.hosts.is_empty()
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -920,15 +928,30 @@ fn main() {
     )
     .expect("parse theseus-init.json");
 
+    // `service.network` is retained as a compatibility fallback for replay
+    // bundles written before network setup became independent of service
+    // checks. New images always use the top-level contract.
+    let network = spec
+        .network
+        .as_ref()
+        .filter(|network| !network.is_empty())
+        .or_else(|| {
+            spec.container_service
+                .as_ref()
+                .map(|service| &service.network)
+                .filter(|network| !network.is_empty())
+        });
+    if let Some(network) = network {
+        if let Err(error) = configure_network(network) {
+            eprintln!("THES:network:FAIL {error}");
+            power_off();
+        }
+    }
     let mut channel = TtyChannel::console().expect("open /dev/ttyS0");
     let Some(service) = spec.container_service.as_ref() else {
         channel.marker(MARKER_BOOT).expect("boot marker");
         exec_image(&spec);
     };
-    if let Err(error) = configure_network(&service.network) {
-        eprintln!("THES:network:FAIL {error}");
-        power_off();
-    }
 
     let pid = unsafe { libc::fork() };
     if pid == 0 {

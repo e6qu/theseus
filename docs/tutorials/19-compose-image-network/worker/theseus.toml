@@ -16,6 +16,3 @@ timeout_secs = 30
 
 [network]
 loopback = false
-
-[container_service.ready]
-url = "http://127.0.0.1:8080/identity"

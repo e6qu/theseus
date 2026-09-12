@@ -175,11 +175,11 @@ the image. Use the simulated network for deterministic networking.
 
 ## Connect image services in Compose
 
-Put image-backed services on a named Compose network and declare a normal
-`container_service` readiness check for each image. Theseus assigns stable
+Put image-backed services on a named Compose network. Theseus assigns stable
 IPv4 addresses while it locks the topology, brings up each guest `ethN`, and
 writes the reachable peer service names into `/etc/hosts` before starting the
-image entrypoint. Use the Compose name directly:
+image entrypoint. This applies even when an image has no `container_service`
+readiness or operation contract. Use the Compose name directly:
 
 ```yaml
 services:

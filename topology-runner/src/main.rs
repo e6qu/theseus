@@ -994,6 +994,11 @@ struct RunPlan {
     checks: Vec<CheckPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     container_service: Option<theseus_orchestrator::oci::ContainerServiceContract>,
+    /// Derived while locking a Compose topology. It is intentionally separate
+    /// from `container_service`, so a plain image entrypoint can use the
+    /// deterministic network without opting into Theseus service checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    container_network: Option<theseus_orchestrator::oci::ContainerNetwork>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -9010,9 +9015,9 @@ fn configure_container_networks(topology: &mut TopologyPlan) -> Result<(), Strin
     }
 
     for (service_name, service) in &mut topology.services {
-        let Some(contract) = service.run.container_service.as_mut() else {
+        if service.run.guest.image.is_none() {
             continue;
-        };
+        }
         let mut interfaces = Vec::with_capacity(service.networks.len());
         let mut hosts = BTreeMap::new();
         for (interface_index, network) in service.networks.iter().enumerate() {
@@ -9040,7 +9045,8 @@ fn configure_container_networks(topology: &mut TopologyPlan) -> Result<(), Strin
                 hosts.entry(peer.clone()).or_insert(peer_address);
             }
         }
-        contract.network = theseus_orchestrator::oci::ContainerNetwork { interfaces, hosts };
+        service.run.container_network =
+            Some(theseus_orchestrator::oci::ContainerNetwork { interfaces, hosts });
     }
     Ok(())
 }
@@ -9123,6 +9129,16 @@ fn lock_service_inputs(service_dir: &Path, service: &mut ServicePlan) -> Result<
                 .map_err(|error| format!("cannot write {}: {error}", contract_path.display()))?;
                 command.arg("--service").arg(contract_path);
             }
+            if let Some(network) = &service.run.container_network {
+                let network_path = service_dir.join("container-network.json");
+                fs::write(
+                    &network_path,
+                    serde_json::to_vec_pretty(network)
+                        .map_err(|error| format!("cannot serialize network contract: {error}"))?,
+                )
+                .map_err(|error| format!("cannot write {}: {error}", network_path.display()))?;
+                command.arg("--network").arg(network_path);
+            }
             let status = command
                 .status()
                 .map_err(|error| format!("cannot start {}: {error}", adapter.display()))?;
@@ -9174,7 +9190,7 @@ mod tests {
         fs::write(&image, b"container image").unwrap();
         fs::write(
             &adapter,
-            "#!/bin/sh\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ncp \"$2\" \"$4\"\n",
+            "#!/bin/sh\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ] && [ \"$7\" = --network ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ngrep -q '10.1.0.10' \"$8\"\ncp \"$2\" \"$4\"\n",
         )
         .unwrap();
         fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
@@ -9219,6 +9235,14 @@ mod tests {
                     shell_operations: Vec::new(),
                     network: theseus_orchestrator::oci::ContainerNetwork::default(),
                 }),
+                container_network: Some(theseus_orchestrator::oci::ContainerNetwork {
+                    interfaces: vec![theseus_orchestrator::oci::ContainerNetworkInterface {
+                        name: "eth0".to_owned(),
+                        address: "10.1.0.10".to_owned(),
+                        prefix_len: 24,
+                    }],
+                    hosts: BTreeMap::new(),
+                }),
             },
             networks: Vec::new(),
             faults: Vec::new(),
@@ -9251,8 +9275,7 @@ mod tests {
                   "run":{"format":"theseus-run-plan-v1", "manifest":"worker/theseus.toml",
                     "runtime":{"firecracker":{"path":"firecracker","sha256":"a"}},
                     "guest":{"kernel":{"path":"vmlinux","sha256":"b"},"image":{"path":"worker.tar","sha256":"c"}},
-                    "run":{"seed":1,"vcpu_count":1,"mem_size_mib":128,"timeout_secs":1,"virtual_time":null},
-                    "container_service":{"ready":{"url":"http://127.0.0.1:8080/health","attempts":1,"interval_millis":1}}
+                    "run":{"seed":1,"vcpu_count":1,"mem_size_mib":128,"timeout_secs":1,"virtual_time":null}
                   }}
               },
               "networks":{"backplane":["api","worker"],"private":["worker"]}
@@ -9263,20 +9286,20 @@ mod tests {
         configure_container_networks(&mut topology).unwrap();
         let api = topology.services["api"]
             .run
-            .container_service
+            .container_network
             .as_ref()
             .unwrap();
-        assert_eq!(api.network.interfaces[0].name, "eth0");
-        assert_eq!(api.network.interfaces[0].address, "10.1.0.10");
-        assert_eq!(api.network.hosts["worker"], "10.1.0.11");
+        assert_eq!(api.interfaces[0].name, "eth0");
+        assert_eq!(api.interfaces[0].address, "10.1.0.10");
+        assert_eq!(api.hosts["worker"], "10.1.0.11");
         let worker = topology.services["worker"]
             .run
-            .container_service
+            .container_network
             .as_ref()
             .unwrap();
-        assert_eq!(worker.network.interfaces[0].address, "10.1.0.11");
-        assert_eq!(worker.network.interfaces[1].address, "10.2.0.10");
-        assert_eq!(worker.network.hosts["api"], "10.1.0.10");
+        assert_eq!(worker.interfaces[0].address, "10.1.0.11");
+        assert_eq!(worker.interfaces[1].address, "10.2.0.10");
+        assert_eq!(worker.hosts["api"], "10.1.0.10");
     }
 
     #[test]
