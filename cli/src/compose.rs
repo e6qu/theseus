@@ -65,6 +65,8 @@ struct ComposeFile {
     services: BTreeMap<String, ComposeService>,
     #[serde(default)]
     networks: BTreeMap<String, ComposeNetwork>,
+    #[serde(default)]
+    configs: BTreeMap<String, ComposeConfigDefinition>,
     #[serde(rename = "x-theseus", default)]
     theseus: Option<ComposeTheseus>,
 }
@@ -733,6 +735,29 @@ struct ComposeService {
     entrypoint: Option<Vec<String>>,
     #[serde(default)]
     working_dir: Option<String>,
+    #[serde(default)]
+    configs: Vec<ComposeServiceConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeConfigDefinition {
+    file: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ComposeServiceConfig {
+    Name(String),
+    Mount(ComposeConfigMount),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeConfigMount {
+    source: String,
+    #[serde(default)]
+    target: Option<String>,
 }
 
 /// Literal Compose environment values. Host-environment inheritance is
@@ -833,7 +858,16 @@ pub struct ComposeServicePlan {
     pub environment: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<ImageLaunchPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configs: Vec<ImageConfigPlan>,
     pub faults: Vec<FaultPlan>,
+}
+
+/// A read-only Compose config baked into an image-backed service initramfs.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageConfigPlan {
+    pub target: String,
+    pub data: Vec<u8>,
 }
 
 /// Literal image launch overrides from a Compose service. They become part of
@@ -1289,6 +1323,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         .keys()
         .map(|name| (name.clone(), BTreeSet::new()))
         .collect();
+    let configs = load_compose_configs(compose_dir, compose.configs)?;
     let mut services = BTreeMap::new();
     for (name, service) in compose.services {
         validate_name("service", &name)?;
@@ -1300,6 +1335,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
             service.entrypoint,
             service.working_dir,
         )?;
+        let configs = image_config_plan(&name, service.configs, &configs)?;
         if service.networks.is_empty() {
             return Err(ComposeError::Invalid(format!(
                 "service {name:?} must join at least one named network"
@@ -1337,9 +1373,9 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
             service: name.clone(),
             source: Box::new(source),
         })?;
-        if launch.is_some() && run.guest.image.is_none() {
+        if (launch.is_some() || !configs.is_empty()) && run.guest.image.is_none() {
             return Err(ComposeError::Invalid(format!(
-                "service {name:?} uses command, entrypoint, or working_dir but its manifest has no guest.image"
+                "service {name:?} uses an image launch or config contract but its manifest has no guest.image"
             )));
         }
         let faults = validate_faults(
@@ -1356,6 +1392,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
                 depends_on,
                 environment,
                 launch,
+                configs,
                 faults,
             },
         );
@@ -1377,6 +1414,87 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         campaign,
         topology_runner: None,
     })
+}
+
+fn load_compose_configs(
+    compose_dir: &Path,
+    definitions: BTreeMap<String, ComposeConfigDefinition>,
+) -> Result<BTreeMap<String, Vec<u8>>, ComposeError> {
+    let mut configs = BTreeMap::new();
+    for (name, definition) in definitions {
+        validate_name("config", &name)?;
+        if definition.file.is_absolute() {
+            return Err(ComposeError::Invalid(format!(
+                "config {name:?} file must be relative to the Compose file"
+            )));
+        }
+        let path = fs::canonicalize(compose_dir.join(&definition.file)).map_err(|source| {
+            ComposeError::Read {
+                path: compose_dir.join(&definition.file),
+                source,
+            }
+        })?;
+        if !path.starts_with(compose_dir) {
+            return Err(ComposeError::Invalid(format!(
+                "config {name:?} file must not escape the Compose directory"
+            )));
+        }
+        let data = fs::read(&path).map_err(|source| ComposeError::Read { path, source })?;
+        if data.contains(&0) {
+            return Err(ComposeError::Invalid(format!(
+                "config {name:?} contains a NUL byte"
+            )));
+        }
+        configs.insert(name, data);
+    }
+    Ok(configs)
+}
+
+fn image_config_plan(
+    service: &str,
+    mounts: Vec<ComposeServiceConfig>,
+    definitions: &BTreeMap<String, Vec<u8>>,
+) -> Result<Vec<ImageConfigPlan>, ComposeError> {
+    let mut targets = BTreeSet::new();
+    let mut result = Vec::new();
+    for mount in mounts {
+        let (source, target) = match mount {
+            ComposeServiceConfig::Name(source) => {
+                let target = format!("/{source}");
+                (source, target)
+            }
+            ComposeServiceConfig::Mount(mount) => {
+                let target = mount.target.unwrap_or_else(|| format!("/{}", mount.source));
+                (mount.source, target)
+            }
+        };
+        let Some(data) = definitions.get(&source) else {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} references unknown config {source:?}"
+            )));
+        };
+        let path = Path::new(&target);
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+            || target.contains('\0')
+        {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} config target {target:?} must be an absolute path without parent traversal"
+            )));
+        }
+        if !targets.insert(target.clone()) {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} mounts more than one config at {target:?}"
+            )));
+        }
+        result.push(ImageConfigPlan {
+            target,
+            data: data.clone(),
+        });
+    }
+    Ok(result)
 }
 
 fn image_launch_plan(
@@ -4806,11 +4924,36 @@ mod tests {
     }
 
     #[test]
+    fn locks_read_only_compose_configs_without_host_paths() {
+        let definitions = BTreeMap::from([("settings".to_owned(), b"mode=campaign\n".to_vec())]);
+        let configs = image_config_plan(
+            "worker",
+            vec![ComposeServiceConfig::Mount(ComposeConfigMount {
+                source: "settings".to_owned(),
+                target: Some("/etc/worker.conf".to_owned()),
+            })],
+            &definitions,
+        )
+        .unwrap();
+        assert_eq!(configs[0].target, "/etc/worker.conf");
+        assert_eq!(configs[0].data, b"mode=campaign\n");
+        assert!(image_config_plan(
+            "worker",
+            vec![ComposeServiceConfig::Name("missing".to_owned())],
+            &definitions,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("unknown config"));
+    }
+
+    #[test]
     fn records_compose_launch_on_an_image_service_only() {
         let directory = fixture(
-            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    command: [--serve]\n    entrypoint: [/bin/worker]\n    working_dir: /srv\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+            "configs:\n  worker_settings:\n    file: worker.conf\nservices:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    command: [--serve]\n    entrypoint: [/bin/worker]\n    working_dir: /srv\n    configs:\n      - source: worker_settings\n        target: /etc/worker.conf\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
         );
         let api = directory.path().join("api");
+        fs::write(directory.path().join("worker.conf"), b"mode=campaign\n").unwrap();
         fs::write(api.join("runtime/theseus-image"), b"adapter").unwrap();
         #[cfg(unix)]
         fs::set_permissions(
@@ -4835,6 +4978,8 @@ mod tests {
             &vec!["/bin/worker".to_owned()]
         );
         assert_eq!(launch.working_dir.as_deref(), Some("/srv"));
+        assert_eq!(plan.services["api"].configs[0].target, "/etc/worker.conf");
+        assert_eq!(plan.services["api"].configs[0].data, b"mode=campaign\n");
 
         let raw_guest = fixture(
             "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    command: [--serve]\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",

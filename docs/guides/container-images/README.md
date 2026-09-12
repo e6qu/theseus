@@ -259,3 +259,23 @@ through the locked image `PATH`, as it does under Docker. No host `PATH` is
 consulted.
 
 See [tutorial 20](../../tutorials/20-compose-image-launch/).
+
+## Mount a read-only Compose config
+
+Declare a local file once, then mount it at an absolute image path:
+
+```yaml
+configs:
+  service_settings:
+    file: config/settings.json
+services:
+  worker:
+    configs:
+      - source: service_settings
+        target: /etc/worker/settings.json
+```
+
+Theseus reads the file while planning, locks its bytes into the image initramfs,
+and makes it read-only. The config file must stay inside the Compose directory;
+external configs and host paths are not accepted. A config may replace an image
+file at its target. See [tutorial 21](../../tutorials/21-compose-config/).

@@ -220,6 +220,9 @@ Compose `command`, `entrypoint`, and `working_dir` are likewise locked while
 the image becomes an initramfs. Theseus accepts argv lists rather than shell
 strings, so replay receives the exact process contract rather than a
 host-dependent expansion.
+Local Compose `configs` are locked as read-only files in image initramfses, so
+ordinary services can receive deterministic file configuration without a bind
+mount or host filesystem dependency.
 
 **Campaign operations:** Compose campaigns also accept a declarative `http`
 operation for an image-backed service. Theseus locks its JSON request command
