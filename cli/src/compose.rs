@@ -722,6 +722,18 @@ struct ComposeService {
     networks: Vec<String>,
     #[serde(default)]
     depends_on: Option<ComposeDependencies>,
+    #[serde(default)]
+    environment: Option<ComposeEnvironment>,
+}
+
+/// Literal Compose environment values. Host-environment inheritance is
+/// deliberately excluded: it would make a locked topology depend on the
+/// machine that happened to create it.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ComposeEnvironment {
+    Map(BTreeMap<String, String>),
+    List(Vec<String>),
 }
 
 /// Compose accepts either a short dependency list or a map carrying one
@@ -808,6 +820,8 @@ pub struct ComposeServicePlan {
     pub networks: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<DependencyPlan>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
     pub faults: Vec<FaultPlan>,
 }
 
@@ -1256,6 +1270,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
     for (name, service) in compose.services {
         validate_name("service", &name)?;
         let depends_on = dependency_plan(&name, service.depends_on)?;
+        let environment = environment_plan(&name, service.environment)?;
         if service.networks.is_empty() {
             return Err(ComposeError::Invalid(format!(
                 "service {name:?} must join at least one named network"
@@ -1305,6 +1320,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
                 run,
                 networks: networks.into_iter().collect(),
                 depends_on,
+                environment,
                 faults,
             },
         );
@@ -1326,6 +1342,59 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         campaign,
         topology_runner: None,
     })
+}
+
+fn environment_plan(
+    service: &str,
+    environment: Option<ComposeEnvironment>,
+) -> Result<BTreeMap<String, String>, ComposeError> {
+    let Some(environment) = environment else {
+        return Ok(BTreeMap::new());
+    };
+    let entries = match environment {
+        ComposeEnvironment::Map(entries) => entries.into_iter().collect(),
+        ComposeEnvironment::List(entries) => entries
+            .into_iter()
+            .map(|entry| {
+                entry.split_once('=').map_or_else(
+                    || {
+                        Err(ComposeError::Invalid(format!(
+                            "service {service:?} environment entry {entry:?} must use KEY=value; host-environment inheritance is not supported"
+                        )))
+                    },
+                    |(key, value)| Ok((key.to_owned(), value.to_owned())),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    let mut result = BTreeMap::new();
+    for (key, value) in entries {
+        if key.is_empty()
+            || !key.bytes().enumerate().all(|(index, byte)| {
+                byte == b'_' || byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit())
+            })
+        {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} environment key {key:?} must be a shell variable name"
+            )));
+        }
+        if key == "THESEUS_CHANNEL" {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} environment cannot override THESEUS_CHANNEL"
+            )));
+        }
+        if value.contains('\0') {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} environment value for {key:?} contains NUL"
+            )));
+        }
+        if result.insert(key.clone(), value).is_some() {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} environment names {key:?} more than once"
+            )));
+        }
+    }
+    Ok(result)
 }
 
 fn dependency_plan(
@@ -4597,6 +4666,25 @@ mod tests {
             plan.services["worker"].depends_on[0].condition,
             DependencyCondition::ServiceStarted
         );
+    }
+
+    #[test]
+    fn locks_literal_compose_environment_without_host_inheritance() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    environment: {MODE: campaign, RETRIES: '3'}\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    environment: [ROLE=worker]\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(plan.services["api"].environment["MODE"], "campaign");
+        assert_eq!(plan.services["api"].environment["RETRIES"], "3");
+        assert_eq!(plan.services["worker"].environment["ROLE"], "worker");
+
+        let inherited = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    environment: [HOST_VALUE]\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        assert!(load_compose_plan(inherited.path().join("compose.yaml"))
+            .unwrap_err()
+            .to_string()
+            .contains("host-environment inheritance"));
     }
 
     #[test]

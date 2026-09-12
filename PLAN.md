@@ -214,6 +214,8 @@ binary, sidecar, Theseus code, or `container_service` contract.
 Compose `depends_on` is locked with the topology and starts dependencies at
 deterministic boot barriers; `service_healthy` uses the existing image-service
 readiness contract rather than host-time polling.
+Literal Compose `environment` values are also locked into the image entrypoint
+contract; host-environment inheritance is rejected.
 
 **Campaign operations:** Compose campaigns also accept a declarative `http`
 operation for an image-backed service. Theseus locks its JSON request command

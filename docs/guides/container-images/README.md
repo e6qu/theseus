@@ -212,5 +212,24 @@ when the dependency declares a `container_service` readiness check. Dependency
 cycles, unknown services, and a healthy condition without that readiness
 contract fail while the Compose plan is created.
 
+## Configure an image with Compose environment
+
+Use literal `environment` values in a Compose service to override the image
+entrypoint environment:
+
+```yaml
+services:
+  worker:
+    environment:
+      LOG_LEVEL: debug
+      RETRIES: "3"
+```
+
+The values are copied into the locked image contract and take precedence over
+same-named image `ENV` values. The list form is also supported when every
+entry uses `KEY=value`. Bare names and null values, which would inherit the
+host environment, are rejected. `THESEUS_CHANNEL` remains reserved for the
+control transport.
+
 See [the control channel](../../control-channel.md) and
 [determinism](../../determinism.md).

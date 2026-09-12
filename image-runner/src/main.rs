@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage: theseus-image flatten image.tar --output initramfs.cpio [--service service.json] [--network network.json]";
+const USAGE: &str = "Usage: theseus-image flatten image.tar --output initramfs.cpio [--service service.json] [--network network.json] [--environment environment.json]";
 
 fn run(args: Vec<String>) -> Result<(), String> {
     match args.as_slice() {
@@ -24,6 +24,7 @@ fn flatten(args: Vec<String>) -> Result<(), String> {
     }
     let mut service = None;
     let mut network = None;
+    let mut environment = None;
     let mut options = rest.iter();
     while let Some(flag) = options.next() {
         let Some(path) = options.next() else {
@@ -46,14 +47,22 @@ fn flatten(args: Vec<String>) -> Result<(), String> {
                         format!("cannot parse network contract {path}: {error}")
                     })?);
             }
+            "--environment" if environment.is_none() => {
+                let bytes = fs::read(path)
+                    .map_err(|error| format!("cannot read environment contract {path}: {error}"))?;
+                environment = Some(serde_json::from_slice(&bytes).map_err(|error| {
+                    format!("cannot parse environment contract {path}: {error}")
+                })?);
+            }
             _ => return Err(USAGE.to_owned()),
         }
     }
     let image = fs::read(image).map_err(|error| format!("cannot read image archive: {error}"))?;
-    let (initramfs, contract) = theseus_orchestrator::oci::flatten_with_service_and_network(
+    let (initramfs, contract) = theseus_orchestrator::oci::flatten_with_contracts(
         &image,
         service.as_ref(),
         network.as_ref(),
+        environment.as_ref(),
     )
     .map_err(|error| format!("cannot flatten image archive: {error}"))?;
     let output = PathBuf::from(output);
@@ -93,8 +102,10 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         let service = directory.join("service.json");
         let network = directory.join("network.json");
+        let environment = directory.join("environment.json");
         fs::write(&service, "{}").unwrap();
         fs::write(&network, r#"{"interfaces":[],"hosts":{}}"#).unwrap();
+        fs::write(&environment, r#"{"MODE":"campaign"}"#).unwrap();
         let error = flatten(vec![
             "flatten".to_owned(),
             directory.join("missing.tar").display().to_string(),
@@ -104,6 +115,8 @@ mod tests {
             network.display().to_string(),
             "--service".to_owned(),
             service.display().to_string(),
+            "--environment".to_owned(),
+            environment.display().to_string(),
         ])
         .unwrap_err();
         assert!(error.contains("cannot read image archive"));
