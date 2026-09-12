@@ -124,11 +124,15 @@ name = "check_schema"
 command = ["/app/migrate", "--check"]
 expect_exit = 0
 output_contains = "up to date"
+output_json = true
 ```
 
 Theseus calls the argv directly in the image working directory with the image
 environment. It captures bounded combined stdout and stderr to evaluate
-`output_contains`; it does not evaluate a shell string.
+`output_contains`; it does not evaluate a shell string. Set `output_json` when
+the complete command output is one JSON value. Theseus emits a JSON-lines event
+with `/event: shell_operation`, `/name`, and the parsed value at `/output`, so
+campaign properties can query fields without parsing text.
 
 For a gRPC-health campaign, put the equivalent request in its Compose operation:
 
@@ -154,11 +158,13 @@ For a command campaign, use `shell` instead:
     command: ["/app/migrate", "--check"]
     expect_exit: 0
     output_contains: up to date
+    output_json: true
 ```
 
 Theseus locks this argv command into the campaign input, runs it after the
 boot barrier, records `THES:SHELL:operation:<name>:PASS` or `FAIL`, and takes
-the usual operation checkpoint.
+the usual operation checkpoint. With `output_json`, use a property predicate
+such as `fields: { /event: shell_operation, /output/state: ready }`.
 
 Static and dynamically linked images work when their dependencies are inside
 the image. Use the simulated network for deterministic networking.

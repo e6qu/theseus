@@ -204,7 +204,9 @@ pivot also drives the standard clear-text gRPC health endpoint as a named
 operation, both in a single-service contract and in a locked Compose campaign;
 the service still needs no Theseus SDK or custom UART protocol. Named shell
 operations run a declared argv command in the image filesystem, verify its exit
-status and bounded combined output, and never evaluate a shell snippet.
+status and bounded combined output, and never evaluate a shell snippet. A
+command can also publish one parsed JSON result as a normal serial event, so
+campaign properties can inspect structured diagnostics without a guest SDK.
 
 **Campaign operations:** Compose campaigns also accept a declarative `http`
 operation for an image-backed service. Theseus locks its JSON request command

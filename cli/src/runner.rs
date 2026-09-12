@@ -1511,6 +1511,7 @@ body_contains = "ok"
                 command: vec!["/bin/cat".to_owned(), "/health".to_owned()],
                 expect_exit: 0,
                 output_contains: Some("ok".to_owned()),
+                output_json: false,
             }],
         });
         let serial_log = directory.path().join("serial.log");

@@ -200,6 +200,8 @@ struct ComposeShellOperation {
     expect_exit: i32,
     #[serde(default)]
     output_contains: Option<String>,
+    #[serde(default)]
+    output_json: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1483,6 +1485,7 @@ fn campaign_plan(
                 "command": shell.command,
                 "expect_exit": shell.expect_exit,
                 "output_contains": shell.output_contains,
+                "output_json": shell.output_json,
             });
             let command = serde_json::to_string(&command).expect("shell command is serializable");
             Some(OperationInputPlan {
@@ -4530,7 +4533,7 @@ mod tests {
     #[test]
     fn locks_a_declared_shell_operation_for_an_image_campaign_driver() {
         let directory = fixture(
-            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: read_health\n        shell:\n          command: [/bin/cat, /health]\n          output_contains: ok\n    faults: []\n",
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: read_health\n        shell:\n          command: [/bin/cat, /health]\n          output_contains: ok\n          output_json: true\n    faults: []\n",
         );
         let root = directory.path().join("api");
         fs::write(root.join("runtime/theseus-image"), b"image adapter").unwrap();
@@ -4566,6 +4569,7 @@ mod tests {
         assert!(command.starts_with("THES:SHELL:operation:"));
         assert!(command.contains("\"command\":[\"/bin/cat\",\"/health\"]"));
         assert!(command.contains("\"expect_exit\":0"));
+        assert!(command.contains("\"output_json\":true"));
     }
 
     #[test]
