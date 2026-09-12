@@ -173,5 +173,28 @@ such as `fields: { /event: shell_operation, /output/state: ready }`.
 Static and dynamically linked images work when their dependencies are inside
 the image. Use the simulated network for deterministic networking.
 
+## Connect image services in Compose
+
+Put image-backed services on a named Compose network and declare a normal
+`container_service` readiness check for each image. Theseus assigns stable
+IPv4 addresses while it locks the topology, brings up each guest `ethN`, and
+writes the reachable peer service names into `/etc/hosts` before starting the
+image entrypoint. Use the Compose name directly:
+
+```yaml
+services:
+  api:
+    networks: [backplane]
+  worker:
+    networks: [backplane]
+networks:
+  backplane: {}
+```
+
+An argv operation in `api` can then call `http://worker:8080/health`. The
+images do not need `ip`, DHCP, a sidecar, or Theseus code. The locked replay
+plan records the selected addresses and peer mappings. See [tutorial
+19](../../tutorials/19-compose-image-network/).
+
 See [the control channel](../../control-channel.md) and
 [determinism](../../determinism.md).

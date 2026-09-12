@@ -207,6 +207,10 @@ operations run a declared argv command in the image filesystem, verify its exit
 status and bounded combined output, and never evaluate a shell snippet. A
 command can also publish one parsed JSON result as a normal serial event, so
 campaign properties can inspect structured diagnostics without a guest SDK.
+For image-backed Compose services, the locked topology now assigns stable IPv4
+addresses, configures each guest NIC before the image starts, and supplies
+peer Compose names through `/etc/hosts`; images need no DHCP client, `ip`
+binary, sidecar, or Theseus code.
 
 **Campaign operations:** Compose campaigns also accept a declarative `http`
 operation for an image-backed service. Theseus locks its JSON request command
