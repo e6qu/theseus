@@ -56,6 +56,8 @@ deterministic-CRNG kernel module is shipped.
     root-only secret file into an unmodified service image.
 23. [Seed image data with a Compose bind volume](23-compose-volume/) — lock a
     local writable data directory into an unmodified service image.
+24. [Gate a service on a Compose health check](24-compose-healthcheck/) — use
+    a standard argv health check before starting a dependent image service.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

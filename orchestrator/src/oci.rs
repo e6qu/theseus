@@ -78,6 +78,15 @@ pub struct ContainerVolume {
     pub files: Vec<ContainerConfig>,
 }
 
+/// An argv-only Compose health check evaluated by the injected image pivot.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContainerHealthcheck {
+    pub command: Vec<String>,
+    pub interval_millis: u64,
+    pub retries: u32,
+    pub start_period_millis: u64,
+}
+
 impl ContainerLaunch {
     pub fn is_empty(&self) -> bool {
         self.command.is_none() && self.entrypoint.is_none() && self.working_dir.is_none()
@@ -260,7 +269,7 @@ enum Entry {
 
 /// Flatten a `docker save` image tar into (cpio_bytes, image_spec).
 pub fn flatten(image_tar: &[u8]) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, None, None, None, None, None, None, None)
+    flatten_with_contracts(image_tar, None, None, None, None, None, None, None, None)
 }
 
 /// Flatten an image and inject an optional boot-time service contract.
@@ -268,7 +277,7 @@ pub fn flatten_with_service(
     image_tar: &[u8],
     service: Option<&ContainerServiceContract>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, service, None, None, None, None, None, None)
+    flatten_with_contracts(image_tar, service, None, None, None, None, None, None, None)
 }
 
 /// Flatten an image and inject optional service and network contracts.
@@ -281,7 +290,9 @@ pub fn flatten_with_service_and_network(
     service: Option<&ContainerServiceContract>,
     network: Option<&ContainerNetwork>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, service, network, None, None, None, None, None)
+    flatten_with_contracts(
+        image_tar, service, network, None, None, None, None, None, None,
+    )
 }
 
 /// Flatten an image and inject optional service, network, image, and local
@@ -296,6 +307,7 @@ pub fn flatten_with_contracts(
     configs: Option<&[ContainerConfig]>,
     secrets: Option<&[ContainerConfig]>,
     volumes: Option<&[ContainerVolume]>,
+    healthcheck: Option<&ContainerHealthcheck>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
     let mut archive = tar::Archive::new(image_tar);
 
@@ -414,6 +426,7 @@ pub fn flatten_with_contracts(
         "workdir": spec.workdir,
         "container_service": service,
         "network": network,
+        "healthcheck": healthcheck,
     })
     .to_string();
 
@@ -755,6 +768,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert!(spec.env.iter().any(|entry| entry == "MODE=campaign"));
@@ -782,6 +796,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -806,6 +821,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(spec.argv, ["/bin/tool", "--foreground"].map(str::to_owned));
@@ -824,6 +840,7 @@ mod tests {
             None,
             None,
             Some(&configs),
+            None,
             None,
             None,
         )
@@ -847,6 +864,7 @@ mod tests {
             None,
             None,
             Some(&secrets),
+            None,
             None,
         )
         .unwrap();
@@ -875,12 +893,39 @@ mod tests {
             None,
             None,
             Some(&volumes),
+            None,
         )
         .unwrap();
         let text = String::from_utf8_lossy(&cpio);
         assert!(text.contains("/app/state/value"));
         assert!(text.contains("seeded\n"));
         assert!(!text.contains("hello\0"));
+    }
+
+    #[test]
+    fn flatten_injects_a_compose_healthcheck() {
+        let healthcheck = ContainerHealthcheck {
+            command: vec!["/bin/check".to_owned(), "--ready".to_owned()],
+            interval_millis: 500,
+            retries: 4,
+            start_period_millis: 1_000,
+        };
+        let (cpio, _) = flatten_with_contracts(
+            &test_image(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&healthcheck),
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&cpio);
+        assert!(text.contains("\"healthcheck\""));
+        assert!(text.contains("/bin/check"));
+        assert!(text.contains("\"retries\":4"));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload

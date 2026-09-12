@@ -318,3 +318,27 @@ directory is writable during a VM run; replay always starts from the same
 locked initial tree. The source must start with `./`, stay inside the Compose
 directory, and contain only regular files and directories. Theseus does not
 support Docker named or shared volumes. See [tutorial 23](../../tutorials/23-compose-volume/).
+
+## Gate dependencies with a Compose health check
+
+Use the standard argv health-check form with `service_healthy`:
+
+```yaml
+services:
+  api:
+    depends_on:
+      worker:
+        condition: service_healthy
+  worker:
+    healthcheck:
+      test: [CMD, /usr/local/bin/check-ready]
+      interval: 1s
+      retries: 5
+      start_period: 2s
+```
+
+Theseus starts the image, runs the locked command inside that image, and emits
+the boot barrier only after it passes. It accepts `CMD` argv checks and the
+`interval`, `retries`, and `start_period` fields. `CMD-SHELL` and command
+timeouts are excluded because shell parsing and host-time cancellation would
+change the replay contract. See [tutorial 24](../../tutorials/24-compose-healthcheck/).

@@ -967,6 +967,8 @@ struct ServicePlan {
     secrets: Vec<theseus_orchestrator::oci::ContainerConfig>,
     #[serde(default)]
     volumes: Vec<theseus_orchestrator::oci::ContainerVolume>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    healthcheck: Option<theseus_orchestrator::oci::ContainerHealthcheck>,
     #[serde(default)]
     faults: Vec<FaultPlan>,
 }
@@ -8694,9 +8696,10 @@ fn dependency_startup_order(topology: &TopologyPlan) -> Result<Vec<String>, Stri
             })?;
             if dependency.condition == DependencyCondition::ServiceHealthy
                 && target.run.container_service.is_none()
+                && target.healthcheck.is_none()
             {
                 return Err(format!(
-                    "service {name:?} requires healthy dependency {:?}, but it has no container_service readiness contract",
+                    "service {name:?} requires healthy dependency {:?}, but it has no Compose healthcheck or container_service readiness contract",
                     dependency.service
                 ));
             }
@@ -9296,6 +9299,17 @@ fn lock_service_inputs(service_dir: &Path, service: &mut ServicePlan) -> Result<
                 .map_err(|error| format!("cannot write {}: {error}", volumes_path.display()))?;
                 command.arg("--volumes").arg(volumes_path);
             }
+            if let Some(healthcheck) = &service.healthcheck {
+                let healthcheck_path = service_dir.join("container-healthcheck.json");
+                fs::write(
+                    &healthcheck_path,
+                    serde_json::to_vec_pretty(healthcheck).map_err(|error| {
+                        format!("cannot serialize healthcheck contract: {error}")
+                    })?,
+                )
+                .map_err(|error| format!("cannot write {}: {error}", healthcheck_path.display()))?;
+                command.arg("--healthcheck").arg(healthcheck_path);
+            }
             let status = command
                 .status()
                 .map_err(|error| format!("cannot start {}: {error}", adapter.display()))?;
@@ -9347,7 +9361,7 @@ mod tests {
         fs::write(&image, b"container image").unwrap();
         fs::write(
             &adapter,
-            "#!/bin/sh\nset -eu\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ] && [ \"$7\" = --network ] && [ \"$9\" = --environment ] && [ \"${11}\" = --launch ] && [ \"${13}\" = --configs ] && [ \"${15}\" = --secrets ] && [ \"${17}\" = --volumes ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ngrep -q '10.1.0.10' \"$8\"\ngrep -q 'MODE' \"${10}\"\ngrep -q 'working_dir' \"${12}\"\ngrep -q '/etc/worker.conf' \"${14}\"\ngrep -q '/run/secrets/token' \"${16}\"\ngrep -q '/var/lib/worker/state' \"${18}\"\ncp \"$2\" \"$4\"\n",
+            "#!/bin/sh\nset -eu\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ] && [ \"$7\" = --network ] && [ \"$9\" = --environment ] && [ \"${11}\" = --launch ] && [ \"${13}\" = --configs ] && [ \"${15}\" = --secrets ] && [ \"${17}\" = --volumes ] && [ \"${19}\" = --healthcheck ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ngrep -q '10.1.0.10' \"$8\"\ngrep -q 'MODE' \"${10}\"\ngrep -q 'working_dir' \"${12}\"\ngrep -q '/etc/worker.conf' \"${14}\"\ngrep -q '/run/secrets/token' \"${16}\"\ngrep -q '/var/lib/worker/state' \"${18}\"\ngrep -q '/bin/check' \"${20}\"\ncp \"$2\" \"$4\"\n",
         )
         .unwrap();
         fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
@@ -9428,6 +9442,12 @@ mod tests {
                     data: b"seeded\n".to_vec(),
                 }],
             }],
+            healthcheck: Some(theseus_orchestrator::oci::ContainerHealthcheck {
+                command: vec!["/bin/check".to_owned()],
+                interval_millis: 1_000,
+                retries: 3,
+                start_period_millis: 0,
+            }),
             faults: Vec::new(),
         };
 

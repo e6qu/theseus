@@ -744,6 +744,8 @@ struct ComposeService {
     secrets: Vec<ComposeServiceConfig>,
     #[serde(default)]
     volumes: Vec<ComposeServiceVolume>,
+    #[serde(default)]
+    healthcheck: Option<ComposeHealthcheck>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -785,6 +787,27 @@ struct ComposeVolumeMount {
     target: String,
     #[serde(default)]
     read_only: bool,
+}
+
+/// The argv-only Compose health-check subset. Shell health checks would add
+/// image-specific parsing rules to a replay, so Theseus accepts `CMD` only.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeHealthcheck {
+    test: ComposeHealthcheckTest,
+    #[serde(default)]
+    interval: Option<String>,
+    #[serde(default)]
+    retries: Option<u32>,
+    #[serde(default)]
+    start_period: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ComposeHealthcheckTest {
+    Command(Vec<String>),
+    Disabled(String),
 }
 
 /// Literal Compose environment values. Host-environment inheritance is
@@ -891,6 +914,8 @@ pub struct ComposeServicePlan {
     pub secrets: Vec<ImageConfigPlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<ImageVolumePlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub healthcheck: Option<ImageHealthcheckPlan>,
     pub faults: Vec<FaultPlan>,
 }
 
@@ -907,6 +932,15 @@ pub struct ImageVolumePlan {
     pub target: String,
     pub directories: Vec<String>,
     pub files: Vec<ImageConfigPlan>,
+}
+
+/// A standard Compose `CMD` health check, locked for the injected image pivot.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageHealthcheckPlan {
+    pub command: Vec<String>,
+    pub interval_millis: u64,
+    pub retries: u32,
+    pub start_period_millis: u64,
 }
 
 /// Literal image launch overrides from a Compose service. They become part of
@@ -1378,6 +1412,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         let configs = image_config_plan(&name, service.configs, &configs)?;
         let secrets = image_secret_plan(&name, service.secrets, &secrets)?;
         let volumes = image_volume_plan(&name, service.volumes, compose_dir)?;
+        let healthcheck = image_healthcheck_plan(&name, service.healthcheck)?;
         if service.networks.is_empty() {
             return Err(ComposeError::Invalid(format!(
                 "service {name:?} must join at least one named network"
@@ -1415,11 +1450,15 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
             service: name.clone(),
             source: Box::new(source),
         })?;
-        if (launch.is_some() || !configs.is_empty() || !secrets.is_empty() || !volumes.is_empty())
+        if (launch.is_some()
+            || !configs.is_empty()
+            || !secrets.is_empty()
+            || !volumes.is_empty()
+            || healthcheck.is_some())
             && run.guest.image.is_none()
         {
             return Err(ComposeError::Invalid(format!(
-                "service {name:?} uses an image launch, config, secret, or volume contract but its manifest has no guest.image"
+                "service {name:?} uses an image launch, config, secret, volume, or healthcheck contract but its manifest has no guest.image"
             )));
         }
         let faults = validate_faults(
@@ -1439,6 +1478,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
                 configs,
                 secrets,
                 volumes,
+                healthcheck,
                 faults,
             },
         );
@@ -1587,6 +1627,90 @@ fn image_volume_plan(
         result.push(read_volume_tree(service, &source_path, target)?);
     }
     Ok(result)
+}
+
+fn image_healthcheck_plan(
+    service: &str,
+    healthcheck: Option<ComposeHealthcheck>,
+) -> Result<Option<ImageHealthcheckPlan>, ComposeError> {
+    let Some(healthcheck) = healthcheck else {
+        return Ok(None);
+    };
+    let command = match healthcheck.test {
+        ComposeHealthcheckTest::Command(mut test) => {
+            if test.first().is_some_and(|entry| entry == "CMD") {
+                test.remove(0);
+                test
+            } else {
+                return Err(ComposeError::Invalid(format!(
+                    "service {service:?} healthcheck.test must start with CMD; CMD-SHELL is not deterministic"
+                )));
+            }
+        }
+        ComposeHealthcheckTest::Disabled(value) if value == "NONE" => return Ok(None),
+        ComposeHealthcheckTest::Disabled(value) => {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} healthcheck.test {value:?} must be a CMD argv or NONE"
+            )));
+        }
+    };
+    if command.is_empty()
+        || command
+            .iter()
+            .any(|entry| entry.is_empty() || entry.contains('\0'))
+    {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} healthcheck CMD must contain non-empty arguments without NUL bytes"
+        )));
+    }
+    let interval_millis = healthcheck
+        .interval
+        .as_deref()
+        .map(|value| parse_compose_duration(service, "healthcheck.interval", value))
+        .transpose()?
+        .unwrap_or(30_000);
+    let start_period_millis = healthcheck
+        .start_period
+        .as_deref()
+        .map(|value| parse_compose_duration(service, "healthcheck.start_period", value))
+        .transpose()?
+        .unwrap_or(0);
+    let retries = healthcheck.retries.unwrap_or(3);
+    if retries == 0 {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} healthcheck.retries must be at least 1"
+        )));
+    }
+    Ok(Some(ImageHealthcheckPlan {
+        command,
+        interval_millis,
+        retries,
+        start_period_millis,
+    }))
+}
+
+fn parse_compose_duration(service: &str, field: &str, value: &str) -> Result<u64, ComposeError> {
+    let (number, multiplier) = if let Some(number) = value.strip_suffix("ms") {
+        (number, 1)
+    } else if let Some(number) = value.strip_suffix('s') {
+        (number, 1_000)
+    } else if let Some(number) = value.strip_suffix('m') {
+        (number, 60_000)
+    } else {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} {field} {value:?} must use ms, s, or m"
+        )));
+    };
+    let millis = number
+        .parse::<u64>()
+        .ok()
+        .and_then(|number| number.checked_mul(multiplier));
+    match millis.filter(|millis| *millis > 0) {
+        Some(millis) => Ok(millis),
+        None => Err(ComposeError::Invalid(format!(
+            "service {service:?} {field} {value:?} must be a positive duration"
+        ))),
+    }
 }
 
 fn read_volume_tree(
@@ -1888,9 +2012,10 @@ fn validate_dependency_graph(
             };
             if dependency.condition == DependencyCondition::ServiceHealthy
                 && target.run.container_service.is_none()
+                && target.healthcheck.is_none()
             {
                 return Err(ComposeError::Invalid(format!(
-                    "service {name:?} requires healthy dependency {:?}, but it has no container_service readiness contract",
+                    "service {name:?} requires healthy dependency {:?}, but it has no Compose healthcheck or container_service readiness contract",
                     dependency.service
                 )));
             }
@@ -5157,6 +5282,81 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("absolute path")
+        );
+    }
+
+    #[test]
+    fn locks_standard_compose_cmd_healthchecks() {
+        let healthcheck = image_healthcheck_plan(
+            "worker",
+            Some(ComposeHealthcheck {
+                test: ComposeHealthcheckTest::Command(vec![
+                    "CMD".to_owned(),
+                    "/bin/busybox".to_owned(),
+                    "true".to_owned(),
+                ]),
+                interval: Some("500ms".to_owned()),
+                retries: Some(4),
+                start_period: Some("2s".to_owned()),
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            healthcheck.command,
+            ["/bin/busybox", "true"].map(str::to_owned)
+        );
+        assert_eq!(healthcheck.interval_millis, 500);
+        assert_eq!(healthcheck.retries, 4);
+        assert_eq!(healthcheck.start_period_millis, 2_000);
+        assert!(image_healthcheck_plan(
+            "worker",
+            Some(ComposeHealthcheck {
+                test: ComposeHealthcheckTest::Command(vec![
+                    "CMD-SHELL".to_owned(),
+                    "true".to_owned(),
+                ]),
+                interval: None,
+                retries: None,
+                start_period: None,
+            }),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("CMD-SHELL"));
+    }
+
+    #[test]
+    fn accepts_service_healthy_for_an_image_compose_healthcheck() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    depends_on:\n      worker:\n        condition: service_healthy\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    healthcheck:\n      test: [CMD, /bin/busybox, /bin/true]\n      interval: 1s\n      retries: 2\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        let worker = directory.path().join("worker");
+        fs::write(worker.join("runtime/theseus-image"), b"adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            worker.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(worker.join("guest/image.tar"), b"image").unwrap();
+        fs::write(
+            worker.join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'guest/image.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(
+            plan.services["api"].depends_on[0].condition,
+            DependencyCondition::ServiceHealthy
+        );
+        assert_eq!(
+            plan.services["worker"]
+                .healthcheck
+                .as_ref()
+                .unwrap()
+                .command,
+            ["/bin/busybox", "/bin/true"].map(str::to_owned)
         );
     }
 

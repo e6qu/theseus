@@ -31,6 +31,8 @@ struct InitSpec {
     container_service: Option<ContainerService>,
     #[serde(default)]
     network: Option<ContainerNetwork>,
+    #[serde(default)]
+    healthcheck: Option<ContainerHealthcheck>,
 }
 
 #[derive(serde::Deserialize)]
@@ -81,6 +83,14 @@ struct HttpReady {
     url: String,
     attempts: u32,
     interval_millis: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct ContainerHealthcheck {
+    command: Vec<String>,
+    interval_millis: u64,
+    retries: u32,
+    start_period_millis: u64,
 }
 
 #[derive(serde::Deserialize)]
@@ -281,11 +291,14 @@ fn exec_argv(
     for path in paths {
         let executable =
             CString::new(path.as_str()).map_err(|_| "command contains NUL".to_owned())?;
-        let rc = unsafe { libc::execve(executable.as_ptr(), argv_ptrs.as_ptr(), env_ptrs.as_ptr()) };
+        let rc =
+            unsafe { libc::execve(executable.as_ptr(), argv_ptrs.as_ptr(), env_ptrs.as_ptr()) };
         let error = std::io::Error::last_os_error();
         // Docker resolves a bare JSON-form command through PATH. Continue
         // searching only when this directory has no matching executable.
-        if error.raw_os_error().is_some_and(|code| code == libc::ENOENT || code == libc::ENOTDIR)
+        if error
+            .raw_os_error()
+            .is_some_and(|code| code == libc::ENOENT || code == libc::ENOTDIR)
         {
             last_error = Some(error);
             continue;
@@ -787,6 +800,31 @@ fn run_shell_operation(
     Ok(ShellOperationResult { output_json })
 }
 
+fn run_healthcheck(spec: &InitSpec, healthcheck: &ContainerHealthcheck) -> Result<(), String> {
+    if healthcheck.start_period_millis > 0 {
+        thread::sleep(Duration::from_millis(healthcheck.start_period_millis));
+    }
+    let operation = ShellOperation {
+        name: "healthcheck".to_owned(),
+        command: healthcheck.command.clone(),
+        expect_exit: 0,
+        output_contains: None,
+        output_json: false,
+        environment: BTreeMap::new(),
+    };
+    let mut last_error = "health check did not run".to_owned();
+    for attempt in 0..healthcheck.retries {
+        match run_shell_operation(spec, &operation) {
+            Ok(_) => return Ok(()),
+            Err(error) => last_error = error,
+        }
+        if attempt + 1 < healthcheck.retries {
+            thread::sleep(Duration::from_millis(healthcheck.interval_millis));
+        }
+    }
+    Err(last_error)
+}
+
 fn run_campaign_shell_operation(
     spec: &InitSpec,
     operation: CampaignShellOperation,
@@ -984,10 +1022,12 @@ fn main() {
         }
     }
     let mut channel = TtyChannel::console().expect("open /dev/ttyS0");
-    let Some(service) = spec.container_service.as_ref() else {
+    let service = spec.container_service.as_ref();
+    let healthcheck = spec.healthcheck.as_ref();
+    if service.is_none() && healthcheck.is_none() {
         channel.marker(MARKER_BOOT).expect("boot marker");
         exec_image(&spec);
-    };
+    }
 
     let pid = unsafe { libc::fork() };
     if pid == 0 {
@@ -998,27 +1038,44 @@ fn main() {
         power_off();
     }
 
-    if let Some(ready) = &service.ready {
-        match wait_for_ready(ready) {
-            Ok(()) => println!("THES:HTTP:ready:PASS"),
-            Err(error) => {
-                eprintln!("THES:HTTP:ready:FAIL {error}");
-                stop_service(pid);
-                power_off();
+    if let Some(service) = service {
+        if let Some(ready) = &service.ready {
+            match wait_for_ready(ready) {
+                Ok(()) => println!("THES:HTTP:ready:PASS"),
+                Err(error) => {
+                    eprintln!("THES:HTTP:ready:FAIL {error}");
+                    stop_service(pid);
+                    power_off();
+                }
+            }
+        }
+        if let Some(ready) = &service.grpc_ready {
+            match wait_for_grpc_ready(ready) {
+                Ok(()) => println!("THES:GRPC:ready:PASS"),
+                Err(error) => {
+                    eprintln!("THES:GRPC:ready:FAIL {error}");
+                    stop_service(pid);
+                    power_off();
+                }
             }
         }
     }
-    if let Some(ready) = &service.grpc_ready {
-        match wait_for_grpc_ready(ready) {
-            Ok(()) => println!("THES:GRPC:ready:PASS"),
+    if let Some(healthcheck) = healthcheck {
+        match run_healthcheck(&spec, healthcheck) {
+            Ok(()) => println!("THES:HEALTHCHECK:PASS"),
             Err(error) => {
-                eprintln!("THES:GRPC:ready:FAIL {error}");
+                eprintln!("THES:HEALTHCHECK:FAIL {error}");
                 stop_service(pid);
                 power_off();
             }
         }
     }
     channel.marker(MARKER_BOOT).expect("boot marker");
+    let Some(service) = service else {
+        let mut status = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        power_off();
+    };
     if service.campaign {
         loop {
             let (protocol, command) = match channel.next_command_any(&[
@@ -1128,9 +1185,6 @@ mod tests {
             executable_paths("httpd", &["PATH=/custom/bin:/bin".to_owned()]),
             ["/custom/bin/httpd", "/bin/httpd"]
         );
-        assert_eq!(
-            executable_paths("/bin/httpd", &[]),
-            ["/bin/httpd"]
-        );
+        assert_eq!(executable_paths("/bin/httpd", &[]), ["/bin/httpd"]);
     }
 }
