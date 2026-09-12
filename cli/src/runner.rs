@@ -1119,6 +1119,13 @@ fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
                     .iter()
                     .any(|argument| argument.is_empty() || argument.contains('\0'))
                 || operation.output_contains.as_deref() == Some("")
+                || operation.environment.iter().any(|(key, value)| {
+                    key.is_empty()
+                        || key.contains('=')
+                        || key.contains('\0')
+                        || value.contains('\0')
+                        || key == "THESEUS_CHANNEL"
+                })
             {
                 return Err(RunError::InvalidBundle {
                     path: path.to_path_buf(),
@@ -1512,6 +1519,7 @@ body_contains = "ok"
                 expect_exit: 0,
                 output_contains: Some("ok".to_owned()),
                 output_json: false,
+                environment: std::collections::BTreeMap::new(),
             }],
         });
         let serial_log = directory.path().join("serial.log");

@@ -1,7 +1,7 @@
 // Copyright 2026 Adrian Mârza (https://www.linkedin.com/in/adrian-m%C3%A2rza-52606512a/) and contributors to Theseus
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -367,6 +367,8 @@ struct ShellOperation {
     output_contains: Option<String>,
     #[serde(default)]
     output_json: bool,
+    #[serde(default)]
+    environment: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -626,6 +628,8 @@ pub struct ShellOperationPlan {
     pub output_contains: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub output_json: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
 }
 
 pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
@@ -938,6 +942,7 @@ fn container_service_plan(
             expect_exit: operation.expect_exit,
             output_contains: operation.output_contains,
             output_json: operation.output_json,
+            environment: operation.environment,
         });
     }
     Ok(Some(ContainerServicePlan {
@@ -968,6 +973,18 @@ fn validate_shell_operation(field: &str, operation: &ShellOperation) -> Result<(
         return Err(LoadError::InvalidCheck(format!(
             "{field} output_contains must not be empty"
         )));
+    }
+    for (key, value) in &operation.environment {
+        if key.is_empty()
+            || key.contains('=')
+            || key.contains('\0')
+            || value.contains('\0')
+            || key == "THESEUS_CHANNEL"
+        {
+            return Err(LoadError::InvalidGuest(format!(
+                "{field} environment must use non-empty names without '=' or NUL and cannot override THESEUS_CHANNEL"
+            )));
+        }
     }
     Ok(())
 }
@@ -1547,6 +1564,7 @@ name = "read_health"
 command = ["/bin/cat", "/health"]
 output_contains = "ok"
 output_json = true
+environment = { CHECK_MODE = "full" }
 "#,
         );
         let test = directory.path().join("test");
@@ -1570,6 +1588,10 @@ output_json = true
         assert_eq!(service.grpc_operations[0].name, "recheck");
         assert_eq!(service.shell_operations[0].command, ["/bin/cat", "/health"]);
         assert!(service.shell_operations[0].output_json);
+        assert_eq!(
+            service.shell_operations[0].environment["CHECK_MODE"],
+            "full"
+        );
     }
 
     #[test]
