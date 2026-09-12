@@ -10,7 +10,8 @@ Start with [tutorial 14](../../tutorials/14-container-image/). It uses only a
 published Theseus runtime image and the files in its own directory.
 
 For a deterministic operation campaign against an unmodified image, continue
-with [tutorial 15](../../tutorials/15-container-campaign/).
+with [tutorial 15](../../tutorials/15-container-campaign/) for HTTP or
+[tutorial 17](../../tutorials/17-grpc-campaign/) for standard gRPC health.
 
 ## 2. Prepare your image
 
@@ -95,6 +96,36 @@ Theseus speaks clear-text HTTP/2 prior knowledge and calls
 `not_serving`, or `service_unknown`. Use this path for a service that exposes
 the standard gRPC health protocol; TLS, reflection, and arbitrary RPC calls
 are not part of this small adapter.
+
+## Drive a gRPC health operation
+
+Use the same narrow protocol as a named operation after readiness. It works in
+a single-image test and is also the operation form that Compose campaigns
+lock, minimize, and replay:
+
+```toml
+[[container_service.grpc_operations]]
+name = "api_health"
+url = "http://127.0.0.1:50051"
+service = "example.Api"
+expect_status = "serving"
+```
+
+For a campaign, put the equivalent request in its Compose operation:
+
+```yaml
+- name: api_health
+  grpc_health:
+    url: http://127.0.0.1:50051
+    service: example.Api
+    expect_status: serving
+```
+
+Theseus serializes the request into the locked topology input, calls the
+standard health endpoint through the image pivot, records
+`THES:GRPC:operation:<name>:PASS` or `FAIL`, and takes the usual operation
+checkpoint. The service does not need an SDK, reflection, TLS, or an arbitrary
+RPC adapter.
 
 Static and dynamically linked images work when their dependencies are inside
 the image. Use the simulated network for deterministic networking.

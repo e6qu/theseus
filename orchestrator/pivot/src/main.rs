@@ -43,6 +43,8 @@ struct ContainerService {
     grpc_ready: Option<GrpcHealth>,
     #[serde(default)]
     grpc_assertions: Vec<GrpcAssertion>,
+    #[serde(default)]
+    grpc_operations: Vec<GrpcOperation>,
 }
 
 #[derive(serde::Deserialize)]
@@ -106,6 +108,24 @@ struct GrpcHealth {
 
 #[derive(serde::Deserialize)]
 struct GrpcAssertion {
+    name: String,
+    url: String,
+    service: String,
+    expect_status: GrpcServingStatus,
+}
+
+#[derive(serde::Deserialize)]
+struct GrpcOperation {
+    name: String,
+    url: String,
+    service: String,
+    expect_status: GrpcServingStatus,
+}
+
+/// A host sends this JSON after the boot marker for a Compose gRPC-health
+/// campaign operation. The service only needs the standard health endpoint.
+#[derive(serde::Deserialize)]
+struct CampaignGrpcOperation {
     name: String,
     url: String,
     service: String,
@@ -518,6 +538,27 @@ fn assert_grpc(assertion: &GrpcAssertion) -> Result<(), String> {
     }
 }
 
+fn run_grpc_operation(operation: &GrpcOperation) -> Result<(), String> {
+    let actual = grpc_health(&operation.url, &operation.service)?;
+    if actual == operation.expect_status {
+        Ok(())
+    } else {
+        Err(format!(
+            "expected {:?}, got {actual:?}",
+            operation.expect_status
+        ))
+    }
+}
+
+fn run_campaign_grpc_operation(operation: CampaignGrpcOperation) -> Result<(), String> {
+    run_grpc_operation(&GrpcOperation {
+        name: operation.name,
+        url: operation.url,
+        service: operation.service,
+        expect_status: operation.expect_status,
+    })
+}
+
 fn stop_service(pid: libc::pid_t) {
     unsafe {
         libc::kill(pid, libc::SIGTERM);
@@ -590,27 +631,48 @@ fn main() {
     channel.marker(MARKER_BOOT).expect("boot marker");
     if service.campaign {
         loop {
-            let command = match channel.next_command("THES:HTTP:operation:") {
-                Ok(command) => command,
-                Err(error) => {
-                    eprintln!("THES:HTTP:operation:FAIL cannot read campaign command: {error}");
-                    stop_service(pid);
-                    power_off();
+            let (protocol, command) =
+                match channel.next_command_any(&["THES:HTTP:operation:", "THES:GRPC:operation:"]) {
+                    Ok(command) => command,
+                    Err(error) => {
+                        eprintln!("THES:operation:FAIL cannot read campaign command: {error}");
+                        stop_service(pid);
+                        power_off();
+                    }
+                };
+            if protocol == 0 {
+                let operation: CampaignHttpOperation = match serde_json::from_str(&command) {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        eprintln!("THES:HTTP:operation:FAIL invalid campaign command: {error}");
+                        continue;
+                    }
+                };
+                let name = operation.name.clone();
+                match run_campaign_http_operation(operation) {
+                    Ok(()) => println!("THES:HTTP:operation:{name}:PASS"),
+                    Err(error) => eprintln!("THES:HTTP:operation:{name}:FAIL {error}"),
                 }
-            };
-            let operation: CampaignHttpOperation = match serde_json::from_str(&command) {
-                Ok(operation) => operation,
-                Err(error) => {
-                    eprintln!("THES:HTTP:operation:FAIL invalid campaign command: {error}");
-                    continue;
+                channel
+                    .checkpoint(&name)
+                    .expect("campaign operation checkpoint");
+            } else {
+                let operation: CampaignGrpcOperation = match serde_json::from_str(&command) {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        eprintln!("THES:GRPC:operation:FAIL invalid campaign command: {error}");
+                        continue;
+                    }
+                };
+                let name = operation.name.clone();
+                match run_campaign_grpc_operation(operation) {
+                    Ok(()) => println!("THES:GRPC:operation:{name}:PASS"),
+                    Err(error) => eprintln!("THES:GRPC:operation:{name}:FAIL {error}"),
                 }
-            };
-            let name = operation.name.clone();
-            match run_campaign_http_operation(operation) {
-                Ok(()) => println!("THES:HTTP:operation:{name}:PASS"),
-                Err(error) => eprintln!("THES:HTTP:operation:{name}:FAIL {error}"),
+                channel
+                    .checkpoint(&name)
+                    .expect("campaign operation checkpoint");
             }
-            channel.checkpoint(&name).expect("campaign operation checkpoint");
         }
     }
     for operation in &service.operations {
@@ -629,6 +691,12 @@ fn main() {
         match assert_grpc(assertion) {
             Ok(()) => println!("THES:GRPC:{}:PASS", assertion.name),
             Err(error) => eprintln!("THES:GRPC:{}:FAIL {error}", assertion.name),
+        }
+    }
+    for operation in &service.grpc_operations {
+        match run_grpc_operation(operation) {
+            Ok(()) => println!("THES:GRPC:operation:{}:PASS", operation.name),
+            Err(error) => eprintln!("THES:GRPC:operation:{}:FAIL {error}", operation.name),
         }
     }
     stop_service(pid);

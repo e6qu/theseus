@@ -1,0 +1,28 @@
+name: grpc-campaign
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+
+networks:
+  backplane: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    max_runs: 1
+    max_operations_per_run: 1
+    faults: []
+    operations:
+      - name: api_health
+        grpc_health:
+          url: http://127.0.0.1:50051
+          service: tutorial.Api
+          expect_status: serving
+    properties:
+      - name: health_response
+        kind: always
+        service: api
+        contains: "THES:GRPC:operation:api_health:PASS"

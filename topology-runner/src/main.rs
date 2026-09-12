@@ -9149,6 +9149,7 @@ mod tests {
                     operations: Vec::new(),
                     grpc_ready: None,
                     grpc_assertions: Vec::new(),
+                    grpc_operations: Vec::new(),
                 }),
             },
             networks: Vec::new(),

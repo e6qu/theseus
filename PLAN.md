@@ -199,14 +199,18 @@ readiness and status/body assertions: the injected PID 1 reports each result
 as a normal Theseus check and stops the service after the contract completes.
 It also supports the standard clear-text gRPC health service for readiness and
 serving-status assertions. Named HTTP operations can drive a ready service
-with GET, POST, PUT, or DELETE requests before assertions run.
+with GET, POST, PUT, or DELETE requests before assertions run. The same image
+pivot also drives the standard clear-text gRPC health endpoint as a named
+operation, both in a single-service contract and in a locked Compose campaign;
+the service still needs no Theseus SDK or custom UART protocol.
 
 **Campaign operations:** Compose campaigns also accept a declarative `http`
 operation for an image-backed service. Theseus locks its JSON request command
 into the campaign input, executes it through the injected pivot after the
 normal boot barrier, records the HTTP result, and emits the ordinary operation
 checkpoint used by faults, minimization, and replay. Tutorial 15 demonstrates
-the path with an unmodified container image.
+the path with an unmodified container image. A `grpc_health` campaign operation
+uses the same boundary for the standard gRPC health method.
 
 **Current execution support:** image-backed test, Compose, campaigns, and
 exploration lock the image, adapter, service contract, and derived initramfs

@@ -68,6 +68,8 @@ pub struct ContainerServiceContract {
     pub grpc_ready: Option<GrpcHealth>,
     #[serde(default)]
     pub grpc_assertions: Vec<GrpcAssertion>,
+    #[serde(default)]
+    pub grpc_operations: Vec<GrpcOperation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
@@ -120,6 +122,17 @@ pub struct GrpcHealth {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub struct GrpcAssertion {
+    pub name: String,
+    pub url: String,
+    pub service: String,
+    pub expect_status: GrpcServingStatus,
+}
+
+/// One standard gRPC health request issued after readiness and before the
+/// final assertions. Compose campaigns use the same contract through the
+/// injected pivot.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct GrpcOperation {
     pub name: String,
     pub url: String,
     pub service: String,
@@ -491,6 +504,12 @@ mod tests {
                 service: String::new(),
                 expect_status: GrpcServingStatus::Serving,
             }],
+            grpc_operations: vec![GrpcOperation {
+                name: "grpc_operation".to_owned(),
+                url: "http://127.0.0.1:50051".to_owned(),
+                service: "example.Api".to_owned(),
+                expect_status: GrpcServingStatus::Serving,
+            }],
         };
         let (cpio, _) = flatten_with_service(&test_image(), Some(&service)).unwrap();
         let text = String::from_utf8_lossy(&cpio);
@@ -499,6 +518,7 @@ mod tests {
         assert!(text.contains("body_contains"));
         assert!(text.contains("operations"));
         assert!(text.contains("grpc_assertions"));
+        assert!(text.contains("grpc_operations"));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload

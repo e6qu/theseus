@@ -5,6 +5,7 @@ e2e/agent/target/
 engine/target/
 orchestrator/target/
 sdk/target/
+sdk/Cargo.lock
 cli/target/
 explorer-runner/target/
 image-runner/target/
@@ -32,5 +33,8 @@ docs/tutorials/16-public-campaign/campaign/
 docs/tutorials/16-public-campaign/public-evaluation/
 docs/tutorials/16-public-campaign/rerun/
 docs/tutorials/16-public-campaign/evaluation.json
+docs/tutorials/17-grpc-campaign/api/work/
+docs/tutorials/17-grpc-campaign/campaign/
+docs/tutorials/17-grpc-campaign/rerun/
 
 orchestrator/pivot/target/

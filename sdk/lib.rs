@@ -209,6 +209,13 @@ pub mod linux {
         /// declared campaign operation without application instrumentation.
         /// Unrelated console traffic is ignored just as it is for events.
         pub fn next_command(&mut self, prefix: &str) -> io::Result<String> {
+            Ok(self.next_command_any(&[prefix])?.1)
+        }
+
+        /// Read the next host command matching one of several stable line
+        /// prefixes. The returned prefix index lets an adapter support more
+        /// than one declared protocol without interpreting application logs.
+        pub fn next_command_any(&mut self, prefixes: &[&str]) -> io::Result<(usize, String)> {
             loop {
                 let mut line = String::new();
                 if self.input.read_line(&mut line)? == 0 {
@@ -217,8 +224,10 @@ pub mod linux {
                         "console closed",
                     ));
                 }
-                if let Some(command) = line.strip_prefix(prefix) {
-                    return Ok(String::from(command.trim_end_matches(['\r', '\n'])));
+                for (index, prefix) in prefixes.iter().enumerate() {
+                    if let Some(command) = line.strip_prefix(prefix) {
+                        return Ok((index, String::from(command.trim_end_matches(['\r', '\n']))));
+                    }
                 }
             }
         }

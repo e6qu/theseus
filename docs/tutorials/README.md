@@ -42,6 +42,8 @@ deterministic-CRNG kernel module is shipped.
     a declared HTTP operation, retain its checkpoint, and replay it.
 16. [Publish a public campaign](16-public-campaign/) — copy a completed
     container campaign into a locked, offline-readable evaluation.
+17. [Campaign a gRPC health service](17-grpc-campaign/) — drive the standard
+    gRPC health endpoint of an unmodified container service.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),
