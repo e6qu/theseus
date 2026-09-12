@@ -50,6 +50,25 @@ pub struct ImageSpec {
     pub workdir: String,
 }
 
+/// Literal launch overrides supplied by a Compose service. The adapter applies
+/// them while deriving the initramfs, so replay reuses the exact same
+/// entrypoint, command, and working-directory contract.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContainerLaunch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+}
+
+impl ContainerLaunch {
+    pub fn is_empty(&self) -> bool {
+        self.command.is_none() && self.entrypoint.is_none() && self.working_dir.is_none()
+    }
+}
+
 /// The HTTP contract that the injected pivot evaluates around an image.
 ///
 /// The CLI serializes this into the init specification; keeping it here makes
@@ -226,7 +245,7 @@ enum Entry {
 
 /// Flatten a `docker save` image tar into (cpio_bytes, image_spec).
 pub fn flatten(image_tar: &[u8]) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, None, None, None)
+    flatten_with_contracts(image_tar, None, None, None, None)
 }
 
 /// Flatten an image and inject an optional boot-time service contract.
@@ -234,7 +253,7 @@ pub fn flatten_with_service(
     image_tar: &[u8],
     service: Option<&ContainerServiceContract>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, service, None, None)
+    flatten_with_contracts(image_tar, service, None, None, None)
 }
 
 /// Flatten an image and inject optional service and network contracts.
@@ -247,17 +266,18 @@ pub fn flatten_with_service_and_network(
     service: Option<&ContainerServiceContract>,
     network: Option<&ContainerNetwork>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, service, network, None)
+    flatten_with_contracts(image_tar, service, network, None, None)
 }
 
-/// Flatten an image and inject optional service, network, and literal
-/// environment contracts. Environment overrides apply to the image
-/// entrypoint itself, not just to Theseus-driven shell operations.
+/// Flatten an image and inject optional service, network, environment, and
+/// launch contracts. Every override applies to the image entrypoint itself,
+/// not just to Theseus-driven shell operations.
 pub fn flatten_with_contracts(
     image_tar: &[u8],
     service: Option<&ContainerServiceContract>,
     network: Option<&ContainerNetwork>,
     environment: Option<&BTreeMap<String, String>>,
+    launch: Option<&ContainerLaunch>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
     let mut archive = tar::Archive::new(image_tar);
 
@@ -294,17 +314,36 @@ pub fn flatten_with_contracts(
         .ok_or_else(|| OciError::Json("empty manifest.json".into()))?;
     let config = config.ok_or_else(|| OciError::Json("no image config JSON".into()))?;
 
-    // Resolve the entrypoint.
+    // Resolve the entrypoint using Compose's image-launch rules: a command
+    // replaces the image Cmd while preserving its Entrypoint; a supplied
+    // entrypoint replaces the image Entrypoint and drops the image Cmd.
     let inner = config.config.unwrap_or_default();
-    let mut argv = inner.entrypoint.clone().unwrap_or_default();
-    argv.extend(inner.cmd.clone().unwrap_or_default());
+    let image_entrypoint = inner.entrypoint.unwrap_or_default();
+    let image_command = inner.cmd.unwrap_or_default();
+    let (mut argv, command) = if let Some(launch) = launch {
+        match &launch.entrypoint {
+            Some(entrypoint) => (
+                entrypoint.clone(),
+                launch.command.clone().unwrap_or_default(),
+            ),
+            None => (
+                image_entrypoint,
+                launch.command.clone().unwrap_or(image_command),
+            ),
+        }
+    } else {
+        (image_entrypoint, image_command)
+    };
+    argv.extend(command);
     if argv.is_empty() {
         return Err(OciError::NoEntrypoint);
     }
     let mut spec = ImageSpec {
         argv,
         env: inner.env.clone().unwrap_or_default(),
-        workdir: inner.workdir.clone().unwrap_or_default(),
+        workdir: launch
+            .and_then(|launch| launch.working_dir.clone())
+            .unwrap_or_else(|| inner.workdir.unwrap_or_default()),
     };
     if let Some(environment) = environment {
         apply_environment(&mut spec.env, environment);
@@ -656,10 +695,41 @@ mod tests {
             ("NEW_VALUE".to_owned(), "present".to_owned()),
         ]);
         let (cpio, spec) =
-            flatten_with_contracts(&test_image(), None, None, Some(&environment)).unwrap();
+            flatten_with_contracts(&test_image(), None, None, Some(&environment), None).unwrap();
         assert!(spec.env.iter().any(|entry| entry == "MODE=campaign"));
         assert!(spec.env.iter().any(|entry| entry == "NEW_VALUE=present"));
         assert!(String::from_utf8_lossy(&cpio).contains("MODE=campaign"));
+    }
+
+    #[test]
+    fn flatten_applies_compose_launch_overrides_to_the_image_entrypoint() {
+        let launch = ContainerLaunch {
+            command: Some(vec![".".to_owned()]),
+            entrypoint: Some(vec![
+                "/bin/serve".to_owned(),
+                "--port".to_owned(),
+                "8080".to_owned(),
+            ]),
+            working_dir: Some("/site".to_owned()),
+        };
+        let (cpio, spec) =
+            flatten_with_contracts(&test_image(), None, None, None, Some(&launch)).unwrap();
+        assert_eq!(
+            spec.argv,
+            ["/bin/serve", "--port", "8080", "."].map(str::to_owned)
+        );
+        assert_eq!(spec.workdir, "/site");
+        let text = String::from_utf8_lossy(&cpio);
+        assert!(text.contains("/bin/serve"));
+        assert!(text.contains("\"workdir\":\"/site\""));
+
+        let command_only = ContainerLaunch {
+            command: Some(vec!["--foreground".to_owned()]),
+            ..ContainerLaunch::default()
+        };
+        let (_, spec) =
+            flatten_with_contracts(&test_image(), None, None, None, Some(&command_only)).unwrap();
+        assert_eq!(spec.argv, ["/bin/tool", "--foreground"].map(str::to_owned));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload

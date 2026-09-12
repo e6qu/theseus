@@ -39,5 +39,13 @@ docs/tutorials/17-grpc-campaign/rerun/
 docs/tutorials/18-container-command/api/work/
 docs/tutorials/18-container-command/campaign/
 docs/tutorials/18-container-command/rerun/
+docs/tutorials/19-compose-image-network/api/work/
+docs/tutorials/19-compose-image-network/worker/work/
+docs/tutorials/19-compose-image-network/campaign/
+docs/tutorials/19-compose-image-network/rerun/
+docs/tutorials/20-compose-image-launch/api/work/
+docs/tutorials/20-compose-image-launch/worker/work/
+docs/tutorials/20-compose-image-launch/campaign/
+docs/tutorials/20-compose-image-launch/rerun/
 
 orchestrator/pivot/target/

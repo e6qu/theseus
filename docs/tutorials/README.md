@@ -48,6 +48,8 @@ deterministic-CRNG kernel module is shipped.
     an unmodified service image and replay its checked result.
 19. [Connect container services by name](19-compose-image-network/) — use a
     deterministic Compose network from unmodified service images.
+20. [Change an image launch with Compose](20-compose-image-launch/) — replace
+    an image command and working directory without changing the image.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),
