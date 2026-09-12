@@ -211,6 +211,9 @@ For image-backed Compose services, the locked topology now assigns stable IPv4
 addresses, configures each guest NIC before the image starts, and supplies
 peer Compose names through `/etc/hosts`; images need no DHCP client, `ip`
 binary, sidecar, Theseus code, or `container_service` contract.
+Compose `depends_on` is locked with the topology and starts dependencies at
+deterministic boot barriers; `service_healthy` uses the existing image-service
+readiness contract rather than host-time polling.
 
 **Campaign operations:** Compose campaigns also accept a declarative `http`
 operation for an image-backed service. Theseus locks its JSON request command
