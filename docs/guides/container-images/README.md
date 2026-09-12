@@ -125,6 +125,7 @@ command = ["/app/migrate", "--check"]
 expect_exit = 0
 output_contains = "up to date"
 output_json = true
+environment = { CHECK_MODE = "full" }
 ```
 
 Theseus calls the argv directly in the image working directory with the image
@@ -133,6 +134,8 @@ environment. It captures bounded combined stdout and stderr to evaluate
 the complete command output is one JSON value. Theseus emits a JSON-lines event
 with `/event: shell_operation`, `/name`, and the parsed value at `/output`, so
 campaign properties can query fields without parsing text.
+`environment` overrides named variables from the image only for this command;
+Theseus preserves its own serial-channel variable.
 
 For a gRPC-health campaign, put the equivalent request in its Compose operation:
 
@@ -159,6 +162,7 @@ For a command campaign, use `shell` instead:
     expect_exit: 0
     output_contains: up to date
     output_json: true
+    environment: {CHECK_MODE: full}
 ```
 
 Theseus locks this argv command into the campaign input, runs it after the

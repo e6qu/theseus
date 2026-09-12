@@ -151,6 +151,8 @@ pub struct ShellOperation {
     pub output_contains: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub output_json: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
@@ -530,6 +532,7 @@ mod tests {
                 expect_exit: 0,
                 output_contains: Some("ok".to_owned()),
                 output_json: true,
+                environment: BTreeMap::from([("CHECK_MODE".to_owned(), "full".to_owned())]),
             }],
         };
         let (cpio, _) = flatten_with_service(&test_image(), Some(&service)).unwrap();
@@ -542,6 +545,7 @@ mod tests {
         assert!(text.contains("grpc_operations"));
         assert!(text.contains("shell_operations"));
         assert!(text.contains("output_json"));
+        assert!(text.contains("CHECK_MODE"));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload

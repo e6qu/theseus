@@ -10,6 +10,7 @@
 //! The image needs no Theseus code of its own — the pivot is the
 //! instrumentation.
 
+use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fs;
 use std::io::{Read, Write};
@@ -146,6 +147,8 @@ struct ShellOperation {
     output_contains: Option<String>,
     #[serde(default)]
     output_json: bool,
+    #[serde(default)]
+    environment: BTreeMap<String, String>,
 }
 
 /// A host sends this JSON after the boot marker for a Compose command
@@ -159,6 +162,8 @@ struct CampaignShellOperation {
     output_contains: Option<String>,
     #[serde(default)]
     output_json: bool,
+    #[serde(default)]
+    environment: BTreeMap<String, String>,
 }
 
 #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
@@ -185,7 +190,11 @@ fn mount(source: &str, target: &str, fstype: &str) {
     }
 }
 
-fn exec_argv(spec: &InitSpec, command: &[String]) -> Result<(), String> {
+fn exec_argv(
+    spec: &InitSpec,
+    command: &[String],
+    environment: &BTreeMap<String, String>,
+) -> Result<(), String> {
     let program = command
         .first()
         .ok_or_else(|| "command has no program".to_owned())?;
@@ -199,12 +208,31 @@ fn exec_argv(spec: &InitSpec, command: &[String]) -> Result<(), String> {
         .chain(std::iter::once(std::ptr::null()))
         .collect();
 
-    let mut env: Vec<CString> = spec
-        .env
+    let mut entries = spec.env.clone();
+    for (key, value) in environment {
+        let entry = format!("{key}={value}");
+        if let Some(position) = entries.iter().rposition(|candidate| {
+            candidate
+                .split_once('=')
+                .is_some_and(|(name, _)| name == key)
+        }) {
+            entries[position] = entry;
+        } else {
+            entries.push(entry);
+        }
+    }
+    entries.retain(|entry| {
+        entry
+            .split_once('=')
+            .is_none_or(|(key, _)| key != "THESEUS_CHANNEL")
+    });
+    entries.push("THESEUS_CHANNEL=serial:/dev/ttyS0".to_owned());
+    let env: Vec<CString> = entries
         .iter()
-        .map(|e| CString::new(e.as_str()).map_err(|_| "environment contains NUL".to_owned()))
+        .map(|entry| {
+            CString::new(entry.as_str()).map_err(|_| "environment contains NUL".to_owned())
+        })
         .collect::<Result<_, _>>()?;
-    env.push(CString::new("THESEUS_CHANNEL=serial:/dev/ttyS0").unwrap());
     let env_ptrs: Vec<*const libc::c_char> = env
         .iter()
         .map(|e| e.as_ptr())
@@ -232,7 +260,7 @@ fn exec_argv(spec: &InitSpec, command: &[String]) -> Result<(), String> {
 }
 
 fn exec_image(spec: &InitSpec) -> ! {
-    if let Err(error) = exec_argv(spec, &spec.argv) {
+    if let Err(error) = exec_argv(spec, &spec.argv, &BTreeMap::new()) {
         eprintln!("pivot: {error}");
     }
     power_off();
@@ -633,7 +661,7 @@ fn run_shell_operation(
             libc::dup2(pipe_fds[1], libc::STDERR_FILENO);
             libc::close(pipe_fds[1]);
         }
-        if let Err(error) = exec_argv(spec, &operation.command) {
+        if let Err(error) = exec_argv(spec, &operation.command, &operation.environment) {
             eprintln!("pivot: {error}");
         }
         std::process::exit(127);
@@ -710,6 +738,7 @@ fn run_campaign_shell_operation(
             expect_exit: operation.expect_exit,
             output_contains: operation.output_contains,
             output_json: operation.output_json,
+            environment: operation.environment,
         },
     )
 }
