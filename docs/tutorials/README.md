@@ -54,6 +54,8 @@ deterministic-CRNG kernel module is shipped.
     read-only config file into an unmodified service image.
 22. [Supply an image secret with Compose](22-compose-secret/) — lock a local
     root-only secret file into an unmodified service image.
+23. [Seed image data with a Compose bind volume](23-compose-volume/) — lock a
+    local writable data directory into an unmodified service image.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

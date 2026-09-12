@@ -4,8 +4,9 @@
 //! Strict Docker Compose-shaped topology input for Theseus guests.
 //!
 //! Compose is used here only as a familiar topology notation. Theseus does
-//! not accept Docker images, host ports, volumes, or host networks: each
-//! service points at its own locked Theseus manifest instead.
+//! does not accept Docker images, host ports, or host networks: each service
+//! points at its own locked Theseus manifest instead. Image-backed services
+//! may seed a writable directory from a local Compose bind mount.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -741,6 +742,8 @@ struct ComposeService {
     configs: Vec<ComposeServiceConfig>,
     #[serde(default)]
     secrets: Vec<ComposeServiceConfig>,
+    #[serde(default)]
+    volumes: Vec<ComposeServiceVolume>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -762,6 +765,26 @@ struct ComposeConfigMount {
     source: String,
     #[serde(default)]
     target: Option<String>,
+}
+
+/// A constrained Compose bind mount. Theseus locks a local directory into the
+/// image initramfs instead of keeping a host mount alive at runtime.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ComposeServiceVolume {
+    Short(String),
+    Mount(ComposeVolumeMount),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeVolumeMount {
+    #[serde(rename = "type")]
+    kind: String,
+    source: String,
+    target: String,
+    #[serde(default)]
+    read_only: bool,
 }
 
 /// Literal Compose environment values. Host-environment inheritance is
@@ -866,6 +889,8 @@ pub struct ComposeServicePlan {
     pub configs: Vec<ImageConfigPlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<ImageConfigPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<ImageVolumePlan>,
     pub faults: Vec<FaultPlan>,
 }
 
@@ -874,6 +899,14 @@ pub struct ComposeServicePlan {
 pub struct ImageConfigPlan {
     pub target: String,
     pub data: Vec<u8>,
+}
+
+/// A writable image directory seeded from a local Compose bind source.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageVolumePlan {
+    pub target: String,
+    pub directories: Vec<String>,
+    pub files: Vec<ImageConfigPlan>,
 }
 
 /// Literal image launch overrides from a Compose service. They become part of
@@ -1344,6 +1377,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         )?;
         let configs = image_config_plan(&name, service.configs, &configs)?;
         let secrets = image_secret_plan(&name, service.secrets, &secrets)?;
+        let volumes = image_volume_plan(&name, service.volumes, compose_dir)?;
         if service.networks.is_empty() {
             return Err(ComposeError::Invalid(format!(
                 "service {name:?} must join at least one named network"
@@ -1381,11 +1415,11 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
             service: name.clone(),
             source: Box::new(source),
         })?;
-        if (launch.is_some() || !configs.is_empty() || !secrets.is_empty())
+        if (launch.is_some() || !configs.is_empty() || !secrets.is_empty() || !volumes.is_empty())
             && run.guest.image.is_none()
         {
             return Err(ComposeError::Invalid(format!(
-                "service {name:?} uses an image launch, config, or secret contract but its manifest has no guest.image"
+                "service {name:?} uses an image launch, config, secret, or volume contract but its manifest has no guest.image"
             )));
         }
         let faults = validate_faults(
@@ -1404,6 +1438,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
                 launch,
                 configs,
                 secrets,
+                volumes,
                 faults,
             },
         );
@@ -1473,6 +1508,148 @@ fn image_secret_plan(
         });
     }
     Ok(result)
+}
+
+fn image_volume_plan(
+    service: &str,
+    mounts: Vec<ComposeServiceVolume>,
+    compose_dir: &Path,
+) -> Result<Vec<ImageVolumePlan>, ComposeError> {
+    let mut targets = BTreeSet::new();
+    let mut result = Vec::new();
+    for mount in mounts {
+        let (source, target) = match mount {
+            ComposeServiceVolume::Short(mount) => {
+                let Some((source, target)) = mount.split_once(':') else {
+                    return Err(ComposeError::Invalid(format!(
+                        "service {service:?} volume {mount:?} must be ./source:/absolute/target"
+                    )));
+                };
+                if target.contains(':') {
+                    return Err(ComposeError::Invalid(format!(
+                        "service {service:?} volume {mount:?} must not include a mode"
+                    )));
+                }
+                (source.to_owned(), target.to_owned())
+            }
+            ComposeServiceVolume::Mount(mount) => {
+                if mount.kind != "bind" {
+                    return Err(ComposeError::Invalid(format!(
+                        "service {service:?} volume type must be bind"
+                    )));
+                }
+                if mount.read_only {
+                    return Err(ComposeError::Invalid(format!(
+                        "service {service:?} read-only volumes are not supported; use configs or secrets"
+                    )));
+                }
+                (mount.source, mount.target)
+            }
+        };
+        if !source.starts_with("./") {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} volume source {source:?} must start with ./"
+            )));
+        }
+        let target_path = Path::new(&target);
+        if target == "/"
+            || !target_path.is_absolute()
+            || target_path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+            || target.contains('\0')
+        {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} volume target {target:?} must be a non-root absolute path without parent traversal"
+            )));
+        }
+        if !targets.insert(target.clone()) {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} mounts more than one volume at {target:?}"
+            )));
+        }
+        let source_path = fs::canonicalize(compose_dir.join(&source)).map_err(|source_error| {
+            ComposeError::Read {
+                path: compose_dir.join(&source),
+                source: source_error,
+            }
+        })?;
+        if !source_path.starts_with(compose_dir) {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} volume source {source:?} must not escape the Compose directory"
+            )));
+        }
+        if !source_path.is_dir() {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} volume source {source:?} must be a directory"
+            )));
+        }
+        result.push(read_volume_tree(service, &source_path, target)?);
+    }
+    Ok(result)
+}
+
+fn read_volume_tree(
+    service: &str,
+    source: &Path,
+    target: String,
+) -> Result<ImageVolumePlan, ComposeError> {
+    let mut directories = BTreeSet::from([target.clone()]);
+    let mut files = Vec::new();
+    let mut pending = vec![(source.to_path_buf(), PathBuf::new())];
+    while let Some((directory, relative)) = pending.pop() {
+        let mut entries = fs::read_dir(&directory)
+            .map_err(|source_error| ComposeError::Read {
+                path: directory.clone(),
+                source: source_error,
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source_error| ComposeError::Read {
+                path: directory.clone(),
+                source: source_error,
+            })?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries.into_iter().rev() {
+            let name = entry.file_name();
+            let relative = relative.join(&name);
+            let destination = Path::new(&target).join(&relative);
+            let destination = destination.to_str().ok_or_else(|| {
+                ComposeError::Invalid(format!(
+                    "service {service:?} volume contains a non-UTF-8 path"
+                ))
+            })?;
+            let file_type = entry
+                .file_type()
+                .map_err(|source_error| ComposeError::Read {
+                    path: entry.path(),
+                    source: source_error,
+                })?;
+            if file_type.is_dir() {
+                directories.insert(destination.to_owned());
+                pending.push((entry.path(), relative));
+            } else if file_type.is_file() {
+                let path = entry.path();
+                let data = fs::read(&path).map_err(|source_error| ComposeError::Read {
+                    path,
+                    source: source_error,
+                })?;
+                files.push(ImageConfigPlan {
+                    target: destination.to_owned(),
+                    data,
+                });
+            } else {
+                return Err(ComposeError::Invalid(format!(
+                    "service {service:?} volume source contains an unsupported non-regular file"
+                )));
+            }
+        }
+    }
+    files.sort_by(|left, right| left.target.cmp(&right.target));
+    Ok(ImageVolumePlan {
+        target,
+        directories: directories.into_iter().collect(),
+        files,
+    })
 }
 
 fn load_compose_files(
@@ -5026,6 +5203,50 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("unknown secret"));
+    }
+
+    #[test]
+    fn locks_a_writable_compose_bind_volume_without_a_host_mount() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    volumes:\n      - ./worker/data:/var/lib/worker\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        let api = directory.path().join("api");
+        let data = directory.path().join("worker/data/state");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("value"), b"seeded\n").unwrap();
+        fs::write(api.join("runtime/theseus-image"), b"adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            api.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(api.join("guest/image.tar"), b"image").unwrap();
+        fs::write(
+            api.join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'guest/image.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let volume = &plan.services["api"].volumes[0];
+        assert_eq!(volume.target, "/var/lib/worker");
+        assert_eq!(
+            volume.directories,
+            ["/var/lib/worker", "/var/lib/worker/state"]
+        );
+        assert_eq!(volume.files[0].target, "/var/lib/worker/state/value");
+        assert_eq!(volume.files[0].data, b"seeded\n");
+        assert!(image_volume_plan(
+            "api",
+            vec![ComposeServiceVolume::Short(
+                "data:/var/lib/worker".to_owned()
+            )],
+            directory.path(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("must start with ./"));
     }
 
     #[test]

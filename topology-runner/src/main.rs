@@ -966,6 +966,8 @@ struct ServicePlan {
     #[serde(default)]
     secrets: Vec<theseus_orchestrator::oci::ContainerConfig>,
     #[serde(default)]
+    volumes: Vec<theseus_orchestrator::oci::ContainerVolume>,
+    #[serde(default)]
     faults: Vec<FaultPlan>,
 }
 
@@ -9284,6 +9286,16 @@ fn lock_service_inputs(service_dir: &Path, service: &mut ServicePlan) -> Result<
                 .map_err(|error| format!("cannot write {}: {error}", secrets_path.display()))?;
                 command.arg("--secrets").arg(secrets_path);
             }
+            if !service.volumes.is_empty() {
+                let volumes_path = service_dir.join("container-volumes.json");
+                fs::write(
+                    &volumes_path,
+                    serde_json::to_vec_pretty(&service.volumes)
+                        .map_err(|error| format!("cannot serialize volume contract: {error}"))?,
+                )
+                .map_err(|error| format!("cannot write {}: {error}", volumes_path.display()))?;
+                command.arg("--volumes").arg(volumes_path);
+            }
             let status = command
                 .status()
                 .map_err(|error| format!("cannot start {}: {error}", adapter.display()))?;
@@ -9335,7 +9347,7 @@ mod tests {
         fs::write(&image, b"container image").unwrap();
         fs::write(
             &adapter,
-            "#!/bin/sh\nset -eu\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ] && [ \"$7\" = --network ] && [ \"$9\" = --environment ] && [ \"${11}\" = --launch ] && [ \"${13}\" = --configs ] && [ \"${15}\" = --secrets ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ngrep -q '10.1.0.10' \"$8\"\ngrep -q 'MODE' \"${10}\"\ngrep -q 'working_dir' \"${12}\"\ngrep -q '/etc/worker.conf' \"${14}\"\ngrep -q '/run/secrets/token' \"${16}\"\ncp \"$2\" \"$4\"\n",
+            "#!/bin/sh\nset -eu\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ] && [ \"$7\" = --network ] && [ \"$9\" = --environment ] && [ \"${11}\" = --launch ] && [ \"${13}\" = --configs ] && [ \"${15}\" = --secrets ] && [ \"${17}\" = --volumes ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ngrep -q '10.1.0.10' \"$8\"\ngrep -q 'MODE' \"${10}\"\ngrep -q 'working_dir' \"${12}\"\ngrep -q '/etc/worker.conf' \"${14}\"\ngrep -q '/run/secrets/token' \"${16}\"\ngrep -q '/var/lib/worker/state' \"${18}\"\ncp \"$2\" \"$4\"\n",
         )
         .unwrap();
         fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
@@ -9404,6 +9416,17 @@ mod tests {
             secrets: vec![theseus_orchestrator::oci::ContainerConfig {
                 target: "/run/secrets/token".to_owned(),
                 data: b"token\n".to_vec(),
+            }],
+            volumes: vec![theseus_orchestrator::oci::ContainerVolume {
+                target: "/var/lib/worker".to_owned(),
+                directories: vec![
+                    "/var/lib/worker".to_owned(),
+                    "/var/lib/worker/state".to_owned(),
+                ],
+                files: vec![theseus_orchestrator::oci::ContainerConfig {
+                    target: "/var/lib/worker/state/value".to_owned(),
+                    data: b"seeded\n".to_vec(),
+                }],
             }],
             faults: Vec::new(),
         };

@@ -55,5 +55,9 @@ docs/tutorials/22-compose-secret/api/work/
 docs/tutorials/22-compose-secret/worker/work/
 docs/tutorials/22-compose-secret/campaign/
 docs/tutorials/22-compose-secret/rerun/
+docs/tutorials/23-compose-volume/api/work/
+docs/tutorials/23-compose-volume/worker/work/
+docs/tutorials/23-compose-volume/campaign/
+docs/tutorials/23-compose-volume/rerun/
 
 orchestrator/pivot/target/

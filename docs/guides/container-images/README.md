@@ -300,3 +300,21 @@ initramfs with root-only permissions. The secret file must stay inside the
 Compose directory; external paths are not accepted. A secret may replace an
 image file at its target. Replay bundles retain the locked bytes, so treat a
 bundle that uses secrets as sensitive. See [tutorial 22](../../tutorials/22-compose-secret/).
+
+## Seed a writable directory with a Compose bind volume
+
+Use a local directory source and an absolute image target:
+
+```yaml
+services:
+  worker:
+    volumes:
+      - ./data/worker:/var/lib/worker
+```
+
+Theseus copies the source tree while planning, removes the image files below
+the target, and writes the locked tree into the derived initramfs. The
+directory is writable during a VM run; replay always starts from the same
+locked initial tree. The source must start with `./`, stay inside the Compose
+directory, and contain only regular files and directories. Theseus does not
+support Docker named or shared volumes. See [tutorial 23](../../tutorials/23-compose-volume/).
