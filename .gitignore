@@ -51,5 +51,9 @@ docs/tutorials/21-compose-config/api/work/
 docs/tutorials/21-compose-config/worker/work/
 docs/tutorials/21-compose-config/campaign/
 docs/tutorials/21-compose-config/rerun/
+docs/tutorials/22-compose-secret/api/work/
+docs/tutorials/22-compose-secret/worker/work/
+docs/tutorials/22-compose-secret/campaign/
+docs/tutorials/22-compose-secret/rerun/
 
 orchestrator/pivot/target/

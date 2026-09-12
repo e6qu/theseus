@@ -279,3 +279,24 @@ Theseus reads the file while planning, locks its bytes into the image initramfs,
 and makes it read-only. The config file must stay inside the Compose directory;
 external configs and host paths are not accepted. A config may replace an image
 file at its target. See [tutorial 21](../../tutorials/21-compose-config/).
+
+## Mount a Compose secret
+
+Declare a local secret once, then mount it at an absolute image path:
+
+```yaml
+secrets:
+  service_token:
+    file: secret/token
+services:
+  worker:
+    secrets:
+      - source: service_token
+        target: /run/secrets/token
+```
+
+Theseus reads the file while planning and locks its bytes into the image
+initramfs with root-only permissions. The secret file must stay inside the
+Compose directory; external paths are not accepted. A secret may replace an
+image file at its target. Replay bundles retain the locked bytes, so treat a
+bundle that uses secrets as sensitive. See [tutorial 22](../../tutorials/22-compose-secret/).

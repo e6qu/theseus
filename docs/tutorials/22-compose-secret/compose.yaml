@@ -1,0 +1,35 @@
+name: compose-secret
+
+secrets:
+  worker_token:
+    file: worker/secret/token
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    depends_on: [worker]
+    networks: [backplane]
+  worker:
+    x-theseus:
+      manifest: worker/theseus.toml
+    secrets:
+      - source: worker_token
+        target: /www/token
+    networks: [backplane]
+
+networks:
+  backplane: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    max_runs: 1
+    max_operations_per_run: 1
+    faults: []
+    operations:
+      - name: read_secret
+        shell:
+          command: [/bin/busybox, wget, -qO-, http://worker:8080/token]
+          expect_exit: 0
+          output_contains: token from Compose secret

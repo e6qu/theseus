@@ -92,6 +92,8 @@ jobs:
           sh -n docs/tutorials/20-compose-image-launch/run-in-runtime.sh
           sh -n docs/tutorials/21-compose-config/run.sh
           sh -n docs/tutorials/21-compose-config/run-in-runtime.sh
+          sh -n docs/tutorials/22-compose-secret/run.sh
+          sh -n docs/tutorials/22-compose-secret/run-in-runtime.sh
           ! rg -n '/dev/hwrng|(^|[[:space:]])/theseus/|\.\./\.\./\.\.' docs/tutorials
 
       - name: Check reproducible release archives
