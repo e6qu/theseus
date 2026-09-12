@@ -70,6 +70,8 @@ pub struct ContainerServiceContract {
     pub grpc_assertions: Vec<GrpcAssertion>,
     #[serde(default)]
     pub grpc_operations: Vec<GrpcOperation>,
+    #[serde(default)]
+    pub shell_operations: Vec<ShellOperation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
@@ -137,6 +139,16 @@ pub struct GrpcOperation {
     pub url: String,
     pub service: String,
     pub expect_status: GrpcServingStatus,
+}
+
+/// An argv command run in the image filesystem after service readiness.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct ShellOperation {
+    pub name: String,
+    pub command: Vec<String>,
+    pub expect_exit: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_contains: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
@@ -510,6 +522,12 @@ mod tests {
                 service: "example.Api".to_owned(),
                 expect_status: GrpcServingStatus::Serving,
             }],
+            shell_operations: vec![ShellOperation {
+                name: "read_health".to_owned(),
+                command: vec!["/bin/cat".to_owned(), "/health".to_owned()],
+                expect_exit: 0,
+                output_contains: Some("ok".to_owned()),
+            }],
         };
         let (cpio, _) = flatten_with_service(&test_image(), Some(&service)).unwrap();
         let text = String::from_utf8_lossy(&cpio);
@@ -519,6 +537,7 @@ mod tests {
         assert!(text.contains("operations"));
         assert!(text.contains("grpc_assertions"));
         assert!(text.contains("grpc_operations"));
+        assert!(text.contains("shell_operations"));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload

@@ -202,7 +202,9 @@ serving-status assertions. Named HTTP operations can drive a ready service
 with GET, POST, PUT, or DELETE requests before assertions run. The same image
 pivot also drives the standard clear-text gRPC health endpoint as a named
 operation, both in a single-service contract and in a locked Compose campaign;
-the service still needs no Theseus SDK or custom UART protocol.
+the service still needs no Theseus SDK or custom UART protocol. Named shell
+operations run a declared argv command in the image filesystem, verify its exit
+status and bounded combined output, and never evaluate a shell snippet.
 
 **Campaign operations:** Compose campaigns also accept a declarative `http`
 operation for an image-backed service. Theseus locks its JSON request command
@@ -210,7 +212,9 @@ into the campaign input, executes it through the injected pivot after the
 normal boot barrier, records the HTTP result, and emits the ordinary operation
 checkpoint used by faults, minimization, and replay. Tutorial 15 demonstrates
 the path with an unmodified container image. A `grpc_health` campaign operation
-uses the same boundary for the standard gRPC health method.
+uses the same boundary for the standard gRPC health method. A `shell` campaign
+operation does the same for an argv command; tutorial 18 demonstrates a direct
+file-read command in an unmodified BusyBox service image.
 
 **Current execution support:** image-backed test, Compose, campaigns, and
 exploration lock the image, adapter, service contract, and derived initramfs

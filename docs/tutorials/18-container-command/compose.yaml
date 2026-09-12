@@ -1,0 +1,27 @@
+name: container-command
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+
+networks:
+  backplane: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    max_runs: 1
+    max_operations_per_run: 1
+    faults: []
+    operations:
+      - name: read_health_file
+        shell:
+          command: [/bin/cat, /www/health]
+          output_contains: ok
+    properties:
+      - name: command_passed
+        kind: always
+        service: api
+        contains: "THES:SHELL:operation:read_health_file:PASS"

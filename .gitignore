@@ -36,5 +36,8 @@ docs/tutorials/16-public-campaign/evaluation.json
 docs/tutorials/17-grpc-campaign/api/work/
 docs/tutorials/17-grpc-campaign/campaign/
 docs/tutorials/17-grpc-campaign/rerun/
+docs/tutorials/18-container-command/api/work/
+docs/tutorials/18-container-command/campaign/
+docs/tutorials/18-container-command/rerun/
 
 orchestrator/pivot/target/

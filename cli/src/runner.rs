@@ -784,6 +784,24 @@ fn evaluate_checks(
                 )
             });
         }
+        for operation in &service.shell_operations {
+            let expected = format!("THES:SHELL:operation:{}:PASS", operation.name);
+            let found = contains(&serial, expected.as_bytes());
+            let name = format!("container_service.operation.{}", operation.name);
+            checks.push(if found {
+                passed(
+                    &name,
+                    "shell_operation",
+                    format!("shell operation {:?} passed", operation.name),
+                )
+            } else {
+                failed(
+                    &name,
+                    "shell_operation",
+                    format!("shell operation {:?} did not pass", operation.name),
+                )
+            });
+        }
     }
     for check in &plan.checks {
         let (kind, expected, found) = match &check.kind {
@@ -1081,6 +1099,33 @@ fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
                 });
             }
         }
+        for operation in &service.shell_operations {
+            if operation.name == "ready"
+                || !operation
+                    .name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                || !assertion_names.insert(&operation.name)
+            {
+                return Err(RunError::InvalidBundle {
+                    path: path.to_path_buf(),
+                    reason: "container_service operation names must be unique and safe".to_owned(),
+                });
+            }
+            if operation.command.is_empty()
+                || !operation.command[0].starts_with('/')
+                || operation
+                    .command
+                    .iter()
+                    .any(|argument| argument.is_empty() || argument.contains('\0'))
+                || operation.output_contains.as_deref() == Some("")
+            {
+                return Err(RunError::InvalidBundle {
+                    path: path.to_path_buf(),
+                    reason: "container_service shell operation contract is invalid".to_owned(),
+                });
+            }
+        }
     }
     if plan.run.vcpu_count == 0 || plan.run.mem_size_mib == 0 || plan.run.timeout_secs == 0 {
         return Err(RunError::InvalidBundle {
@@ -1211,7 +1256,9 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
 mod tests {
     use super::*;
     use crate::load_plan;
-    use crate::manifest::{CheckPlan, ContainerServicePlan, GrpcOperationPlan, GrpcServingStatus};
+    use crate::manifest::{
+        CheckPlan, ContainerServicePlan, GrpcOperationPlan, GrpcServingStatus, ShellOperationPlan,
+    };
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
 
@@ -1459,13 +1506,26 @@ body_contains = "ok"
                 service: "example.Api".to_owned(),
                 expect_status: GrpcServingStatus::Serving,
             }],
+            shell_operations: vec![ShellOperationPlan {
+                name: "read_health".to_owned(),
+                command: vec!["/bin/cat".to_owned(), "/health".to_owned()],
+                expect_exit: 0,
+                output_contains: Some("ok".to_owned()),
+            }],
         });
         let serial_log = directory.path().join("serial.log");
-        fs::write(&serial_log, b"THES:GRPC:operation:api_health:PASS\n").unwrap();
+        fs::write(
+            &serial_log,
+            b"THES:GRPC:operation:api_health:PASS\nTHES:SHELL:operation:read_health:PASS\n",
+        )
+        .unwrap();
 
         let execution = evaluate_checks(&plan, &serial_log, Terminal::TimedOut).unwrap();
         assert!(execution.checks.iter().any(|check| {
             check.name == "container_service.operation.api_health" && check.status == "passed"
+        }));
+        assert!(execution.checks.iter().any(|check| {
+            check.name == "container_service.operation.read_health" && check.status == "passed"
         }));
     }
 }

@@ -14,6 +14,7 @@ use std::ffi::CString;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::os::fd::FromRawFd;
 use std::thread;
 use std::time::Duration;
 
@@ -45,6 +46,8 @@ struct ContainerService {
     grpc_assertions: Vec<GrpcAssertion>,
     #[serde(default)]
     grpc_operations: Vec<GrpcOperation>,
+    #[serde(default)]
+    shell_operations: Vec<ShellOperation>,
 }
 
 #[derive(serde::Deserialize)]
@@ -132,6 +135,28 @@ struct CampaignGrpcOperation {
     expect_status: GrpcServingStatus,
 }
 
+/// An argv command run in the image filesystem. It is intentionally not a
+/// shell snippet: arguments are passed to execve unchanged.
+#[derive(serde::Deserialize)]
+struct ShellOperation {
+    name: String,
+    command: Vec<String>,
+    expect_exit: i32,
+    #[serde(default)]
+    output_contains: Option<String>,
+}
+
+/// A host sends this JSON after the boot marker for a Compose command
+/// operation. The command stays entirely inside the image VM.
+#[derive(serde::Deserialize)]
+struct CampaignShellOperation {
+    name: String,
+    command: Vec<String>,
+    expect_exit: i32,
+    #[serde(default)]
+    output_contains: Option<String>,
+}
+
 #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum GrpcServingStatus {
@@ -156,12 +181,14 @@ fn mount(source: &str, target: &str, fstype: &str) {
     }
 }
 
-fn exec_image(spec: &InitSpec) -> ! {
-    let argv: Vec<CString> = spec
-        .argv
+fn exec_argv(spec: &InitSpec, command: &[String]) -> Result<(), String> {
+    let program = command
+        .first()
+        .ok_or_else(|| "command has no program".to_owned())?;
+    let argv: Vec<CString> = command
         .iter()
-        .map(|a| CString::new(a.as_str()).unwrap())
-        .collect();
+        .map(|a| CString::new(a.as_str()).map_err(|_| "command contains NUL".to_owned()))
+        .collect::<Result<_, _>>()?;
     let argv_ptrs: Vec<*const libc::c_char> = argv
         .iter()
         .map(|a| a.as_ptr())
@@ -171,8 +198,8 @@ fn exec_image(spec: &InitSpec) -> ! {
     let mut env: Vec<CString> = spec
         .env
         .iter()
-        .map(|e| CString::new(e.as_str()).unwrap())
-        .collect();
+        .map(|e| CString::new(e.as_str()).map_err(|_| "environment contains NUL".to_owned()))
+        .collect::<Result<_, _>>()?;
     env.push(CString::new("THESEUS_CHANNEL=serial:/dev/ttyS0").unwrap());
     let env_ptrs: Vec<*const libc::c_char> = env
         .iter()
@@ -181,22 +208,30 @@ fn exec_image(spec: &InitSpec) -> ! {
         .collect();
 
     if !spec.workdir.is_empty() {
-        let workdir = CString::new(spec.workdir.as_str()).unwrap();
-        unsafe { libc::chdir(workdir.as_ptr()) };
+        let workdir = CString::new(spec.workdir.as_str())
+            .map_err(|_| "working directory contains NUL".to_owned())?;
+        if unsafe { libc::chdir(workdir.as_ptr()) } != 0 {
+            return Err(format!(
+                "cannot change to working directory {:?}: {}",
+                spec.workdir,
+                std::io::Error::last_os_error()
+            ));
+        }
     }
 
-    let program = CString::new(spec.argv[0].as_str()).unwrap();
+    let program = CString::new(program.as_str()).map_err(|_| "command contains NUL".to_owned())?;
     let rc = unsafe { libc::execve(program.as_ptr(), argv_ptrs.as_ptr(), env_ptrs.as_ptr()) };
-    // execve only returns on failure.
-    let err = std::io::Error::last_os_error();
-    eprintln!(
-        "pivot: failed to exec {:?} (rc={rc}, err={err})",
-        spec.argv[0]
-    );
-    unsafe {
-        libc::reboot(libc::LINUX_REBOOT_CMD_POWER_OFF);
+    Err(format!(
+        "failed to exec {program:?} (rc={rc}, err={})",
+        std::io::Error::last_os_error()
+    ))
+}
+
+fn exec_image(spec: &InitSpec) -> ! {
+    if let Err(error) = exec_argv(spec, &spec.argv) {
+        eprintln!("pivot: {error}");
     }
-    std::process::exit(127);
+    power_off();
 }
 
 struct HttpUrl {
@@ -559,6 +594,101 @@ fn run_campaign_grpc_operation(operation: CampaignGrpcOperation) -> Result<(), S
     })
 }
 
+const SHELL_OUTPUT_LIMIT: usize = 64 * 1024;
+
+fn run_shell_operation(spec: &InitSpec, operation: &ShellOperation) -> Result<(), String> {
+    let mut pipe_fds = [0; 2];
+    if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } != 0 {
+        return Err(format!(
+            "cannot create command output pipe: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        unsafe {
+            libc::close(pipe_fds[0]);
+            libc::close(pipe_fds[1]);
+        }
+        return Err(format!(
+            "cannot start command: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if pid == 0 {
+        unsafe {
+            libc::close(pipe_fds[0]);
+            libc::dup2(pipe_fds[1], libc::STDOUT_FILENO);
+            libc::dup2(pipe_fds[1], libc::STDERR_FILENO);
+            libc::close(pipe_fds[1]);
+        }
+        if let Err(error) = exec_argv(spec, &operation.command) {
+            eprintln!("pivot: {error}");
+        }
+        std::process::exit(127);
+    }
+
+    unsafe { libc::close(pipe_fds[1]) };
+    let mut output = Vec::new();
+    let mut reader = unsafe { std::fs::File::from_raw_fd(pipe_fds[0]) };
+    let mut buffer = [0; 4096];
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("cannot read command output: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        let remaining = SHELL_OUTPUT_LIMIT.saturating_sub(output.len());
+        output.extend_from_slice(&buffer[..count.min(remaining)]);
+    }
+
+    let mut status = 0;
+    if unsafe { libc::waitpid(pid, &mut status, 0) } != pid {
+        return Err(format!(
+            "cannot wait for command: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if !libc::WIFEXITED(status) {
+        return Err(format!(
+            "command was terminated by signal {}",
+            libc::WTERMSIG(status)
+        ));
+    }
+    let actual_exit = libc::WEXITSTATUS(status);
+    if actual_exit != operation.expect_exit {
+        return Err(format!(
+            "expected exit {}, got {actual_exit}",
+            operation.expect_exit
+        ));
+    }
+    if let Some(expected) = &operation.output_contains {
+        if !output
+            .windows(expected.len())
+            .any(|window| window == expected.as_bytes())
+        {
+            return Err(format!("command output does not contain {expected:?}"));
+        }
+    }
+    Ok(())
+}
+
+fn run_campaign_shell_operation(
+    spec: &InitSpec,
+    operation: CampaignShellOperation,
+) -> Result<(), String> {
+    run_shell_operation(
+        spec,
+        &ShellOperation {
+            name: operation.name,
+            command: operation.command,
+            expect_exit: operation.expect_exit,
+            output_contains: operation.output_contains,
+        },
+    )
+}
+
 fn stop_service(pid: libc::pid_t) {
     unsafe {
         libc::kill(pid, libc::SIGTERM);
@@ -631,15 +761,18 @@ fn main() {
     channel.marker(MARKER_BOOT).expect("boot marker");
     if service.campaign {
         loop {
-            let (protocol, command) =
-                match channel.next_command_any(&["THES:HTTP:operation:", "THES:GRPC:operation:"]) {
-                    Ok(command) => command,
-                    Err(error) => {
-                        eprintln!("THES:operation:FAIL cannot read campaign command: {error}");
-                        stop_service(pid);
-                        power_off();
-                    }
-                };
+            let (protocol, command) = match channel.next_command_any(&[
+                "THES:HTTP:operation:",
+                "THES:GRPC:operation:",
+                "THES:SHELL:operation:",
+            ]) {
+                Ok(command) => command,
+                Err(error) => {
+                    eprintln!("THES:operation:FAIL cannot read campaign command: {error}");
+                    stop_service(pid);
+                    power_off();
+                }
+            };
             if protocol == 0 {
                 let operation: CampaignHttpOperation = match serde_json::from_str(&command) {
                     Ok(operation) => operation,
@@ -656,7 +789,7 @@ fn main() {
                 channel
                     .checkpoint(&name)
                     .expect("campaign operation checkpoint");
-            } else {
+            } else if protocol == 1 {
                 let operation: CampaignGrpcOperation = match serde_json::from_str(&command) {
                     Ok(operation) => operation,
                     Err(error) => {
@@ -668,6 +801,22 @@ fn main() {
                 match run_campaign_grpc_operation(operation) {
                     Ok(()) => println!("THES:GRPC:operation:{name}:PASS"),
                     Err(error) => eprintln!("THES:GRPC:operation:{name}:FAIL {error}"),
+                }
+                channel
+                    .checkpoint(&name)
+                    .expect("campaign operation checkpoint");
+            } else {
+                let operation: CampaignShellOperation = match serde_json::from_str(&command) {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        eprintln!("THES:SHELL:operation:FAIL invalid campaign command: {error}");
+                        continue;
+                    }
+                };
+                let name = operation.name.clone();
+                match run_campaign_shell_operation(&spec, operation) {
+                    Ok(()) => println!("THES:SHELL:operation:{name}:PASS"),
+                    Err(error) => eprintln!("THES:SHELL:operation:{name}:FAIL {error}"),
                 }
                 channel
                     .checkpoint(&name)
@@ -697,6 +846,12 @@ fn main() {
         match run_grpc_operation(operation) {
             Ok(()) => println!("THES:GRPC:operation:{}:PASS", operation.name),
             Err(error) => eprintln!("THES:GRPC:operation:{}:FAIL {error}", operation.name),
+        }
+    }
+    for operation in &service.shell_operations {
+        match run_shell_operation(&spec, operation) {
+            Ok(()) => println!("THES:SHELL:operation:{}:PASS", operation.name),
+            Err(error) => eprintln!("THES:SHELL:operation:{}:FAIL {error}", operation.name),
         }
     }
     stop_service(pid);

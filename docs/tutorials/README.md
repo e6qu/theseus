@@ -44,6 +44,8 @@ deterministic-CRNG kernel module is shipped.
     container campaign into a locked, offline-readable evaluation.
 17. [Campaign a gRPC health service](17-grpc-campaign/) — drive the standard
     gRPC health endpoint of an unmodified container service.
+18. [Run a container command](18-container-command/) — run an argv command in
+    an unmodified service image and replay its checked result.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),
