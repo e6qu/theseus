@@ -144,6 +144,8 @@ struct ShellOperation {
     expect_exit: i32,
     #[serde(default)]
     output_contains: Option<String>,
+    #[serde(default)]
+    output_json: bool,
 }
 
 /// A host sends this JSON after the boot marker for a Compose command
@@ -155,6 +157,8 @@ struct CampaignShellOperation {
     expect_exit: i32,
     #[serde(default)]
     output_contains: Option<String>,
+    #[serde(default)]
+    output_json: bool,
 }
 
 #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
@@ -596,7 +600,14 @@ fn run_campaign_grpc_operation(operation: CampaignGrpcOperation) -> Result<(), S
 
 const SHELL_OUTPUT_LIMIT: usize = 64 * 1024;
 
-fn run_shell_operation(spec: &InitSpec, operation: &ShellOperation) -> Result<(), String> {
+struct ShellOperationResult {
+    output_json: Option<serde_json::Value>,
+}
+
+fn run_shell_operation(
+    spec: &InitSpec,
+    operation: &ShellOperation,
+) -> Result<ShellOperationResult, String> {
     let mut pipe_fds = [0; 2];
     if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } != 0 {
         return Err(format!(
@@ -630,6 +641,7 @@ fn run_shell_operation(spec: &InitSpec, operation: &ShellOperation) -> Result<()
 
     unsafe { libc::close(pipe_fds[1]) };
     let mut output = Vec::new();
+    let mut output_truncated = false;
     let mut reader = unsafe { std::fs::File::from_raw_fd(pipe_fds[0]) };
     let mut buffer = [0; 4096];
     loop {
@@ -641,6 +653,7 @@ fn run_shell_operation(spec: &InitSpec, operation: &ShellOperation) -> Result<()
         }
         let remaining = SHELL_OUTPUT_LIMIT.saturating_sub(output.len());
         output.extend_from_slice(&buffer[..count.min(remaining)]);
+        output_truncated |= count > remaining;
     }
 
     let mut status = 0;
@@ -671,13 +684,24 @@ fn run_shell_operation(spec: &InitSpec, operation: &ShellOperation) -> Result<()
             return Err(format!("command output does not contain {expected:?}"));
         }
     }
-    Ok(())
+    let output_json = if operation.output_json {
+        if output_truncated {
+            return Err("command output exceeded 65536-byte JSON limit".to_owned());
+        }
+        Some(
+            serde_json::from_slice(&output)
+                .map_err(|error| format!("command output is not JSON: {error}"))?,
+        )
+    } else {
+        None
+    };
+    Ok(ShellOperationResult { output_json })
 }
 
 fn run_campaign_shell_operation(
     spec: &InitSpec,
     operation: CampaignShellOperation,
-) -> Result<(), String> {
+) -> Result<ShellOperationResult, String> {
     run_shell_operation(
         spec,
         &ShellOperation {
@@ -685,8 +709,23 @@ fn run_campaign_shell_operation(
             command: operation.command,
             expect_exit: operation.expect_exit,
             output_contains: operation.output_contains,
+            output_json: operation.output_json,
         },
     )
+}
+
+fn report_shell_operation(name: &str, result: ShellOperationResult) {
+    if let Some(output) = result.output_json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "shell_operation",
+                "name": name,
+                "output": output,
+            })
+        );
+    }
+    println!("THES:SHELL:operation:{name}:PASS");
 }
 
 fn stop_service(pid: libc::pid_t) {
@@ -815,7 +854,7 @@ fn main() {
                 };
                 let name = operation.name.clone();
                 match run_campaign_shell_operation(&spec, operation) {
-                    Ok(()) => println!("THES:SHELL:operation:{name}:PASS"),
+                    Ok(result) => report_shell_operation(&name, result),
                     Err(error) => eprintln!("THES:SHELL:operation:{name}:FAIL {error}"),
                 }
                 channel
@@ -850,7 +889,7 @@ fn main() {
     }
     for operation in &service.shell_operations {
         match run_shell_operation(&spec, operation) {
-            Ok(()) => println!("THES:SHELL:operation:{}:PASS", operation.name),
+            Ok(result) => report_shell_operation(&operation.name, result),
             Err(error) => eprintln!("THES:SHELL:operation:{}:FAIL {error}", operation.name),
         }
     }

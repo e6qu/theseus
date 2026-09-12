@@ -149,6 +149,8 @@ pub struct ShellOperation {
     pub expect_exit: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contains: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub output_json: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
@@ -527,6 +529,7 @@ mod tests {
                 command: vec!["/bin/cat".to_owned(), "/health".to_owned()],
                 expect_exit: 0,
                 output_contains: Some("ok".to_owned()),
+                output_json: true,
             }],
         };
         let (cpio, _) = flatten_with_service(&test_image(), Some(&service)).unwrap();
@@ -538,6 +541,7 @@ mod tests {
         assert!(text.contains("grpc_assertions"));
         assert!(text.contains("grpc_operations"));
         assert!(text.contains("shell_operations"));
+        assert!(text.contains("output_json"));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload

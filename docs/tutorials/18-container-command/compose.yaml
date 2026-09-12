@@ -20,8 +20,15 @@ x-theseus:
         shell:
           command: [/bin/cat, /www/health]
           output_contains: ok
+          output_json: true
     properties:
-      - name: command_passed
+      - name: command_reported_ok
         kind: always
         service: api
-        contains: "THES:SHELL:operation:read_health_file:PASS"
+        predicate:
+          json:
+            fields:
+              /event: shell_operation
+              /name: read_health_file
+              /output/status: ok
+              /output/schema: 1

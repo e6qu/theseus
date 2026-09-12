@@ -365,6 +365,8 @@ struct ShellOperation {
     expect_exit: i32,
     #[serde(default)]
     output_contains: Option<String>,
+    #[serde(default)]
+    output_json: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -622,6 +624,8 @@ pub struct ShellOperationPlan {
     pub expect_exit: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contains: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub output_json: bool,
 }
 
 pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
@@ -933,6 +937,7 @@ fn container_service_plan(
             command: operation.command,
             expect_exit: operation.expect_exit,
             output_contains: operation.output_contains,
+            output_json: operation.output_json,
         });
     }
     Ok(Some(ContainerServicePlan {
@@ -1541,6 +1546,7 @@ expect_status = "serving"
 name = "read_health"
 command = ["/bin/cat", "/health"]
 output_contains = "ok"
+output_json = true
 "#,
         );
         let test = directory.path().join("test");
@@ -1563,6 +1569,7 @@ output_contains = "ok"
         );
         assert_eq!(service.grpc_operations[0].name, "recheck");
         assert_eq!(service.shell_operations[0].command, ["/bin/cat", "/health"]);
+        assert!(service.shell_operations[0].output_json);
     }
 
     #[test]

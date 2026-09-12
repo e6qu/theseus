@@ -11,8 +11,9 @@ sh ./run.sh
 
 `Dockerfile` is an ordinary BusyBox HTTP service. `compose.yaml` declares a
 `shell` operation that runs `/bin/cat /www/health` inside that image after it is
-ready. Theseus records the exit status, checks its output, checkpoints the
-operation, then replays the locked campaign.
+ready. Theseus records the exit status, checks its output, emits its JSON as a
+structured serial event, checkpoints the operation, then replays the locked
+campaign.
 
 Use an argv array with an absolute executable path for `command`; Theseus does
 not invoke a shell or search `PATH`. Replace the command with your migration
