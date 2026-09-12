@@ -223,6 +223,9 @@ host-dependent expansion.
 Local Compose `configs` are locked as read-only files in image initramfses, so
 ordinary services can receive deterministic file configuration without a bind
 mount or host filesystem dependency.
+Local Compose `secrets` follow the same locked path with root-only file
+permissions. Their bytes remain in replay material, so secret-bearing bundles
+must be handled as sensitive artifacts.
 
 **Campaign operations:** Compose campaigns also accept a declarative `http`
 operation for an image-backed service. Theseus locks its JSON request command

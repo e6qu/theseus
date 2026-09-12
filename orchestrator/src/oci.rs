@@ -252,7 +252,7 @@ enum Entry {
 
 /// Flatten a `docker save` image tar into (cpio_bytes, image_spec).
 pub fn flatten(image_tar: &[u8]) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, None, None, None, None, None)
+    flatten_with_contracts(image_tar, None, None, None, None, None, None)
 }
 
 /// Flatten an image and inject an optional boot-time service contract.
@@ -260,7 +260,7 @@ pub fn flatten_with_service(
     image_tar: &[u8],
     service: Option<&ContainerServiceContract>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, service, None, None, None, None)
+    flatten_with_contracts(image_tar, service, None, None, None, None, None)
 }
 
 /// Flatten an image and inject optional service and network contracts.
@@ -273,7 +273,7 @@ pub fn flatten_with_service_and_network(
     service: Option<&ContainerServiceContract>,
     network: Option<&ContainerNetwork>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, service, network, None, None, None)
+    flatten_with_contracts(image_tar, service, network, None, None, None, None)
 }
 
 /// Flatten an image and inject optional service, network, environment, and
@@ -286,6 +286,7 @@ pub fn flatten_with_contracts(
     environment: Option<&BTreeMap<String, String>>,
     launch: Option<&ContainerLaunch>,
     configs: Option<&[ContainerConfig]>,
+    secrets: Option<&[ContainerConfig]>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
     let mut archive = tar::Archive::new(image_tar);
 
@@ -370,6 +371,14 @@ pub fn flatten_with_contracts(
             files.insert(
                 config.target.clone(),
                 Entry::File(config.data.clone(), 0o100444),
+            );
+        }
+    }
+    if let Some(secrets) = secrets {
+        for secret in secrets {
+            files.insert(
+                secret.target.clone(),
+                Entry::File(secret.data.clone(), 0o100400),
             );
         }
     }
@@ -710,9 +719,16 @@ mod tests {
             ("MODE".to_owned(), "campaign".to_owned()),
             ("NEW_VALUE".to_owned(), "present".to_owned()),
         ]);
-        let (cpio, spec) =
-            flatten_with_contracts(&test_image(), None, None, Some(&environment), None, None)
-                .unwrap();
+        let (cpio, spec) = flatten_with_contracts(
+            &test_image(),
+            None,
+            None,
+            Some(&environment),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(spec.env.iter().any(|entry| entry == "MODE=campaign"));
         assert!(spec.env.iter().any(|entry| entry == "NEW_VALUE=present"));
         assert!(String::from_utf8_lossy(&cpio).contains("MODE=campaign"));
@@ -730,7 +746,8 @@ mod tests {
             working_dir: Some("/site".to_owned()),
         };
         let (cpio, spec) =
-            flatten_with_contracts(&test_image(), None, None, None, Some(&launch), None).unwrap();
+            flatten_with_contracts(&test_image(), None, None, None, Some(&launch), None, None)
+                .unwrap();
         assert_eq!(
             spec.argv,
             ["/bin/serve", "--port", "8080", "."].map(str::to_owned)
@@ -744,9 +761,16 @@ mod tests {
             command: Some(vec!["--foreground".to_owned()]),
             ..ContainerLaunch::default()
         };
-        let (_, spec) =
-            flatten_with_contracts(&test_image(), None, None, None, Some(&command_only), None)
-                .unwrap();
+        let (_, spec) = flatten_with_contracts(
+            &test_image(),
+            None,
+            None,
+            None,
+            Some(&command_only),
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(spec.argv, ["/bin/tool", "--foreground"].map(str::to_owned));
     }
 
@@ -757,10 +781,26 @@ mod tests {
             data: b"configured\n".to_vec(),
         }];
         let (cpio, _) =
-            flatten_with_contracts(&test_image(), None, None, None, None, Some(&configs)).unwrap();
+            flatten_with_contracts(&test_image(), None, None, None, None, Some(&configs), None)
+                .unwrap();
         let text = String::from_utf8_lossy(&cpio);
         assert!(text.contains("configured\n"));
         assert!(!text.contains("hello\0"));
+    }
+
+    #[test]
+    fn flatten_overrides_an_image_file_with_a_root_only_compose_secret() {
+        let secrets = [ContainerConfig {
+            target: "/run/secrets/token".to_owned(),
+            data: b"secret\n".to_vec(),
+        }];
+        let (cpio, _) =
+            flatten_with_contracts(&test_image(), None, None, None, None, None, Some(&secrets))
+                .unwrap();
+        let text = String::from_utf8_lossy(&cpio);
+        assert!(text.contains("/run/secrets/token"));
+        assert!(text.contains("secret\n"));
+        assert!(text.contains("00008100"));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload
