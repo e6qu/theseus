@@ -63,6 +63,13 @@ pub struct ContainerLaunch {
     pub working_dir: Option<String>,
 }
 
+/// A read-only file supplied by Compose rather than the container image.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContainerConfig {
+    pub target: String,
+    pub data: Vec<u8>,
+}
+
 impl ContainerLaunch {
     pub fn is_empty(&self) -> bool {
         self.command.is_none() && self.entrypoint.is_none() && self.working_dir.is_none()
@@ -245,7 +252,7 @@ enum Entry {
 
 /// Flatten a `docker save` image tar into (cpio_bytes, image_spec).
 pub fn flatten(image_tar: &[u8]) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, None, None, None, None)
+    flatten_with_contracts(image_tar, None, None, None, None, None)
 }
 
 /// Flatten an image and inject an optional boot-time service contract.
@@ -253,7 +260,7 @@ pub fn flatten_with_service(
     image_tar: &[u8],
     service: Option<&ContainerServiceContract>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, service, None, None, None)
+    flatten_with_contracts(image_tar, service, None, None, None, None)
 }
 
 /// Flatten an image and inject optional service and network contracts.
@@ -266,7 +273,7 @@ pub fn flatten_with_service_and_network(
     service: Option<&ContainerServiceContract>,
     network: Option<&ContainerNetwork>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_contracts(image_tar, service, network, None, None)
+    flatten_with_contracts(image_tar, service, network, None, None, None)
 }
 
 /// Flatten an image and inject optional service, network, environment, and
@@ -278,6 +285,7 @@ pub fn flatten_with_contracts(
     network: Option<&ContainerNetwork>,
     environment: Option<&BTreeMap<String, String>>,
     launch: Option<&ContainerLaunch>,
+    configs: Option<&[ContainerConfig]>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
     let mut archive = tar::Archive::new(image_tar);
 
@@ -356,6 +364,14 @@ pub fn flatten_with_contracts(
             .get(layer_name)
             .ok_or_else(|| OciError::Tar(format!("missing layer {layer_name}")))?;
         apply_layer(layer, &mut files)?;
+    }
+    if let Some(configs) = configs {
+        for config in configs {
+            files.insert(
+                config.target.clone(),
+                Entry::File(config.data.clone(), 0o100444),
+            );
+        }
     }
 
     // Write the cpio archive.
@@ -695,7 +711,8 @@ mod tests {
             ("NEW_VALUE".to_owned(), "present".to_owned()),
         ]);
         let (cpio, spec) =
-            flatten_with_contracts(&test_image(), None, None, Some(&environment), None).unwrap();
+            flatten_with_contracts(&test_image(), None, None, Some(&environment), None, None)
+                .unwrap();
         assert!(spec.env.iter().any(|entry| entry == "MODE=campaign"));
         assert!(spec.env.iter().any(|entry| entry == "NEW_VALUE=present"));
         assert!(String::from_utf8_lossy(&cpio).contains("MODE=campaign"));
@@ -713,7 +730,7 @@ mod tests {
             working_dir: Some("/site".to_owned()),
         };
         let (cpio, spec) =
-            flatten_with_contracts(&test_image(), None, None, None, Some(&launch)).unwrap();
+            flatten_with_contracts(&test_image(), None, None, None, Some(&launch), None).unwrap();
         assert_eq!(
             spec.argv,
             ["/bin/serve", "--port", "8080", "."].map(str::to_owned)
@@ -728,8 +745,22 @@ mod tests {
             ..ContainerLaunch::default()
         };
         let (_, spec) =
-            flatten_with_contracts(&test_image(), None, None, None, Some(&command_only)).unwrap();
+            flatten_with_contracts(&test_image(), None, None, None, Some(&command_only), None)
+                .unwrap();
         assert_eq!(spec.argv, ["/bin/tool", "--foreground"].map(str::to_owned));
+    }
+
+    #[test]
+    fn flatten_overrides_an_image_file_with_a_read_only_compose_config() {
+        let configs = [ContainerConfig {
+            target: "/app/hello.txt".to_owned(),
+            data: b"configured\n".to_vec(),
+        }];
+        let (cpio, _) =
+            flatten_with_contracts(&test_image(), None, None, None, None, Some(&configs)).unwrap();
+        let text = String::from_utf8_lossy(&cpio);
+        assert!(text.contains("configured\n"));
+        assert!(!text.contains("hello\0"));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload

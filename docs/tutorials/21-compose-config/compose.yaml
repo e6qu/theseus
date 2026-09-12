@@ -1,0 +1,35 @@
+name: compose-config
+
+configs:
+  worker_identity:
+    file: worker/config/identity
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    depends_on: [worker]
+    networks: [backplane]
+  worker:
+    x-theseus:
+      manifest: worker/theseus.toml
+    configs:
+      - source: worker_identity
+        target: /www/identity
+    networks: [backplane]
+
+networks:
+  backplane: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    max_runs: 1
+    max_operations_per_run: 1
+    faults: []
+    operations:
+      - name: read_config
+        shell:
+          command: [/bin/busybox, wget, -qO-, http://worker:8080/identity]
+          expect_exit: 0
+          output_contains: identity from Compose config

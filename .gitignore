@@ -47,5 +47,9 @@ docs/tutorials/20-compose-image-launch/api/work/
 docs/tutorials/20-compose-image-launch/worker/work/
 docs/tutorials/20-compose-image-launch/campaign/
 docs/tutorials/20-compose-image-launch/rerun/
+docs/tutorials/21-compose-config/api/work/
+docs/tutorials/21-compose-config/worker/work/
+docs/tutorials/21-compose-config/campaign/
+docs/tutorials/21-compose-config/rerun/
 
 orchestrator/pivot/target/
