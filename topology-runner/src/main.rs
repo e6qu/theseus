@@ -2957,6 +2957,7 @@ fn boot_campaign_checkpoint(
     driver: &str,
 ) -> Result<CampaignCheckpoint, String> {
     fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    configure_container_networks(topology)?;
     if let Some(runner) = &mut topology.topology_runner {
         fs::create_dir_all(directory.join("artifacts")).map_err(|error| error.to_string())?;
         let locked = lock_artifact(directory, "theseus-topology", runner)?;
@@ -7203,6 +7204,7 @@ fn execute(
     expected_virtual_time: Option<BTreeMap<String, Option<Vec<u64>>>>,
     expected_lifecycle_rounds: Option<u64>,
 ) -> Result<(), String> {
+    configure_container_networks(&mut topology)?;
     if checkpoint.is_none() {
         if let Some(runner) = &mut topology.topology_runner {
             fs::create_dir_all(output.join("artifacts")).map_err(|error| error.to_string())?;
@@ -8979,6 +8981,70 @@ fn lock_artifact(service_dir: &Path, name: &str, artifact: &Artifact) -> Result<
     Ok(target)
 }
 
+/// Give image-backed Compose services a small deterministic IPv4 network.
+///
+/// Firecracker provides the L2 devices in the order in `ServicePlan.networks`.
+/// The injected image pivot configures the matching `ethN` devices and writes
+/// the peer aliases into `/etc/hosts` before it starts the image entrypoint.
+/// Address allocation is part of the locked replay plan, not host state:
+/// named networks sort into `10.1.0.0/24`, `10.2.0.0/24`, and so on; members
+/// sort into host addresses starting at `.10`.
+fn configure_container_networks(topology: &mut TopologyPlan) -> Result<(), String> {
+    let mut addresses: BTreeMap<(String, String), String> = BTreeMap::new();
+    for (network_index, (network, members)) in topology.networks.iter().enumerate() {
+        let subnet = u8::try_from(network_index + 1)
+            .map_err(|_| "Compose supports at most 255 named networks".to_owned())?;
+        for (member_index, service) in members.iter().enumerate() {
+            if !topology.services.contains_key(service) {
+                return Err(format!(
+                    "network {network:?} contains unknown service {service:?}"
+                ));
+            }
+            let host = u8::try_from(member_index + 10)
+                .map_err(|_| format!("network {network:?} supports at most 246 services"))?;
+            addresses.insert(
+                (service.clone(), network.clone()),
+                format!("10.{subnet}.0.{host}"),
+            );
+        }
+    }
+
+    for (service_name, service) in &mut topology.services {
+        let Some(contract) = service.run.container_service.as_mut() else {
+            continue;
+        };
+        let mut interfaces = Vec::with_capacity(service.networks.len());
+        let mut hosts = BTreeMap::new();
+        for (interface_index, network) in service.networks.iter().enumerate() {
+            let address = addresses
+                .get(&(service_name.clone(), network.clone()))
+                .ok_or_else(|| {
+                    format!("service {service_name:?} is not a member of network {network:?}")
+                })?
+                .clone();
+            interfaces.push(theseus_orchestrator::oci::ContainerNetworkInterface {
+                name: format!("eth{interface_index}"),
+                address,
+                prefix_len: 24,
+            });
+            let members = topology.networks.get(network).ok_or_else(|| {
+                format!("service {service_name:?} references unknown network {network:?}")
+            })?;
+            for peer in members {
+                let peer_address = addresses
+                    .get(&(peer.clone(), network.clone()))
+                    .expect("network member has an address")
+                    .clone();
+                // If two services share more than one network, keep the first
+                // interface in the service's declared deterministic order.
+                hosts.entry(peer.clone()).or_insert(peer_address);
+            }
+        }
+        contract.network = theseus_orchestrator::oci::ContainerNetwork { interfaces, hosts };
+    }
+    Ok(())
+}
+
 fn artifact_at(path: PathBuf) -> Result<Artifact, String> {
     let path = fs::canonicalize(path).map_err(|error| error.to_string())?;
     let bytes = fs::read(&path).map_err(|error| error.to_string())?;
@@ -9151,6 +9217,7 @@ mod tests {
                     grpc_assertions: Vec::new(),
                     grpc_operations: Vec::new(),
                     shell_operations: Vec::new(),
+                    network: theseus_orchestrator::oci::ContainerNetwork::default(),
                 }),
             },
             networks: Vec::new(),
@@ -9165,6 +9232,51 @@ mod tests {
         assert!(service.run.guest.image.is_some());
         assert!(service.run.runtime.image_adapter.is_some());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn assigns_stable_ipv4_addresses_and_peer_names_to_container_services() {
+        let mut topology: TopologyPlan = serde_json::from_str(
+            r#"{
+              "format":"theseus-compose-plan-v1", "compose":"compose.yaml",
+              "services":{
+                "api":{"manifest":"api/theseus.toml", "networks":["backplane"],
+                  "run":{"format":"theseus-run-plan-v1", "manifest":"api/theseus.toml",
+                    "runtime":{"firecracker":{"path":"firecracker","sha256":"a"}},
+                    "guest":{"kernel":{"path":"vmlinux","sha256":"b"},"image":{"path":"api.tar","sha256":"c"}},
+                    "run":{"seed":1,"vcpu_count":1,"mem_size_mib":128,"timeout_secs":1,"virtual_time":null},
+                    "container_service":{"ready":{"url":"http://127.0.0.1:8080/health","attempts":1,"interval_millis":1}}
+                  }},
+                "worker":{"manifest":"worker/theseus.toml", "networks":["backplane","private"],
+                  "run":{"format":"theseus-run-plan-v1", "manifest":"worker/theseus.toml",
+                    "runtime":{"firecracker":{"path":"firecracker","sha256":"a"}},
+                    "guest":{"kernel":{"path":"vmlinux","sha256":"b"},"image":{"path":"worker.tar","sha256":"c"}},
+                    "run":{"seed":1,"vcpu_count":1,"mem_size_mib":128,"timeout_secs":1,"virtual_time":null},
+                    "container_service":{"ready":{"url":"http://127.0.0.1:8080/health","attempts":1,"interval_millis":1}}
+                  }}
+              },
+              "networks":{"backplane":["api","worker"],"private":["worker"]}
+            }"#,
+        )
+        .unwrap();
+
+        configure_container_networks(&mut topology).unwrap();
+        let api = topology.services["api"]
+            .run
+            .container_service
+            .as_ref()
+            .unwrap();
+        assert_eq!(api.network.interfaces[0].name, "eth0");
+        assert_eq!(api.network.interfaces[0].address, "10.1.0.10");
+        assert_eq!(api.network.hosts["worker"], "10.1.0.11");
+        let worker = topology.services["worker"]
+            .run
+            .container_service
+            .as_ref()
+            .unwrap();
+        assert_eq!(worker.network.interfaces[0].address, "10.1.0.11");
+        assert_eq!(worker.network.interfaces[1].address, "10.2.0.10");
+        assert_eq!(worker.network.hosts["api"], "10.1.0.10");
     }
 
     #[test]

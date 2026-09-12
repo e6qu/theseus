@@ -49,6 +49,23 @@ struct ContainerService {
     grpc_operations: Vec<GrpcOperation>,
     #[serde(default)]
     shell_operations: Vec<ShellOperation>,
+    #[serde(default)]
+    network: ContainerNetwork,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ContainerNetwork {
+    #[serde(default)]
+    interfaces: Vec<NetworkInterface>,
+    #[serde(default)]
+    hosts: BTreeMap<String, String>,
+}
+
+#[derive(serde::Deserialize)]
+struct NetworkInterface {
+    name: String,
+    address: String,
+    prefix_len: u8,
 }
 
 #[derive(serde::Deserialize)]
@@ -781,6 +798,118 @@ fn power_off() -> ! {
     std::process::exit(0);
 }
 
+// Linux `ifreq` is a 16-byte interface name followed by a 24-byte union on
+// the x86_64 and aarch64 guests Theseus publishes. Keeping the request local
+// avoids depending on `ip` or a DHCP client in the image being tested.
+#[repr(C)]
+struct IfReq {
+    name: [u8; 16],
+    data: [u8; 24],
+}
+
+fn ipv4(value: &str) -> Result<[u8; 4], String> {
+    let parts = value
+        .split('.')
+        .map(|part| {
+            part.parse::<u8>()
+                .map_err(|_| format!("invalid IPv4 address {value:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    parts
+        .try_into()
+        .map_err(|_| format!("invalid IPv4 address {value:?}"))
+}
+
+fn ifreq(name: &str) -> Result<IfReq, String> {
+    if name.is_empty() || name.len() >= 16 || !name.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return Err(format!("invalid interface name {name:?}"));
+    }
+    let mut request = IfReq {
+        name: [0; 16],
+        data: [0; 24],
+    };
+    request.name[..name.len()].copy_from_slice(name.as_bytes());
+    Ok(request)
+}
+
+fn set_sockaddr(request: &mut IfReq, address: [u8; 4]) {
+    request.data = [0; 24];
+    request.data[..2].copy_from_slice(&(libc::AF_INET as u16).to_ne_bytes());
+    request.data[4..8].copy_from_slice(&address);
+}
+
+fn ioctl(fd: libc::c_int, command: libc::Ioctl, request: &mut IfReq) -> Result<(), String> {
+    if unsafe { libc::ioctl(fd, command, request) } < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+fn configure_interface(interface: &NetworkInterface) -> Result<(), String> {
+    if interface.prefix_len > 32 {
+        return Err(format!(
+            "invalid IPv4 prefix length {}",
+            interface.prefix_len
+        ));
+    }
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    if fd < 0 {
+        return Err(format!(
+            "cannot open network control socket: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let result = (|| {
+        let mut request = ifreq(&interface.name)?;
+        set_sockaddr(&mut request, ipv4(&interface.address)?);
+        ioctl(fd, libc::SIOCSIFADDR as libc::Ioctl, &mut request)?;
+
+        let mask = if interface.prefix_len == 0 {
+            0
+        } else {
+            u32::MAX << (32 - interface.prefix_len)
+        };
+        let mut request = ifreq(&interface.name)?;
+        set_sockaddr(&mut request, mask.to_be_bytes());
+        ioctl(fd, libc::SIOCSIFNETMASK as libc::Ioctl, &mut request)?;
+
+        let mut request = ifreq(&interface.name)?;
+        ioctl(fd, libc::SIOCGIFFLAGS as libc::Ioctl, &mut request)?;
+        let flags = i16::from_ne_bytes([request.data[0], request.data[1]]) | (libc::IFF_UP as i16);
+        request.data[..2].copy_from_slice(&flags.to_ne_bytes());
+        ioctl(fd, libc::SIOCSIFFLAGS as libc::Ioctl, &mut request)
+    })();
+    unsafe { libc::close(fd) };
+    result.map_err(|error| format!("{}: {error}", interface.name))
+}
+
+fn configure_network(network: &ContainerNetwork) -> Result<(), String> {
+    for interface in &network.interfaces {
+        configure_interface(interface)?;
+    }
+    if network.hosts.is_empty() {
+        return Ok(());
+    }
+    let mut hosts = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/etc/hosts")
+        .map_err(|error| format!("cannot open /etc/hosts: {error}"))?;
+    for (name, address) in &network.hosts {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(format!("invalid host name {name:?}"));
+        }
+        writeln!(hosts, "{address} {name}")
+            .map_err(|error| format!("cannot write /etc/hosts: {error}"))?;
+    }
+    Ok(())
+}
+
 fn main() {
     mount("devtmpfs", "/dev", "devtmpfs");
     mount("proc", "/proc", "proc");
@@ -796,6 +925,10 @@ fn main() {
         channel.marker(MARKER_BOOT).expect("boot marker");
         exec_image(&spec);
     };
+    if let Err(error) = configure_network(&service.network) {
+        eprintln!("THES:network:FAIL {error}");
+        power_off();
+    }
 
     let pid = unsafe { libc::fork() };
     if pid == 0 {

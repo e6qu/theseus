@@ -1,0 +1,27 @@
+name: compose-image-network
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+  worker:
+    x-theseus:
+      manifest: worker/theseus.toml
+    networks: [backplane]
+
+networks:
+  backplane: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    max_runs: 1
+    max_operations_per_run: 1
+    faults: []
+    operations:
+      - name: read_worker
+        shell:
+          command: [/bin/busybox, wget, -qO-, http://worker:8080/identity]
+          expect_exit: 0
+          output_contains: worker reached

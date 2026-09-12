@@ -72,6 +72,35 @@ pub struct ContainerServiceContract {
     pub grpc_operations: Vec<GrpcOperation>,
     #[serde(default)]
     pub shell_operations: Vec<ShellOperation>,
+    /// Guest networking synthesized by the Compose topology runner. The pivot
+    /// applies this before starting the image entrypoint, so images need not
+    /// carry `ip`, a DHCP client, or Theseus-specific startup code.
+    #[serde(default, skip_serializing_if = "ContainerNetwork::is_empty")]
+    pub network: ContainerNetwork,
+}
+
+/// The deterministic L3 view supplied to one image-backed Compose service.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct ContainerNetwork {
+    #[serde(default)]
+    pub interfaces: Vec<ContainerNetworkInterface>,
+    #[serde(default)]
+    pub hosts: BTreeMap<String, String>,
+}
+
+impl ContainerNetwork {
+    pub fn is_empty(&self) -> bool {
+        self.interfaces.is_empty() && self.hosts.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct ContainerNetworkInterface {
+    /// Linux guest interface name, for example `eth0`.
+    pub name: String,
+    /// IPv4 address in dotted-quad form.
+    pub address: String,
+    pub prefix_len: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
@@ -534,6 +563,14 @@ mod tests {
                 output_json: true,
                 environment: BTreeMap::from([("CHECK_MODE".to_owned(), "full".to_owned())]),
             }],
+            network: ContainerNetwork {
+                interfaces: vec![ContainerNetworkInterface {
+                    name: "eth0".to_owned(),
+                    address: "10.1.0.10".to_owned(),
+                    prefix_len: 24,
+                }],
+                hosts: BTreeMap::from([("worker".to_owned(), "10.1.0.11".to_owned())]),
+            },
         };
         let (cpio, _) = flatten_with_service(&test_image(), Some(&service)).unwrap();
         let text = String::from_utf8_lossy(&cpio);
@@ -546,6 +583,8 @@ mod tests {
         assert!(text.contains("shell_operations"));
         assert!(text.contains("output_json"));
         assert!(text.contains("CHECK_MODE"));
+        assert!(text.contains("10.1.0.10"));
+        assert!(text.contains("worker"));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload
