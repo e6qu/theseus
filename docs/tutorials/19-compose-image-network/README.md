@@ -14,6 +14,10 @@ writes Compose service names into `/etc/hosts` before starting its entrypoint.
 Only `api` declares a readiness check; `worker` demonstrates that plain image
 services receive this network setup too.
 
+`api` uses Compose `depends_on` to start only after `worker` reaches its
+deterministic boot barrier. Theseus records this relationship in the locked
+plan; no sleep loop or guest-side wait script is needed.
+
 The `read_worker` command runs inside `api` and requests
 `http://worker:8080/identity`. Neither image configures a NIC, runs DHCP, or
 contains Theseus code. The script explores the one operation, checks the

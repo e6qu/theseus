@@ -720,6 +720,33 @@ struct ComposeService {
     theseus: ServiceTheseus,
     #[serde(default)]
     networks: Vec<String>,
+    #[serde(default)]
+    depends_on: Option<ComposeDependencies>,
+}
+
+/// Compose accepts either a short dependency list or a map carrying one
+/// condition per service. Theseus intentionally implements the two startup
+/// conditions it can prove from its deterministic boot barrier.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ComposeDependencies {
+    Names(Vec<String>),
+    Conditions(BTreeMap<String, ComposeDependency>),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeDependency {
+    #[serde(default)]
+    condition: DependencyCondition,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyCondition {
+    #[default]
+    ServiceStarted,
+    ServiceHealthy,
 }
 
 #[derive(Debug, Deserialize)]
@@ -779,7 +806,15 @@ pub struct ComposeServicePlan {
     pub manifest: String,
     pub run: RunPlan,
     pub networks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<DependencyPlan>,
     pub faults: Vec<FaultPlan>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DependencyPlan {
+    pub service: String,
+    pub condition: DependencyCondition,
 }
 
 /// A deterministic, serial-driven topology campaign.  Operations are UTF-8
@@ -1220,6 +1255,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
     let mut services = BTreeMap::new();
     for (name, service) in compose.services {
         validate_name("service", &name)?;
+        let depends_on = dependency_plan(&name, service.depends_on)?;
         if service.networks.is_empty() {
             return Err(ComposeError::Invalid(format!(
                 "service {name:?} must join at least one named network"
@@ -1268,10 +1304,13 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
                 manifest: manifest.display().to_string(),
                 run,
                 networks: networks.into_iter().collect(),
+                depends_on,
                 faults,
             },
         );
     }
+
+    validate_dependency_graph(&services)?;
 
     let campaign = campaign_plan(compose.theseus, &mut services)?;
     let networks = memberships
@@ -1287,6 +1326,94 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         campaign,
         topology_runner: None,
     })
+}
+
+fn dependency_plan(
+    source: &str,
+    dependencies: Option<ComposeDependencies>,
+) -> Result<Vec<DependencyPlan>, ComposeError> {
+    let Some(dependencies) = dependencies else {
+        return Ok(Vec::new());
+    };
+    let entries: Vec<(String, DependencyCondition)> = match dependencies {
+        ComposeDependencies::Names(names) => names
+            .into_iter()
+            .map(|service| (service, DependencyCondition::ServiceStarted))
+            .collect(),
+        ComposeDependencies::Conditions(conditions) => conditions
+            .into_iter()
+            .map(|(service, dependency)| (service, dependency.condition))
+            .collect(),
+    };
+    let mut plans = Vec::with_capacity(entries.len());
+    let mut seen = BTreeSet::new();
+    for (service, condition) in entries {
+        validate_name("depends_on service", &service)?;
+        if service == source {
+            return Err(ComposeError::Invalid(format!(
+                "service {source:?} cannot depend on itself"
+            )));
+        }
+        if !seen.insert(service.clone()) {
+            return Err(ComposeError::Invalid(format!(
+                "service {source:?} lists dependency {service:?} more than once"
+            )));
+        }
+        plans.push(DependencyPlan { service, condition });
+    }
+    plans.sort_by(|left, right| left.service.cmp(&right.service));
+    Ok(plans)
+}
+
+fn validate_dependency_graph(
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<(), ComposeError> {
+    for (name, service) in services {
+        for dependency in &service.depends_on {
+            let Some(target) = services.get(&dependency.service) else {
+                return Err(ComposeError::Invalid(format!(
+                    "service {name:?} depends on unknown service {:?}",
+                    dependency.service
+                )));
+            };
+            if dependency.condition == DependencyCondition::ServiceHealthy
+                && target.run.container_service.is_none()
+            {
+                return Err(ComposeError::Invalid(format!(
+                    "service {name:?} requires healthy dependency {:?}, but it has no container_service readiness contract",
+                    dependency.service
+                )));
+            }
+        }
+    }
+    fn visit(
+        service: &str,
+        services: &BTreeMap<String, ComposeServicePlan>,
+        active: &mut BTreeSet<String>,
+        complete: &mut BTreeSet<String>,
+    ) -> Result<(), ComposeError> {
+        if complete.contains(service) {
+            return Ok(());
+        }
+        if !active.insert(service.to_owned()) {
+            return Err(ComposeError::Invalid(format!(
+                "Compose depends_on graph contains a cycle at service {service:?}"
+            )));
+        }
+        for dependency in &services[service].depends_on {
+            visit(&dependency.service, services, active, complete)?;
+        }
+        active.remove(service);
+        complete.insert(service.to_owned());
+        Ok(())
+    }
+
+    let mut active = BTreeSet::new();
+    let mut complete = BTreeSet::new();
+    for service in services.keys() {
+        visit(service, services, &mut active, &mut complete)?;
+    }
+    Ok(())
 }
 
 fn default_campaign_runs() -> u16 {
@@ -4456,6 +4583,39 @@ mod tests {
         assert_eq!(plan.format, "theseus-compose-plan-v1");
         assert_eq!(plan.networks["backplane"], ["api", "worker"]);
         assert_eq!(plan.services["api"].run.guest.kernel.sha256.len(), 64);
+    }
+
+    #[test]
+    fn locks_short_and_conditional_compose_dependencies() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    depends_on: [worker]\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    depends_on:\n      auditor:\n        condition: service_started\n    networks: [backplane]\n  auditor:\n    x-theseus:\n      manifest: auditor/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(plan.services["api"].depends_on.len(), 1);
+        assert_eq!(plan.services["api"].depends_on[0].service, "worker");
+        assert_eq!(
+            plan.services["worker"].depends_on[0].condition,
+            DependencyCondition::ServiceStarted
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_and_cyclic_compose_dependencies() {
+        let unknown = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    depends_on: [missing]\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        assert!(load_compose_plan(unknown.path().join("compose.yaml"))
+            .unwrap_err()
+            .to_string()
+            .contains("unknown service"));
+
+        let cyclic = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    depends_on: [worker]\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    depends_on: [api]\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        assert!(load_compose_plan(cyclic.path().join("compose.yaml"))
+            .unwrap_err()
+            .to_string()
+            .contains("contains a cycle"));
     }
 
     #[test]

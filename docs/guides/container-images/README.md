@@ -196,5 +196,21 @@ images do not need `ip`, DHCP, a sidecar, or Theseus code. The locked replay
 plan records the selected addresses and peer mappings. See [tutorial
 19](../../tutorials/19-compose-image-network/).
 
+Use standard Compose `depends_on` when one image must start after another:
+
+```yaml
+services:
+  api:
+    depends_on:
+      worker:
+        condition: service_started
+```
+
+Theseus resumes dependencies first and waits for their deterministic boot
+marker before starting each dependent. `service_healthy` is also available
+when the dependency declares a `container_service` readiness check. Dependency
+cycles, unknown services, and a healthy condition without that readiness
+contract fail while the Compose plan is created.
+
 See [the control channel](../../control-channel.md) and
 [determinism](../../determinism.md).

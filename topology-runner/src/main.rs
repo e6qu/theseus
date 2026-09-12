@@ -956,7 +956,22 @@ struct ServicePlan {
     run: RunPlan,
     networks: Vec<String>,
     #[serde(default)]
+    depends_on: Vec<DependencyPlan>,
+    #[serde(default)]
     faults: Vec<FaultPlan>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DependencyPlan {
+    service: String,
+    condition: DependencyCondition,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum DependencyCondition {
+    ServiceStarted,
+    ServiceHealthy,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -3017,28 +3032,14 @@ fn boot_campaign_checkpoint(
             },
         );
     }
-    for service in services.values() {
-        service.vm.resume()?;
-    }
     let max_rounds = topology
         .services
         .values()
         .map(|service| service.run.run.max_rounds)
         .max()
         .unwrap_or_else(default_max_rounds);
-    let serial = services
-        .get(driver)
-        .ok_or_else(|| format!("campaign driver did not start: {driver}"))?
-        .serial_logs[0]
-        .clone();
-    let startup_round = wait_for_serial_with_topology_rounds(
-        &serial,
-        b"THES:M:42",
-        "campaign driver serial readiness",
-        &mut services,
-        &switches,
-        max_rounds,
-    )?;
+    let startup_round =
+        start_services_in_dependency_order(topology, &mut services, &switches, max_rounds)?;
     capture_campaign_checkpoint(directory, topology, &mut services, &switches, startup_round)
 }
 
@@ -7324,10 +7325,6 @@ fn execute(
                 .map_err(|error| error.to_string())?;
         }
     }
-    for name in &names {
-        let service = &services[name];
-        service.vm.resume()?;
-    }
     let max_rounds = topology
         .services
         .values()
@@ -7335,6 +7332,18 @@ fn execute(
         .max()
         .unwrap_or_else(default_max_rounds);
     let mut round = checkpoint.map_or(0, |checkpoint| checkpoint.round);
+    if checkpoint.is_some() {
+        for name in &names {
+            services[name].vm.resume()?;
+        }
+    } else {
+        round = round.saturating_add(start_services_in_dependency_order(
+            &topology,
+            &mut services,
+            &switches,
+            max_rounds.saturating_sub(round),
+        )?);
+    }
     let mut actions = Vec::new();
     let mut lifecycle_barrier_rounds: u64 = 0;
     for name in &names {
@@ -8614,6 +8623,90 @@ fn wait_for_serial_with_topology_rounds(
     ))
 }
 
+/// Resume services in a deterministic topological order. A pivot emits its
+/// boot marker only after its declared image-service readiness checks pass;
+/// a plain image emits it immediately before its unmodified entrypoint. That
+/// gives `service_healthy` and `service_started` their respective Compose
+/// meanings without host-time polling or guest-side wait scripts.
+fn start_services_in_dependency_order(
+    topology: &TopologyPlan,
+    services: &mut BTreeMap<String, ServiceRuntime>,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    max_rounds: u64,
+) -> Result<u64, String> {
+    let order = dependency_startup_order(topology)?;
+    let mut rounds = 0;
+    for name in order {
+        let service = services
+            .get(name.as_str())
+            .ok_or_else(|| format!("dependency service did not start: {name}"))?;
+        service.vm.resume()?;
+        let serial = service.serial_logs[0].clone();
+        let remaining = max_rounds.saturating_sub(rounds);
+        rounds = rounds.saturating_add(wait_for_serial_with_topology_rounds(
+            &serial,
+            b"THES:M:42",
+            "dependency startup",
+            services,
+            switches,
+            remaining,
+        )?);
+    }
+    Ok(rounds)
+}
+
+fn dependency_startup_order(topology: &TopologyPlan) -> Result<Vec<String>, String> {
+    fn visit(
+        name: &str,
+        topology: &TopologyPlan,
+        active: &mut BTreeSet<String>,
+        complete: &mut BTreeSet<String>,
+        order: &mut Vec<String>,
+    ) -> Result<(), String> {
+        if complete.contains(name) {
+            return Ok(());
+        }
+        let service = topology
+            .services
+            .get(name)
+            .ok_or_else(|| format!("dependency references unknown service {name:?}"))?;
+        if !active.insert(name.to_owned()) {
+            return Err(format!(
+                "Compose depends_on graph contains a cycle at service {name:?}"
+            ));
+        }
+        for dependency in &service.depends_on {
+            let target = topology.services.get(&dependency.service).ok_or_else(|| {
+                format!(
+                    "service {name:?} depends on unknown service {:?}",
+                    dependency.service
+                )
+            })?;
+            if dependency.condition == DependencyCondition::ServiceHealthy
+                && target.run.container_service.is_none()
+            {
+                return Err(format!(
+                    "service {name:?} requires healthy dependency {:?}, but it has no container_service readiness contract",
+                    dependency.service
+                ));
+            }
+            visit(&dependency.service, topology, active, complete, order)?;
+        }
+        active.remove(name);
+        complete.insert(name.to_owned());
+        order.push(name.to_owned());
+        Ok(())
+    }
+
+    let mut active = BTreeSet::new();
+    let mut complete = BTreeSet::new();
+    let mut order = Vec::with_capacity(topology.services.len());
+    for name in topology.services.keys() {
+        visit(name, topology, &mut active, &mut complete, &mut order)?;
+    }
+    Ok(order)
+}
+
 const CAMPAIGN_BARRIER_MAX_ROUNDS: u64 = 512;
 
 /// Drive every service and simulated network once.  The target is held outside
@@ -9245,6 +9338,7 @@ mod tests {
                 }),
             },
             networks: Vec::new(),
+            depends_on: Vec::new(),
             faults: Vec::new(),
         };
 
@@ -9265,6 +9359,7 @@ mod tests {
               "format":"theseus-compose-plan-v1", "compose":"compose.yaml",
               "services":{
                 "api":{"manifest":"api/theseus.toml", "networks":["backplane"],
+                  "depends_on":[{"service":"worker","condition":"service_started"}],
                   "run":{"format":"theseus-run-plan-v1", "manifest":"api/theseus.toml",
                     "runtime":{"firecracker":{"path":"firecracker","sha256":"a"}},
                     "guest":{"kernel":{"path":"vmlinux","sha256":"b"},"image":{"path":"api.tar","sha256":"c"}},
@@ -9300,6 +9395,10 @@ mod tests {
         assert_eq!(worker.interfaces[0].address, "10.1.0.11");
         assert_eq!(worker.interfaces[1].address, "10.2.0.10");
         assert_eq!(worker.hosts["api"], "10.1.0.10");
+        assert_eq!(
+            dependency_startup_order(&topology).unwrap(),
+            ["worker", "api"]
+        );
     }
 
     #[test]

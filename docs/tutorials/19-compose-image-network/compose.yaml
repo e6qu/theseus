@@ -4,6 +4,9 @@ services:
   api:
     x-theseus:
       manifest: api/theseus.toml
+    depends_on:
+      worker:
+        condition: service_started
     networks: [backplane]
   worker:
     x-theseus:
