@@ -226,7 +226,7 @@ enum Entry {
 
 /// Flatten a `docker save` image tar into (cpio_bytes, image_spec).
 pub fn flatten(image_tar: &[u8]) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_service_and_network(image_tar, None, None)
+    flatten_with_contracts(image_tar, None, None, None)
 }
 
 /// Flatten an image and inject an optional boot-time service contract.
@@ -234,7 +234,7 @@ pub fn flatten_with_service(
     image_tar: &[u8],
     service: Option<&ContainerServiceContract>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
-    flatten_with_service_and_network(image_tar, service, None)
+    flatten_with_contracts(image_tar, service, None, None)
 }
 
 /// Flatten an image and inject optional service and network contracts.
@@ -246,6 +246,18 @@ pub fn flatten_with_service_and_network(
     image_tar: &[u8],
     service: Option<&ContainerServiceContract>,
     network: Option<&ContainerNetwork>,
+) -> Result<(Vec<u8>, ImageSpec), OciError> {
+    flatten_with_contracts(image_tar, service, network, None)
+}
+
+/// Flatten an image and inject optional service, network, and literal
+/// environment contracts. Environment overrides apply to the image
+/// entrypoint itself, not just to Theseus-driven shell operations.
+pub fn flatten_with_contracts(
+    image_tar: &[u8],
+    service: Option<&ContainerServiceContract>,
+    network: Option<&ContainerNetwork>,
+    environment: Option<&BTreeMap<String, String>>,
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
     let mut archive = tar::Archive::new(image_tar);
 
@@ -289,11 +301,14 @@ pub fn flatten_with_service_and_network(
     if argv.is_empty() {
         return Err(OciError::NoEntrypoint);
     }
-    let spec = ImageSpec {
+    let mut spec = ImageSpec {
         argv,
         env: inner.env.clone().unwrap_or_default(),
         workdir: inner.workdir.clone().unwrap_or_default(),
     };
+    if let Some(environment) = environment {
+        apply_environment(&mut spec.env, environment);
+    }
 
     // Apply layers in order.
     let mut files: BTreeMap<String, Entry> = BTreeMap::new();
@@ -352,6 +367,21 @@ pub fn flatten_with_service_and_network(
     cpio_trailer(&mut out, &mut ino);
 
     Ok((out, spec))
+}
+
+fn apply_environment(entries: &mut Vec<String>, overrides: &BTreeMap<String, String>) {
+    for (key, value) in overrides {
+        let entry = format!("{key}={value}");
+        if let Some(position) = entries.iter().position(|candidate| {
+            candidate
+                .split_once('=')
+                .is_some_and(|(name, _)| name == key)
+        }) {
+            entries[position] = entry;
+        } else {
+            entries.push(entry);
+        }
+    }
 }
 
 fn apply_layer(layer: &[u8], files: &mut BTreeMap<String, Entry>) -> Result<(), OciError> {
@@ -617,6 +647,19 @@ mod tests {
         assert!(text.contains("\"container_service\":null"));
         assert!(text.contains("\"network\""));
         assert!(text.contains("10.1.0.10"));
+    }
+
+    #[test]
+    fn flatten_applies_literal_environment_to_the_image_entrypoint() {
+        let environment = BTreeMap::from([
+            ("MODE".to_owned(), "campaign".to_owned()),
+            ("NEW_VALUE".to_owned(), "present".to_owned()),
+        ]);
+        let (cpio, spec) =
+            flatten_with_contracts(&test_image(), None, None, Some(&environment)).unwrap();
+        assert!(spec.env.iter().any(|entry| entry == "MODE=campaign"));
+        assert!(spec.env.iter().any(|entry| entry == "NEW_VALUE=present"));
+        assert!(String::from_utf8_lossy(&cpio).contains("MODE=campaign"));
     }
 
     /// Full image→VM path: build a tiny image containing a static payload

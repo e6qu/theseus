@@ -11,6 +11,8 @@ services:
   worker:
     x-theseus:
       manifest: worker/theseus.toml
+    environment:
+      IDENTITY: worker reached through Compose environment
     networks: [backplane]
 
 networks:
