@@ -286,11 +286,24 @@ services:
     working_dir: /srv/worker
 ```
 
+Use numeric `user` when the image process must not run as root:
+
+```yaml
+services:
+  worker:
+    user: "1000:1000"
+```
+
+Theseus applies the locked `uid:gid` before it starts the image entrypoint,
+health checks, or campaign shell operations. Name lookup is intentionally out
+of scope: account files are image-specific, while numeric credentials replay
+without consulting the host. See [tutorial 27](../../tutorials/27-compose-user/).
+
 `command` replaces the image `Cmd` and retains its image `Entrypoint`. An
 explicit `entrypoint` replaces the image entrypoint and drops the image `Cmd`;
 the supplied `command` then supplies its arguments. Theseus supports only argv
 lists, never shell strings. A Compose `entrypoint` program and `working_dir`
-must be absolute paths. All three values are locked into the derived initramfs
+must be absolute paths. All four values are locked into the derived initramfs
 and reused by replay. They apply only to image-backed services.
 
 A bare program in an image or Compose `command`, such as `httpd`, resolves

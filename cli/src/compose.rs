@@ -742,6 +742,8 @@ struct ComposeService {
     #[serde(default)]
     working_dir: Option<String>,
     #[serde(default)]
+    user: Option<String>,
+    #[serde(default)]
     configs: Vec<ComposeServiceConfig>,
     #[serde(default)]
     secrets: Vec<ComposeServiceConfig>,
@@ -983,6 +985,16 @@ pub struct ImageLaunchPlan {
     pub entrypoint: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<ImageUserPlan>,
+}
+
+/// Numeric credentials for a Compose image process. Name lookup would make a
+/// plan depend on image-specific account files, so Theseus locks uid:gid.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageUserPlan {
+    pub uid: u32,
+    pub gid: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1439,6 +1451,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
             service.command,
             service.entrypoint,
             service.working_dir,
+            service.user,
         )?;
         let configs = image_config_plan(&name, service.configs, &configs)?;
         let secrets = image_secret_plan(&name, service.secrets, &secrets)?;
@@ -1900,6 +1913,7 @@ fn image_launch_plan(
     command: Option<Vec<String>>,
     entrypoint: Option<Vec<String>>,
     working_dir: Option<String>,
+    user: Option<String>,
 ) -> Result<Option<ImageLaunchPlan>, ComposeError> {
     for (field, values) in [
         ("command", command.as_ref()),
@@ -1936,14 +1950,38 @@ fn image_launch_plan(
             )));
         }
     }
-    if command.is_none() && entrypoint.is_none() && working_dir.is_none() {
+    let user = user
+        .map(|user| image_user_plan(service, &user))
+        .transpose()?;
+    if command.is_none() && entrypoint.is_none() && working_dir.is_none() && user.is_none() {
         return Ok(None);
     }
     Ok(Some(ImageLaunchPlan {
         command,
         entrypoint,
         working_dir,
+        user,
     }))
+}
+
+fn image_user_plan(service: &str, value: &str) -> Result<ImageUserPlan, ComposeError> {
+    let Some((uid, gid)) = value.split_once(':') else {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} user must use numeric uid:gid"
+        )));
+    };
+    if uid.is_empty() || gid.is_empty() || gid.contains(':') {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} user must use numeric uid:gid"
+        )));
+    }
+    let uid = uid.parse::<u32>().map_err(|_| {
+        ComposeError::Invalid(format!("service {service:?} user must use numeric uid:gid"))
+    })?;
+    let gid = gid.parse::<u32>().map_err(|_| {
+        ComposeError::Invalid(format!("service {service:?} user must use numeric uid:gid"))
+    })?;
+    Ok(ImageUserPlan { uid, gid })
 }
 
 fn environment_plan(
@@ -5501,24 +5539,35 @@ mod tests {
                 "-f".to_owned(),
             ]),
             Some("/site".to_owned()),
+            Some("1000:1001".to_owned()),
         )
         .unwrap()
         .unwrap();
         assert_eq!(launch.command, Some(vec![".".to_owned()]));
         assert_eq!(launch.entrypoint.as_ref().unwrap()[0], "/bin/busybox");
         assert_eq!(launch.working_dir.as_deref(), Some("/site"));
+        assert_eq!(
+            launch.user.as_ref().map(|user| (user.uid, user.gid)),
+            Some((1000, 1001))
+        );
 
         assert!(
-            image_launch_plan("worker", None, Some(vec!["busybox".to_owned()]), None,)
+            image_launch_plan("worker", None, Some(vec!["busybox".to_owned()]), None, None,)
                 .unwrap_err()
                 .to_string()
                 .contains("absolute path")
         );
         assert!(
-            image_launch_plan("worker", None, None, Some("relative".to_owned()),)
+            image_launch_plan("worker", None, None, Some("relative".to_owned()), None,)
                 .unwrap_err()
                 .to_string()
                 .contains("absolute path")
+        );
+        assert!(
+            image_launch_plan("worker", None, None, None, Some("app".to_owned()))
+                .unwrap_err()
+                .to_string()
+                .contains("numeric uid:gid")
         );
     }
 

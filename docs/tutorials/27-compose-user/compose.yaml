@@ -1,0 +1,24 @@
+name: compose-user
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    user: "1000:1000"
+    networks: [backplane]
+
+networks:
+  backplane: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    max_runs: 1
+    max_operations_per_run: 1
+    faults: []
+    operations:
+      - name: inspect_uid
+        shell:
+          command: [/bin/busybox, id, -u]
+          expect_exit: 0
+          output_contains: "1000"

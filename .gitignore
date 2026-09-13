@@ -69,5 +69,8 @@ docs/tutorials/25-compose-env-file/rerun/
 docs/tutorials/26-compose-host-identity/api/work/
 docs/tutorials/26-compose-host-identity/campaign/
 docs/tutorials/26-compose-host-identity/rerun/
+docs/tutorials/27-compose-user/api/work/
+docs/tutorials/27-compose-user/campaign/
+docs/tutorials/27-compose-user/rerun/
 
 orchestrator/pivot/target/

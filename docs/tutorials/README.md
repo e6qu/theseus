@@ -62,6 +62,8 @@ deterministic-CRNG kernel module is shipped.
     literal `env_file` values into an image service and replay them.
 26. [Set Compose host identity](26-compose-host-identity/) — lock a hostname
     and local `extra_hosts` aliases into an image service and replay them.
+27. [Run an image as a Compose user](27-compose-user/) — lock numeric image
+    credentials into a service and replay them.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

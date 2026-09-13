@@ -229,6 +229,10 @@ Compose `command`, `entrypoint`, and `working_dir` are likewise locked while
 the image becomes an initramfs. Theseus accepts argv lists rather than shell
 strings, so replay receives the exact process contract rather than a
 host-dependent expansion.
+Compose `user` locks numeric `uid:gid` credentials into that process contract.
+The pivot drops supplementary groups and applies those credentials before the
+image entrypoint, health checks, and campaign shell operations; host and
+image account-name lookup are deliberately out of scope.
 Local Compose `configs` are locked as read-only files in image initramfses, so
 ordinary services can receive deterministic file configuration without a bind
 mount or host filesystem dependency.

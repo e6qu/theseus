@@ -9371,7 +9371,7 @@ mod tests {
         fs::write(&image, b"container image").unwrap();
         fs::write(
             &adapter,
-            "#!/bin/sh\nset -eu\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ] && [ \"$7\" = --network ] && [ \"$9\" = --environment ] && [ \"${11}\" = --launch ] && [ \"${13}\" = --configs ] && [ \"${15}\" = --secrets ] && [ \"${17}\" = --volumes ] && [ \"${19}\" = --healthcheck ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ngrep -q '10.1.0.10' \"$8\"\ngrep -q 'api.local' \"$8\"\ngrep -q 'MODE' \"${10}\"\ngrep -q 'working_dir' \"${12}\"\ngrep -q '/etc/worker.conf' \"${14}\"\ngrep -q '/run/secrets/token' \"${16}\"\ngrep -q '/var/lib/worker/state' \"${18}\"\ngrep -q '/bin/check' \"${20}\"\ncp \"$2\" \"$4\"\n",
+            "#!/bin/sh\nset -eu\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ] && [ \"$7\" = --network ] && [ \"$9\" = --environment ] && [ \"${11}\" = --launch ] && [ \"${13}\" = --configs ] && [ \"${15}\" = --secrets ] && [ \"${17}\" = --volumes ] && [ \"${19}\" = --healthcheck ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ngrep -q '10.1.0.10' \"$8\"\ngrep -q 'api.local' \"$8\"\ngrep -q 'MODE' \"${10}\"\ngrep -q 'working_dir' \"${12}\"\ngrep -q '1000' \"${12}\"\ngrep -q '/etc/worker.conf' \"${14}\"\ngrep -q '/run/secrets/token' \"${16}\"\ngrep -q '/var/lib/worker/state' \"${18}\"\ngrep -q '/bin/check' \"${20}\"\ncp \"$2\" \"$4\"\n",
         )
         .unwrap();
         fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
@@ -9433,6 +9433,10 @@ mod tests {
                 command: Some(vec!["--serve".to_owned()]),
                 entrypoint: None,
                 working_dir: Some("/srv".to_owned()),
+                user: Some(theseus_orchestrator::oci::ContainerUser {
+                    uid: 1000,
+                    gid: 1000,
+                }),
             }),
             configs: vec![theseus_orchestrator::oci::ContainerConfig {
                 target: "/etc/worker.conf".to_owned(),
