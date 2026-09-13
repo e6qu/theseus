@@ -18,7 +18,7 @@ extras for host-side and Linux use. AGPL-3.0-or-later (see
 - `engine/door` — the host-side `TheseusDevice` (constants, registers)
 - `firecracker` — the bus primitives via re-export
 - the bare-metal test guests (`firecracker/src/vmm/src/test_utils/mock_resources/theseus_guest_rs/`)
-- `e2e/agent` — the Linux serial-channel proof
+- `e2e/agent` — the Linux serial-channel live check
 
 ## Documentation
 

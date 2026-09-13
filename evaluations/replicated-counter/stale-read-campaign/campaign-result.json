@@ -14,8 +14,8 @@
     }
   },
   "replay_verification": {
-    "status": "passed",
-    "detail": "1 recorded campaign timeline reproduced"
+    "status": "unverified",
+    "detail": "format fixture has no replay plan or runtime artifacts"
   },
   "runs": [
     {

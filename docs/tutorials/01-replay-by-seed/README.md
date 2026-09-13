@@ -1,25 +1,66 @@
-# Tutorial 1: Replay `/dev/urandom`
+# Tutorial 1: Replay Linux random devices
 
-Run every command from this directory. You need Linux, KVM, Docker, and a
-published Theseus runtime image. Choose a published short commit SHA and set
-it once:
+Boot the same tiny Linux guest three times. The guest reads `/dev/urandom`
+and `/dev/random` with ordinary shell commands. Two boots use seed `42`; the
+third uses seed `1337`.
+
+This tutorial currently requires Linux on arm64, KVM, and Docker. Run every
+host command from this directory. Choose a published 12-character commit SHA:
 
 ```sh
 export THESEUS_TAG=<12-character-sha>
-export THESEUS_IMAGE=ghcr.io/e6qu/theseus:$THESEUS_TAG
+export THESEUS_IMAGE=ghcr.io/e6qu/theseus:${THESEUS_TAG}-arm64
 ```
 
-Run the tutorial:
+The local `init` file is the complete guest workload. Read it first:
+
+```sh
+sed -n '1,160p' init
+```
+
+It loads the published deterministic-CRNG kernel module and uses BusyBox `od`
+to print 16 bytes from each standard random device. It does not use an SDK.
+The meaningful guest commands are simply:
+
+```sh
+od -An -tx1 -N16 /dev/urandom
+od -An -tx1 -N16 /dev/random
+```
+
+## 1. Inspect the Firecracker harness
+
+`run.sh` is not an application wrapper. It is the low-level host harness that
+builds the initramfs and issues Firecracker API calls for three boots. Review
+those API calls before running them:
+
+```sh
+sed -n '1,260p' run.sh
+```
+
+## 2. Run the three boots
 
 ```sh
 docker run --rm --privileged --platform linux/arm64 \
   -v "$PWD":/tutorial -w /tutorial "$THESEUS_IMAGE" sh ./run.sh
 ```
 
-The guest is only [`init`](init). It loads the matching seed loader, then
-dumps 16 bytes from `/dev/urandom` and `/dev/random` with `od`.
+The command prints three pairs of random-device values and ends with:
 
-The runner boots the guest with seeds `42`, `42`, and `1337`. Equal seeds
-produce equal output; the third run differs.
+```text
+PASS: both standard random devices replay by seed
+```
 
-Keep the seed with a failure. It is the replay input.
+The two seed-42 lines must match. The seed-1337 line must differ. Keep the
+seed with a failure; it is the replay input.
+
+## 3. Inspect the three serial logs
+
+```sh
+grep -aE '^(urandom|random):' work/first.log work/second.log work/third.log
+```
+
+## 4. Clean up (optional)
+
+```sh
+rm -rf work
+```

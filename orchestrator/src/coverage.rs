@@ -1,14 +1,13 @@
 // Copyright 2026 Adrian Mârza (https://www.linkedin.com/in/adrian-m%C3%A2rza-52606512a/) and contributors to Theseus
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Single-step code coverage: the set of guest PCs executed, collected with
-//! `KVM_GUESTDBG_SINGLESTEP` — true code coverage with zero guest
-//! instrumentation. Slow by nature (one VM exit per instruction), so this is
-//! the ground-truth signal for small workloads and the validation reference
-//! for faster mechanisms later.
+//! Single-step execution locations: guest PCs collected with
+//! `KVM_GUESTDBG_SINGLESTEP`. This is an instruction-address set, not
+//! application basic-block or edge coverage. It is slow by nature (one VM
+//! exit per instruction) and serves as a reference for faster PC sampling.
 //!
 //! The deterministic property this buys the explorer: the same timeline
-//! replayed produces the same coverage set, and a timeline that diverges
+//! replayed produces the same PC set, and a timeline that diverges
 //! produces a different one.
 
 use std::collections::BTreeSet;
@@ -73,14 +72,19 @@ fn skip_instruction(vcpu: &VcpuFd, pc: u64) -> Result<(), CoverageError> {
 ///
 /// The caller owns setup: guest code loaded, PC set, vCPU initialized. The
 /// vCPU must be stopped/paused; debug state is restored (disabled) on return.
-pub fn collect(vcpu: &mut VcpuFd, max_steps: usize, loop_window: usize) -> Result<Coverage, CoverageError> {
-    use kvm_bindings::{KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP, kvm_guest_debug};
+pub fn collect(
+    vcpu: &mut VcpuFd,
+    max_steps: usize,
+    loop_window: usize,
+) -> Result<Coverage, CoverageError> {
+    use kvm_bindings::{kvm_guest_debug, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP};
 
     let debug_on = kvm_guest_debug {
         control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP,
         ..Default::default()
     };
-    vcpu.set_guest_debug(&debug_on).map_err(CoverageError::GuestDebug)?;
+    vcpu.set_guest_debug(&debug_on)
+        .map_err(CoverageError::GuestDebug)?;
 
     let mut coverage = Coverage::default();
     let mut steps_without_new_pc = 0usize;
@@ -145,7 +149,7 @@ mod tests {
     fn test_single_step_coverage_is_deterministic() {
         use vmm::arch::aarch64::regs::PC;
         use vmm::test_utils::single_region_mem_at_raw;
-        
+
         use vm_memory::Bytes;
 
         let guest = std::fs::read(concat!(
@@ -164,7 +168,10 @@ mod tests {
             vm.setup_irqchip(1).unwrap();
 
             vm.guest_memory()
-                .write_slice(&guest, vmm::vstate::memory::GuestAddress(vmm::arch::DRAM_MEM_START))
+                .write_slice(
+                    &guest,
+                    vmm::vstate::memory::GuestAddress(vmm::arch::DRAM_MEM_START),
+                )
                 .unwrap();
             vcpu.fd
                 .set_one_reg(PC, &vmm::arch::DRAM_MEM_START.to_ne_bytes())
@@ -186,7 +193,11 @@ mod tests {
             "entry point not in coverage: {:?}",
             a.pcs
         );
-        assert!(a.pcs.len() > 20, "suspiciously little coverage: {:?}", a.pcs);
+        assert!(
+            a.pcs.len() > 20,
+            "suspiciously little coverage: {:?}",
+            a.pcs
+        );
         assert!(a.steps > 20, "guest ran {} steps", a.steps);
     }
 
@@ -198,7 +209,7 @@ mod tests {
     fn test_coverage_detects_divergence() {
         use vmm::arch::aarch64::regs::PC;
         use vmm::test_utils::single_region_mem_at_raw;
-        
+
         use vm_memory::Bytes;
 
         let original = std::fs::read(concat!(
@@ -220,7 +231,10 @@ mod tests {
             vcpu.init(&[]).unwrap();
             vm.setup_irqchip(1).unwrap();
             vm.guest_memory()
-                .write_slice(code, vmm::vstate::memory::GuestAddress(vmm::arch::DRAM_MEM_START))
+                .write_slice(
+                    code,
+                    vmm::vstate::memory::GuestAddress(vmm::arch::DRAM_MEM_START),
+                )
                 .unwrap();
             vcpu.fd
                 .set_one_reg(PC, &vmm::arch::DRAM_MEM_START.to_ne_bytes())

@@ -5,8 +5,12 @@ set -eu
 fc=${FC:-/usr/local/bin/firecracker}
 kernel=${THESEUS_KERNEL:-/opt/theseus/vmlinux}
 reading=${READING:-21.5C}
-work=$(mktemp -d /tmp/theseus-serial.XXXXXX)
-trap 'rm -rf "$work"' EXIT
+work=work
+[ ! -e "$work" ] || {
+    echo 'work/ already exists; inspect it or remove it before another run.' >&2
+    exit 1
+}
+mkdir "$work"
 
 [ -x "$fc" ] && [ -f "$kernel" ] || {
     echo 'Run this tutorial in a published Theseus runtime image.' >&2
@@ -28,7 +32,7 @@ pid=$!
 # Opening the writer lets Firecracker finish opening its stdin, but keeps the
 # UART open until the guest has read the sample.
 exec 3>"$serial_in"
-trap 'exec 3>&-; kill "$pid" 2>/dev/null || true; rm -rf "$work"' EXIT
+trap 'exec 3>&-; kill "$pid" 2>/dev/null || true' EXIT
 
 for _ in $(seq 1 50); do [ -S "$sock" ] && break; sleep 0.1; done
 curl -fsS --unix-socket "$sock" -X PUT localhost/boot-source \

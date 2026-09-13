@@ -50,7 +50,7 @@ x-theseus:
       replicated_write:
         workflow:
           # Each API request/attempt must reach both peer services. The
-          # service streams are independent, so this proves a keyed stage at
+          # service streams are independent, so this records a keyed stage at
           # each service instead of inventing a global event order.
           pointers: [/request_id, /attempt]
           quantifier: every

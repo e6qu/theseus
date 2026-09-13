@@ -1,42 +1,72 @@
 # Tutorial 5: Run two connected services
 
-Run every command from this directory. This tutorial creates two tiny Linux
-guests, connects them to the `backplane` network, sends `ping` to the API's
-UART, and checks that `api` can ping `worker`.
+Boot two tiny Linux services on a deterministic Compose network. The `api`
+guest receives `ping` through its UART and reaches `worker` over the simulated
+backplane.
+
+Use Linux with KVM and Docker. Run every host command from this directory:
 
 ```sh
 export THESEUS_TAG=<12-character-sha>
-export THESEUS_IMAGE=ghcr.io/e6qu/theseus:$THESEUS_TAG
-docker run --rm --privileged -v "$PWD":/tutorial -w /tutorial \
-  "$THESEUS_IMAGE" sh ./run.sh
+export THESEUS_IMAGE=ghcr.io/e6qu/theseus:${THESEUS_TAG}-arm64
+docker run --rm -it --privileged --platform linux/arm64 \
+  -v "$PWD":/tutorial -w /tutorial "$THESEUS_IMAGE" sh
 ```
 
-`compose.yaml` is a deliberately small Compose file. Each service points to
-its own Theseus manifest. Their network settings delay each frame by one
-deterministic scheduler round, then add zero or one seeded jitter rounds. That
-can deliver a later frame first without using host time. The API announces
-serial readiness, then Theseus injects its manifest event directly into that
-VM's UART. `theseus compose test`
-locks the artifacts, runs the two guests in one deterministic topology, and
-leaves their serial logs and results in `theseus-compose-replay/services/`.
-`theseus compose replay` runs the locked bundle again and compares every
-service serial log, simulated-network topology, and deterministic network
-traffic counters and frame-content fingerprints with the original.
+Run the remaining steps inside the container.
 
-`tx_bytes_per_round` limits each service's outbound link. It refills at every
-topology round; `0` leaves it unlimited. A frame larger than the budget uses a
-full round, so it still makes progress.
+## 1. Inspect the topology
 
-`duplicate_ppm = 1000000` duplicates every accepted frame in this example.
-The copies use the same simulated link, so bandwidth, delay, and jitter still
-apply. Linux networking tolerates these duplicate ARP and ping frames.
+```sh
+sed -n '1,240p' compose.yaml
+sed -n '1,200p' api/theseus.toml
+sed -n '1,200p' worker/theseus.toml
+```
 
-Set `corrupt_ppm` to select nonempty frames for one seeded bit flip before the
-simulated link delivers them. A duplicate carries the same corrupted bytes.
+The manifests use local guest files only. The network adds one round of
+latency, up to one seeded jitter round, and duplicates accepted frames.
 
-Each service result includes the first 64 simulated NIC TX, RX, and drop frames.
-Each record has a deterministic scheduler round, a drop reason when relevant,
-and a hexadecimal payload.
+## 2. Build both initramfs images
 
-Set `rx_queue_frames` to bound frames waiting for a guest that is not reading
-its NIC. Extra frames are recorded as `rx_queue` drops.
+```sh
+for service in api worker; do
+  mkdir -p "$service/runtime" "$service/guest/root/bin"
+  cp /usr/local/bin/firecracker "$service/runtime/firecracker"
+  cp /opt/theseus/vmlinux "$service/guest/vmlinux"
+  cp /bin/busybox "$service/guest/root/bin/busybox"
+  for applet in mount ip sleep ping poweroff; do
+    ln -sf busybox "$service/guest/root/bin/$applet"
+  done
+  cp "$service/init" "$service/guest/root/init"
+  chmod +x "$service/guest/root/init"
+  (cd "$service/guest/root" && find . -print | cpio -o -H newc --quiet | gzip > ../initramfs.cpio.gz)
+done
+```
+
+## 3. Run and inspect the topology
+
+```sh
+theseus compose test
+grep -a '^ping passed$' theseus-compose-replay/services/api/serial.log
+grep -a '^serial command accepted$' theseus-compose-replay/services/api/serial.log
+grep -a '"jitter_rounds": 1' theseus-compose-replay/replay-plan.json
+```
+
+Those lines show that the UART command ran, the service reached its peer, and
+the locked plan retained the network configuration.
+
+## 4. Replay the locked bundle
+
+```sh
+theseus compose replay theseus-compose-replay --output topology-replay
+grep -a 'serial logs match the original replay bundle' topology-replay/services/api/result.json
+grep -a 'simulated network traffic matches the original replay bundle' topology-replay/services/api/result.json
+exit
+```
+
+## 5. Clean up (optional)
+
+```sh
+rm -rf api/runtime api/guest worker/runtime worker/guest \
+  theseus-compose-replay topology-replay
+```

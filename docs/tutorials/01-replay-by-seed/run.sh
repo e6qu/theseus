@@ -5,8 +5,12 @@ set -eu
 fc=${FC:-/usr/local/bin/firecracker}
 kernel=${THESEUS_KERNEL:-/opt/theseus/vmlinux}
 module=${THESEUS_RNG_MODULE:-/opt/theseus/theseus_rng.ko}
-work=$(mktemp -d /tmp/theseus-replay.XXXXXX)
-trap 'rm -rf "$work"' EXIT
+work=work
+[ ! -e "$work" ] || {
+    echo 'work/ already exists; inspect it or remove it before another run.' >&2
+    exit 1
+}
+mkdir "$work"
 
 [ -x "$fc" ] && [ -f "$kernel" ] && [ -f "$module" ] || {
     echo 'Run this tutorial in the published arm64 Theseus runtime image.' >&2
@@ -24,7 +28,6 @@ boot() {
     seed=$1
     log=$2
     sock="$work/firecracker-$seed.sock"
-    rm -f "$sock"
     "$fc" --api-sock "$sock" --no-seccomp >"$log" 2>&1 &
     pid=$!
     for _ in $(seq 1 50); do [ -S "$sock" ] && break; sleep 0.1; done

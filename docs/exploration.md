@@ -13,9 +13,9 @@ doc covers the wire protocol this builds on.
 
 Children restore through the unmodified snapshot-restore path with the
 memfd mapped `MAP_PRIVATE` — the kernel provides copy-on-write, so sibling
-timelines share all pages until they write them (proven by
-`test_branch_children_memory_is_cow`). The only eager cost is one RAM dump
-per branch point.
+timelines share mapped pages until they write them. A unit test exercises this
+mapping behavior. Capture itself still performs one full RAM dump per branch
+point, so the complete path is not zero-copy.
 
 Each child is reseeded before resume, so siblings differ *only* by seed
 (`splitmix64(base_seed ^ branch_index)` — deterministic). Fault schedules
@@ -120,10 +120,10 @@ asserts it.
 
 ## Coverage
 
-`coverage.rs` collects executed guest PCs via `KVM_GUESTDBG_SINGLESTEP` —
-true coverage with zero guest instrumentation. MMIO instructions are
+`coverage.rs` collects guest PCs via `KVM_GUESTDBG_SINGLESTEP`. This is an
+instruction-address set, not application basic-block or edge coverage. MMIO instructions are
 counted and skipped (aarch64 fixed width; x86_64 reports
-`UnsupportedMmioSkip`). It remains the ground-truth reference for small
+`UnsupportedMmioSkip`). It is a validation reference for small bare-metal
 workloads. Compose campaigns use a low-overhead alternative: each vCPU records
 PCs at deterministic handled-exit intervals and pause barriers, so ordinary
 devices stay enabled. Campaign plans can select that accumulated signal,

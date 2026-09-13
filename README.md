@@ -1,227 +1,131 @@
 # Theseus
 
-**Deterministic simulation testing for whole distributed systems** — run an
-entire system (services, dependencies, workloads) in an environment where
-every source of nondeterminism is seeded and replayable, then fork
-timelines into multiverses that diverge only by seed.
+Theseus is an open deterministic-testing runtime for Linux services. It boots
+ordinary service artifacts in Firecracker microVMs, controls selected inputs
+and faults, explores bounded timelines, and retains replay bundles for failed
+properties.
 
-Built on a fork of [Firecracker](https://github.com/firecracker-microvm/firecracker)
-(v1.17.0-dev, `f3f65a3`).
+The project is under active development. Its strongest current path is a
+Linux/KVM Compose campaign using simulated I/O and explicit workload input.
+The exact guarantees and known gaps are documented below; source code or a
+passing unit suite alone is not treated as runtime proof.
 
-## What it does
+## What works today
 
-- **Seeded everything a guest can observe**: entropy (virtio-rng, FDT
-  rng-seed, vmgenid, MMDS tokens, TCP ISNs), all from one seed — so two
-  boots with the same seed are byte-identical.
-- **Tick-stepped virtual time** (exit-counted quanta) on x86_64 and aarch64.
-- **A control channel** between guest and host (MMIO + serial console) with
-  a `no_std` guest SDK.
-- **Simulated network** with deterministic drops, partitions, and
-  per-branch fault schedules.
-- **In-memory timeline branching**: pause a VM, fork it, and run children
-  that differ only by seed — with kernel copy-on-write.
-- **A parallel exploration engine** that drives timelines through
-  rendezvous protocols and fingerprints every node (entropy probe, markers,
-  dirty pages).
-- **Ground-truth coverage** via single-stepping (`KVM_GUESTDBG`).
+- Seeded virtio entropy and host-side random sources.
+- A Linux kernel module that installs the Theseus seed into the normal Linux
+  CRNG, allowing `/dev/random` and `/dev/urandom` tutorials to replay.
+- Exit-counted virtual-time quanta on amd64 and arm64.
+- Deterministic simulated network and memory-backed storage faults.
+- UART operations for unmodified Linux services and an optional guest SDK.
+- Compose campaigns with bounded operations, faults, serial properties,
+  minimization, replay, and offline reports.
+- In-memory branch capture and private copy-on-write child mappings.
+- Container-image conversion for ordinary Linux service images.
+- SHA-addressed Linux runtime images for amd64 and arm64, plus published CLI
+  binaries for Linux amd64/arm64 and macOS arm64.
 
-Verified end to end: 761 `vmm` tests plus crate tests on real KVM, and four
-live boot proofs in `e2e/`.
+## Important limits
 
-## What Theseus investigates
+- Linux and KVM are required to execute microVMs. The macOS binary can plan,
+  validate, and inspect retained evidence, but cannot run Firecracker.
+- Virtual counters free-run between exit-counted tick boundaries. Theseus does
+  not promise instruction-exact virtual time.
+- Campaign “coverage” is sampled guest vCPU instruction pointers. It is not
+  application basic-block or edge coverage.
+- `compare` finds the first difference in two recorded histories. It does not
+  perform counterfactual re-exploration or prove causality.
+- Capturing a branch copies guest RAM into a memfd. Restored children then use
+  private copy-on-write mappings; the complete capture/restore path is not
+  zero-copy.
+- A runtime certificate applies only to the exact recorded plan, artifacts,
+  architecture, and supported simulated-I/O profile.
 
-Theseus is built for the bugs that only appear when a system is stressed
-in ways you did not plan a test for:
+See [PLAN.md](PLAN.md) for the current roadmap and
+[the claim audit](docs/audits/2026-09-runtime-and-docs.md) for the documentation
+review.
 
-- **Concurrency and race conditions** — interleavings of threads and
-  processes that hand-written tests never schedule.
-- **Replication and consistency bugs** — split-brain, lost writes,
-  divergent replicas after partitions and rejoins. For a key-value store:
-  a committed write that vanishes after a failover. For a consensus
-  system: two leaders elected in the same term.
-- **Exactly-once violations** — a command applied twice when a retry
-  meets a lost acknowledgement (the tutorial's running example), or a
-  message delivered twice by a queue under reconnection.
-- **Crash recovery and durability** — a database that loses its last
-  write-ahead-log records when paused mid-fsync, or recovers to a torn
-  state.
-- **Timeout and election logic** — leader elections, lease expiry,
-  failover, and retry storms under controlled virtual time.
-- **Fault-handling logic** — what your code actually does on packet loss,
-  partitions, node crashes, slow or corrupt storage — not what it does in
-  a healthy environment.
-- **Flaky tests** — failures that appear once and never again; a seed
-  turns them into failures you can rerun every time.
-- **Fault-schedule regressions** — behavior changes under a fixed sweep
-  of drops, partitions, and seeds, compared across runs.
+## Start with the tutorials
 
-## Container images as test targets
+The [tutorial index](docs/tutorials/) starts with CLI and service-facing
+examples:
 
-Boot the artifact your CI already builds. Theseus takes a container image
-(`docker save` tar), a Dockerfile (build it, then save it), or a registry
-image (pull it, then save it), flattens the layers into a bootable
-initramfs, injects a static pivot init that wires up the control channel,
-and boots it — no guest driver, no image modification, no Dockerfile
-changes. The image's entrypoint runs unchanged. See
-[docs/guides/container-images/](docs/guides/container-images/).
+1. Replay ordinary Linux `/dev/random` and `/dev/urandom` reads.
+2. Select a deterministic random stream with a seed.
+3. Add the optional SDK control channel to a bare-metal guest.
+4. Record and replay serial/TTY input like a Raspberry Pi sensor reading.
+5. Move to multi-service Compose campaigns, faults, reports, and container
+   images.
 
-On Linux, the published runtime includes `theseus-image`. Point a manifest at
-the Docker archive and adapter; Theseus converts it before booting and locks
-both inputs for replay:
+Each tutorial directory is its own working directory and complete input
+context. Runnable tutorials use published Theseus images or binaries, not a
+checkout-relative build artifact. The README exposes the commands and expected
+observations step by step.
+
+## Run a container service
+
+Theseus accepts a Docker archive as `guest.image`. The published Linux runtime
+contains `theseus-image`, which flattens the image into a bootable initramfs
+and locks the adapter, kernel, Firecracker binary, image bytes, and resolved
+launch contract for replay.
 
 ```toml
 [runtime]
-image_adapter = "runtime/theseus-image"
+firecracker = "work/runtime/firecracker"
+image_adapter = "work/runtime/theseus-image"
 
 [guest]
-image = "guest/service.tar"
+kernel = "work/guest/vmlinux"
+image = "work/service.tar"
 ```
 
-The image entrypoint, environment, and working directory are written to the
-initramfs by the adapter. The service itself stays unmodified.
-
-## Requirements for the system under test
-
-A system must satisfy the following to be tested with full replay:
-
-1. **Boots under Firecracker.** A kernel image plus an initramfs or
-   rootfs (aarch64 or x86_64). Any Linux workload; bare-metal guests work
-   too.
-2. **Event-driven workload.** The system takes its inputs through the
-   control channel (the Theseus SDK, bare-metal MMIO or the Linux serial
-   transport) rather than wall-clock sleeps or external networks.
-   Behavior you want replayed must follow from events, not host time.
-3. **Deterministic dependencies.** The simulated network backend is used
-   for networked systems; host-fd-backed devices (tap networking,
-   file-backed block storage) are outside deterministic mode. Rate
-   limiters are rejected when virtual time is enabled.
-4. **Optional: virtual time.** For timer-driven logic (timeouts,
-   elections), enable `machine-config.virtual_time` so those decisions
-   replay too.
-
-Seeded entropy is provided by the engine itself (the entropy device and
-the host-side random sources are seeded automatically from the run seed)
-— it is not something you need to configure per system.
-
-## Requirements from the user
-
-- **Package your system** as a Firecracker-bootable image (kernel plus
-  initramfs or rootfs).
-- **Wire inputs through the SDK** — events in, markers out. Bare-metal
-  guests use the MMIO device; Linux workloads use the serial transport.
-- **Emit markers for the outcomes you care about** — one call per
-  observable result. That is the entire instrumentation surface: nothing
-  needs to change in your system to *run* it, only to *judge* it.
-- **Choose seeds and fault schedules** for each run, or declare a Compose
-  campaign: UART operations, lifecycle candidates, named-network
-  `partition`/`heal` actions, directed `link_partition`/`link_heal` actions,
-  simulated-drive `storage_fault`/`storage_recover`, packet-condition
-  `network_fault`/`network_recover`, EtherType-matched (optionally directed)
-  `packet_fault`/`packet_recover`
-  actions, and runtime properties. Theseus
-  explores bounded candidate sequences from one reusable whole-topology
-  checkpoint and reduces a violating operation history to one replay bundle.
-- **Run on a Linux+KVM host** (on Apple Silicon, a privileged aarch64
-  Docker container works).
-
-Compose campaign serial predicates can also match ordered JSON-lines events.
-Use `query` inside a JSON predicate for an RFC 9535 JSONPath expression; it
-matches when the expression selects a node from that same event. This handles
-filtered nested arrays without a host-side parser.
-Within a `sequence`, `capture` binds a JSON Pointer from one event and
-`equals_capture` requires a later event to carry that same value. Use this to
-prove that lifecycle events belong to the same request or transaction.
-Use an input-capture `workflow` when that transaction crosses services: list
-the shared key pointers, then each service-local stage. Theseus reads the
-capture pointer from the final stage only after the same key completes every
-stage.
-Properties can extend that proof across services with
-`requires_serial_correlations`: match one JSON event and pointer in a source
-service to the same pointer value in an event from another service.
-Use `requires_serial_joins` when one value must be common to every endpoint
-across three or more services. Put the same guard on an operation to defer it
-until that evidence exists at its restored checkpoint, or use
-`excludes_serial_joins` to block it when the joined evidence is present.
-Use `pointers` instead of `pointer` to join on a composite key such as request
-ID plus attempt number.
-JSON joins default to `quantifier: any`; use `quantifier: every` to require
-every key emitted by the first endpoint to occur at every peer endpoint.
-Add `occurs: {exactly: N}`, `at_least`, or `at_most` to bound the number of
-distinct first-endpoint keys that match; repeated log lines do not inflate the
-count. Relations accept the same `quantifier` and `occurs` controls for their
-distinct left-endpoint values.
-When one operation or property needs a mixed rule, use
-`requires_serial_evidence`: a recursive `all`, `any`, or `none` tree whose
-leaves are service `guard`s, JSON `correlation`s, `join`s, `relation`s, or
-keyed event `path`s and cross-service `workflow`s.
-`excludes_serial_evidence` blocks an operation or property when its tree
-matches.
-Evidence trees also accept `relation`: compare values selected by two JSON
-endpoints with equality or numeric ordering. This can assert that an observed
-retry generation advances the original request without guest-side test code.
-For events in one service transcript, add `order: before` or `order: after` to
-require that the left matching event occurs strictly before or after the right
-matching event. Ordered relations deliberately require both endpoints to name
-the same service (or both use the same default transcript).
-Evidence trees also accept `path`: select one or every distinct key from the
-first JSON event, then require each key through one or more later JSON event
-steps in strict order within one service transcript. Paths support composite
-`pointers`, optional `service`, `quantifier`, and distinct-key `occurs` bounds.
-For several independent service transcripts, use `workflow`: named stages each
-contain a local ordered path for the same key. This asserts distributed
-progress without claiming an unverifiable global serial-event order. A stage
-may override `pointers` to map that key from its own JSON schema; all stages
-must retain the same key-tuple width.
-Define shared trees once under `campaign.evidence` and expand them with
-`use: name` in properties, operation guards, or other evidence trees. Theseus
-rejects undefined and cyclic definitions, then records the expanded form in
-the replay plan.
+No guest SDK is required for HTTP, command, health-check, or serial workloads.
+Use the SDK only when explicit in-guest markers or control events improve the
+property contract.
 
 ## Repository layout
 
-| Path | What it is |
+| Path | Purpose |
 |---|---|
-| [`firecracker/`](firecracker/) | The fork — Apache-2.0 upstream code plus marked deviations ([provenance](firecracker/README-THESEUS.md)) |
-| [`sdk/`](sdk/) | `theseus-sdk` — protocol contract, bus primitives, guest transports ([README](sdk/README.md)) |
-| [`engine/`](engine/) | `theseus-engine` — detrng, virtual clock, sim net, control door ([README](engine/README.md)) |
-| [`orchestrator/`](orchestrator/) | `theseus-orchestrator` — branching, coverage, explorer ([README](orchestrator/README.md)) |
-| [`cli/`](cli/) | `theseus` — self-contained test-manifest validation and canonical dry-run plans ([README](cli/README.md)) |
-| [`e2e/`](e2e/) | Live-KVM end-to-end proofs ([README](e2e/README.md)) |
-| [`docs/`](docs/) | Design documentation |
+| [`cli/`](cli/) | manifests, campaigns, replay, comparison, evaluation, reports |
+| [`topology-runner/`](topology-runner/) | multi-service KVM execution and certification |
+| [`image-runner/`](image-runner/) | commands and probes inside converted images |
+| [`explorer-runner/`](explorer-runner/) | single-guest branching execution |
+| [`orchestrator/`](orchestrator/) | branch capture, timelines, OCI conversion, PC collection |
+| [`engine/`](engine/) | seeded entropy, virtual clock, simulated devices, control door |
+| [`sdk/`](sdk/) | optional guest control-channel library |
+| [`firecracker/`](firecracker/) | Apache-2.0 Firecracker fork and marked Theseus changes |
+| [`docs/`](docs/) | tutorials, behavior contracts, limitations, and audits |
+
+## Development checks
+
+The pull-request workflow runs compilation, unit tests, deterministic subsystem
+tests, tutorial structure checks, and release-input checks on an amd64 GitHub
+runner. Native KVM certification is a separate manually triggered self-hosted
+amd64/arm64 workflow; it produces evidence only when it actually runs and its
+certificate is retained.
+
+```sh
+cargo test --manifest-path cli/Cargo.toml --locked
+cargo test --manifest-path topology-runner/Cargo.toml --locked
+cargo test --manifest-path image-runner/Cargo.toml --locked
+cargo test --manifest-path explorer-runner/Cargo.toml --locked
+```
+
+See [docs/testing.md](docs/testing.md) for the complete development and
+runtime-validation paths.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — crate layout, dependency direction, layers
-- [The determinism model](docs/determinism.md) — what's closed, what's leaked, replay fingerprints
-- [The control channel](docs/control-channel.md) — registers, serial transport, protocol rounds
-- [Exploration](docs/exploration.md) — branch points, timeline tree, parallel explorer, coverage
-- [CLI manifest](cli/README.md) — the self-contained test-directory contract
-- [Tutorials](docs/tutorials/) — hands-on walkthroughs from replay to serial input
-- [Testing](docs/testing.md) — dev loop, e2e proofs, CI
-- [Reproducing a runtime release](docs/reproducing-releases.md) — verify signed inputs and rebuild an OCI digest
-
-## Quickstart
-
-Requires a Linux+KVM host (on Apple Silicon, a privileged aarch64 Docker
-container works — see [docs/testing.md](docs/testing.md)):
-
-```sh
-cd firecracker && cargo test -p vmm --lib -- --test-threads=1   # 761 tests
-cargo test --manifest-path engine/Cargo.toml
-cargo test --manifest-path orchestrator/Cargo.toml
-cargo test --manifest-path cli/Cargo.toml
-sh e2e/run.sh                                                    # live proofs
-```
+- [Architecture](docs/architecture.md)
+- [Determinism and replay limits](docs/determinism.md)
+- [Exploration and coverage](docs/exploration.md)
+- [CLI and test-directory reference](cli/README.md)
+- [Comparison with Antithesis and related tools](docs/comparison.md)
+- [Tutorials](docs/tutorials/)
 
 ## License
 
-Copyright 2026 Adrian Mârza
-(<https://www.linkedin.com/in/adrian-m%C3%A2rza-52606512a/>) and
-contributors to Theseus.
-
-Theseus-authored code (everything outside `firecracker/` that carries the
-Theseus header) is licensed under **AGPL-3.0-or-later** — see
-[LICENSE](LICENSE). Everything under `firecracker/` remains **Apache-2.0**
-([firecracker/LICENSE](firecracker/LICENSE), `firecracker/NOTICE`), with
-deviations marked in comments. The boundary is spelled out in
-[firecracker/README-THESEUS.md](firecracker/README-THESEUS.md).
+Theseus-authored code is AGPL-3.0-or-later. The `firecracker/` subtree remains
+Apache-2.0; see [firecracker/README-THESEUS.md](firecracker/README-THESEUS.md)
+for provenance and the marked fork boundary.

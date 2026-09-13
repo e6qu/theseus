@@ -1,42 +1,49 @@
-# Tutorial 12: Investigate two campaign bundles
+# Tutorial 12: Compare two campaign bundles
 
-Run every command from this directory. It contains two completed campaign
-results, so it needs only a published `theseus` binary on `PATH`. No VM,
-source checkout, or snapshot is needed.
+Find the first retained difference between two completed campaign fixtures and
+query the evidence at that boundary. This is offline comparison, not
+counterfactual causality analysis.
+
+Run every command from this directory with a published `theseus` binary on
+`PATH`. No KVM, Docker, snapshot, or source checkout is needed.
+
+## 1. Compare the recorded histories
 
 ```sh
-theseus compare campaign-before campaign-after
+theseus compare campaign-before campaign-after > comparison.json
+grep -F 'first operation-boundary state differs' comparison.json
+grep -F '"boundary": 1' comparison.json
 ```
 
-The result names the first changed operation boundary. In these fixtures, the
-same `read` operation first reaches a different topology state after a network
-partition. The bundle retains the fault action, serial digest, and coverage
-evidence, so inspect the cause without diffing a serial log or opening a VM
-snapshot.
+The result identifies the first operation boundary at which these two retained
+histories differ. It does not prove that the changed field caused a failure.
 
-Ask for a compact issue-ready report:
+## 2. Render a Markdown investigation note
 
 ```sh
 theseus compare --format markdown campaign-before campaign-after > investigation.md
+grep -F 'First recorded divergence' investigation.md
+grep -F 'topology state differs' investigation.md
 ```
 
-Inspect any retained field with an RFC 6901 JSON Pointer. This reads the paused
-PC samples at the divergent boundary:
+## 3. Query exact retained fields
 
 ```sh
 theseus compare --query /runs/0/timeline/1/program_counters \
-  campaign-before campaign-after
+  campaign-before campaign-after > coverage.json
+grep -F '0x8010' coverage.json
+grep -F '0x8020' coverage.json
+theseus compare --query /properties/0/status \
+  campaign-before campaign-after > properties.json
+grep -F '"passed"' properties.json
+grep -F '"failed"' properties.json
 ```
 
-Pointers also reach fault actions, serial evidence, topology hashes, and
-property verdicts. For example:
+The `program_counters` field contains sampled vCPU instruction pointers. It is
+not application basic-block coverage.
+
+## 4. Clean up (optional)
 
 ```sh
-theseus compare --query /properties/0/status campaign-before campaign-after
-```
-
-Run the complete check:
-
-```sh
-sh ./run.sh
+rm -f comparison.json investigation.md coverage.json properties.json
 ```

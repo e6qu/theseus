@@ -3,7 +3,7 @@
 
 //! Tutorial driver (tutorial 04): runs the counter guest through the
 //! explorer with and without a partition, prints the marker streams, and
-//! proves the partition-injected retry bug and its bit-for-bit replay.
+//! demonstrates the partition-injected retry bug and compares its recorded replay.
 //! Run it on a Linux+KVM host (see the tutorial's README).
 
 #![cfg(target_arch = "aarch64")]
@@ -108,7 +108,10 @@ fn main() {
     // Replay: the same schedule produces the identical marker stream.
     let replay = run_timeline(vec![0x05, 0xEE, 0x06]);
     println!("replay:             {replay:02x?}");
-    assert_eq!(replay, partitioned, "replay is bit-for-bit identical");
+    assert_eq!(
+        replay, partitioned,
+        "recorded replay observations are identical"
+    );
 
     println!("all assertions passed");
 }

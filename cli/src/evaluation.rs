@@ -346,7 +346,8 @@ pub fn evaluate(path: impl AsRef<Path>) -> Result<EvaluationSummary, EvaluationE
         let replay_verified = result
             .replay_verification
             .as_ref()
-            .is_some_and(|verification| verification.status == "passed");
+            .is_some_and(|verification| verification.status == "passed")
+            && bundle.join("replay-plan.json").is_file();
         let expected_properties = workload.properties.iter().all(|expected| {
             result
                 .properties
@@ -819,6 +820,7 @@ status = "failed"
         )
         .unwrap();
         fs::write(directory.path().join("bundle/campaign-result.json"), r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","generated_candidates":8,"unique_topology_states":3,"unique_instruction_locations":5,"search":{"checkpoint":{"root_captures":1,"prefix_captures":2,"checkpoint_nodes":3,"prefix_reuses":4,"avoided_prefix_recomputations":5}},"replay_verification":{"status":"passed"},"runs":[{"timeline":[{},{}]}],"properties":[{"name":"consistent_read","status":"failed"}]}"#).unwrap();
+        fs::write(directory.path().join("bundle/replay-plan.json"), "{}").unwrap();
         fs::write(directory.path().join("bundle/minimization.json"), r#"{"original_operations":["write","read"],"minimized_operations":["write"],"original_faults":["partition"],"minimized_faults":[],"operation_attempts":3,"fault_attempts":2}"#).unwrap();
         let summary = evaluate(directory.path().join("theseus-evaluation.toml")).unwrap();
         assert_eq!(summary.status, "passed");
@@ -846,7 +848,7 @@ expected_status = "failed"
         .unwrap();
         fs::write(
             directory.path().join("bundle/campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed"}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","replay_verification":{"status":"passed"}}"#,
         )
         .unwrap();
         let summary = evaluate(directory.path().join("theseus-evaluation.toml")).unwrap();
@@ -875,12 +877,13 @@ status = "failed"
         .unwrap();
         let result = r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","replay_verification":{"status":"passed"},"runs":[],"properties":[{"name":"consistent_read","status":"failed"}]}"#;
         fs::write(directory.path().join("bundle/campaign-result.json"), result).unwrap();
+        fs::write(directory.path().join("bundle/replay-plan.json"), "{}").unwrap();
         fs::write(directory.path().join("bundle/minimization.json"), "{}").unwrap();
 
         let lock = write_evaluation_lock(directory.path().join("theseus-evaluation.toml")).unwrap();
         assert!(lock.is_file());
         let summary = evaluate(directory.path().join("theseus-evaluation.toml")).unwrap();
-        assert_eq!(summary.artifact_verification.unwrap().files, 2);
+        assert_eq!(summary.artifact_verification.unwrap().files, 3);
 
         fs::write(
             directory.path().join("bundle/minimization.json"),

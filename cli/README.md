@@ -65,7 +65,7 @@ open theseus-replay/theseus-report/index.html
 ### Investigate two campaign results
 
 Compare two locked Compose campaign directories without starting a VM or
-opening a snapshot. Theseus stops at the first causal difference: selected
+opening a snapshot. Theseus stops at the first recorded difference: selected
 operation or fault, applied fault action, operation-boundary topology state,
 serial evidence, coverage, or property outcome.
 
@@ -139,10 +139,9 @@ events = ["90"]
 ```
 
 `max_nodes` is a hard cap, including the root. `markers` ranks children by
-new SDK marker bytes; `coverage` ranks by a deterministic dirty-page coverage
-proxy. Every result node records its seed path, marker stream,
-entropy probe, and dirty-page count. Use a seed path as the replay recipe;
-P6.8 will add the static timeline viewer.
+new SDK marker bytes; `coverage` ranks by a deterministic dirty-page footprint
+proxy. Every result node records its seed path, marker stream, entropy probe,
+and dirty-page count. Use a seed path as the replay recipe.
 
 ## Test directory
 

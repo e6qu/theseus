@@ -1,8 +1,4 @@
-/* Theseus e2e proof: read guest-visible entropy, print it, power off.
- *
- * Boots as /init in a minimal initramfs. Deterministic runs (same seed) must
- * print identical hex; different seeds must differ.
- */
+/* Theseus e2e probe: read Linux's standard random devices and power off. */
 #include <fcntl.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -31,9 +27,7 @@ static void dump(const char *label, const char *path, int major, int minor) {
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("theseus-e2e init\n");
-    /* virtio-rng (our seeded ChaCha device) — hwrng core, misc 10:183 */
-    dump("hwrng", "/dev/hwrng", 10, 183);
-    /* kernel CSPRNG — seeded from hwrng, so also deterministic under Theseus */
+    dump("random", "/dev/random", 1, 8);
     dump("urandom", "/dev/urandom", 1, 9);
     printf("done\n");
     reboot(LINUX_REBOOT_CMD_POWER_OFF);

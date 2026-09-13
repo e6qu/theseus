@@ -1,176 +1,94 @@
-# Theseus vs. Antithesis vs. Hypothesis (and related projects)
+# Theseus compared with Antithesis
 
-Where Theseus sits in the landscape of property-based testing, deterministic
-simulation, and chaos tooling. Terms are defined in
-[terminology.md](terminology.md); a hands-on run is in
-[tutorials/](tutorials/).
+Antithesis is the closest product reference for Theseus: both run distributed
+systems under controlled faults and retain reproducible failures. They do not
+currently provide equivalent behavior.
 
-## The short version
+This comparison describes public interfaces, not benchmark results. Theseus
+has no independent head-to-head evaluation with Antithesis.
 
-| | Hypothesis (and proptest, QuickCheck) | Antithesis | Theseus |
-|---|---|---|---|
-| What is tested | Functions / units of code | Whole distributed systems, unmodified | Whole distributed systems, unmodified |
-| Method | Generate inputs, check properties | Deterministic hypervisor + guided state-space exploration + fault injection | Same idea, on a Firecracker/KVM fork |
-| Replay | Seeded input shrinking | Perfect, instruction-level | Locked seeded timelines, actions, coverage, guidance, and properties; clock reads retain a documented mid-quantum caveat |
-| Determinism mechanism | In-process seeded PRNG | Custom deterministic hypervisor (bhyve fork) on bare metal | KVM + seeded devices + tick-stepped virtual clock |
-| Fault injection | None | Guided (network, disk, crash, clock) | Simulated network/storage faults plus Compose lifecycle, clock, and packet actions |
-| Coverage guidance | Shrinking / targeted generators | RL-guided exploration | Marker, deterministic exit-sampled execution locations, topology-state, property, adaptive, and posterior guidance |
-| Model | You write properties | You state invariants; product finds bugs | Same |
-| License | Open source (MPL) | Commercial (some OSS tools) | AGPL-3.0-or-later (engine); Apache-2.0 (fork) |
+| Capability | Antithesis | Theseus today |
+|---|---|---|
+| Workload packaging | Container-based test environment | Container images or explicit Firecracker guest inputs |
+| Test interface | Test templates and SDK assertions | Compose campaigns, UART operations, serial properties, optional SDK |
+| Determinism | Custom deterministic hypervisor | KVM plus seeded devices, simulated I/O, and exit-counted virtual time |
+| Replay | Instruction-level deterministic reproduction | Locked-input replay with recorded fingerprints; mid-quantum clock caveat |
+| Search guidance | Coverage-guided autonomous exploration | Markers, topology/property evidence, dirty-page footprint, and sampled guest PCs |
+| Coverage | Application basic-block instrumentation | Raw guest-PC signals; no application basic-block instrumentation yet |
+| Faults | Network, process, clock, and storage faults | Simulated network/storage plus Compose lifecycle, clock, and packet actions |
+| Concurrency | Controlled thread/process scheduling | Operation-level overlap only; no general thread scheduler control yet |
+| Debugging | Time-travel and causality analysis | Static reports, replay, minimization, bundle comparison, snapshot export |
+| Causality | Counterfactual re-exploration from checkpoints | Not implemented; comparison only finds recorded differences |
+| Delivery | Hosted commercial product | Open source, self-operated Linux/KVM runtime |
 
-## Hypothesis (and the PBT family)
+## What Antithesis demonstrates that Theseus does not yet
 
-Hypothesis (Python), proptest (Rust), QuickCheck (Haskell) test *code you
-own, in-process*: they generate inputs and check that properties hold, then
-shrink failing inputs to minimal counterexamples. They are superb for
-business logic — parsers, state machines, data structure invariants.
+### Application coverage
 
-Where they stop: the system under test is one process executing your code.
-There is no network to partition, no clock to skew, no node to kill. The
-bugs that live in *timing and topology* are out of scope by construction.
+Antithesis documents compiler-based basic-block instrumentation for coverage.
+Theseus currently collects guest instruction addresses by single-stepping
+small guests or sampling vCPU PCs at deterministic exits and pause barriers.
+Those addresses can guide search, but they are not application basic-block or
+edge coverage.
 
-Theseus borrows the discipline — **state properties, let the machine
-search** — and lifts it to the whole running system.
+Reference: [Antithesis coverage instrumentation](https://antithesis.com/docs/product/writing_tests/instrumentation/coverage_instrumentation/).
 
-## Antithesis
+### General concurrency exploration
 
-Antithesis is the reference product for whole-system deterministic
-simulation: a custom deterministic hypervisor (a bhyve fork) runs your
-unmodified containers deterministically, an RL-guided explorer injects
-faults while searching for new states, and every bug found is perfectly
-reproducible with time-travel debugging.
+Antithesis controls execution deeply enough to pause threads and explore
+scheduling choices. Theseus can overlap declared operations and control
+topology faults, but it does not yet expose a general deterministic scheduler
+for application threads or processes.
 
-Key architectural differences with Theseus:
+### Test templates
 
-- **Determinism boundary**: Antithesis built a hypervisor from scratch so
-  it controls the instruction stream itself (instruction-level virtual
-  time). Theseus uses KVM and gains time control at tick granularity —
-  exit-counted quanta with TSC/CNTVCT stepped at boundaries. The tradeoff:
-  guest counter reads between boundaries free-run at host rate (a
-  documented, measured leak); Antithesis does not have it.
-- **Cost and complexity**: Antithesis needs bare-metal hypervisor
-  engineering (custom time sources, CPU quirk taming). Theseus rides KVM's
-  commodity path — far less mechanism, no kernel patches, at the price of
-  that leak.
-- **Exploration guidance**: Antithesis uses coverage-guided RL at scale.
-  Theseus restores Compose campaign candidates from a reusable whole-topology
-  prefix tree and ranks them with marker, deterministic exit-sampled execution
-  locations, topology-state, property, adaptive, and deterministic-posterior
-  evidence. Its single-VM explorer uses deterministic DFS and marker/dirty-page
-  novelty. Ground-truth single-step coverage remains the validation reference
-  for small guests.
-- **Campaign interface**: Antithesis can drive unmodified workloads through
-  its test templates and property APIs. Theseus accepts a designated Compose
-  driver, text UART operations, lifecycle/clock candidates, barrier-triggered
-  named-network `partition`/`heal`, directed service-to-service
-  `link_partition`/`link_heal`, simulated-drive `storage_fault`/`storage_recover`, packet-condition
-  `network_fault`/`network_recover`, EtherType-matched and directed
-  `packet_fault`/`packet_recover`, and
-  `always`/`sometimes`/`reachable`/`unreachable` serial properties. It reduces
-  an individual violation from the same whole-topology checkpoint, supports
-  bounded fault sequences, and fingerprints the applied actions on replay, but
-  it does not yet have Antithesis's
-  copy-on-write whole-topology snapshots or its large-scale RL scheduler.
+Antithesis provides setup, workload, and teardown templates for unmodified
+containers. Theseus has analogous campaign concepts, but its current interface
+is lower-level: Compose configuration, a designated driver, explicit UART or
+image operations, and serial evidence.
 
-If you can pay for the product and want instruction-exact replay plus
-vendor support, use Antithesis. Theseus exists as an open,
-KVM-native, hackable engine in the same intellectual family.
+Reference: [Antithesis test templates](https://antithesis.com/docs/product/writing_tests/test_templates/).
 
-## Public evaluation evidence
+### Counterfactual causality analysis
 
-Theseus publishes versioned evaluation contracts and locked campaign evidence
-under [`evaluations/`](../evaluations/). `theseus evaluate` reports replay
-verification, corpus and coverage counts, checkpoint and reduction work, and
-retained investigation boundaries. A suite may place an ordinary
-fixed-chaos observation beside those metrics, but it is explicitly labelled as
-a baseline observation rather than a product comparison. Do not infer an
-Antithesis performance or bug-finding comparison from it: that needs the same
-public workload, budget, host class, and independently reproducible results.
+Antithesis describes re-executing from checkpoints while changing one event to
+test whether it caused a later behavior. Theseus `compare` reads two completed
+histories and reports their first retained difference. It does not run those
+counterfactual experiments and its output must not be called a causal result.
 
-## FoundationDB
+Reference: [Antithesis causality analysis](https://antithesis.com/docs/product/debugging/causality_analysis/).
 
-FoundationDB is where deterministic simulation testing was proven at
-scale. The database is written in Flow, a C++ actor-model extension, and
-every source of nondeterminism — network, disk, clock, timers,
-randomness — flows through abstract interfaces. In simulation mode those
-interfaces are backed by a deterministic discrete-event simulator with a
-seeded generator: the whole cluster runs on one thread, while the
-simulator kills machines, partitions networks, corrupts disks, and skews
-clocks. Nightly, millions of seeded runs torture the system; every
-failure replays exactly from its seed.
+### Scale and operating model
 
-Key characteristics:
+Antithesis is a hosted product with a mature autonomous exploration service.
+Theseus is a self-operated development project. It needs published runtime
+artifacts, native KVM capacity, retained certificates, and reproducible public
+workload evidence before performance or bug-finding comparisons would be
+meaningful.
 
-- **Deterministic by construction.** The deepest possible control — the
-  code itself only ever sees the simulated environment — at the price of
-  writing the entire system against Flow. Nothing else may run in that
-  process.
-- **Faster than real time.** One thread simulating a cluster outruns any
-  deployment of real machines by orders of magnitude.
-- **Total replay.** A failing run is a seed; the seed is the bug report.
+## Where Theseus is intentionally different
 
-Theseus trades that depth for breadth: instead of rewriting the system
-against a framework, the hypervisor forces determinism on unmodified
-binaries. The price on our side is real: mid-quantum clock reads free-run
-at host rate (documented in [determinism.md](determinism.md)), and a VM
-boundary costs more than an in-process event loop. The price on their
-side: years of framework discipline before the first test, and nothing
-outside the framework can be tested at all.
+- The Firecracker fork, engine, CLI, and bundle formats are inspectable and
+  modifiable under open-source licenses.
+- KVM keeps the runtime close to commodity Linux virtualization, at the cost
+  of weaker instruction-level control.
+- The artifact contract is explicit: a bundle locks the selected runtime,
+  workload, plan, and recorded evidence for offline inspection.
+- The CLI can validate, plan, report, evaluate, and compare bundles without a
+  hosted service. Execution still requires Linux and KVM.
 
-(Antithesis, for the record, was founded by FoundationDB veterans — the
-simulator's methodology generalized into a product. Theseus sits in the
-same family tree.)
+## Other useful comparisons
 
-## TigerBeetle's VOPR
+- Hypothesis, QuickCheck, and proptest explore inputs inside one process; they
+  do not simulate a distributed runtime.
+- FoundationDB and TigerBeetle obtain stronger determinism by building the
+  application against a deterministic simulator. Theseus instead targets
+  ordinary Linux binaries across a VM boundary.
+- Jepsen analyzes consistency histories from real deployments; it does not
+  provide deterministic VM replay.
+- Chaos tools inject faults into live infrastructure but generally do not
+  control all execution inputs or produce locked deterministic replays.
 
-TigerBeetle is a financial-transactions database written in Zig, tested
-by VOPR (the "Viewstamped Operation Replicator" fuzzer): a deterministic
-simulator that runs the whole cluster in one process against a simulated
-network, storage, and clock. VOPR's notable ideas, beyond plain schedule
-fuzzing:
-
-- a **state checker** that validates the simulated cluster against a
-  model after every run — the replica under test is compared to a
-  reference, not just probed for crashes;
-- **fault injection in the storage layer** (torn writes, misreads, corrupt
-  sectors), not just the network;
-- **performance fuzzing** — the simulator tracks operation latencies and
-  flags regressions, catching slowdowns the way correctness fuzzing
-  catches crashes.
-
-VOPR is the strongest case for the deterministic-by-construction school
-done in a modern systems language: single-threaded, seeded, thousands of
-runs per second, and it found real consensus bugs in TigerBeetle's
-Viewstamped Replication implementation before anyone ran them in
-production. Like FoundationDB, it can only test code written inside its
-simulated runtime. Theseus's VM boundary is slower per run and needs a
-KVM host, but the system under test needs no simulator port.
-
-## Other related projects
-
-- **madsim / turmoil (Rust)** — deterministic simulation of tokio-based
-  systems via drop-in runtime shims. Same "rewrite against a simulated
-  runtime" trade as FoundationDB and TigerBeetle: lighter than a
-  hypervisor, but only for code built on those runtimes.
-- **Jepsen** — the gold standard for *analyzing* distributed-system
-  histories for consistency violations on real infrastructure. Jepsen
-  runs real nodes on real networks; bugs are real but reproduction is
-  flaky and there is no replay. Theseus trades some realism for perfect
-  replay.
-- **Chaos engineering (Chaos Monkey, Litmus, Gremlin)** — randomized fault
-  injection on live systems. Finds real problems, but blindly (no
-  state-space guidance) and irreproducibly (no determinism).
-- **Formal methods (TLA+, P)** — prove properties of *models* of systems.
-  Complementary: proofs about designs, Theseus explores the actual
-  implementation, binary included.
-
-## When to use what
-
-- Unit/property bugs in pure logic → Hypothesis/proptest.
-- You own all the code and can re-architect → deterministic-by-construction
-  (FoundationDB-style, madsim, TigerBeetle).
-- You need instruction-exact replay of unmodified systems with vendor
-  support →
-  Antithesis.
-- You want an open, KVM-based engine you can read, modify, and embed →
-  Theseus.
+These tools are complementary. Choose based on the system boundary and the
+evidence required, not by treating the word “deterministic” as one uniform
+guarantee.
