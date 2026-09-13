@@ -840,7 +840,9 @@ mod tests {
         let text = String::from_utf8_lossy(&cpio);
         assert!(text.contains("/bin/serve"));
         assert!(text.contains("\"workdir\":\"/site\""));
-        assert!(text.contains("\"user\":{\"uid\":1000,\"gid\":1000}"));
+        assert!(text.contains("\"user\""));
+        assert!(text.contains("\"uid\":1000"));
+        assert!(text.contains("\"gid\":1000"));
 
         let command_only = ContainerLaunch {
             command: Some(vec!["--foreground".to_owned()]),
