@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage: theseus-image flatten image.tar --output initramfs.cpio [--service service.json] [--network network.json] [--environment environment.json] [--launch launch.json] [--configs configs.json] [--secrets secrets.json] [--volumes volumes.json]";
+const USAGE: &str = "Usage: theseus-image flatten image.tar --output initramfs.cpio [--service service.json] [--network network.json] [--environment environment.json] [--launch launch.json] [--configs configs.json] [--secrets secrets.json] [--volumes volumes.json] [--healthcheck healthcheck.json]";
 
 fn run(args: Vec<String>) -> Result<(), String> {
     match args.as_slice() {
@@ -29,6 +29,7 @@ fn flatten(args: Vec<String>) -> Result<(), String> {
     let mut configs: Option<Vec<theseus_orchestrator::oci::ContainerConfig>> = None;
     let mut secrets: Option<Vec<theseus_orchestrator::oci::ContainerConfig>> = None;
     let mut volumes: Option<Vec<theseus_orchestrator::oci::ContainerVolume>> = None;
+    let mut healthcheck: Option<theseus_orchestrator::oci::ContainerHealthcheck> = None;
     let mut options = rest.iter();
     while let Some(flag) = options.next() {
         let Some(path) = options.next() else {
@@ -90,6 +91,13 @@ fn flatten(args: Vec<String>) -> Result<(), String> {
                         format!("cannot parse volume contract {path}: {error}")
                     })?);
             }
+            "--healthcheck" if healthcheck.is_none() => {
+                let bytes = fs::read(path)
+                    .map_err(|error| format!("cannot read healthcheck contract {path}: {error}"))?;
+                healthcheck = Some(serde_json::from_slice(&bytes).map_err(|error| {
+                    format!("cannot parse healthcheck contract {path}: {error}")
+                })?);
+            }
             _ => return Err(USAGE.to_owned()),
         }
     }
@@ -103,6 +111,7 @@ fn flatten(args: Vec<String>) -> Result<(), String> {
         configs.as_deref(),
         secrets.as_deref(),
         volumes.as_deref(),
+        healthcheck.as_ref(),
     )
     .map_err(|error| format!("cannot flatten image archive: {error}"))?;
     let output = PathBuf::from(output);
@@ -147,6 +156,7 @@ mod tests {
         let configs = directory.join("configs.json");
         let secrets = directory.join("secrets.json");
         let volumes = directory.join("volumes.json");
+        let healthcheck = directory.join("healthcheck.json");
         fs::write(&service, "{}").unwrap();
         fs::write(&network, r#"{"interfaces":[],"hosts":{}}"#).unwrap();
         fs::write(&environment, r#"{"MODE":"campaign"}"#).unwrap();
@@ -160,6 +170,11 @@ mod tests {
         fs::write(
             &volumes,
             r#"[{"target":"/var/lib/app","directories":["/var/lib/app"],"files":[{"target":"/var/lib/app/value","data":[118]}]}]"#,
+        )
+        .unwrap();
+        fs::write(
+            &healthcheck,
+            r#"{"command":["/bin/check"],"interval_millis":1000,"retries":3,"start_period_millis":0}"#,
         )
         .unwrap();
         let error = flatten(vec![
@@ -181,6 +196,8 @@ mod tests {
             secrets.display().to_string(),
             "--volumes".to_owned(),
             volumes.display().to_string(),
+            "--healthcheck".to_owned(),
+            healthcheck.display().to_string(),
         ])
         .unwrap_err();
         assert!(error.contains("cannot read image archive"));

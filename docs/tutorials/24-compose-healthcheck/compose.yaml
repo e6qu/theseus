@@ -1,0 +1,34 @@
+name: compose-healthcheck
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    depends_on:
+      worker:
+        condition: service_healthy
+    networks: [backplane]
+  worker:
+    x-theseus:
+      manifest: worker/theseus.toml
+    healthcheck:
+      test: [CMD, /bin/busybox, wget, -qO-, http://127.0.0.1:8080/health]
+      interval: 100ms
+      retries: 5
+    networks: [backplane]
+
+networks:
+  backplane: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    max_runs: 1
+    max_operations_per_run: 1
+    faults: []
+    operations:
+      - name: read_worker
+        shell:
+          command: [/bin/busybox, wget, -qO-, http://worker:8080/identity]
+          expect_exit: 0
+          output_contains: healthy Compose worker

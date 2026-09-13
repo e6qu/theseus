@@ -230,6 +230,9 @@ Local Compose bind-volume directories are also copied into derived image
 initramfses. They start from the same locked tree on every replay and are
 writable only inside each VM run; Docker named and shared volumes remain out
 of scope because they would add host-persistent state to a replay.
+Standard Compose `CMD` health checks now lock their argv and timing contract
+into the image initramfs. `service_healthy` can use that normal Compose signal
+without an application-specific Theseus readiness contract.
 
 **Campaign operations:** Compose campaigns also accept a declarative `http`
 operation for an image-backed service. Theseus locks its JSON request command

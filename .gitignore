@@ -59,5 +59,9 @@ docs/tutorials/23-compose-volume/api/work/
 docs/tutorials/23-compose-volume/worker/work/
 docs/tutorials/23-compose-volume/campaign/
 docs/tutorials/23-compose-volume/rerun/
+docs/tutorials/24-compose-healthcheck/api/work/
+docs/tutorials/24-compose-healthcheck/worker/work/
+docs/tutorials/24-compose-healthcheck/campaign/
+docs/tutorials/24-compose-healthcheck/rerun/
 
 orchestrator/pivot/target/
