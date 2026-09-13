@@ -26,6 +26,42 @@ use serde::Deserialize;
 /// The pivot binary, prebuilt by `pivot/build.sh`.
 const PIVOT: &[u8] = include_bytes!("../pivot.bin");
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PivotMetadata {
+    pub format: &'static str,
+    pub architecture: &'static str,
+    pub bytes: usize,
+}
+
+/// Exact static executable inserted at `/init` in every flattened image.
+pub fn pivot_bytes() -> &'static [u8] {
+    PIVOT
+}
+
+/// Describe the exact PID-1 bytes embedded in this image adapter.
+pub fn pivot_metadata() -> Result<PivotMetadata, OciError> {
+    let architecture = match PIVOT.get(0..20) {
+        Some(header)
+            if header.starts_with(b"\x7fELF")
+                && u16::from_le_bytes([header[18], header[19]]) == 62 =>
+        {
+            "amd64"
+        }
+        Some(header)
+            if header.starts_with(b"\x7fELF")
+                && u16::from_le_bytes([header[18], header[19]]) == 183 =>
+        {
+            "arm64"
+        }
+        _ => return Err(OciError::Pivot),
+    };
+    Ok(PivotMetadata {
+        format: "theseus-pivot-metadata-v1",
+        architecture,
+        bytes: PIVOT.len(),
+    })
+}
+
 /// Errors from image flattening.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
 pub enum OciError {
@@ -37,6 +73,8 @@ pub enum OciError {
     Json(String),
     /// Image has no entrypoint or command
     NoEntrypoint,
+    /// Embedded pivot is not a supported little-endian Linux ELF executable
+    Pivot,
 }
 
 /// The boot-relevant part of the image config.
@@ -695,6 +733,14 @@ mod tests {
         assert!(cpio.starts_with(b"070701"));
         assert!(cpio.windows(10).any(|w| w == b"TRAILER!!!"));
         assert_eq!(cpio.len() % 512, 0);
+    }
+
+    #[test]
+    fn reports_the_exact_embedded_pivot() {
+        let metadata = pivot_metadata().unwrap();
+        assert!(matches!(metadata.architecture, "amd64" | "arm64"));
+        assert_eq!(metadata.bytes, PIVOT.len());
+        assert_eq!(pivot_bytes(), PIVOT);
     }
 
     #[test]

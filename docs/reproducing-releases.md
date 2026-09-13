@@ -36,6 +36,7 @@ git clone https://github.com/$REPOSITORY "$work/source"
 git -C "$work/source" checkout --detach "$commit"
 docker buildx build --platform "linux/$ARCH" --no-cache \
   --build-arg "SOURCE_DATE_EPOCH=$epoch" \
+  --build-arg "THESEUS_SOURCE_COMMIT=$commit" \
   --output "type=oci,dest=$work/rebuilt.oci.tar,rewrite-timestamp=true" \
   "$work/source"
 mkdir "$work/oci"
@@ -48,6 +49,11 @@ The final comparison establishes that the rebuilt platform image has the same OC
 manifest digest as the published `TAG-ARCH` runtime image. The on-demand
 `verify runtime reproducibility` workflow performs this comparison twice with
 independent no-cache builds for both architectures and signs a witness.
+
+The runtime archive also contains `pivot` and `pivot.json`. The JSON identifies
+the architecture, source commit, and SHA-256 of the exact PID-1 embedded by
+`theseus-image`. Run `theseus-image pivot` to inspect the embedded copy and
+compare its digest with the packaged file.
 
 ## Create an external witness
 
