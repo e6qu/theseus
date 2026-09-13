@@ -54,6 +54,7 @@ jobs:
           tags: ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}-${{ matrix.arch }}
           build-args: |
             SOURCE_DATE_EPOCH=${{ steps.source-date.outputs.value }}
+            THESEUS_SOURCE_COMMIT=${{ github.sha }}
           cache-from: type=gha,scope=runtime-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=runtime-${{ matrix.arch }},ignore-error=true
 
@@ -78,6 +79,11 @@ jobs:
             test -x /usr/local/bin/theseus-explorer
             test -x /usr/local/bin/theseus-image
             test -s /opt/theseus/vmlinux
+            test -x /opt/theseus/pivot
+            test -s /opt/theseus/pivot.json
+            /usr/local/bin/theseus-image pivot | grep -F '"architecture": "${{ matrix.arch }}"'
+            pivot_sha256=$(sha256sum /opt/theseus/pivot | cut -d ' ' -f 1)
+            grep -F "\"sha256\": \"$pivot_sha256\"" /opt/theseus/pivot.json
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
             /usr/local/bin/theseus-image --help >/dev/null
@@ -103,6 +109,7 @@ jobs:
           chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-topology"
           chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-explorer"
           chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-image"
+          chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/pivot"
           (
             cd "theseus-${TAG}-linux-${{ matrix.arch }}"
             sha256sum ./* > SHA256SUMS
@@ -342,6 +349,10 @@ jobs:
             test -x /usr/local/bin/theseus-explorer
             test -x /usr/local/bin/theseus-image
             test -s /opt/theseus/vmlinux
+            test -x /opt/theseus/pivot
+            test -s /opt/theseus/pivot.json
+            /usr/local/bin/theseus-image pivot | grep -F '"architecture": "${{ matrix.arch }}"'
+            grep -F '"source_commit": "${{ github.sha }}"' /opt/theseus/pivot.json
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
             /usr/local/bin/theseus-image --help >/dev/null
@@ -399,9 +410,15 @@ jobs:
             test -x theseus-explorer
             test -x theseus-image
             test -s vmlinux
+            test -x pivot
+            test -s pivot.json
             ./firecracker --version
             ./theseus --help >/dev/null
             ./theseus-image --help >/dev/null
+            ./theseus-image pivot | grep -F '"architecture": "${{ matrix.arch }}"'
+            pivot_sha256=$(sha256sum pivot | cut -d ' ' -f 1)
+            grep -F "\"sha256\": \"$pivot_sha256\"" pivot.json
+            grep -F "\"source_commit\": \"$GITHUB_SHA\"" pivot.json
           )
 
   cli-release-consumer:

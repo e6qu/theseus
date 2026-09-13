@@ -81,6 +81,8 @@ struct Run {
 #[derive(Deserialize)]
 struct Boundary {
     #[serde(default)]
+    id: String,
+    #[serde(default)]
     operation: String,
     #[serde(default)]
     service: String,
@@ -230,6 +232,15 @@ pub fn compare_campaigns(
                 });
             }
             for (boundary, (left, right)) in left.timeline.iter().zip(&right.timeline).enumerate() {
+                if !left.id.is_empty() && !right.id.is_empty() && left.id != right.id {
+                    return Some(CampaignDivergence {
+                        run,
+                        boundary: Some(boundary),
+                        reason: "operation-boundary identities differ".to_owned(),
+                        left: left.id.clone(),
+                        right: right.id.clone(),
+                    });
+                }
                 if left.actions != right.actions {
                     return Some(CampaignDivergence {
                         run,

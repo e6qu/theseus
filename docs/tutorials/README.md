@@ -66,6 +66,8 @@ deterministic-CRNG kernel module is shipped.
     credentials into a service and replay them.
 28. [Lock Compose VM resources](28-compose-resources/) — turn standard Compose
     CPU and memory limits into a replayed VM contract.
+29. [Overlap ordinary commands](29-overlap-commands/) — launch named processes,
+    find a lost update, minimize it, and replay its completion observations.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

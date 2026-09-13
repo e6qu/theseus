@@ -85,6 +85,7 @@ jobs:
               --platform "linux/${{ matrix.arch }}" \
               --no-cache \
               --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+              --build-arg "THESEUS_SOURCE_COMMIT=${{ steps.inputs.outputs.commit }}" \
               --output "type=oci,dest=$work/${build}.oci.tar,rewrite-timestamp=true" \
               source
             mkdir "$work/$build"

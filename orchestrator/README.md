@@ -17,7 +17,9 @@ Depends on `vmm` one-way (no cycles). AGPL-3.0-or-later (see
 
 The `pivot/` subdirectory builds the static PID-1 binary embedded in
 flattened images. Runtime-image builds regenerate it for their own CPU
-architecture before compiling the image adapter.
+architecture before compiling and testing the image adapter. Published
+runtime archives include those pivot bytes and `pivot.json`; run
+`theseus-image pivot` to inspect the embedded architecture and digest.
 
 ## Documentation
 

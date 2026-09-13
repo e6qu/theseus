@@ -7,8 +7,11 @@
 FROM rust:1.97.0-bookworm@sha256:8fa55b2f3ddf97471ab6a767bfa3f37e6bad0986ba823e75fea57e2a2a5c3073 AS build
 
 ARG SOURCE_DATE_EPOCH
+ARG TARGETARCH
+ARG THESEUS_SOURCE_COMMIT=unknown
 ARG THESEUS_KERNEL_REVISION=8a40ca92bfa9b706b76287942c89b13884928cb0
 ENV SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH \
+    THESEUS_SOURCE_COMMIT=$THESEUS_SOURCE_COMMIT \
     THESEUS_KERNEL_REVISION=$THESEUS_KERNEL_REVISION \
     ZERO_AR_DATE=1
 
@@ -19,7 +22,7 @@ RUN printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99
         /etc/apt/sources.list.d/debian.sources \
     && apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
-        bc bison busybox-static cpio curl dwarves flex gcc git libclang-dev \
+        bc bison busybox-static cpio curl dwarves file flex gcc git libclang-dev \
         libelf-dev libseccomp-dev libssl-dev make patch squashfs-tools tree \
         musl-tools \
     && rm -rf /var/lib/apt/lists/*
@@ -30,7 +33,7 @@ COPY . .
 # Each manifest writes to its own target directory. Fail in the build stage
 # with a precise error instead of discovering a missing runtime binary only
 # when the final image tries to copy it.
-RUN ./orchestrator/pivot/build.sh \
+RUN ./orchestrator/pivot/build.sh --target "$TARGETARCH" \
     && cargo build --manifest-path firecracker/Cargo.toml --release -p firecracker \
     && cargo build --manifest-path cli/Cargo.toml --release --locked \
     && cargo build --manifest-path topology-runner/Cargo.toml --release --locked \
@@ -40,14 +43,22 @@ RUN ./orchestrator/pivot/build.sh \
     && test -x cli/target/release/theseus \
     && test -x topology-runner/target/release/theseus-topology \
     && test -x image-runner/target/release/theseus-image \
-    && test -x explorer-runner/target/release/theseus-explorer
+    && test -x explorer-runner/target/release/theseus-explorer \
+    && mkdir -p /out \
+    && cp orchestrator/pivot.bin /out/pivot \
+    && image-runner/target/release/theseus-image pivot > /out/embedded-pivot.json \
+    && architecture=$(dpkg --print-architecture) \
+    && grep -F "\"architecture\": \"$architecture\"" /out/embedded-pivot.json \
+    && pivot_sha256=$(sha256sum /out/pivot | cut -d ' ' -f 1) \
+    && grep -F "\"sha256\": \"$pivot_sha256\"" /out/embedded-pivot.json \
+    && printf '{\n  "format": "theseus-packaged-pivot-v1",\n  "architecture": "%s",\n  "source_commit": "%s",\n  "sha256": "%s"\n}\n' \
+        "$architecture" "$THESEUS_SOURCE_COMMIT" "$pivot_sha256" > /out/pivot.json
 
 # rebuild.sh normally installs its CI-machine dependencies itself.  The image
 # above already has the smaller, fixed set needed to produce the tutorial
 # kernel, so do not mutate the build image while compiling it.
 RUN cd firecracker/resources \
     && THESEUS_SKIP_DEPENDENCIES=1 ./rebuild.sh kernels 6.1 \
-    && mkdir -p /out \
     && cp "$(find "$(uname -m)" -maxdepth 1 -name 'vmlinux-6.1*' ! -name '*.config' | head -n 1)" /out/vmlinux \
     && module="$(find "$(uname -m)" -maxdepth 1 -name 'theseus_rng-6.1*.ko' | head -n 1)" \
     && if [ -n "$module" ]; then cp "$module" /out/theseus_rng.ko; fi

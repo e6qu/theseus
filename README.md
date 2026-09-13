@@ -20,6 +20,8 @@ passing unit suite alone is not treated as runtime proof.
 - UART operations for unmodified Linux services and an optional guest SDK.
 - Compose campaigns with bounded operations, faults, serial properties,
   minimization, replay, and offline reports.
+- Named image commands that remain in flight across operation checkpoints,
+  with replayed launches and completion-observation order.
 - In-memory branch capture and private copy-on-write child mappings.
 - Container-image conversion for ordinary Linux service images.
 - SHA-addressed Linux runtime images for amd64 and arm64, plus published CLI
@@ -56,6 +58,7 @@ examples:
 4. Record and replay serial/TTY input like a Raspberry Pi sensor reading.
 5. Move to multi-service Compose campaigns, faults, reports, and container
    images.
+6. Find and minimize a lost update by overlapping ordinary image commands.
 
 Each tutorial directory is its own working directory and complete input
 context. Runnable tutorials use published Theseus images or binaries, not a

@@ -3,12 +3,34 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage: theseus-image flatten image.tar --output initramfs.cpio [--service service.json] [--network network.json] [--environment environment.json] [--launch launch.json] [--configs configs.json] [--secrets secrets.json] [--volumes volumes.json] [--healthcheck healthcheck.json]";
+use sha2::{Digest, Sha256};
+
+const USAGE: &str = "Usage:
+  theseus-image pivot
+  theseus-image flatten image.tar --output initramfs.cpio [--service service.json] [--network network.json] [--environment environment.json] [--launch launch.json] [--configs configs.json] [--secrets secrets.json] [--volumes volumes.json] [--healthcheck healthcheck.json]";
 
 fn run(args: Vec<String>) -> Result<(), String> {
     match args.as_slice() {
         [command] if command == "--help" || command == "-h" => {
             println!("{USAGE}");
+            Ok(())
+        }
+        [command] if command == "pivot" => {
+            let metadata = theseus_orchestrator::oci::pivot_metadata()
+                .map_err(|error| format!("cannot inspect embedded pivot: {error}"))?;
+            let output = serde_json::json!({
+                "format": metadata.format,
+                "architecture": metadata.architecture,
+                "bytes": metadata.bytes,
+                "sha256": format!(
+                    "{:x}",
+                    Sha256::digest(theseus_orchestrator::oci::pivot_bytes())
+                ),
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&output).map_err(|error| error.to_string())?
+            );
             Ok(())
         }
         _ => flatten(args),
@@ -231,5 +253,21 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, USAGE);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn reports_the_embedded_pivot() {
+        run(vec!["pivot".to_owned()]).unwrap();
+        let metadata = theseus_orchestrator::oci::pivot_metadata().unwrap();
+        assert!(matches!(metadata.architecture, "amd64" | "arm64"));
+        assert!(metadata.bytes > 0);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(theseus_orchestrator::oci::pivot_bytes())
+            )
+            .len(),
+            64
+        );
     }
 }

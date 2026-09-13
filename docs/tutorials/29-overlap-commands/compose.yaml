@@ -1,0 +1,123 @@
+name: overlapping-commands
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+
+networks:
+  backplane: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    state: {phase: new, a: idle, b: idle}
+    max_runs: 64
+    max_operations_per_run: 9
+    faults: []
+    operations:
+      - name: setup
+        max_uses: 1
+        requires_state: {phase: new}
+        sets_state: {phase: ready}
+        shell:
+          phase: setup
+          command: [/bin/sh, -c, "rm -f /state/*; echo 0 > /state/counter"]
+
+      - name: launch_a
+        max_uses: 1
+        requires_state: {phase: ready, a: idle}
+        sets_state: {a: running}
+        shell:
+          phase: launch
+          process: writer-a
+          command: [/work/writer, a]
+
+      - name: release_a
+        max_uses: 1
+        requires_state: {a: running, b: idle}
+        sets_state: {a: released}
+        shell:
+          command: [/bin/sh, -c, "while [ ! -e /state/a.ready ]; do sleep 0.01; done; touch /state/a.go"]
+
+      - name: complete_a
+        max_uses: 1
+        requires_state: {a: released}
+        sets_state: {a: done}
+        shell:
+          phase: completion
+          process: writer-a
+          output_contains: committed-a
+
+      - name: launch_b_sequential
+        max_uses: 1
+        requires_state: {a: done, b: idle}
+        sets_state: {b: running}
+        shell:
+          phase: launch
+          process: writer-b
+          command: [/work/writer, b]
+
+      - name: release_b
+        max_uses: 1
+        requires_state: {a: done, b: running}
+        sets_state: {b: released}
+        shell:
+          command: [/bin/sh, -c, "while [ ! -e /state/b.ready ]; do sleep 0.01; done; touch /state/b.go"]
+
+      - name: launch_b_overlapped
+        max_uses: 1
+        requires_state: {a: running, b: idle}
+        sets_state: {b: running}
+        shell:
+          phase: launch
+          process: writer-b
+          command: [/work/writer, b]
+
+      - name: release_both
+        max_uses: 1
+        requires_state: {a: running, b: running}
+        sets_state: {a: released, b: released}
+        shell:
+          command: [/bin/sh, -c, "while [ ! -e /state/a.ready ] || [ ! -e /state/b.ready ]; do sleep 0.01; done; touch /state/a.go /state/b.go"]
+
+      - name: complete_b
+        max_uses: 1
+        requires_state: {b: released}
+        sets_state: {b: done}
+        shell:
+          phase: completion
+          process: writer-b
+          output_contains: committed-b
+
+      - name: inspect
+        max_uses: 1
+        requires_state: {a: done, b: done}
+        sets_state: {phase: inspected}
+        shell:
+          phase: assertion
+          command: [/bin/sh, -c, "printf '{\"value\":%s}\n' \"$(cat /state/counter)\""]
+          output_json: true
+
+      - name: recover
+        max_uses: 1
+        requires_state: {phase: inspected}
+        sets_state: {phase: recovered}
+        shell:
+          phase: recovery
+          command: [/bin/sh, -c, "rm -f /state/*.ready /state/*.go"]
+
+    properties:
+      - name: sequential_result_is_reachable
+        kind: reachable
+        service: api
+        predicate:
+          json:
+            fields: {/event: shell_operation, /name: inspect, /output/value: 2}
+      - name: lost_update_is_unreachable
+        kind: unreachable
+        service: api
+        predicate:
+          json:
+            fields: {/event: shell_operation, /name: inspect, /output/value: 1}

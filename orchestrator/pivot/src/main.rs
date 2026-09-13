@@ -202,9 +202,26 @@ struct ShellOperation {
 
 /// A host sends this JSON after the boot marker for a Compose command
 /// operation. The command stays entirely inside the image VM.
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ShellPhase {
+    #[default]
+    Run,
+    Setup,
+    Launch,
+    Completion,
+    Assertion,
+    Recovery,
+}
+
 #[derive(serde::Deserialize)]
 struct CampaignShellOperation {
     name: String,
+    #[serde(default)]
+    phase: ShellPhase,
+    #[serde(default)]
+    process: Option<String>,
+    #[serde(default)]
     command: Vec<String>,
     expect_exit: i32,
     #[serde(default)]
@@ -785,10 +802,16 @@ struct ShellOperationResult {
     output_json: Option<serde_json::Value>,
 }
 
-fn run_shell_operation(
+struct RunningShellOperation {
+    pid: libc::pid_t,
+    output: std::fs::File,
+}
+
+fn start_shell_operation(
     spec: &InitSpec,
-    operation: &ShellOperation,
-) -> Result<ShellOperationResult, String> {
+    command: &[String],
+    environment: &BTreeMap<String, String>,
+) -> Result<RunningShellOperation, String> {
     let mut pipe_fds = [0; 2];
     if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } != 0 {
         return Err(format!(
@@ -814,19 +837,31 @@ fn run_shell_operation(
             libc::dup2(pipe_fds[1], libc::STDERR_FILENO);
             libc::close(pipe_fds[1]);
         }
-        if let Err(error) = exec_argv(spec, &operation.command, &operation.environment) {
+        if let Err(error) = exec_argv(spec, command, environment) {
             eprintln!("pivot: {error}");
         }
         std::process::exit(127);
     }
 
     unsafe { libc::close(pipe_fds[1]) };
+    Ok(RunningShellOperation {
+        pid,
+        output: unsafe { std::fs::File::from_raw_fd(pipe_fds[0]) },
+    })
+}
+
+fn finish_shell_operation(
+    mut running: RunningShellOperation,
+    expect_exit: i32,
+    output_contains: Option<&str>,
+    output_json: bool,
+) -> Result<ShellOperationResult, String> {
     let mut output = Vec::new();
     let mut output_truncated = false;
-    let mut reader = unsafe { std::fs::File::from_raw_fd(pipe_fds[0]) };
     let mut buffer = [0; 4096];
     loop {
-        let count = reader
+        let count = running
+            .output
             .read(&mut buffer)
             .map_err(|error| format!("cannot read command output: {error}"))?;
         if count == 0 {
@@ -838,7 +873,7 @@ fn run_shell_operation(
     }
 
     let mut status = 0;
-    if unsafe { libc::waitpid(pid, &mut status, 0) } != pid {
+    if unsafe { libc::waitpid(running.pid, &mut status, 0) } != running.pid {
         return Err(format!(
             "cannot wait for command: {}",
             std::io::Error::last_os_error()
@@ -851,13 +886,10 @@ fn run_shell_operation(
         ));
     }
     let actual_exit = libc::WEXITSTATUS(status);
-    if actual_exit != operation.expect_exit {
-        return Err(format!(
-            "expected exit {}, got {actual_exit}",
-            operation.expect_exit
-        ));
+    if actual_exit != expect_exit {
+        return Err(format!("expected exit {expect_exit}, got {actual_exit}"));
     }
-    if let Some(expected) = &operation.output_contains {
+    if let Some(expected) = output_contains {
         if !output
             .windows(expected.len())
             .any(|window| window == expected.as_bytes())
@@ -865,7 +897,7 @@ fn run_shell_operation(
             return Err(format!("command output does not contain {expected:?}"));
         }
     }
-    let output_json = if operation.output_json {
+    let output_json = if output_json {
         if output_truncated {
             return Err("command output exceeded 65536-byte JSON limit".to_owned());
         }
@@ -877,6 +909,19 @@ fn run_shell_operation(
         None
     };
     Ok(ShellOperationResult { output_json })
+}
+
+fn run_shell_operation(
+    spec: &InitSpec,
+    operation: &ShellOperation,
+) -> Result<ShellOperationResult, String> {
+    let running = start_shell_operation(spec, &operation.command, &operation.environment)?;
+    finish_shell_operation(
+        running,
+        operation.expect_exit,
+        operation.output_contains.as_deref(),
+        operation.output_json,
+    )
 }
 
 fn run_healthcheck(spec: &InitSpec, healthcheck: &ContainerHealthcheck) -> Result<(), String> {
@@ -904,21 +949,90 @@ fn run_healthcheck(spec: &InitSpec, healthcheck: &ContainerHealthcheck) -> Resul
     Err(last_error)
 }
 
+struct CampaignShellResult {
+    phase: ShellPhase,
+    process: Option<String>,
+    completion: Option<u64>,
+    output_json: Option<serde_json::Value>,
+}
+
 fn run_campaign_shell_operation(
     spec: &InitSpec,
     operation: CampaignShellOperation,
-) -> Result<ShellOperationResult, String> {
-    run_shell_operation(
-        spec,
-        &ShellOperation {
-            name: operation.name,
-            command: operation.command,
-            expect_exit: operation.expect_exit,
-            output_contains: operation.output_contains,
-            output_json: operation.output_json,
-            environment: operation.environment,
-        },
-    )
+    running: &mut BTreeMap<String, RunningShellOperation>,
+    completion_count: &mut u64,
+) -> Result<CampaignShellResult, String> {
+    let process = operation.process.clone();
+    match operation.phase {
+        ShellPhase::Launch => {
+            let process = process.ok_or_else(|| "launch has no process identity".to_owned())?;
+            if running.contains_key(&process) {
+                return Err(format!("process {process:?} is already running"));
+            }
+            let child = start_shell_operation(spec, &operation.command, &operation.environment)?;
+            running.insert(process.clone(), child);
+            Ok(CampaignShellResult {
+                phase: operation.phase,
+                process: Some(process),
+                completion: None,
+                output_json: None,
+            })
+        }
+        ShellPhase::Completion => {
+            let process = process.ok_or_else(|| "completion has no process identity".to_owned())?;
+            let child = running
+                .remove(&process)
+                .ok_or_else(|| format!("process {process:?} is not running"))?;
+            let result = finish_shell_operation(
+                child,
+                operation.expect_exit,
+                operation.output_contains.as_deref(),
+                operation.output_json,
+            )?;
+            let completion = *completion_count;
+            *completion_count = completion.saturating_add(1);
+            Ok(CampaignShellResult {
+                phase: operation.phase,
+                process: Some(process),
+                completion: Some(completion),
+                output_json: result.output_json,
+            })
+        }
+        ShellPhase::Run | ShellPhase::Setup | ShellPhase::Assertion | ShellPhase::Recovery => {
+            let result = run_shell_operation(
+                spec,
+                &ShellOperation {
+                    name: operation.name,
+                    command: operation.command,
+                    expect_exit: operation.expect_exit,
+                    output_contains: operation.output_contains,
+                    output_json: operation.output_json,
+                    environment: operation.environment,
+                },
+            )?;
+            Ok(CampaignShellResult {
+                phase: operation.phase,
+                process: None,
+                completion: None,
+                output_json: result.output_json,
+            })
+        }
+    }
+}
+
+fn report_campaign_shell_operation(name: &str, result: CampaignShellResult) {
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "shell_operation",
+            "name": name,
+            "phase": result.phase,
+            "process": result.process,
+            "completion": result.completion,
+            "output": result.output_json,
+        })
+    );
+    println!("THES:SHELL:operation:{name}:PASS");
 }
 
 fn report_shell_operation(name: &str, result: ShellOperationResult) {
@@ -1172,6 +1286,8 @@ fn main() {
         power_off();
     };
     if service.campaign {
+        let mut running_shell_operations = BTreeMap::new();
+        let mut shell_completion_count = 0_u64;
         loop {
             let (protocol, command) = match channel.next_command_any(&[
                 "THES:HTTP:operation:",
@@ -1226,8 +1342,13 @@ fn main() {
                     }
                 };
                 let name = operation.name.clone();
-                match run_campaign_shell_operation(&spec, operation) {
-                    Ok(result) => report_shell_operation(&name, result),
+                match run_campaign_shell_operation(
+                    &spec,
+                    operation,
+                    &mut running_shell_operations,
+                    &mut shell_completion_count,
+                ) {
+                    Ok(result) => report_campaign_shell_operation(&name, result),
                     Err(error) => eprintln!("THES:SHELL:operation:{name}:FAIL {error}"),
                 }
                 channel
@@ -1281,5 +1402,21 @@ mod tests {
             ["/custom/bin/httpd", "/bin/httpd"]
         );
         assert_eq!(executable_paths("/bin/httpd", &[]), ["/bin/httpd"]);
+    }
+
+    #[test]
+    fn decodes_named_command_lifecycle() {
+        let launch: CampaignShellOperation = serde_json::from_str(
+            r#"{"name":"start","phase":"launch","process":"writer","command":["/bin/writer"],"expect_exit":0}"#,
+        )
+        .unwrap();
+        assert!(matches!(launch.phase, ShellPhase::Launch));
+        assert_eq!(launch.process.as_deref(), Some("writer"));
+
+        let legacy: CampaignShellOperation =
+            serde_json::from_str(r#"{"name":"check","command":["/bin/true"],"expect_exit":0}"#)
+                .unwrap();
+        assert!(matches!(legacy.phase, ShellPhase::Run));
+        assert!(legacy.process.is_none());
     }
 }

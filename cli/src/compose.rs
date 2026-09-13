@@ -201,6 +201,11 @@ struct ComposeGrpcHealthOperation {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeShellOperation {
+    #[serde(default)]
+    phase: ComposeShellPhase,
+    #[serde(default)]
+    process: Option<String>,
+    #[serde(default)]
     command: Vec<String>,
     #[serde(default = "default_shell_exit")]
     expect_exit: i32,
@@ -210,6 +215,22 @@ struct ComposeShellOperation {
     output_json: bool,
     #[serde(default)]
     environment: BTreeMap<String, String>,
+}
+
+/// Lifecycle step for an ordinary command executed inside an image VM.
+/// `launch` deliberately returns before the child exits; a later `completion`
+/// step joins that exact named process. The remaining phases execute to
+/// completion and exist to make a retained scenario readable.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposeShellPhase {
+    #[default]
+    Run,
+    Setup,
+    Launch,
+    Completion,
+    Assertion,
+    Recovery,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1094,6 +1115,10 @@ pub struct CampaignPlan {
 pub struct OperationPlan {
     pub name: String,
     pub service: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell_phase: Option<ComposeShellPhase>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell_process: Option<String>,
     pub inputs: Vec<OperationInputPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_grammar: Option<OperationInputGrammarPlan>,
@@ -2457,9 +2482,9 @@ fn campaign_plan(
             "campaign max_faults_per_run must be between 1 and 4".to_owned(),
         ));
     }
-    if campaign.max_operations_per_run == 0 || campaign.max_operations_per_run > 4 {
+    if campaign.max_operations_per_run == 0 || campaign.max_operations_per_run > 12 {
         return Err(ComposeError::Invalid(
-            "campaign max_operations_per_run must be between 1 and 4".to_owned(),
+            "campaign max_operations_per_run must be between 1 and 12".to_owned(),
         ));
     }
     let initial_state = campaign.state;
@@ -2499,6 +2524,8 @@ fn campaign_plan(
                 operation.name
             )));
         }
+        let mut shell_phase = None;
+        let mut shell_process = None;
         let http_input = if let Some(http) = http {
             if !http.url.starts_with("http://")
                 || !(100..=599).contains(&http.expect_status)
@@ -2575,12 +2602,37 @@ fn campaign_plan(
                 sets_state: BTreeMap::new(),
             })
         } else if let Some(shell) = shell {
-            if shell.command.is_empty()
-                || !shell.command[0].starts_with('/')
-                || shell
-                    .command
-                    .iter()
-                    .any(|argument| argument.is_empty() || argument.contains('\0'))
+            let named_process = matches!(
+                shell.phase,
+                ComposeShellPhase::Launch | ComposeShellPhase::Completion
+            );
+            let command_required = !matches!(shell.phase, ComposeShellPhase::Completion);
+            let command_valid = (!command_required && shell.command.is_empty())
+                || (command_required
+                    && !shell.command.is_empty()
+                    && shell.command[0].starts_with('/')
+                    && shell
+                        .command
+                        .iter()
+                        .all(|argument| !argument.is_empty() && !argument.contains('\0')));
+            let process_valid = match (named_process, shell.process.as_deref()) {
+                (true, Some(process)) => {
+                    !process.is_empty()
+                        && process.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+                        })
+                }
+                (false, None) => true,
+                _ => false,
+            };
+            if !command_valid
+                || !process_valid
+                || (matches!(shell.phase, ComposeShellPhase::Launch)
+                    && (shell.expect_exit != 0
+                        || shell.output_contains.is_some()
+                        || shell.output_json))
+                || (matches!(shell.phase, ComposeShellPhase::Completion)
+                    && !shell.environment.is_empty())
                 || shell.output_contains.as_deref() == Some("")
                 || shell.environment.iter().any(|(key, value)| {
                     key.is_empty()
@@ -2605,8 +2657,12 @@ fn campaign_plan(
                 )));
             };
             container.campaign = true;
+            shell_phase = Some(shell.phase);
+            shell_process = shell.process.clone();
             let command = serde_json::json!({
                 "name": operation.name.clone(),
+                "phase": shell.phase,
+                "process": shell.process,
                 "command": shell.command,
                 "expect_exit": shell.expect_exit,
                 "output_contains": shell.output_contains,
@@ -2792,6 +2848,8 @@ fn campaign_plan(
         operations.push(OperationPlan {
             name: operation.name,
             service,
+            shell_phase,
+            shell_process,
             inputs,
             input_grammar: input_grammar.map(|grammar| grammar.source),
             stage: operation.stage,
@@ -6128,6 +6186,79 @@ mod tests {
     }
 
     #[test]
+    fn locks_named_shell_process_lifecycle_for_overlapping_commands() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 4\n    max_operations_per_run: 6\n    operations:\n      - name: launch_writer\n        shell:\n          phase: launch\n          process: writer-a\n          command: [/bin/writer, a]\n      - name: complete_writer\n        shell:\n          phase: completion\n          process: writer-a\n          output_contains: committed\n    faults: []\n",
+        );
+        let root = directory.path().join("api");
+        fs::write(root.join("runtime/theseus-image"), b"image adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            root.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(root.join("guest/service.tar"), b"image").unwrap();
+        fs::write(
+            root.join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'guest/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n[container_service.ready]\nurl = 'http://127.0.0.1:8080/health'\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let operations = &plan.campaign.unwrap().operations;
+        assert_eq!(operations[0].shell_phase, Some(ComposeShellPhase::Launch));
+        assert_eq!(operations[0].shell_process.as_deref(), Some("writer-a"));
+        assert_eq!(
+            operations[1].shell_phase,
+            Some(ComposeShellPhase::Completion)
+        );
+        let completion = operations[1].inputs[0]
+            .input_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        let completion = String::from_utf8(completion).unwrap();
+        assert!(completion.contains("\"phase\":\"completion\""));
+        assert!(completion.contains("\"command\":[]"));
+        assert!(completion.contains("\"output_contains\":\"committed\""));
+    }
+
+    #[test]
+    fn rejects_malformed_shell_process_lifecycle() {
+        for shell in [
+            "phase: launch\n          command: [/bin/writer]",
+            "phase: completion\n          process: writer\n          command: [/bin/wait]",
+            "phase: run\n          process: writer\n          command: [/bin/writer]",
+            "phase: launch\n          process: writer\n          command: [/bin/writer]\n          output_json: true",
+        ] {
+            let directory = fixture(&format!(
+                "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [test]\nnetworks:\n  test: {{}}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: command\n        shell:\n          {shell}\n    faults: []\n"
+            ));
+            let root = directory.path().join("api");
+            fs::write(root.join("runtime/theseus-image"), b"image adapter").unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(
+                root.join("runtime/theseus-image"),
+                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+            )
+            .unwrap();
+            fs::write(root.join("guest/service.tar"), b"image").unwrap();
+            fs::write(
+                root.join("theseus.toml"),
+                "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'guest/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1\nexits_per_tick = 1\n[container_service.ready]\nurl = 'http://127.0.0.1:8080'\n",
+            )
+            .unwrap();
+            let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+            assert!(
+                error.to_string().contains("invalid shell contract"),
+                "unexpected error for {shell:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_host_compose_features() {
         let directory = fixture(
             "services:\n  api:\n    image: nginx\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
@@ -7572,7 +7703,7 @@ x-theseus:
     #[test]
     fn rejects_an_unbounded_campaign_operation_sequence() {
         let directory = fixture(
-            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_operations_per_run: 5\n    operations:\n      - name: request\n        input: 'request\\n'\n",
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_operations_per_run: 13\n    operations:\n      - name: request\n        input: 'request\\n'\n",
         );
         let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
         assert!(error.to_string().contains("max_operations_per_run"));
