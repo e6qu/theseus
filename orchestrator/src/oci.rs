@@ -50,6 +50,10 @@ pub struct ImageSpec {
     pub workdir: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<ContainerUser>,
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tmpfs: Vec<String>,
 }
 
 /// Numeric credentials for a locked Compose image process.
@@ -72,6 +76,10 @@ pub struct ContainerLaunch {
     pub working_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<ContainerUser>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tmpfs: Vec<String>,
 }
 
 /// A read-only file supplied by Compose rather than the container image.
@@ -104,6 +112,8 @@ impl ContainerLaunch {
             && self.entrypoint.is_none()
             && self.working_dir.is_none()
             && self.user.is_none()
+            && !self.read_only
+            && self.tmpfs.is_empty()
     }
 }
 
@@ -392,6 +402,10 @@ pub fn flatten_with_contracts(
             .and_then(|launch| launch.working_dir.clone())
             .unwrap_or_else(|| inner.workdir.unwrap_or_default()),
         user: launch.and_then(|launch| launch.user.clone()),
+        read_only: launch.is_some_and(|launch| launch.read_only),
+        tmpfs: launch
+            .map(|launch| launch.tmpfs.clone())
+            .unwrap_or_default(),
     };
     if let Some(environment) = environment {
         apply_environment(&mut spec.env, environment);
@@ -443,6 +457,8 @@ pub fn flatten_with_contracts(
         "env": spec.env,
         "workdir": spec.workdir,
         "user": spec.user,
+        "read_only": spec.read_only,
+        "tmpfs": spec.tmpfs,
         "container_service": service,
         "network": network,
         "healthcheck": healthcheck,
