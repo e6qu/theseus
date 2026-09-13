@@ -182,7 +182,7 @@ status = "failed"
     .unwrap();
     fs::write(
         bundle.join("replay-plan.json"),
-        r#"{"format":"theseus-compose-plan-v1"}"#,
+        r#"{"format":"theseus-compose-plan-v1","services":[{}]}"#,
     )
     .unwrap();
     let lock = Command::new(env!("CARGO_BIN_EXE_theseus"))
@@ -216,7 +216,7 @@ fn evaluate_capture_publishes_a_complete_campaign_without_kvm() {
     fs::create_dir_all(campaign.join("services/api")).unwrap();
     fs::write(
         campaign.join("replay-plan.json"),
-        r#"{"format":"theseus-compose-plan-v1"}"#,
+        r#"{"format":"theseus-compose-plan-v1","services":[{}]}"#,
     )
     .unwrap();
     fs::write(campaign.join("services/api/serial.log"), "evidence\n").unwrap();
