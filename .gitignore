@@ -72,5 +72,8 @@ docs/tutorials/26-compose-host-identity/rerun/
 docs/tutorials/27-compose-user/api/work/
 docs/tutorials/27-compose-user/campaign/
 docs/tutorials/27-compose-user/rerun/
+docs/tutorials/28-compose-resources/api/work/
+docs/tutorials/28-compose-resources/campaign/
+docs/tutorials/28-compose-resources/rerun/
 
 orchestrator/pivot/target/

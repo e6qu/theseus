@@ -233,6 +233,9 @@ Compose `user` locks numeric `uid:gid` credentials into that process contract.
 The pivot drops supplementary groups and applies those credentials before the
 image entrypoint, health checks, and campaign shell operations; host and
 image account-name lookup are deliberately out of scope.
+Compose CPU and memory limits now replace the manifest's VM resources through
+whole vCPU and MiB quantities. The resolved machine configuration is part of
+the locked plan; fractional host-scheduled quotas remain out of scope.
 Local Compose `configs` are locked as read-only files in image initramfses, so
 ordinary services can receive deterministic file configuration without a bind
 mount or host filesystem dependency.

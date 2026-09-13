@@ -64,6 +64,8 @@ deterministic-CRNG kernel module is shipped.
     and local `extra_hosts` aliases into an image service and replay them.
 27. [Run an image as a Compose user](27-compose-user/) — lock numeric image
     credentials into a service and replay them.
+28. [Lock Compose VM resources](28-compose-resources/) — turn standard Compose
+    CPU and memory limits into a replayed VM contract.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

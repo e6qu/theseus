@@ -299,6 +299,11 @@ health checks, or campaign shell operations. Name lookup is intentionally out
 of scope: account files are image-specific, while numeric credentials replay
 without consulting the host. See [tutorial 27](../../tutorials/27-compose-user/).
 
+Compose `cpus` and `mem_limit`, or `deploy.resources.limits.cpus` and
+`memory`, can replace the manifest's VM vCPU and memory values. Theseus accepts
+whole vCPU counts and whole MiB memory quantities only, then records the
+resolved machine configuration in the replay plan. See [tutorial 28](../../tutorials/28-compose-resources/).
+
 `command` replaces the image `Cmd` and retains its image `Entrypoint`. An
 explicit `entrypoint` replaces the image entrypoint and drops the image `Cmd`;
 the supplied `command` then supplies its arguments. Theseus supports only argv

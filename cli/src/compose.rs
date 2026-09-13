@@ -755,6 +755,55 @@ struct ComposeService {
     hostname: Option<String>,
     #[serde(default)]
     extra_hosts: Option<ComposeExtraHosts>,
+    #[serde(default)]
+    cpus: Option<ComposeQuantity>,
+    #[serde(default)]
+    mem_limit: Option<ComposeQuantity>,
+    #[serde(default)]
+    deploy: Option<ComposeDeploy>,
+}
+
+/// Compose accepts quantities as either YAML numbers or strings. Theseus
+/// normalizes the small deterministic subset it can express as VM resources.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum ComposeQuantity {
+    Text(String),
+    Integer(u64),
+    Decimal(f64),
+}
+
+impl ComposeQuantity {
+    fn literal(&self) -> String {
+        match self {
+            Self::Text(value) => value.clone(),
+            Self::Integer(value) => value.to_string(),
+            Self::Decimal(value) => value.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeDeploy {
+    #[serde(default)]
+    resources: Option<ComposeDeployResources>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeDeployResources {
+    #[serde(default)]
+    limits: Option<ComposeResourceLimits>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeResourceLimits {
+    #[serde(default)]
+    cpus: Option<ComposeQuantity>,
+    #[serde(default)]
+    memory: Option<ComposeQuantity>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1492,10 +1541,20 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
                 "service {name:?} x-theseus.manifest must not escape the Compose directory"
             )));
         }
-        let run = load_plan(&manifest).map_err(|source| ComposeError::Manifest {
+        let mut run = load_plan(&manifest).map_err(|source| ComposeError::Manifest {
             service: name.clone(),
             source: Box::new(source),
         })?;
+        apply_resource_limits(
+            &name,
+            &mut run,
+            service.cpus,
+            service.mem_limit,
+            service
+                .deploy
+                .and_then(|deploy| deploy.resources)
+                .and_then(|resources| resources.limits),
+        )?;
         if (launch.is_some()
             || !configs.is_empty()
             || !secrets.is_empty()
@@ -1982,6 +2041,74 @@ fn image_user_plan(service: &str, value: &str) -> Result<ImageUserPlan, ComposeE
         ComposeError::Invalid(format!("service {service:?} user must use numeric uid:gid"))
     })?;
     Ok(ImageUserPlan { uid, gid })
+}
+
+/// Map Compose's resource declarations to the machine configuration that is
+/// already part of every locked Theseus run plan. Fractional CPU quotas would
+/// need a host scheduler or timer-driven throttler, so certification supports
+/// only an integral VM vCPU count. Memory is likewise rounded nowhere: users
+/// must declare an integral MiB quantity.
+fn apply_resource_limits(
+    service: &str,
+    run: &mut RunPlan,
+    cpus: Option<ComposeQuantity>,
+    mem_limit: Option<ComposeQuantity>,
+    deploy: Option<ComposeResourceLimits>,
+) -> Result<(), ComposeError> {
+    let deploy_cpus = deploy.as_ref().and_then(|limits| limits.cpus.as_ref());
+    let deploy_memory = deploy.as_ref().and_then(|limits| limits.memory.as_ref());
+    let cpus = compose_matching_quantity(service, "cpus", cpus.as_ref(), deploy_cpus)?;
+    let memory = compose_matching_quantity(service, "memory", mem_limit.as_ref(), deploy_memory)?;
+    if let Some(value) = cpus {
+        run.run.vcpu_count = parse_compose_vcpus(service, &value)?;
+    }
+    if let Some(value) = memory {
+        run.run.mem_size_mib = parse_compose_memory_mib(service, &value)?;
+    }
+    Ok(())
+}
+
+fn compose_matching_quantity(
+    service: &str,
+    field: &str,
+    service_value: Option<&ComposeQuantity>,
+    deploy_value: Option<&ComposeQuantity>,
+) -> Result<Option<String>, ComposeError> {
+    let service_value = service_value.map(ComposeQuantity::literal);
+    let deploy_value = deploy_value.map(ComposeQuantity::literal);
+    if let (Some(left), Some(right)) = (&service_value, &deploy_value) {
+        if left != right {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} {field} and deploy.resources.limits.{field} must agree"
+            )));
+        }
+    }
+    Ok(service_value.or(deploy_value))
+}
+
+fn parse_compose_vcpus(service: &str, value: &str) -> Result<u8, ComposeError> {
+    let count = value.parse::<u8>().ok().filter(|count| *count > 0);
+    count.ok_or_else(|| {
+        ComposeError::Invalid(format!(
+            "service {service:?} cpus must be a whole number from 1 to 255"
+        ))
+    })
+}
+
+fn parse_compose_memory_mib(service: &str, value: &str) -> Result<u32, ComposeError> {
+    let value = value.trim();
+    let number = value
+        .strip_suffix("MiB")
+        .or_else(|| value.strip_suffix("mib"))
+        .or_else(|| value.strip_suffix('M'))
+        .or_else(|| value.strip_suffix('m'))
+        .unwrap_or(value);
+    let mib = number.parse::<u32>().ok().filter(|mib| *mib > 0);
+    mib.ok_or_else(|| {
+        ComposeError::Invalid(format!(
+            "service {service:?} memory must be a positive whole MiB quantity (for example 256M)"
+        ))
+    })
 }
 
 fn environment_plan(
@@ -5450,6 +5577,28 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("host-environment inheritance"));
+    }
+
+    #[test]
+    fn locks_compose_resource_limits_into_the_vm_contract() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    cpus: 2\n    mem_limit: 256M\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    deploy:\n      resources:\n        limits:\n          cpus: '2'\n          memory: 192MiB\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(plan.services["api"].run.run.vcpu_count, 2);
+        assert_eq!(plan.services["api"].run.run.mem_size_mib, 256);
+        assert_eq!(plan.services["worker"].run.run.vcpu_count, 2);
+        assert_eq!(plan.services["worker"].run.run.mem_size_mib, 192);
+        let json = serde_json::to_value(&plan).unwrap();
+        assert_eq!(json["services"]["api"]["run"]["run"]["mem_size_mib"], 256);
+
+        let invalid = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    cpus: '0.5'\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        assert!(load_compose_plan(invalid.path().join("compose.yaml"))
+            .unwrap_err()
+            .to_string()
+            .contains("whole number"));
     }
 
     #[test]
