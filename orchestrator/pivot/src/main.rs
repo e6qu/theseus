@@ -28,11 +28,19 @@ struct InitSpec {
     env: Vec<String>,
     workdir: String,
     #[serde(default)]
+    user: Option<ContainerUser>,
+    #[serde(default)]
     container_service: Option<ContainerService>,
     #[serde(default)]
     network: Option<ContainerNetwork>,
     #[serde(default)]
     healthcheck: Option<ContainerHealthcheck>,
+}
+
+#[derive(serde::Deserialize)]
+struct ContainerUser {
+    uid: u32,
+    gid: u32,
 }
 
 #[derive(serde::Deserialize)]
@@ -275,6 +283,29 @@ fn exec_argv(
         .map(|e| e.as_ptr())
         .chain(std::iter::once(std::ptr::null()))
         .collect();
+
+    if let Some(user) = &spec.user {
+        if unsafe { libc::setgroups(0, std::ptr::null()) } != 0 {
+            return Err(format!(
+                "cannot clear supplementary groups: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if unsafe { libc::setgid(user.gid) } != 0 {
+            return Err(format!(
+                "cannot set gid {}: {}",
+                user.gid,
+                std::io::Error::last_os_error()
+            ));
+        }
+        if unsafe { libc::setuid(user.uid) } != 0 {
+            return Err(format!(
+                "cannot set uid {}: {}",
+                user.uid,
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
 
     if !spec.workdir.is_empty() {
         let workdir = CString::new(spec.workdir.as_str())

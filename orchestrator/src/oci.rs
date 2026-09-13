@@ -48,6 +48,15 @@ pub struct ImageSpec {
     pub env: Vec<String>,
     /// Working directory.
     pub workdir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<ContainerUser>,
+}
+
+/// Numeric credentials for a locked Compose image process.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContainerUser {
+    pub uid: u32,
+    pub gid: u32,
 }
 
 /// Literal launch overrides supplied by a Compose service. The adapter applies
@@ -61,6 +70,8 @@ pub struct ContainerLaunch {
     pub entrypoint: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<ContainerUser>,
 }
 
 /// A read-only file supplied by Compose rather than the container image.
@@ -89,7 +100,10 @@ pub struct ContainerHealthcheck {
 
 impl ContainerLaunch {
     pub fn is_empty(&self) -> bool {
-        self.command.is_none() && self.entrypoint.is_none() && self.working_dir.is_none()
+        self.command.is_none()
+            && self.entrypoint.is_none()
+            && self.working_dir.is_none()
+            && self.user.is_none()
     }
 }
 
@@ -377,6 +391,7 @@ pub fn flatten_with_contracts(
         workdir: launch
             .and_then(|launch| launch.working_dir.clone())
             .unwrap_or_else(|| inner.workdir.unwrap_or_default()),
+        user: launch.and_then(|launch| launch.user.clone()),
     };
     if let Some(environment) = environment {
         apply_environment(&mut spec.env, environment);
@@ -427,6 +442,7 @@ pub fn flatten_with_contracts(
         "argv": spec.argv,
         "env": spec.env,
         "workdir": spec.workdir,
+        "user": spec.user,
         "container_service": service,
         "network": network,
         "healthcheck": healthcheck,
@@ -792,6 +808,10 @@ mod tests {
                 "8080".to_owned(),
             ]),
             working_dir: Some("/site".to_owned()),
+            user: Some(ContainerUser {
+                uid: 1000,
+                gid: 1000,
+            }),
         };
         let (cpio, spec) = flatten_with_contracts(
             &test_image(),
@@ -810,9 +830,19 @@ mod tests {
             ["/bin/serve", "--port", "8080", "."].map(str::to_owned)
         );
         assert_eq!(spec.workdir, "/site");
+        assert_eq!(
+            spec.user,
+            Some(ContainerUser {
+                uid: 1000,
+                gid: 1000
+            })
+        );
         let text = String::from_utf8_lossy(&cpio);
         assert!(text.contains("/bin/serve"));
         assert!(text.contains("\"workdir\":\"/site\""));
+        assert!(text.contains("\"user\""));
+        assert!(text.contains("\"uid\":1000"));
+        assert!(text.contains("\"gid\":1000"));
 
         let command_only = ContainerLaunch {
             command: Some(vec!["--foreground".to_owned()]),
