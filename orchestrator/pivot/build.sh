@@ -61,7 +61,7 @@ case "$architecture:$description" in
     *) echo "pivot architecture mismatch: expected $architecture, got $description" >&2; exit 1 ;;
 esac
 case "$description" in
-    *statically\ linked*) ;;
+    *statically\ linked*|*static-pie\ linked*) ;;
     *) echo "pivot must be statically linked: $description" >&2; exit 1 ;;
 esac
 
