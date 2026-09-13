@@ -828,6 +828,8 @@ mod tests {
                 uid: 1000,
                 gid: 1000,
             }),
+            read_only: false,
+            tmpfs: Vec::new(),
         };
         let (cpio, spec) = flatten_with_contracts(
             &test_image(),

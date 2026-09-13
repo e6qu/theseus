@@ -9437,6 +9437,8 @@ mod tests {
                     uid: 1000,
                     gid: 1000,
                 }),
+                read_only: false,
+                tmpfs: Vec::new(),
             }),
             configs: vec![theseus_orchestrator::oci::ContainerConfig {
                 target: "/etc/worker.conf".to_owned(),
