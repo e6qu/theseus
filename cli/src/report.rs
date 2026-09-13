@@ -180,6 +180,10 @@ struct CampaignOperation {
     #[serde(default)]
     service: String,
     #[serde(default)]
+    shell_phase: Option<String>,
+    #[serde(default)]
+    shell_process: Option<String>,
+    #[serde(default)]
     input_grammar: Option<CampaignOperationInputGrammar>,
     #[serde(default)]
     inputs: Vec<CampaignOperationInput>,
@@ -408,6 +412,8 @@ struct CampaignPosteriorEvidence {
 
 #[derive(Clone, Deserialize, Serialize)]
 struct CampaignTimelineBoundary {
+    #[serde(default)]
+    id: String,
     operation: String,
     #[serde(default)]
     service: String,
@@ -1107,7 +1113,7 @@ const replay=section(m.command_label);replay.append(el('pre',m.command));
 if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));if(n.serial_log){{d.append(el('p','serial log: '+n.serial_log));}}d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
 if(Object.keys(m.campaign_state).length){{const s=section('Campaign state machine');s.append(el('pre',JSON.stringify(m.campaign_state)));const rows=[];m.campaign_operations.forEach(o=>{{if(Object.keys(o.requires_state).length||Object.keys(o.sets_state).length)rows.push([o.name,JSON.stringify(o.requires_state),JSON.stringify(o.sets_state)]);o.inputs.forEach(i=>{{if(Object.keys(i.requires_state).length||Object.keys(i.sets_state).length)rows.push([o.name+'['+i.name+']',JSON.stringify(i.requires_state),JSON.stringify(i.sets_state)]);}});}});if(rows.length)s.append(table(rows,['Transition','Requires state','Sets state']));}}
-if(m.campaign_operations.length){{const predicate=p=>p?JSON.stringify(p):'none',predicates=ps=>ps.length?JSON.stringify(ps):'none',ref=r=>r.operation+(r.input?'['+r.input+']':''),capture=(n,c)=>n+'@'+(c.service||'driver')+':'+c.pointer+' · '+JSON.stringify(c.json||c.workflow||{{sequence:c.sequence}})+' ('+(c.encoding||'text')+', '+(c.select||'latest')+')',input=i=>{{const rules=i.requires.length||i.excludes.length||i.max_uses!==null?' ('+[i.requires.length?'after '+i.requires.map(ref).join(' + '):'',i.excludes.length?'without '+i.excludes.map(ref).join(' + '):'',i.max_uses===null?'':'at most '+i.max_uses].filter(Boolean).join('; ')+')':'';const captures=i.input_template?' ← '+i.input_template+' · '+Object.entries(i.input_captures).map(([n,c])=>capture(n,c)).join(', '):'';return i.name+rules+captures}},grammar=o=>o.input_grammar?(o.input_grammar.name_template+' ← '+o.input_grammar.template+' · '+Object.entries(o.input_grammar.choices).map(([v,c])=>v+'='+Object.keys(c).join('/')).join(', ')+(Object.keys(o.input_grammar.input_captures).length?' · '+Object.entries(o.input_grammar.input_captures).map(([n,c])=>capture(n,c)).join(', '):'')):'literal cases',s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,grammar(o),o.inputs.map(input).join(' + ')||'default',o.stage||'any',o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',predicate(o.requires_serial),predicate(o.excludes_serial),predicates(o.requires_serial_all),predicates(o.excludes_serial_any),predicates(o.requires_serial_joins),predicates(o.excludes_serial_joins),predicate(o.requires_serial_evidence),predicate(o.excludes_serial_evidence),o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Input grammar','Input cases','Stage','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Requires serial predicate','Excludes serial predicate','Requires all serial guards','Excludes any serial guard','Requires JSON joins','Excludes JSON joins','Requires serial evidence','Excludes serial evidence','Maximum uses']));}}
+if(m.campaign_operations.length){{const predicate=p=>p?JSON.stringify(p):'none',predicates=ps=>ps.length?JSON.stringify(ps):'none',ref=r=>r.operation+(r.input?'['+r.input+']':''),capture=(n,c)=>n+'@'+(c.service||'driver')+':'+c.pointer+' · '+JSON.stringify(c.json||c.workflow||{{sequence:c.sequence}})+' ('+(c.encoding||'text')+', '+(c.select||'latest')+')',input=i=>{{const rules=i.requires.length||i.excludes.length||i.max_uses!==null?' ('+[i.requires.length?'after '+i.requires.map(ref).join(' + '):'',i.excludes.length?'without '+i.excludes.map(ref).join(' + '):'',i.max_uses===null?'':'at most '+i.max_uses].filter(Boolean).join('; ')+')':'';const captures=i.input_template?' ← '+i.input_template+' · '+Object.entries(i.input_captures).map(([n,c])=>capture(n,c)).join(', '):'';return i.name+rules+captures}},grammar=o=>o.input_grammar?(o.input_grammar.name_template+' ← '+o.input_grammar.template+' · '+Object.entries(o.input_grammar.choices).map(([v,c])=>v+'='+Object.keys(c).join('/')).join(', ')+(Object.keys(o.input_grammar.input_captures).length?' · '+Object.entries(o.input_grammar.input_captures).map(([n,c])=>capture(n,c)).join(', '):'')):'literal cases',s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,o.shell_phase||'input',o.shell_process||'none',grammar(o),o.inputs.map(input).join(' + ')||'default',o.stage||'any',o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',predicate(o.requires_serial),predicate(o.excludes_serial),predicates(o.requires_serial_all),predicates(o.excludes_serial_any),predicates(o.requires_serial_joins),predicates(o.excludes_serial_joins),predicate(o.requires_serial_evidence),predicate(o.excludes_serial_evidence),o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Command phase','Process','Input grammar','Input cases','Stage','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Requires serial predicate','Excludes serial predicate','Requires all serial guards','Excludes any serial guard','Requires JSON joins','Excludes JSON joins','Requires serial evidence','Excludes serial evidence','Maximum uses']));}}
 if(m.campaign_operations.some(o=>o.service)){{const s=section('Operation targets');s.append(el('p','Each operation sends its UART input to this service. Operations without a target in older bundles use the designated campaign driver.'));s.append(table(m.campaign_operations.filter(o=>o.service).map(o=>[o.name,o.service]),['Operation','Service']));}}
 if(m.campaign_runs.length){{const location=l=>{{if(typeof l==='string')return l;const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},locations=r=>Object.entries(r.program_counters).map(([service,pcs])=>service+': '+((r.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',ledger=r=>r.guidance_ledger&&r.guidance_ledger.sha256?r.guidance_ledger.observations+' observations · '+r.guidance_ledger.sha256:'unrecorded (legacy)',posterior=r=>{{const p=r.guidance_evidence;return p.scope+' · '+p.successes+' yield(s), '+p.misses+' miss(es) · mean '+p.mean_per_mille+'‰ + '+p.uncertainty_per_mille+'‰'}},hasPosterior=m.campaign_runs.some(r=>r.guidance_evidence),rows=m.campaign_runs.map(r=>{{const row=[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',ledger(r)];if(hasPosterior)row.push(posterior(r));row.push(r.state_novel?'new':'seen',locations(r),r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none');return row}}),heads=['Run','Operations','Candidates','Selection','Guidance ledger'];if(hasPosterior)heads.push('Posterior evidence');heads.push('Topology state','Instruction locations','Applied actions','Status','New markers');const s=section('Generated timelines');s.append(table(rows,heads));}}
 if(m.campaign_runs.some(r=>r.property_witnesses.length)){{const rows=m.campaign_runs.filter(r=>r.property_witnesses.length).map(r=>[String(r.index),r.operations.join(' → ')||'none',r.property_witnesses.join(', ')]),s=section('Property witnesses');s.append(el('p','These declared properties produced useful evidence in this timeline. A reachable or sometimes match is a witness; an always or unreachable witness is a counterexample.'));s.append(table(rows,['Run','Operations','Property witnesses']));}}
@@ -1122,10 +1128,10 @@ barrier=b=>b.barrier.recorded?b.barrier.checkpoint+' at round '+b.barrier.round+
 traffic=b=>Object.entries(b.network_traffic_delta).flatMap(([service,nets])=>Object.entries(nets).map(([network,d])=>service+'.'+network+': tx '+d.tx_frames+' rx '+d.rx_frames+' drop '+d.dropped+' dup '+d.duplicated+' corrupt '+d.corrupted)).join(' · ')||'none',
 storage=b=>b.changed_storage.join(', ')||'none',
 virtualTime=b=>Object.entries(b.virtual_time_delta_ns).map(([service,clocks])=>service+': '+clocks.join(', ')+' ns').join(' · ')||'none',
-rows=m.campaign_runs.flatMap(r=>r.timeline.map(b=>[String(r.index),b.operation,b.service||'driver (legacy)',input(b),delivery(b),barrier(b),String(b.round),delta(b),b.markers.join(' ')||'none',locations(b),b.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',Object.entries(b.serial_sha256).map(([service,hash])=>service+':'+hash).join(' ')||'none',serial(b),traffic(b),storage(b),virtualTime(b),b.state_sha256||'none'])),
+rows=m.campaign_runs.flatMap(r=>r.timeline.map(b=>[String(r.index),b.id||'legacy',b.operation,b.service||'driver (legacy)',input(b),delivery(b),barrier(b),String(b.round),delta(b),b.markers.join(' ')||'none',locations(b),b.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',Object.entries(b.serial_sha256).map(([service,hash])=>service+':'+hash).join(' ')||'none',serial(b),traffic(b),storage(b),virtualTime(b),b.state_sha256||'none'])),
 s=section('Operation boundaries');
 s.append(el('p','Each row is the paused checkpoint after one operation. Target names the service whose UART received it. UART input is an escaped, bounded copy of the exact delivered bytes; its hash covers the complete input in the locked replay plan. UART delivery records accepted bytes, guest FIFO reads, and queued bytes. UART barrier records that the named marker arrived after that input, with its post-input response hash and excerpt. The delta compares the checkpoint with the preceding one. New serial output is also escaped and bounded. Network counters, changed storage, and virtual-time deltas show state produced by this operation.'));
-s.append(table(rows,['Run','Operation','Target','UART input','UART delivery','UART barrier','Round','Delta','Markers','Instruction locations','Applied actions','Serial SHA-256','New serial output','Network traffic','Changed storage','Virtual time delta','State SHA-256']));
+s.append(table(rows,['Run','Boundary ID','Operation','Target','UART input','UART delivery','UART barrier','Round','Delta','Markers','Instruction locations','Applied actions','Serial SHA-256','New serial output','Network traffic','Changed storage','Virtual time delta','State SHA-256']));
 }}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
 if(m.campaign_minimization){{const x=m.campaign_minimization,s=section('Campaign minimization');s.append(table([[x.property,x.original_operations.join(' → ')||'none',x.minimized_operations.join(' → ')||'none',x.original_faults.join(' + ')||'none',x.minimized_faults.join(' + ')||'none',String(x.operation_attempts),String(x.fault_attempts)]],['Property','Original operations','1-minimal operations','Original faults','1-minimal faults','Operation replays','Fault replays']));}}
@@ -1334,7 +1340,7 @@ fn campaign_uart_barrier_label(boundary: &CampaignTimelineBoundary) -> String {
     )
 }
 
-fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 17]> {
+fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 18]> {
     run.timeline
         .iter()
         .map(|boundary| {
@@ -1361,6 +1367,11 @@ fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 17]> {
             };
             [
                 run.index.to_string(),
+                if boundary.id.is_empty() {
+                    "legacy".to_owned()
+                } else {
+                    boundary.id.clone()
+                },
                 boundary.operation.clone(),
                 if boundary.service.is_empty() {
                     "driver (legacy)".to_owned()
@@ -1504,6 +1515,25 @@ fn render_markdown(model: &ReportModel) -> String {
             }
         }
     }
+    if model
+        .campaign_operations
+        .iter()
+        .any(|operation| operation.shell_phase.is_some())
+    {
+        output.push_str(
+            "\n## Command lifecycle\n\n| Operation | Phase | Process |\n| --- | --- | --- |\n",
+        );
+        for operation in &model.campaign_operations {
+            if let Some(phase) = &operation.shell_phase {
+                output.push_str(&format!(
+                    "| {} | {} | {} |\n",
+                    markdown_cell(&operation.name),
+                    markdown_cell(phase),
+                    markdown_cell(operation.shell_process.as_deref().unwrap_or("none")),
+                ));
+            }
+        }
+    }
     if !model.campaign_runs.is_empty() {
         let has_posterior = model
             .campaign_runs
@@ -1566,13 +1596,14 @@ fn render_markdown(model: &ReportModel) -> String {
         .flat_map(campaign_timeline_labels)
         .collect::<Vec<_>>();
     if !timeline.is_empty() {
-        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. Target is the service whose UART received it. UART input is an escaped, bounded copy of the delivered bytes; its hash covers the complete input in the locked replay plan. UART delivery records accepted bytes, guest FIFO reads, and queued bytes. UART barrier records that the named marker arrived after that input, with its post-input response hash and excerpt. The delta compares the checkpoint with the preceding one.\n\n| Run | Operation | Target | UART input | UART delivery | UART barrier | Round | Delta | Markers | Instruction locations | Applied actions | Serial SHA-256 | New serial output | Network traffic | Changed storage | Virtual time delta | State SHA-256 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
-        for [run, operation, target, input, delivery, barrier, round, delta, markers, locations, actions, serial, serial_output, traffic, storage, time, state] in
+        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. Boundary ID is stable within the replayed schedule. Target is the service whose UART received it. UART input is an escaped, bounded copy of the delivered bytes; its hash covers the complete input in the locked replay plan. UART delivery records accepted bytes, guest FIFO reads, and queued bytes. UART barrier records that the named marker arrived after that input, with its post-input response hash and excerpt. The delta compares the checkpoint with the preceding one.\n\n| Run | Boundary ID | Operation | Target | UART input | UART delivery | UART barrier | Round | Delta | Markers | Instruction locations | Applied actions | Serial SHA-256 | New serial output | Network traffic | Changed storage | Virtual time delta | State SHA-256 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+        for [run, id, operation, target, input, delivery, barrier, round, delta, markers, locations, actions, serial, serial_output, traffic, storage, time, state] in
             timeline
         {
             output.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 markdown_cell(&run),
+                markdown_cell(&id),
                 markdown_cell(&operation),
                 markdown_cell(&target),
                 markdown_cell(&input),

@@ -125,6 +125,10 @@ struct CampaignOperation {
     name: String,
     #[serde(default)]
     service: String,
+    #[serde(default)]
+    shell_phase: Option<CampaignShellPhase>,
+    #[serde(default)]
+    shell_process: Option<String>,
     /// `input_hex` is retained only to replay plans locked by older Theseus
     /// releases. New plans always use named `inputs`.
     #[serde(default)]
@@ -167,6 +171,17 @@ struct CampaignOperation {
     requires_state: BTreeMap<String, String>,
     #[serde(default)]
     sets_state: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CampaignShellPhase {
+    Run,
+    Setup,
+    Launch,
+    Completion,
+    Assertion,
+    Recovery,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -643,6 +658,9 @@ struct CampaignRun {
 /// serial log and VM snapshot remain in the locked run directory.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 struct CampaignTimelineBoundary {
+    /// Stable within one recorded schedule and reproduced verbatim on replay.
+    #[serde(default)]
+    id: String,
     operation: String,
     /// The UART service that received this operation. Empty only in a result
     /// recorded before service-targeted operations existed.
@@ -4410,7 +4428,17 @@ fn campaign_operation_is_ready(
         prior_stage.is_none()
             || candidate_stage.is_none_or(|candidate| prior_stage <= Some(candidate))
     });
-    stages_are_ordered
+    let shell_process_ready = match (candidate.shell_phase, candidate.shell_process.as_deref()) {
+        (Some(CampaignShellPhase::Launch), Some(process)) => {
+            campaign_shell_process_balance(campaign, history, &candidate.service, process) == 0
+        }
+        (Some(CampaignShellPhase::Completion), Some(process)) => {
+            campaign_shell_process_balance(campaign, history, &candidate.service, process) == 1
+        }
+        _ => true,
+    };
+    shell_process_ready
+        && stages_are_ordered
         && campaign_state_matches(&state, &candidate.requires_state)
         && campaign_state_matches(&state, &input.requires_state)
         && candidate.requires.iter().all(|requirement| {
@@ -4445,6 +4473,29 @@ fn campaign_operation_is_ready(
                 .count()
                 < usize::from(maximum)
         })
+}
+
+/// Number of unmatched launches for one service-local process identity.
+/// Compose validation prevents malformed phase declarations; this additional
+/// scheduler rule removes impossible completion-first and double-launch
+/// histories from the bounded corpus.
+fn campaign_shell_process_balance(
+    campaign: &CampaignPlan,
+    history: &[CampaignOperationChoice],
+    service: &str,
+    process: &str,
+) -> usize {
+    history.iter().fold(0_usize, |balance, choice| {
+        let prior = &campaign.operations[choice.operation];
+        if prior.service != service || prior.shell_process.as_deref() != Some(process) {
+            return balance;
+        }
+        match prior.shell_phase {
+            Some(CampaignShellPhase::Launch) => balance.saturating_add(1),
+            Some(CampaignShellPhase::Completion) => balance.saturating_sub(1),
+            _ => balance,
+        }
+    })
 }
 
 fn ordered_operation_histories<F>(
@@ -4623,9 +4674,10 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     mismatches
 }
 
-/// Legacy campaign results have operation boundaries but no target service.
-/// Continue to verify every older field while allowing that absent explanation;
-/// new results lock the target into replay verification.
+/// Legacy campaign results can omit the target service, stable boundary ID,
+/// input receipt, or barrier receipt. Continue to verify every older field
+/// while allowing only those absent additions; new results lock all of them
+/// into replay verification.
 fn campaign_timeline_matches(
     expected: &[CampaignTimelineBoundary],
     actual: &[CampaignTimelineBoundary],
@@ -4635,6 +4687,9 @@ fn campaign_timeline_matches(
             (expected.service.is_empty() || expected.service == actual.service) && {
                 let mut normalized = actual.clone();
                 normalized.service = expected.service.clone();
+                if expected.id.is_empty() {
+                    normalized.id.clear();
+                }
                 if campaign_input_is_absent(&expected.input) {
                     normalized.input = expected.input.clone();
                 }
@@ -5629,7 +5684,8 @@ fn campaign_operation_timeline(
         .zip(events)
         .zip(barriers)
         .zip(boundaries)
-        .map(|(((operation, event), barrier), boundary)| {
+        .enumerate()
+        .map(|(index, (((operation, event), barrier), boundary))| {
             let (new_markers, changed_program_counters, changed_serial) =
                 campaign_boundary_delta(&previous, boundary);
             let serial_delta = campaign_serial_delta(&previous, boundary);
@@ -5641,6 +5697,10 @@ fn campaign_operation_timeline(
                 campaign_uart_delivery(&event.service, &event.event, &input, &previous, boundary);
             previous = boundary.clone();
             CampaignTimelineBoundary {
+                id: format!(
+                    "op-{index:03}-{}",
+                    campaign_operation_choice_name(campaign, *operation)
+                ),
                 operation: campaign_operation_choice_name(campaign, *operation),
                 service: campaign_operation_service(campaign, *operation).to_owned(),
                 input,
@@ -10401,6 +10461,8 @@ mod tests {
                 CampaignOperation {
                     name: "write".to_owned(),
                     service: "api".to_owned(),
+                    shell_phase: None,
+                    shell_process: None,
                     input_hex: None,
                     inputs: vec![
                         CampaignOperationInput {
@@ -10459,6 +10521,8 @@ mod tests {
                 CampaignOperation {
                     name: "read".to_owned(),
                     service: "api".to_owned(),
+                    shell_phase: None,
+                    shell_process: None,
                     input_hex: Some("726561640a".to_owned()),
                     inputs: Vec::new(),
                     input_grammar: None,
@@ -11938,6 +12002,7 @@ mod tests {
             }),
             property_witnesses: vec!["stale_read_is_reachable".to_owned()],
             timeline: vec![CampaignTimelineBoundary {
+                id: "op-000-write".to_owned(),
                 operation: "write".to_owned(),
                 service: "api".to_owned(),
                 input: CampaignInputEvidence {
@@ -12292,6 +12357,52 @@ mod tests {
             }),
             vec![vec![0], vec![0, 1]]
         );
+    }
+
+    #[test]
+    fn campaign_process_lifecycle_excludes_impossible_histories() {
+        let campaign: CampaignPlan = serde_json::from_value(serde_json::json!({
+            "driver": "api",
+            "operations": [
+                {
+                    "name": "launch",
+                    "service": "api",
+                    "shell_phase": "launch",
+                    "shell_process": "writer",
+                    "inputs": [{"name":"default", "input_hex":"00"}],
+                    "max_uses": 2
+                },
+                {
+                    "name": "complete",
+                    "service": "api",
+                    "shell_phase": "completion",
+                    "shell_process": "writer",
+                    "inputs": [{"name":"default", "input_hex":"00"}],
+                    "max_uses": 2
+                }
+            ],
+            "max_runs": 16,
+            "max_faults_per_run": 1,
+            "max_operations_per_run": 4
+        }))
+        .unwrap();
+        let histories = campaign_operation_histories(&campaign)
+            .into_iter()
+            .map(|history| {
+                history
+                    .into_iter()
+                    .map(|choice| campaign.operations[choice.operation].name.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(histories.contains(&vec!["launch"]));
+        assert!(histories.contains(&vec!["launch", "complete"]));
+        assert!(histories.contains(&vec!["launch", "complete", "launch"]));
+        assert!(!histories.iter().any(|history| history[0] == "complete"));
+        assert!(!histories
+            .iter()
+            .any(|history| history.starts_with(&["launch", "launch"])));
     }
 
     #[test]
