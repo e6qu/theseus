@@ -63,11 +63,13 @@ struct ContainerNetwork {
     interfaces: Vec<NetworkInterface>,
     #[serde(default)]
     hosts: BTreeMap<String, String>,
+    #[serde(default)]
+    hostname: Option<String>,
 }
 
 impl ContainerNetwork {
     fn is_empty(&self) -> bool {
-        self.interfaces.is_empty() && self.hosts.is_empty()
+        self.interfaces.is_empty() && self.hosts.is_empty() && self.hostname.is_none()
     }
 }
 
@@ -967,6 +969,18 @@ fn configure_interface(interface: &NetworkInterface) -> Result<(), String> {
 }
 
 fn configure_network(network: &ContainerNetwork) -> Result<(), String> {
+    if let Some(hostname) = &network.hostname {
+        let hostname =
+            CString::new(hostname.as_str()).map_err(|_| "hostname contains NUL".to_owned())?;
+        if unsafe { libc::sethostname(hostname.as_ptr().cast(), hostname.as_bytes().len()) } != 0 {
+            return Err(format!(
+                "cannot set hostname: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        fs::write("/etc/hostname", hostname.as_bytes())
+            .map_err(|error| format!("cannot write /etc/hostname: {error}"))?;
+    }
     for interface in &network.interfaces {
         configure_interface(interface)?;
     }
@@ -982,7 +996,7 @@ fn configure_network(network: &ContainerNetwork) -> Result<(), String> {
         if name.is_empty()
             || !name
                 .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
         {
             return Err(format!("invalid host name {name:?}"));
         }

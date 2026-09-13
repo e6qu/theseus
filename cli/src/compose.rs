@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -748,6 +749,10 @@ struct ComposeService {
     volumes: Vec<ComposeServiceVolume>,
     #[serde(default)]
     healthcheck: Option<ComposeHealthcheck>,
+    #[serde(default)]
+    hostname: Option<String>,
+    #[serde(default)]
+    extra_hosts: Option<ComposeExtraHosts>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -828,6 +833,16 @@ enum ComposeEnvironment {
 #[serde(untagged)]
 enum ComposeEnvFiles {
     Single(String),
+    List(Vec<String>),
+}
+
+/// Compose's local host aliases. Theseus accepts either the mapping form or
+/// the portable short form (`name=address` or `name:address`) and locks the
+/// resolved IP address into the image initramfs.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ComposeExtraHosts {
+    Map(BTreeMap<String, String>),
     List(Vec<String>),
 }
 
@@ -927,6 +942,10 @@ pub struct ComposeServicePlan {
     pub volumes: Vec<ImageVolumePlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub healthcheck: Option<ImageHealthcheckPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra_hosts: BTreeMap<String, String>,
     pub faults: Vec<FaultPlan>,
 }
 
@@ -1425,6 +1444,8 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         let secrets = image_secret_plan(&name, service.secrets, &secrets)?;
         let volumes = image_volume_plan(&name, service.volumes, compose_dir)?;
         let healthcheck = image_healthcheck_plan(&name, service.healthcheck)?;
+        let (hostname, extra_hosts) =
+            host_identity_plan(&name, service.hostname, service.extra_hosts)?;
         if service.networks.is_empty() {
             return Err(ComposeError::Invalid(format!(
                 "service {name:?} must join at least one named network"
@@ -1466,11 +1487,13 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
             || !configs.is_empty()
             || !secrets.is_empty()
             || !volumes.is_empty()
-            || healthcheck.is_some())
+            || healthcheck.is_some()
+            || hostname.is_some()
+            || !extra_hosts.is_empty())
             && run.guest.image.is_none()
         {
             return Err(ComposeError::Invalid(format!(
-                "service {name:?} uses an image launch, config, secret, volume, or healthcheck contract but its manifest has no guest.image"
+                "service {name:?} uses an image launch, config, secret, volume, healthcheck, or host-identity contract but its manifest has no guest.image"
             )));
         }
         let faults = validate_faults(
@@ -1491,6 +1514,8 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
                 secrets,
                 volumes,
                 healthcheck,
+                hostname,
+                extra_hosts,
                 faults,
             },
         );
@@ -2030,6 +2055,69 @@ fn validate_environment_value(service: &str, key: &str, value: &str) -> Result<(
     if value.contains("${") {
         return Err(ComposeError::Invalid(format!(
             "service {service:?} environment value for {key:?} must be literal; interpolation is not supported"
+        )));
+    }
+    Ok(())
+}
+
+fn host_identity_plan(
+    service: &str,
+    hostname: Option<String>,
+    extra_hosts: Option<ComposeExtraHosts>,
+) -> Result<(Option<String>, BTreeMap<String, String>), ComposeError> {
+    if let Some(hostname) = &hostname {
+        validate_host_name(service, "hostname", hostname)?;
+    }
+    let entries = match extra_hosts {
+        None => Vec::new(),
+        Some(ComposeExtraHosts::Map(entries)) => entries.into_iter().collect(),
+        Some(ComposeExtraHosts::List(entries)) => entries
+            .into_iter()
+            .map(|entry| {
+                let Some((name, address)) = entry
+                    .split_once('=')
+                    .or_else(|| entry.split_once(':'))
+                else {
+                    return Err(ComposeError::Invalid(format!(
+                        "service {service:?} extra_hosts entry {entry:?} must use name=address or name:address"
+                    )));
+                };
+                Ok((name.to_owned(), address.to_owned()))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    let mut hosts = BTreeMap::new();
+    for (name, address) in entries {
+        validate_host_name(service, "extra_hosts name", &name)?;
+        let address = address.parse::<IpAddr>().map_err(|_| {
+            ComposeError::Invalid(format!(
+                "service {service:?} extra_hosts address for {name:?} must be an IP address"
+            ))
+        })?;
+        if hosts.insert(name.clone(), address.to_string()).is_some() {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} extra_hosts names {name:?} more than once"
+            )));
+        }
+    }
+    Ok((hostname, hosts))
+}
+
+fn validate_host_name(service: &str, field: &str, value: &str) -> Result<(), ComposeError> {
+    if value.is_empty()
+        || value.len() > 253
+        || value.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || !label.as_bytes()[0].is_ascii_alphanumeric()
+                || !label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} {field} {value:?} must be a DNS host name"
         )));
     }
     Ok(())
@@ -5358,6 +5446,48 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("interpolation"));
+    }
+
+    #[test]
+    fn locks_compose_host_identity_without_host_name_resolution() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    hostname: api.local\n    extra_hosts:\n      cache.local: 10.9.0.7\n      telemetry.local: '2001:db8::7'\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    extra_hosts: [cache.local=10.9.0.8]\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        for service in ["api", "worker"] {
+            let root = directory.path().join(service);
+            fs::write(root.join("runtime/theseus-image"), b"adapter").unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(
+                root.join("runtime/theseus-image"),
+                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+            )
+            .unwrap();
+            fs::write(root.join("guest/image.tar"), b"image").unwrap();
+            fs::write(
+                root.join("theseus.toml"),
+                "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'guest/image.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+            )
+            .unwrap();
+        }
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(plan.services["api"].hostname.as_deref(), Some("api.local"));
+        assert_eq!(plan.services["api"].extra_hosts["cache.local"], "10.9.0.7");
+        assert_eq!(
+            plan.services["api"].extra_hosts["telemetry.local"],
+            "2001:db8::7"
+        );
+        assert_eq!(
+            plan.services["worker"].extra_hosts["cache.local"],
+            "10.9.0.8"
+        );
+
+        let invalid = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    extra_hosts: [cache.local=not-an-ip]\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        assert!(load_compose_plan(invalid.path().join("compose.yaml"))
+            .unwrap_err()
+            .to_string()
+            .contains("must be an IP address"));
     }
 
     #[test]

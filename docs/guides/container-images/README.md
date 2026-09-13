@@ -196,6 +196,27 @@ images do not need `ip`, DHCP, a sidecar, or Theseus code. The locked replay
 plan records the selected addresses and peer mappings. See [tutorial
 19](../../tutorials/19-compose-image-network/).
 
+## Set Compose host identity
+
+Set a literal hostname and local aliases when an image expects its normal
+container identity:
+
+```yaml
+services:
+  api:
+    hostname: api.local
+    extra_hosts:
+      cache.local: 10.9.0.7
+```
+
+Theseus applies `hostname` before the image entrypoint starts and records it
+in `/etc/hostname`. It appends `extra_hosts` to the guest `/etc/hosts`; an
+explicit alias takes precedence over a generated Compose peer alias. Use DNS
+host names and literal IPv4 or IPv6 addresses. The short `name=address` and
+`name:address` forms are also accepted. Theseus does not consult a host DNS
+resolver, so the aliases replay exactly. See [tutorial
+26](../../tutorials/26-compose-host-identity/).
+
 Use standard Compose `depends_on` when one image must start after another:
 
 ```yaml
