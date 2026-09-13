@@ -969,6 +969,10 @@ struct ServicePlan {
     volumes: Vec<theseus_orchestrator::oci::ContainerVolume>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     healthcheck: Option<theseus_orchestrator::oci::ContainerHealthcheck>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hostname: Option<String>,
+    #[serde(default)]
+    extra_hosts: BTreeMap<String, String>,
     #[serde(default)]
     faults: Vec<FaultPlan>,
 }
@@ -9151,8 +9155,14 @@ fn configure_container_networks(topology: &mut TopologyPlan) -> Result<(), Strin
                 hosts.entry(peer.clone()).or_insert(peer_address);
             }
         }
-        service.run.container_network =
-            Some(theseus_orchestrator::oci::ContainerNetwork { interfaces, hosts });
+        // Compose `extra_hosts` is explicit service configuration, so it
+        // intentionally wins over generated peer aliases.
+        hosts.extend(service.extra_hosts.clone());
+        service.run.container_network = Some(theseus_orchestrator::oci::ContainerNetwork {
+            interfaces,
+            hosts,
+            hostname: service.hostname.clone(),
+        });
     }
     Ok(())
 }
@@ -9361,7 +9371,7 @@ mod tests {
         fs::write(&image, b"container image").unwrap();
         fs::write(
             &adapter,
-            "#!/bin/sh\nset -eu\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ] && [ \"$7\" = --network ] && [ \"$9\" = --environment ] && [ \"${11}\" = --launch ] && [ \"${13}\" = --configs ] && [ \"${15}\" = --secrets ] && [ \"${17}\" = --volumes ] && [ \"${19}\" = --healthcheck ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ngrep -q '10.1.0.10' \"$8\"\ngrep -q 'MODE' \"${10}\"\ngrep -q 'working_dir' \"${12}\"\ngrep -q '/etc/worker.conf' \"${14}\"\ngrep -q '/run/secrets/token' \"${16}\"\ngrep -q '/var/lib/worker/state' \"${18}\"\ngrep -q '/bin/check' \"${20}\"\ncp \"$2\" \"$4\"\n",
+            "#!/bin/sh\nset -eu\n[ \"$1\" = flatten ] && [ \"$3\" = --output ] && [ \"$5\" = --service ] && [ \"$7\" = --network ] && [ \"$9\" = --environment ] && [ \"${11}\" = --launch ] && [ \"${13}\" = --configs ] && [ \"${15}\" = --secrets ] && [ \"${17}\" = --volumes ] && [ \"${19}\" = --healthcheck ]\ngrep -q '127.0.0.1:8080/health' \"$6\"\ngrep -q '10.1.0.10' \"$8\"\ngrep -q 'api.local' \"$8\"\ngrep -q 'MODE' \"${10}\"\ngrep -q 'working_dir' \"${12}\"\ngrep -q '/etc/worker.conf' \"${14}\"\ngrep -q '/run/secrets/token' \"${16}\"\ngrep -q '/var/lib/worker/state' \"${18}\"\ngrep -q '/bin/check' \"${20}\"\ncp \"$2\" \"$4\"\n",
         )
         .unwrap();
         fs::set_permissions(&adapter, fs::Permissions::from_mode(0o755)).unwrap();
@@ -9413,6 +9423,7 @@ mod tests {
                         prefix_len: 24,
                     }],
                     hosts: BTreeMap::new(),
+                    hostname: Some("api.local".to_owned()),
                 }),
             },
             networks: Vec::new(),
@@ -9448,6 +9459,8 @@ mod tests {
                 retries: 3,
                 start_period_millis: 0,
             }),
+            hostname: Some("api.local".to_owned()),
+            extra_hosts: BTreeMap::from([("cache.local".to_owned(), "10.9.0.7".to_owned())]),
             faults: Vec::new(),
         };
 
@@ -9468,6 +9481,7 @@ mod tests {
               "format":"theseus-compose-plan-v1", "compose":"compose.yaml",
               "services":{
                 "api":{"manifest":"api/theseus.toml", "networks":["backplane"],
+                  "hostname":"api.local", "extra_hosts":{"worker":"10.1.0.99","cache.local":"10.9.0.7"},
                   "depends_on":[{"service":"worker","condition":"service_started"}],
                   "run":{"format":"theseus-run-plan-v1", "manifest":"api/theseus.toml",
                     "runtime":{"firecracker":{"path":"firecracker","sha256":"a"}},
@@ -9495,7 +9509,9 @@ mod tests {
             .unwrap();
         assert_eq!(api.interfaces[0].name, "eth0");
         assert_eq!(api.interfaces[0].address, "10.1.0.10");
-        assert_eq!(api.hosts["worker"], "10.1.0.11");
+        assert_eq!(api.hosts["worker"], "10.1.0.99");
+        assert_eq!(api.hosts["cache.local"], "10.9.0.7");
+        assert_eq!(api.hostname.as_deref(), Some("api.local"));
         let worker = topology.services["worker"]
             .run
             .container_network

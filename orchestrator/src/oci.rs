@@ -129,11 +129,14 @@ pub struct ContainerNetwork {
     pub interfaces: Vec<ContainerNetworkInterface>,
     #[serde(default)]
     pub hosts: BTreeMap<String, String>,
+    /// Compose hostname, set before the image entrypoint starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
 }
 
 impl ContainerNetwork {
     pub fn is_empty(&self) -> bool {
-        self.interfaces.is_empty() && self.hosts.is_empty()
+        self.interfaces.is_empty() && self.hosts.is_empty() && self.hostname.is_none()
     }
 }
 
@@ -718,6 +721,7 @@ mod tests {
                     prefix_len: 24,
                 }],
                 hosts: BTreeMap::from([("worker".to_owned(), "10.1.0.11".to_owned())]),
+                hostname: Some("api.local".to_owned()),
             },
         };
         let (cpio, _) = flatten_with_service(&test_image(), Some(&service)).unwrap();
@@ -733,6 +737,7 @@ mod tests {
         assert!(text.contains("CHECK_MODE"));
         assert!(text.contains("10.1.0.10"));
         assert!(text.contains("worker"));
+        assert!(text.contains("api.local"));
     }
 
     #[test]
@@ -744,6 +749,7 @@ mod tests {
                 prefix_len: 24,
             }],
             hosts: BTreeMap::from([("worker".to_owned(), "10.1.0.11".to_owned())]),
+            hostname: Some("api.local".to_owned()),
         };
         let (cpio, _) =
             flatten_with_service_and_network(&test_image(), None, Some(&network)).unwrap();

@@ -66,5 +66,8 @@ docs/tutorials/24-compose-healthcheck/rerun/
 docs/tutorials/25-compose-env-file/api/work/
 docs/tutorials/25-compose-env-file/campaign/
 docs/tutorials/25-compose-env-file/rerun/
+docs/tutorials/26-compose-host-identity/api/work/
+docs/tutorials/26-compose-host-identity/campaign/
+docs/tutorials/26-compose-host-identity/rerun/
 
 orchestrator/pivot/target/

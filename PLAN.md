@@ -211,6 +211,10 @@ For image-backed Compose services, the locked topology now assigns stable IPv4
 addresses, configures each guest NIC before the image starts, and supplies
 peer Compose names through `/etc/hosts`; images need no DHCP client, `ip`
 binary, sidecar, Theseus code, or `container_service` contract.
+Compose `hostname` and `extra_hosts` are locked into that guest-side network
+view as well. Theseus sets the image hostname before its entrypoint starts and
+writes literal local aliases to `/etc/hosts`; it never resolves a host name on
+the machine planning or replaying the campaign.
 Compose `depends_on` is locked with the topology and starts dependencies at
 deterministic boot barriers; `service_healthy` uses either the existing
 image-service readiness contract or a standard Compose health check, never

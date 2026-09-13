@@ -60,6 +60,8 @@ deterministic-CRNG kernel module is shipped.
     a standard argv health check before starting a dependent image service.
 25. [Load image environment from a Compose file](25-compose-env-file/) — lock
     literal `env_file` values into an image service and replay them.
+26. [Set Compose host identity](26-compose-host-identity/) — lock a hostname
+    and local `extra_hosts` aliases into an image service and replay them.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),
