@@ -58,6 +58,8 @@ deterministic-CRNG kernel module is shipped.
     local writable data directory into an unmodified service image.
 24. [Gate a service on a Compose health check](24-compose-healthcheck/) — use
     a standard argv health check before starting a dependent image service.
+25. [Load image environment from a Compose file](25-compose-env-file/) — lock
+    literal `env_file` values into an image service and replay them.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

@@ -729,6 +729,8 @@ struct ComposeService {
     depends_on: Option<ComposeDependencies>,
     #[serde(default)]
     environment: Option<ComposeEnvironment>,
+    #[serde(default)]
+    env_file: Option<ComposeEnvFiles>,
     /// The Compose launch fields are intentionally an argv-only subset. A
     /// shell string would add image-specific parsing rules to the locked
     /// topology, whereas an argv is the exact execve contract.
@@ -817,6 +819,15 @@ enum ComposeHealthcheckTest {
 #[serde(untagged)]
 enum ComposeEnvironment {
     Map(BTreeMap<String, String>),
+    List(Vec<String>),
+}
+
+/// Local Compose environment files. Theseus reads them while planning and
+/// stores their literal values, never consulting the host environment later.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ComposeEnvFiles {
+    Single(String),
     List(Vec<String>),
 }
 
@@ -1402,7 +1413,8 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
     for (name, service) in compose.services {
         validate_name("service", &name)?;
         let depends_on = dependency_plan(&name, service.depends_on)?;
-        let environment = environment_plan(&name, service.environment)?;
+        let environment =
+            environment_plan(&name, compose_dir, service.env_file, service.environment)?;
         let launch = image_launch_plan(
             &name,
             service.command,
@@ -1911,14 +1923,15 @@ fn image_launch_plan(
 
 fn environment_plan(
     service: &str,
+    compose_dir: &Path,
+    env_files: Option<ComposeEnvFiles>,
     environment: Option<ComposeEnvironment>,
 ) -> Result<BTreeMap<String, String>, ComposeError> {
-    let Some(environment) = environment else {
-        return Ok(BTreeMap::new());
-    };
+    let mut result = environment_files_plan(service, compose_dir, env_files)?;
     let entries = match environment {
-        ComposeEnvironment::Map(entries) => entries.into_iter().collect(),
-        ComposeEnvironment::List(entries) => entries
+        None => return Ok(result),
+        Some(ComposeEnvironment::Map(entries)) => entries.into_iter().collect(),
+        Some(ComposeEnvironment::List(entries)) => entries
             .into_iter()
             .map(|entry| {
                 entry.split_once('=').map_or_else(
@@ -1932,34 +1945,94 @@ fn environment_plan(
             })
             .collect::<Result<Vec<_>, _>>()?,
     };
-    let mut result = BTreeMap::new();
+    let mut explicit_names = BTreeSet::new();
     for (key, value) in entries {
-        if key.is_empty()
-            || !key.bytes().enumerate().all(|(index, byte)| {
-                byte == b'_' || byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit())
-            })
-        {
-            return Err(ComposeError::Invalid(format!(
-                "service {service:?} environment key {key:?} must be a shell variable name"
-            )));
-        }
-        if key == "THESEUS_CHANNEL" {
-            return Err(ComposeError::Invalid(format!(
-                "service {service:?} environment cannot override THESEUS_CHANNEL"
-            )));
-        }
-        if value.contains('\0') {
-            return Err(ComposeError::Invalid(format!(
-                "service {service:?} environment value for {key:?} contains NUL"
-            )));
-        }
-        if result.insert(key.clone(), value).is_some() {
+        validate_environment_value(service, &key, &value)?;
+        if !explicit_names.insert(key.clone()) {
             return Err(ComposeError::Invalid(format!(
                 "service {service:?} environment names {key:?} more than once"
             )));
         }
+        // Explicit `environment` is the final Compose precedence layer and
+        // intentionally replaces a same-named value from env_file.
+        result.insert(key, value);
     }
     Ok(result)
+}
+
+fn environment_files_plan(
+    service: &str,
+    compose_dir: &Path,
+    env_files: Option<ComposeEnvFiles>,
+) -> Result<BTreeMap<String, String>, ComposeError> {
+    let paths = match env_files {
+        None => return Ok(BTreeMap::new()),
+        Some(ComposeEnvFiles::Single(path)) => vec![path],
+        Some(ComposeEnvFiles::List(paths)) => paths,
+    };
+    let mut result = BTreeMap::new();
+    for file in paths {
+        if Path::new(&file).is_absolute() {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} env_file {file:?} must be relative to the Compose file"
+            )));
+        }
+        let path =
+            fs::canonicalize(compose_dir.join(&file)).map_err(|source| ComposeError::Read {
+                path: compose_dir.join(&file),
+                source,
+            })?;
+        if !path.starts_with(compose_dir) {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} env_file {file:?} must not escape the Compose directory"
+            )));
+        }
+        let input =
+            fs::read_to_string(&path).map_err(|source| ComposeError::Read { path, source })?;
+        for (line_number, line) in input.lines().enumerate() {
+            let line = line.trim_end_matches('\r');
+            if line.trim().is_empty() || line.trim_start().starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(ComposeError::Invalid(format!(
+                    "service {service:?} env_file {file:?} line {} must use KEY=value; host-environment inheritance is not supported",
+                    line_number + 1
+                )));
+            };
+            validate_environment_value(service, key, value)?;
+            result.insert(key.to_owned(), value.to_owned());
+        }
+    }
+    Ok(result)
+}
+
+fn validate_environment_value(service: &str, key: &str, value: &str) -> Result<(), ComposeError> {
+    if key.is_empty()
+        || !key.bytes().enumerate().all(|(index, byte)| {
+            byte == b'_' || byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit())
+        })
+    {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} environment key {key:?} must be a shell variable name"
+        )));
+    }
+    if key == "THESEUS_CHANNEL" {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} environment cannot override THESEUS_CHANNEL"
+        )));
+    }
+    if value.contains('\0') {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} environment value for {key:?} contains NUL"
+        )));
+    }
+    if value.contains("${") {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} environment value for {key:?} must be literal; interpolation is not supported"
+        )));
+    }
+    Ok(())
 }
 
 fn dependency_plan(
@@ -5251,6 +5324,40 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("host-environment inheritance"));
+    }
+
+    #[test]
+    fn locks_literal_compose_env_files_with_explicit_environment_precedence() {
+        let directory = fixture(
+            "services:\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    env_file: [./base.env, ./override.env]\n    environment:\n      MODE: explicit\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        fs::write(
+            directory.path().join("base.env"),
+            "# locked locally\nMODE=base\nROLE=worker\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("override.env"),
+            "MODE=file-override\nRETRIES=3\n",
+        )
+        .unwrap();
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(plan.services["worker"].environment["MODE"], "explicit");
+        assert_eq!(plan.services["worker"].environment["ROLE"], "worker");
+        assert_eq!(plan.services["worker"].environment["RETRIES"], "3");
+
+        let interpolated = fixture(
+            "services:\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    env_file: ./worker.env\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        fs::write(
+            interpolated.path().join("worker.env"),
+            "MODE=${HOST_MODE}\n",
+        )
+        .unwrap();
+        assert!(load_compose_plan(interpolated.path().join("compose.yaml"))
+            .unwrap_err()
+            .to_string()
+            .contains("interpolation"));
     }
 
     #[test]
