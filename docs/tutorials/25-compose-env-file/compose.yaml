@@ -1,0 +1,24 @@
+name: compose-env-file
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    env_file: ./api/service.env
+    networks: [backplane]
+
+networks:
+  backplane: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    max_runs: 1
+    max_operations_per_run: 1
+    faults: []
+    operations:
+      - name: inspect_environment
+        shell:
+          command: [/bin/busybox, env]
+          expect_exit: 0
+          output_contains: MODE=from_env_file

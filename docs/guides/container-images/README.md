@@ -207,10 +207,11 @@ services:
 ```
 
 Theseus resumes dependencies first and waits for their deterministic boot
-marker before starting each dependent. `service_healthy` is also available
-when the dependency declares a `container_service` readiness check. Dependency
-cycles, unknown services, and a healthy condition without that readiness
-contract fail while the Compose plan is created.
+marker before starting each dependent. `service_healthy` is available when the
+dependency declares either a standard Compose health check or a
+`container_service` readiness check. Dependency cycles, unknown services, and
+a healthy condition without either contract fail while the Compose plan is
+created.
 
 ## Configure an image with Compose environment
 
@@ -230,6 +231,23 @@ same-named image `ENV` values. The list form is also supported when every
 entry uses `KEY=value`. Bare names and null values, which would inherit the
 host environment, are rejected. `THESEUS_CHANNEL` remains reserved for the
 control transport.
+
+Use `env_file` for a local file of literal values:
+
+```yaml
+services:
+  worker:
+    env_file: ./worker/service.env
+    environment:
+      LOG_LEVEL: debug
+```
+
+Theseus reads the file while it plans the Compose campaign. A list reads files
+in order, with later files overriding earlier values; explicit `environment`
+values override every file. Files must stay under the Compose directory, and
+every non-comment line must be `KEY=value`. Bare names and `${...}`
+interpolation are rejected, so replay never consults a host environment. See
+[tutorial 25](../../tutorials/25-compose-env-file/).
 
 See [the control channel](../../control-channel.md) and
 [determinism](../../determinism.md).

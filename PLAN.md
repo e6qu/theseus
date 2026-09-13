@@ -212,10 +212,15 @@ addresses, configures each guest NIC before the image starts, and supplies
 peer Compose names through `/etc/hosts`; images need no DHCP client, `ip`
 binary, sidecar, Theseus code, or `container_service` contract.
 Compose `depends_on` is locked with the topology and starts dependencies at
-deterministic boot barriers; `service_healthy` uses the existing image-service
-readiness contract rather than host-time polling.
+deterministic boot barriers; `service_healthy` uses either the existing
+image-service readiness contract or a standard Compose health check, never
+host-time polling.
 Literal Compose `environment` values are also locked into the image entrypoint
 contract; host-environment inheritance is rejected.
+Local Compose `env_file` values follow the same path: Theseus reads literal
+`KEY=value` files under the Compose directory while planning, layers later
+files and explicit `environment` values by Compose precedence, and rejects
+host inheritance and interpolation.
 Compose `command`, `entrypoint`, and `working_dir` are likewise locked while
 the image becomes an initramfs. Theseus accepts argv lists rather than shell
 strings, so replay receives the exact process contract rather than a
