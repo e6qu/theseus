@@ -761,6 +761,10 @@ struct ComposeService {
     mem_limit: Option<ComposeQuantity>,
     #[serde(default)]
     deploy: Option<ComposeDeploy>,
+    #[serde(default)]
+    read_only: bool,
+    #[serde(default)]
+    tmpfs: Vec<String>,
 }
 
 /// Compose accepts quantities as either YAML numbers or strings. Theseus
@@ -1036,6 +1040,10 @@ pub struct ImageLaunchPlan {
     pub working_dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<ImageUserPlan>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tmpfs: Vec<String>,
 }
 
 /// Numeric credentials for a Compose image process. Name lookup would make a
@@ -1501,6 +1509,8 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
             service.entrypoint,
             service.working_dir,
             service.user,
+            service.read_only,
+            service.tmpfs,
         )?;
         let configs = image_config_plan(&name, service.configs, &configs)?;
         let secrets = image_secret_plan(&name, service.secrets, &secrets)?;
@@ -1973,6 +1983,8 @@ fn image_launch_plan(
     entrypoint: Option<Vec<String>>,
     working_dir: Option<String>,
     user: Option<String>,
+    read_only: bool,
+    tmpfs: Vec<String>,
 ) -> Result<Option<ImageLaunchPlan>, ComposeError> {
     for (field, values) in [
         ("command", command.as_ref()),
@@ -2012,7 +2024,21 @@ fn image_launch_plan(
     let user = user
         .map(|user| image_user_plan(service, &user))
         .transpose()?;
-    if command.is_none() && entrypoint.is_none() && working_dir.is_none() && user.is_none() {
+    for path in &tmpfs {
+        if !path.starts_with('/') || path.contains('\0') || path.split('/').any(|part| part == "..")
+        {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} tmpfs path {path:?} must be absolute without parent traversal"
+            )));
+        }
+    }
+    if command.is_none()
+        && entrypoint.is_none()
+        && working_dir.is_none()
+        && user.is_none()
+        && !read_only
+        && tmpfs.is_empty()
+    {
         return Ok(None);
     }
     Ok(Some(ImageLaunchPlan {
@@ -2020,6 +2046,8 @@ fn image_launch_plan(
         entrypoint,
         working_dir,
         user,
+        read_only,
+        tmpfs,
     }))
 }
 
@@ -5689,6 +5717,8 @@ mod tests {
             ]),
             Some("/site".to_owned()),
             Some("1000:1001".to_owned()),
+            true,
+            vec!["/tmp".to_owned()],
         )
         .unwrap()
         .unwrap();
@@ -5699,25 +5729,45 @@ mod tests {
             launch.user.as_ref().map(|user| (user.uid, user.gid)),
             Some((1000, 1001))
         );
+        assert!(launch.read_only);
+        assert_eq!(launch.tmpfs, ["/tmp"]);
 
-        assert!(
-            image_launch_plan("worker", None, Some(vec!["busybox".to_owned()]), None, None,)
-                .unwrap_err()
-                .to_string()
-                .contains("absolute path")
-        );
-        assert!(
-            image_launch_plan("worker", None, None, Some("relative".to_owned()), None,)
-                .unwrap_err()
-                .to_string()
-                .contains("absolute path")
-        );
-        assert!(
-            image_launch_plan("worker", None, None, None, Some("app".to_owned()))
-                .unwrap_err()
-                .to_string()
-                .contains("numeric uid:gid")
-        );
+        assert!(image_launch_plan(
+            "worker",
+            None,
+            Some(vec!["busybox".to_owned()]),
+            None,
+            None,
+            false,
+            Vec::new()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("absolute path"));
+        assert!(image_launch_plan(
+            "worker",
+            None,
+            None,
+            Some("relative".to_owned()),
+            None,
+            false,
+            Vec::new()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("absolute path"));
+        assert!(image_launch_plan(
+            "worker",
+            None,
+            None,
+            None,
+            Some("app".to_owned()),
+            false,
+            Vec::new()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("numeric uid:gid"));
     }
 
     #[test]

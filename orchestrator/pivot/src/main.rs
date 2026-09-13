@@ -30,6 +30,10 @@ struct InitSpec {
     #[serde(default)]
     user: Option<ContainerUser>,
     #[serde(default)]
+    read_only: bool,
+    #[serde(default)]
+    tmpfs: Vec<String>,
+    #[serde(default)]
     container_service: Option<ContainerService>,
     #[serde(default)]
     network: Option<ContainerNetwork>,
@@ -233,6 +237,48 @@ fn mount(source: &str, target: &str, fstype: &str) {
             std::ptr::null(),
         );
     }
+}
+
+fn apply_filesystem_contract(spec: &InitSpec) -> Result<(), String> {
+    for path in &spec.tmpfs {
+        fs::create_dir_all(path).map_err(|error| format!("create tmpfs {path}: {error}"))?;
+        let path = CString::new(path.as_str()).map_err(|_| "tmpfs path contains NUL".to_owned())?;
+        let source = CString::new("tmpfs").unwrap();
+        let fstype = CString::new("tmpfs").unwrap();
+        if unsafe {
+            libc::mount(
+                source.as_ptr(),
+                path.as_ptr(),
+                fstype.as_ptr(),
+                0,
+                std::ptr::null(),
+            )
+        } != 0
+        {
+            return Err(format!(
+                "mount tmpfs {}: {}",
+                path.to_string_lossy(),
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    if spec.read_only
+        && unsafe {
+            libc::mount(
+                std::ptr::null(),
+                b"/\0".as_ptr().cast(),
+                std::ptr::null(),
+                libc::MS_REMOUNT | libc::MS_RDONLY,
+                std::ptr::null(),
+            )
+        } != 0
+    {
+        return Err(format!(
+            "remount root read-only: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 fn exec_argv(
@@ -1065,6 +1111,10 @@ fn main() {
             eprintln!("THES:network:FAIL {error}");
             power_off();
         }
+    }
+    if let Err(error) = apply_filesystem_contract(&spec) {
+        eprintln!("THES:filesystem:FAIL {error}");
+        power_off();
     }
     let mut channel = TtyChannel::console().expect("open /dev/ttyS0");
     let service = spec.container_service.as_ref();
