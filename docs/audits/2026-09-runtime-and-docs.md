@@ -1,0 +1,65 @@
+# Runtime and documentation claim audit — 2026-09
+
+This audit reviewed the Theseus-authored root and component READMEs, active
+design documents, tutorials, evaluation notes, workflows, and behavioral code
+comments. Vendored Firecracker history and general upstream documentation were
+left unchanged unless a Theseus instruction depended on them.
+
+The dispositions below distinguish implementation from demonstrated runtime
+behavior. “Implemented” means a code path and tests exist. “Demonstrated” needs
+retained output from the named execution. A workflow definition is not itself
+a demonstration.
+
+| Claim area | Disposition | Active wording or evidence |
+|---|---|---|
+| Published platforms | Implemented packaging | Linux amd64/arm64 runtimes and CLI binaries plus macOS arm64 CLI are the intended release matrix. KVM execution remains Linux-only. |
+| Native runtime support | Conditional | The certification workflow requests self-hosted amd64/arm64 KVM jobs. A release is demonstrated only when its attached certificate exists and verifies the exact plan/artifacts. |
+| Linux random devices | Implemented with guest cooperation | Seeded virtio entropy is insufficient for a stock Linux CSPRNG. Tutorials 1–2 use the matching published kernel/module pair and only `/dev/random` and `/dev/urandom`. |
+| Virtual time | Implemented with a known leak | Time advances at exit-counted boundaries; counter reads within a quantum can reflect host progression. No instruction-exact claim remains. |
+| Network and storage faults | Implemented | Deterministic mode uses simulated network and memory-backed storage. Host-backed nondeterministic paths are rejected by the supported profile. Runtime proof is per retained certificate/campaign. |
+| Branch snapshots | Implemented | Capture copies all guest RAM into a memfd. Children restore with private copy-on-write mappings. The full path is not zero-copy. |
+| Campaign coverage | Implemented execution signal | Campaigns retain guest-PC samples at deterministic exits and barriers. This is not application basic-block or edge coverage. |
+| Single-step collector | Implemented reference signal | Small guests can yield an instruction-address set. MMIO limitations remain, and the set is not source-level coverage. |
+| Replay | Implemented for locked recorded fields | Replay re-executes supported bundles and compares retained fingerprints, serial output, actions, properties, and device evidence. It does not establish unrecorded state equality. |
+| Campaign comparison | Implemented offline diff | `compare` finds the first recorded difference between two bundles. “Causal divergence” was removed from CLI output, tests, and tutorials. |
+| Causality analysis | Proposed | Counterfactual re-exploration from checkpoints is Priority 3 in `PLAN.md`. |
+| General thread scheduling | Proposed | Current campaigns overlap explicit operations but do not control arbitrary application threads/processes. |
+| Public evaluation fixture | Format example only | Tutorial 13 and the current replicated-counter material do not independently prove execution without complete replay artifacts. Hashes prove retained bytes only. |
+| Antithesis parity | Not claimed | The comparison document identifies missing application coverage, general scheduling, hosted scale, and counterfactual investigation. No performance parity claim is supported. |
+
+## Tutorial disposition
+
+- Every tutorial README names its directory as the working context and uses a
+  published Theseus binary, SDK crate, or runtime image.
+- Tutorials 1 and 2 use normal Linux random devices. Tutorial 3 is the first
+  SDK example. Tutorial 4 explains UART versus the Linux TTY interface and
+  separates simulated input from Raspberry Pi hardware.
+- Orchestration-only `run.sh` and `run-in-runtime.sh` files were removed.
+  Tutorials 1, 2, and 4 retain `run.sh` because it is the actual low-level
+  Firecracker boot/UART harness; their READMEs require the user to inspect it
+  before execution.
+- Tutorials 5–13 expose build, execution, expected-failure, inspection,
+  replay, and cleanup commands directly in their READMEs.
+- Container and Compose tutorials 14–28 expose host image builds, interactive
+  runtime entry, locked input preparation, execution, evidence inspection,
+  replay, and optional cleanup as separate steps.
+- Generated bundles remain available until the user explicitly runs cleanup.
+
+## Corrections made
+
+- Removed historical test-count claims and statements that every layer had
+  already been proven on hardware.
+- Replaced “ground-truth coverage” with precise PC-signal terminology.
+- Replaced causal language in the comparison report with chronological
+  recorded-divergence language.
+- Qualified entropy, clock, checkpoint, certification, evaluation, and
+  platform claims in root and reference documentation.
+- Replaced the obsolete milestone ledger with an evidence-driven roadmap.
+- Added CI checks for tutorial structure and high-risk documentation wording.
+
+## Re-audit trigger
+
+Update this audit when a PR changes runtime guarantees, supported platforms,
+bundle evidence, coverage identity, scheduling control, or causality analysis.
+Do not mark a proposed row demonstrated until its exact public artifact and
+retrieval instructions are available.

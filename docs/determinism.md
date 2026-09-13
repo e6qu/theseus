@@ -1,15 +1,14 @@
 # The determinism model
 
-A run is only useful if it is *replayable*: same seed in, same observable
-behavior out. This document lists every source of nondeterminism in a
-Firecracker microVM and how Theseus closes it — plus the leaks we know
-about and have not closed. See also [architecture.md](architecture.md).
+A run is only useful if its recorded observations are replayable. This
+document lists the inputs Theseus controls and the limits that remain. See
+also [architecture.md](architecture.md).
 
-## Closed sources
+## Controlled sources
 
 ### Entropy
 
-Every byte a guest can observe as "random" is seeded:
+Theseus seeds the entropy sources it owns:
 
 - **virtio-rng** serves a seeded ChaCha stream (`PUT /entropy` takes
   `"seed"`; deterministic by default). The stream state is part of the
@@ -19,8 +18,11 @@ Every byte a guest can observe as "random" is seeded:
   MMDS token keys, dumbo TCP ISNs — all flow through `engine::detrng`, one
   seeded ChaCha stream per process, initialized from the run seed.
 
-Proven end to end: `/dev/hwrng` is byte-identical across same-seed boots
-and differs across seeds (`e2e/run.sh`).
+Linux also mixes guest timing into its CSPRNG. The published arm64 runtime
+therefore includes a matching guest module that installs the Theseus seed into
+the normal CRNG. Tutorials 1 and 2 exercise `/dev/random` and `/dev/urandom`
+with that kernel/module pair. Without the module, seeded virtio entropy alone
+does not guarantee identical Linux CSPRNG output.
 
 ### Time
 
@@ -36,9 +38,9 @@ Track B′: **tick-stepped virtual time with exit-counted quanta.**
   once before the first `KVM_RUN`.
 - Enable with `machine-config.virtual_time`.
 
-Proven on metal: a bare-metal guest reading CNTVCT sees anchored,
-bounded-close time across runs with virtual time on, and divergent host
-time with it off.
+Native tests can check that an enabled counter is anchored and remains near
+the requested tick progression. That is not a bitwise guarantee for reads
+inside a quantum.
 
 ### Network
 
@@ -67,9 +69,9 @@ sim config is rewritten in the captured state at spawn).
   (measured ≤ a few ticks). Bitwise replay of *clock reads* is Track B
   (trap counter reads — parked deliberately; on x86 it needs a KVM patch,
   on aarch64 there is no userspace trap knob).
-- **Guest-internal jitter entropy.** The Linux kernel's CSPRNG mixes
-  timing jitter, so `/dev/urandom` diverges even on same-seed boots. A
-  hypervisor cannot close this without guest cooperation.
+- **Unmodified Linux CSPRNG.** A stock kernel can mix timing jitter, so its
+  random-device output may diverge even when virtio entropy is seeded. Use the
+  matching published kernel/module pair when random-device replay matters.
 - **`detrng` owns one stream per VM timeline.** Parallel in-process timelines
   enter distinct streams, so their
   host-side random calls cannot interleave.
@@ -78,8 +80,7 @@ sim config is rewritten in the captured state at spawn).
 
 ## Replay fingerprints
 
-Determinism is asserted continuously, not assumed. Each timeline node
-records:
+Each captured timeline node records:
 
 1. **Entropy probe** — next bytes the entropy device would serve (must be
    a fresh ChaCha stream of the node's seed).
@@ -87,8 +88,8 @@ records:
    coverage).
 3. **Dirty pages** — KVM dirty-bitmap count at capture (memory footprint).
 
-Two runs of the same exploration must produce identical fingerprints at
-every node; the explorer's tests assert exactly that.
+Replay compares these fields at every retained node. A match is evidence for
+those recorded observations, not a proof about unrecorded guest state.
 
 ## Certify a runtime
 

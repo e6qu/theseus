@@ -135,7 +135,7 @@ fn compare_queries_and_reports_campaign_evidence_without_kvm() {
     assert!(markdown.status.success(), "{markdown:?}");
     assert!(String::from_utf8(markdown.stdout)
         .unwrap()
-        .contains("First causal divergence"));
+        .contains("First recorded divergence"));
 
     let query = Command::new(env!("CARGO_BIN_EXE_theseus"))
         .args([
@@ -180,6 +180,11 @@ status = "failed"
         r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","generated_candidates":4,"unique_topology_states":2,"unique_instruction_locations":3,"replay_verification":{"status":"passed"},"runs":[{"timeline":[{}]}],"properties":[{"name":"consistent_read","status":"failed"}]}"#,
     )
     .unwrap();
+    fs::write(
+        bundle.join("replay-plan.json"),
+        r#"{"format":"theseus-compose-plan-v1","services":[{}]}"#,
+    )
+    .unwrap();
     let lock = Command::new(env!("CARGO_BIN_EXE_theseus"))
         .args(["evaluate", "lock", "theseus-evaluation.toml"])
         .current_dir(directory.path())
@@ -201,7 +206,7 @@ status = "failed"
     let output = String::from_utf8(output.stdout).unwrap();
     assert!(output.contains("Theseus public evaluation: public corpus"));
     assert!(output.contains("Replay verification: 1/1 bundles"));
-    assert!(output.contains("Locked artifacts: verified (1 files"));
+    assert!(output.contains("Locked artifacts: verified (2 files"));
 }
 
 #[test]
@@ -211,7 +216,7 @@ fn evaluate_capture_publishes_a_complete_campaign_without_kvm() {
     fs::create_dir_all(campaign.join("services/api")).unwrap();
     fs::write(
         campaign.join("replay-plan.json"),
-        r#"{"format":"theseus-compose-plan-v1"}"#,
+        r#"{"format":"theseus-compose-plan-v1","services":[{}]}"#,
     )
     .unwrap();
     fs::write(campaign.join("services/api/serial.log"), "evidence\n").unwrap();
@@ -252,18 +257,18 @@ fn evaluate_capture_publishes_a_complete_campaign_without_kvm() {
 }
 
 #[test]
-fn versioned_replicated_counter_evaluation_stays_replay_verified() {
+fn versioned_replicated_counter_fixture_stays_explicitly_unverified() {
     let evaluation = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../evaluations/replicated-counter/theseus-evaluation.toml");
     let output = Command::new(env!("CARGO_BIN_EXE_theseus"))
         .args(["evaluate", evaluation.to_str().unwrap()])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{output:?}");
+    assert!(!output.status.success(), "{output:?}");
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["status"], "passed");
-    assert_eq!(report["replay"]["verified"], 1);
-    assert_eq!(report["conventional_baseline"]["counterexamples"], 0);
+    assert_eq!(report["status"], "failed");
+    assert_eq!(report["replay"]["verified"], 0);
+    assert!(report.get("conventional_baseline").is_none());
 }
 
 #[test]

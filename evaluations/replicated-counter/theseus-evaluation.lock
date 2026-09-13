@@ -5,8 +5,8 @@ bundle = "stale-read-campaign"
 
 [[bundles.files]]
 path = "campaign-result.json"
-sha256 = "119cd9b987711f7e498cce606dd4bd1244fbaed89626f27e1bd79a5c9f65d5da"
-bytes = 929
+sha256 = "2d90c1bff7dc589b385f6fce726b628d7f03f70d1bb9a11effdd5d0a26a3f79e"
+bytes = 948
 
 [[bundles.files]]
 path = "minimization.json"

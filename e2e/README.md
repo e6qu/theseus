@@ -3,21 +3,19 @@
 Boots real microVMs on real KVM and asserts the properties the unit tests
 can't reach. AGPL-3.0-or-later (see [../LICENSE](../LICENSE)).
 
-## What it proves
+## What it checks
 
-`run.sh` runs four proofs inside a privileged Linux container (repo mounted
+`run.sh` runs live checks inside a privileged Linux container (repo mounted
 at `/theseus`):
 
-1. **Seeded entropy**: three boots with the CI kernel + a tiny initramfs
-   (static C init). Seed 42 twice → byte-identical `/dev/hwrng`; seed 1337
-   → different.
-2. **Known leak note**: `/dev/urandom` diverges even on same-seed boots —
-   the guest kernel's CSPRNG mixes timing jitter (informational, not a
-   failure).
-3. **MMIO control channel**: a 216-byte bare-metal guest
+1. **Stock-kernel entropy probe**: three boots read `/dev/random` and
+   `/dev/urandom`. Their output is informational because this kernel mixes
+   guest timing into its CSPRNG. Tutorials 1 and 2 use the matching published
+   kernel module for random-device replay.
+2. **MMIO control channel**: a 216-byte bare-metal guest
    (`firecracker/.../theseus_guest.S`) reads the magic register and issues
    setup-complete + a log marker; the host drains exactly those events.
-4. **Serial control channel**: `agent/` (static musl Rust binary using
+3. **Serial control channel**: `agent/` (static musl Rust binary using
    `theseus_sdk::linux`) does a full marker/event round trip over the
    serial console on a stock kernel.
 

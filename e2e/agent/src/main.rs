@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Theseus e2e guest agent: runs as /init in a minimal initramfs on a stock
-//! CI kernel. Proves the SDK's Linux transport: dumps seeded entropy, then
+//! CI kernel. Exercises the SDK's Linux transport: dumps seeded entropy, then
 //! does a control-channel round trip over the serial console.
 
 use std::fs::File;
@@ -37,10 +37,10 @@ fn dump(label: &str, path: &str) {
 
 fn main() {
     println!("theseus-agent init");
-    mknod("/dev/hwrng", 10, 183);
+    mknod("/dev/random", 1, 8);
     mknod("/dev/urandom", 1, 9);
     mknod("/dev/ttyS0", 4, 64);
-    dump("hwrng", "/dev/hwrng");
+    dump("random", "/dev/random");
     dump("urandom", "/dev/urandom");
     println!("entropy done");
 

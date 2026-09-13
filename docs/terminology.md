@@ -6,10 +6,10 @@ Terms used across Theseus code and documentation. See
 
 ## Core model
 
-- **Deterministic simulation testing** — running a whole system inside an
-  environment where every source of nondeterminism (entropy, time,
-  scheduling, network faults) is controlled and seed-driven, so any run
-  can be replayed bit-for-bit.
+- **Deterministic simulation testing** — running a whole system with selected
+  inputs, scheduling boundaries, and faults under replay control. A concrete
+  runtime must state its remaining nondeterminism instead of implying that
+  every machine observation is controlled.
 - **Seed** — the single input from which all randomness in a run is
   derived. Same seed ⇒ same observable behavior.
 - **Timeline** — one execution of the system under test, from a branch
@@ -28,22 +28,22 @@ Terms used across Theseus code and documentation. See
 
 ## Replay and verification
 
-- **Replay** — re-executing a timeline from its branch point and seed path;
-  must reproduce every observable bit.
+- **Replay** — re-executing a retained timeline from its locked inputs and
+  comparing the recorded fingerprints and properties.
 - **Seed path** — the chain of seeds from the root to a timeline; the
   replay recipe for it (`TimelineTree::seed_path`).
-- **Fingerprint** — per-node proof-of-replay data: entropy probe, marker
+- **Fingerprint** — per-node recorded replay data: entropy probe, marker
   stream, and dirty-page count. Two runs of the same exploration must
   produce identical fingerprints at every node.
 - **Entropy probe** — the next bytes the entropy device would serve at
   capture time. Must equal a fresh ChaCha stream of the node's seed.
 - **Dirty pages** — count of guest pages written, from the KVM dirty
   bitmap; a memory-footprint coverage signal.
-- **Coverage** — an execution identity used to guide search. Single-stepping
-  (`KVM_GUESTDBG_SINGLESTEP`) collects the ground-truth PC set for small
+- **Execution-location signal** — guest instruction addresses used to guide
+  search. Single-stepping (`KVM_GUESTDBG_SINGLESTEP`) collects a PC set for small
   guests. Compose campaigns normally use PCs sampled at deterministic handled
   exits and pause barriers; markers and final checkpoint PCs are replay-locked
-  baseline signals.
+  baseline signals. Neither form is application basic-block coverage.
 
 ## Execution machinery
 
@@ -90,7 +90,7 @@ Terms used across Theseus code and documentation. See
 - **Invariant / property** — an observable statement about the system that
   must hold in every timeline (expressed as markers/assertions in guest
   code).
-- **e2e** — the live-KVM proof harness in `e2e/`, which boots real
+- **e2e** — the live-KVM check harness in `e2e/`, which boots real
   microVMs and checks entropy determinism and both control-channel
   transports.
 - **Deterministic by construction** — a system built so all

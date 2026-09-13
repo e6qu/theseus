@@ -658,7 +658,7 @@ struct CampaignTimelineBoundary {
     #[serde(default)]
     delivery: CampaignUartDelivery,
     /// A marker barrier is valid only when it appears after this operation's
-    /// UART bytes were accepted. This records that causal response window.
+    /// UART bytes were accepted. This records that post-input response window.
     #[serde(default)]
     barrier: CampaignUartBarrier,
     round: u64,
@@ -830,7 +830,7 @@ struct CampaignCheckpointEconomics {
     snapshot_file_bytes: u64,
 }
 
-/// Global proof that the checkpoint tree and the inputs to guidance were the
+/// Global record that the checkpoint tree and the inputs to guidance were the
 /// same during replay. Per-run evidence explains individual choices; this
 /// record catches changes to the search as a whole.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -2535,7 +2535,7 @@ fn certify(plan: &str, output: &Path) -> Result<(), String> {
                 "file-backed or vhost-user block devices",
                 "host-backed persistent memory",
             ],
-            known_limit: "counter reads can free-run within an exit-counted quantum; this profile proves exact end-of-run fingerprints, not instruction-by-instruction clock reads",
+            known_limit: "counter reads can free-run within an exit-counted quantum; this profile compares end-of-run fingerprints, not instruction-by-instruction clock reads",
         },
         source: CertificateSource {
             plan_sha256: format!("{:x}", Sha256::digest(&input)),
@@ -8748,7 +8748,7 @@ fn advance_campaign_operation_round(
     Ok(())
 }
 
-/// Wait for a causal UART barrier using deterministic topology rounds rather
+/// Wait for a post-input UART barrier using deterministic topology rounds rather
 /// than a host-time deadline. This lets a response that needs simulated
 /// network delivery complete while giving every campaign the same bound.
 fn wait_for_serial_after_rounds(

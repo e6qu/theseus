@@ -24,7 +24,7 @@ theseus/
 │                       # detrng, virtual clock, sim net backend, control door.
 ├── orchestrator/       # theseus-orchestrator. Timeline branching,
 │                       # coverage, and the exploration engine.
-├── e2e/                # Live-KVM proof harness (see e2e/README.md)
+├── e2e/                # Live-KVM check harness (see e2e/README.md)
 └── docs/               # You are here.
 ```
 
@@ -56,17 +56,22 @@ door could leave `vmm` without creating a dependency cycle.
 
 | Layer | Where | What it does |
 |---|---|---|
-| Seeded entropy | `firecracker` (rng device) + `engine/detrng` | Every byte of entropy a guest can see comes from a seeded ChaCha stream. |
+| Seeded entropy | `firecracker` (rng device) + `engine/detrng` | Supplies seeded device and host-side entropy; Linux CSPRNG replay also requires the shipped guest module. |
 | Control channel | `engine/door` + `sdk` | Guest↔host door over MMIO and serial console. |
 | Simulated network | `engine/simnet` | Loopback, partition, seeded drops; per-branch fault schedules. |
 | Virtual time | `engine/vclock` + vCPU tick loop | Tick-stepped clock (exit-counted quanta) on x86_64 and aarch64. |
 | Branching | `orchestrator/branch` | In-memory (memfd) timeline forks with kernel copy-on-write. |
 | Exploration | `orchestrator/orchestrator` | Timeline tree, child spawning, parallel rendezvous explorer. |
-| Coverage | `orchestrator/coverage` | Single-step PC collection — ground-truth coverage. |
+| Execution locations | `orchestrator/coverage` | Guest-PC collection by single-step or deterministic exit sampling. |
 
 ## Verification model
 
-Every layer is proven on hardware, not just written: 761 `vmm` tests plus
-crate tests on aarch64 KVM, and four end-to-end boot proofs in `e2e/`. CI
-(`.github/workflows/ci.yml`) runs on pull requests only and executes the
-environment-independent subset on GitHub runners.
+Pull-request CI compiles the workspace and runs environment-independent tests
+on an amd64 GitHub runner. KVM behavior needs separate native execution. The
+manual certification workflow targets self-hosted amd64 and arm64 KVM hosts;
+only a retained certificate from an actual run is runtime evidence.
+
+Branch capture first copies all guest RAM into a memfd. Restored children map
+that memfd privately, so child writes use kernel copy-on-write. Single-step and
+sampled PCs identify guest instruction addresses; without application symbol
+or block instrumentation they are not application basic-block coverage.

@@ -1,6 +1,6 @@
 # Public evaluations
 
-Each directory is a versioned, offline-readable evaluation. Its
+Each directory is a versioned, offline-readable evaluation input. Its
 `theseus-evaluation.toml` names only bundles below that directory, states the
 expected property outcome, and records a conventional baseline separately from
 Theseus evidence. Version 2 contracts also name an artifact lock. Evaluation
@@ -33,7 +33,12 @@ outcomes from its recorded result, writes a version 2 contract, and locks every
 copied file. Add the conventional baseline only after its observation is
 independently reproducible.
 
-The machine report counts replay verification, generated candidates, retained
+The tracked `replicated-counter` directory is a format fixture, not runtime
+evidence. It deliberately omits a replay plan and runtime artifacts, so current
+`theseus evaluate` reports its replay as unverified. Replace it with output
+from `evaluate capture` before presenting it as a public result.
+
+The machine report counts recorded replay verification, generated candidates, retained
 runs, topology and instruction-location coverage, checkpoint work, reduction
 work, and retained operation boundaries. A manually recorded investigation
 duration is informational only: no host-time value changes an evaluation

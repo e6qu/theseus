@@ -44,7 +44,7 @@ actual=$(jq -r '.manifests[0].digest' "$work/oci/index.json")
 test "$actual" = "$expected"
 ```
 
-The final comparison proves that the rebuilt platform image has the same OCI
+The final comparison establishes that the rebuilt platform image has the same OCI
 manifest digest as the published `TAG-ARCH` runtime image. The on-demand
 `verify runtime reproducibility` workflow performs this comparison twice with
 independent no-cache builds for both architectures and signs a witness.

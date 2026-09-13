@@ -3,8 +3,8 @@
 
 //! The stable boundary between a Theseus test directory and the runner.
 //!
-//! P6.1 deliberately stops at validation and planning. The returned run plan
-//! is what the executor and replay bundle will consume in P6.2.
+//! It validates test inputs, produces locked plans, executes supported KVM
+//! workloads, and reads or compares retained evidence.
 
 mod compare;
 mod compose;

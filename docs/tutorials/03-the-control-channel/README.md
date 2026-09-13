@@ -1,25 +1,52 @@
 # Tutorial 3: Mark guest state with `theseus-sdk`
 
-This directory is a complete bare-metal guest. It gets `theseus-sdk` from the
-published GitHub release, not from a Theseus checkout.
+Build a small bare-metal guest that detects the Theseus control device, emits
+setup and boot markers, echoes input events, and signals completion.
 
-Choose a published short commit SHA, then build it:
+Run every command from this directory. You need Rust, `rustup`, `objcopy`, and
+a published 12-character Theseus release SHA. The SDK is downloaded from that
+release; no Theseus checkout is used.
 
 ```sh
 export THESEUS_TAG=<12-character-sha>
-rustup target add aarch64-unknown-none
-sh ./build.sh
 ```
 
-`build.sh` downloads the SDK package into `vendor/`, builds the guest, and
-writes `guest.bin` in this directory.
+## 1. Inspect the guest
 
-The guest uses `ControlChannel` to do three things:
+```sh
+sed -n '1,240p' main.rs
+sed -n '1,120p' Cargo.toml
+```
 
-1. Detect the Theseus control device.
-2. Emit `MARKER_BOOT` and `CMD_SETUP_COMPLETE`.
-3. Echo events as markers, then emit `MARKER_DONE`.
+The marker values form the guest/service contract. Give them stable meanings,
+such as “ready” or “invariant failed.”
 
-Markers are the small, stable contract between a guest and the Theseus
-service. Keep values meaningful: for example, use one marker for “ready” and
-one for a failed invariant.
+## 2. Download the published SDK
+
+```sh
+rm -rf vendor target guest.bin
+mkdir vendor
+curl -fsSL \
+  "https://github.com/e6qu/theseus/releases/download/$THESEUS_TAG/theseus-sdk-0.1.0.crate" \
+  | tar -xz -C vendor --strip-components=1
+```
+
+`Cargo.toml` points only at the new local `vendor` directory.
+
+## 3. Build the guest
+
+```sh
+rustup target add aarch64-unknown-none
+cargo build --release
+objcopy -O binary \
+  target/aarch64-unknown-none/release/theseus-sdk-tutorial guest.bin
+test -s guest.bin
+```
+
+`guest.bin` is the resulting aarch64 guest image.
+
+## 4. Clean up (optional)
+
+```sh
+rm -rf vendor target guest.bin
+```

@@ -1,6 +1,6 @@
 # theseus-orchestrator
 
-Timeline branching, ground-truth coverage, and the exploration engine.
+Timeline branching, guest-PC execution signals, and the exploration engine.
 Depends on `vmm` one-way (no cycles). AGPL-3.0-or-later (see
 [../LICENSE](../LICENSE)).
 

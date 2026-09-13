@@ -33,9 +33,9 @@ deterministic-CRNG kernel module is shipped.
 11. [Certify a deterministic runtime](11-certify-runtime/) — run a fixed KVM
     topology twice and save its machine-readable repeatability witness.
 12. [Investigate two campaign bundles](12-investigate-campaign/) — find the
-    first causal divergence and query retained evidence without a VM.
-13. [Read a public evaluation](13-public-evaluation/) — summarize replay,
-    coverage, reduction, and conventional-baseline evidence without KVM.
+    first recorded divergence and query retained evidence without a VM.
+13. [Read a public evaluation](13-public-evaluation/) — distinguish a locked
+    format fixture from independently replayable runtime evidence.
 14. [Run a container image](14-container-image/) — convert, test, and replay
     an unmodified service image with the published Linux runtime.
 15. [Campaign an unmodified container service](15-container-campaign/) — drive

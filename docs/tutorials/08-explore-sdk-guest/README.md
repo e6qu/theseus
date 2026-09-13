@@ -1,32 +1,69 @@
 # Tutorial 8: Explore an SDK guest
 
-Run every command from this directory. Build the small aarch64 guest first.
-It downloads `theseus-sdk` from the published release; it does not use a
-Theseus checkout.
+Build a small SDK-instrumented aarch64 guest, explore up to seven timelines,
+then replay the locked result. This is the second SDK example; tutorials 1,
+2, and 4 use ordinary Linux device interfaces instead.
+
+Run every host command from this directory. You need Rust, Docker, Linux on
+arm64 with KVM, and a published release:
 
 ```sh
 export THESEUS_TAG=<12-character-sha>
-rustup target add aarch64-unknown-none
-sh ./build.sh
+export THESEUS_IMAGE=ghcr.io/e6qu/theseus:${THESEUS_TAG}-arm64
 ```
 
-Then run the published arm64 runtime on a Linux/KVM arm64 host:
+## 1. Inspect and build the guest on the host
 
 ```sh
-export THESEUS_IMAGE=ghcr.io/e6qu/theseus:${THESEUS_TAG}-arm64
-docker run --rm --privileged -v "$PWD":/tutorial -w /tutorial \
-  "$THESEUS_IMAGE" sh ./run.sh
+sed -n '1,240p' main.rs
+sed -n '1,240p' theseus.toml
+rm -rf vendor target guest.bin
+mkdir vendor
+curl -fsSL \
+  "https://github.com/e6qu/theseus/releases/download/$THESEUS_TAG/theseus-sdk-0.1.0.crate" \
+  | tar -xz -C vendor --strip-components=1
+rustup target add aarch64-unknown-none
+cargo build --release
+objcopy -O binary \
+  target/aarch64-unknown-none/release/theseus-explore-tutorial guest.bin
+test -s guest.bin
 ```
 
-The guest signals setup, reads `A` from its UART, receives `90` through the
-SDK control channel, and signals completion. Theseus injects the UART byte
-into each timeline directly; it never uses shared host stdin. It forks up to
-seven timelines and checks that each one read the byte and completed. It
-records every seed path and check outcome in `theseus-exploration/result.json`.
-The bundle also contains the exact `theseus-explorer` binary used for replay.
+## 2. Enter the published runtime
 
-Replay those locked artifacts without the original manifest:
+```sh
+docker run --rm -it --privileged --platform linux/arm64 \
+  -v "$PWD":/tutorial -w /tutorial "$THESEUS_IMAGE" sh
+```
+
+Run the remaining steps inside the container.
+
+## 3. Prepare and explore
+
+```sh
+mkdir -p runtime initramfs-root
+cp /usr/local/bin/firecracker runtime/firecracker
+(cd initramfs-root && find . -print | cpio -o -H newc --quiet > ../empty-initramfs.cpio)
+theseus explore
+grep -a '"status": "passed"' theseus-exploration/result.json
+grep -a '"seed_path"' theseus-exploration/result.json
+test -x theseus-exploration/artifacts/theseus-explorer
+```
+
+The result records each explored seed path. The bundle includes the exact
+explorer binary selected for replay.
+
+## 4. Replay
 
 ```sh
 theseus explore --replay theseus-exploration --output exploration-replay
+grep -a '"status": "passed"' exploration-replay/result.json
+exit
+```
+
+## 5. Clean up (optional)
+
+```sh
+rm -rf vendor target guest.bin runtime initramfs-root empty-initramfs.cpio \
+  theseus-exploration exploration-replay
 ```

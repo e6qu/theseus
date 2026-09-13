@@ -1,337 +1,149 @@
 # Theseus roadmap
 
-## Objective
+## Product objective
 
-Build an open, deterministic system-testing environment for Linux services.
-Theseus runs a Firecracker/KVM topology, controls its nondeterministic inputs,
-branches it at reproducible checkpoints, searches faulted histories, and emits
-one self-contained replay bundle for every result.
-
-The target is the useful part of the Antithesis experience: test a real service
-topology, explore failures automatically, reproduce any result exactly, and
-understand why that history was selected. Theseus is not yet an instruction-
-perfect deterministic hypervisor or a hosted Antithesis replacement. Do not
-claim either.
+Run ordinary Linux services under controlled inputs and faults, discover a
+failure, and let another person reproduce and investigate it from published
+artifacts. Measure progress by demonstrated runtime behavior and retained
+evidence, not by implemented types, accepted syntax, or test counts.
 
 ## Current baseline
 
-### What is shipped
+Theseus has a Linux/KVM runtime, Compose planning and execution, container
+image conversion, simulated network and storage, exit-counted virtual time,
+bounded campaign search, minimization, replay, reports, bundle comparison, and
+an optional guest SDK.
 
-- Published macOS-arm64 and Linux amd64/arm64 CLI/runtime artifacts, plus
-  Linux multi-architecture OCI images. Tutorials consume those artifacts and
-  are self-contained directories.
-- Seeded guest entropy, including `/dev/random` and `/dev/urandom` through the
-  matching Theseus kernel/module distribution; a serial/TTY control protocol;
-  and a guest SDK as an optional third integration path.
-- Deterministic simulated NICs and storage: delay, jitter, partitioning,
-  loss, duplication, corruption, bandwidth/queue/MTU limits, and storage
-  errors, latency, torn writes, and read corruption.
-- Exit-counted virtual time, deterministic topology rounds, lifecycle faults,
-  causal UART barriers, and a single topology-wide budget. No normal topology
-  path waits on host elapsed time.
-- Compose campaigns: operation/input grammars, state and serial guards,
-  cross-service JSON evidence, property checks, deterministic fault actions,
-  minimization, locked replay, portable HTML/Markdown/JSON/JUnit reports.
-- A whole-topology operation-prefix checkpoint tree. A shared prefix is
-  captured once, then later schedules restore it instead of replaying its
-  earlier operations. Marker, paused-PC, topology-state, property, adaptive,
-  and posterior guidance are deterministic and replay-checked.
-- Explorer primitives: in-memory branch snapshots, kernel COW child mappings,
-  seeded child divergence, dirty-page and marker novelty, and slow
-  single-step PC coverage as a ground-truth reference.
+The following limits define the honest baseline:
 
-### Constraints we must keep visible
+- Pull-request CI runs mostly environment-independent checks on an amd64
+  GitHub runner. Native KVM behavior is evidence only when a matching runtime
+  job actually ran and retained its certificate.
+- Linux CSPRNG replay requires the matching published kernel and Theseus seed
+  module. Seeded virtio entropy alone does not remove stock-kernel timing mix.
+- Guest counters free-run within an exit-counted virtual-time quantum.
+- Campaign execution signals are raw vCPU PCs sampled at exits and barriers,
+  not application basic-block or edge coverage.
+- `compare` finds differences between retained histories. It does not perform
+  counterfactual experiments and must not claim causality.
+- Branch capture copies guest RAM into a memfd. Restored children then use
+  private copy-on-write mappings; capture is not zero-copy.
+- The recorded public evaluation fixtures explain formats but do not contain
+  complete, independently replayable runtime evidence.
 
-- KVM does not trap ordinary clock reads. Virtual time is deterministic at
-  exit-counted quantum boundaries, but a guest can see a small host-time tail
-  while it runs within a quantum. See `docs/determinism.md`; do not call this
-  instruction-perfect replay.
-- Compose checkpoint snapshots currently use Firecracker snapshot files. The
-  prefix tree avoids repeated histories, but it is not yet a zero-copy,
-  whole-topology snapshot store.
-- Single-step coverage is intentionally slow and suitable only as a reference
-  signal. Campaign PC samples are cheap checkpoint observations, not execution
-  coverage.
-- The supported production path is Linux/KVM. macOS is a CLI authoring
-  platform, not a local VM execution platform.
+## Evidence rules
 
-## Architecture that work must preserve
+Apply these rules to code, documentation, releases, and future PRs:
 
-```
-manifest / Compose input
-        ↓ normalize and lock released artifacts
-deterministic topology runner
-        ↓ rounds, UART, faults, simulated devices
-whole-topology checkpoint tree ──→ campaign corpus scheduler
-        ↓                                  ↓
-locked replay bundle ← evidence, properties, minimization, report
-```
+1. Label a capability as implemented, runtime-demonstrated, or proposed.
+2. Treat a hash as proof of retained bytes only, never proof of execution.
+3. State the architecture, kernel/module pair, runtime digest, plan, and I/O
+   profile for KVM evidence.
+4. Preserve the replay plan, locked runtime/workload artifacts, results, logs,
+   operation boundaries, fault schedule, and property verdict for a public
+   counterexample.
+5. Keep tutorial directories self-contained. Run from the directory and use
+   published Theseus artifacts only.
+6. Put meaningful commands and expected observations in the tutorial README.
+   Keep scripts only when they are actual workloads or reusable low-level
+   tools, and make their contents reviewable before execution.
+7. Do not restore historical P-number completion ledgers as active guidance.
+   Git history is the record of completed work.
 
-The replay bundle is the product boundary. New guidance, metrics, artifacts,
-or debugging data are only complete when they are copied into the bundle,
-understood by offline reports, and verified on replay.
+## Priority 0: prove the packaged runtime on a concurrent service failure
 
-## Completed tranches
+Deliver this as one coherent PR, with separately reviewable commits.
 
-| Tranche | Status | Outcome |
-| --- | --- | --- |
-| P0–P5 core | Done | Deterministic devices, virtual-time plumbing, branching, explorer, serial transport, and reference coverage. |
-| P6–P10 product | Done | Public CLI, Compose runner, replay/minimization, reports, tutorials, and autonomous campaigns. |
-| P11 release | Done | Multi-architecture artifacts, consumer verification, provenance, SBOMs, reproducible build inputs, and external rebuild witnesses. |
-| P12 campaign correctness | Done through PR #169 | Prefix checkpoints, coverage/property guidance, detailed operation evidence, deterministic lifecycle scheduling, and replay proof. |
-| P13 scalable exploration | Done through PR #170 | Checkpoint economics, per-decision guidance ledgers, replay-checked search evidence, and portable reports. |
+### Package the runtime that tests execute
 
-P12 and P13 are closed. Do not reopen them for isolated report fields or
-scheduler bookkeeping. Fold new search capability into the next complete
-tranche.
+- Build the embedded pivot from matching source for every Linux target and
+  make CI exercise the same binary and packaging path used by release images.
+- Resolve and test Compose quantity parsing, mount overlap/path validation,
+  read-only roots, tmpfs, credentials, environment, health checks, launch
+  overrides, configs, secrets, seeded volumes, and service networking as one
+  combined runtime contract.
+- Run native amd64 and arm64 KVM checks for boot, normal operation, each
+  selected fault path, checkpoint restoration, and replay.
+- Publish and retain certificates for the exact SHA artifacts. Leave a missing
+  architecture explicitly unverified rather than substituting unit tests.
 
-## Next work, in order
+### Find a concurrency-dependent failure
 
-### P13 — scalable deterministic exploration
+- Add bounded command templates with explicit setup, launch, completion,
+  assertion, and recovery phases using ordinary service executables.
+- Generate deterministic overlapping schedules with stable operation IDs and
+  recorded completion order. Do not use host wall time as the scheduling
+  oracle.
+- Preserve in-flight operation state across a supported checkpoint boundary,
+  or reject that boundary explicitly.
+- Demonstrate one intentionally introduced concurrency bug in a multi-service
+  workload, alongside a passing schedule and a minimized failing schedule.
+- Publish complete locked replay artifacts and exact retrieval/replay steps.
+  Remove unsupported baseline numbers or investigation-time claims.
 
-**Done in PR #170.** The checkpoint tree now records captured/restored/avoided
-work, every adaptive choice retains its input ledger, and replay checks the
-same search evidence that reports display.
+### Exit criteria
 
-### P14 — deterministic-runtime certification
+- The PR CI is green at the final commit.
+- Both advertised Linux architectures have retained native KVM evidence for
+  the exact candidate artifacts.
+- A new user can retrieve the published artifacts, reproduce the minimized
+  failure from its directory, inspect why the property failed, and replay it
+  without undocumented repository inputs.
+- `PLAN.md`, reference docs, comments, CLI wording, and tutorials describe the
+  observed result and remaining limits consistently.
 
-Turn the current virtual-time caveat into a tested support contract.
+## Priority 1: application basic-block coverage
 
-**Current big PR:** turn one fixed Compose topology into a reusable,
-release-attested certification witness.
+- Define stable process, module, and basic-block identities across ASLR and
+  rebuilds.
+- Instrument one bounded initial toolchain/language path.
+- Preserve coverage identities in campaign bundles and reports.
+- Measure runtime/storage overhead and demonstrate search improvement over
+  marker, dirty-page, and PC-sampling baselines on the same workload budget.
 
-- Add `theseus-topology certify`: require KVM and virtual time, execute once,
-  replay once, and save a stable certificate containing exact serial, entropy,
-  storage, network, virtual-clock, lifecycle, and action evidence.
-- Reject host timerfd rate limiters plus tap, Unix-socket vsock,
-  file-backed/vhost-user block, and host-pmem devices at the VMM boundary
-  whenever virtual time is enabled.
-- Ship a self-contained certification tutorial and a manually dispatched,
-  native amd64/arm64 KVM-metal workflow that attests and attaches the result to
-  its SHA release.
-- Use the first metal certificates to measure timer-deadline and quantum-tail
-  behavior. Escalate to kernel/KVM work if the exact replay witness diverges.
+Exit when a public workload produces replay-stable application coverage and a
+controlled comparison shows that it finds a counterexample or useful state
+that the existing signals miss.
 
-**Exit criteria:** supported hardware/configuration pairs have a reproducible
-certification artifact; unsupported configurations are rejected or labelled
-honestly. Escalate to kernel/KVM work if the quantum tail causes real replay
-divergence.
+## Priority 2: thread and process scheduling
 
-### P15 — zero-copy whole-topology checkpoints
+- Introduce explicit replayable scheduling choices for a bounded Linux target.
+- Record runnable entities and selected decisions with stable identities.
+- Add deterministic perturbations and race examples below operation-level
+  overlap.
+- Carry scheduling state through checkpoint, minimization, and replay.
 
-Make branching economical at the data-plane level, not just at the operation
-history level.
+Exit when a real race can be found, minimized, and replayed from retained
+artifacts without relying on host timing.
 
-- Replace per-prefix snapshot-file copying with a retained, shared memory
-  backing and kernel COW children for every service in a topology.
-- Keep switch state, UART transcripts, storage state, scheduler cursors, and
-  virtual clock state atomic with the VM memory barrier.
-- Bound cache lifetime and account for resident/shared/private pages without
-  making host timing part of replay evidence.
-- Benchmark topology fan-out by deterministic work counts and separately
-  publish non-authoritative wall-clock measurements.
+## Priority 3: counterfactual investigation
 
-**Current implementation:** retain each service checkpoint in an anonymous
-memfd, deserialize fresh VMM state for every child, and restore the memory
-through a private mapping. Linux shares clean source pages and COWs writes, so
-siblings no longer create `state.snap`/`memory.snap` files. The campaign tree
-owns every retained branch and releases all of them when that invocation ends;
-its result now records retained immutable bytes, logical COW-mapped restore
-bytes, dirty pages at capture barriers, and zero snapshot-file bytes. Switch
-state, UART transcripts, storage fingerprints, scheduler cursors, and virtual
-clocks remain in the same pause barrier.
+- Navigate a retained operation/fault/property timeline offline.
+- Re-execute from an earlier checkpoint while changing one controlled event.
+- Compare the resulting behavior with the original and label conclusions by
+  the experiment actually performed.
+- Never promote chronological difference to causal language automatically.
 
-**Exit criteria:** sibling topology leaves share immutable memory pages; branch
-isolation and replay are proven under multi-service network/storage faults;
-cache reclamation cannot invalidate a locked replay bundle.
+Exit when the tool can show, from reproducible experiments, that removing or
+changing one event prevents or preserves a selected failure.
 
-### P16 — usable execution coverage and search guidance
+## Priority 4: exploration scale
 
-Replace checkpoint-PC sampling as the main coverage signal.
+- Bound checkpoint retention and garbage collection.
+- Measure capture, restore, shared-page, and private-page costs on realistic
+  multi-service topologies.
+- Improve search scheduling only against public fixed-budget workloads.
+- Pursue broader integrations or hosted execution after runtime evidence and
+  artifact reproduction are reliable.
 
-- Build a low-overhead coverage collector that can run with normal devices and
-  captures stable execution-location identities across a complete service
-  topology.
-- Validate it against the existing single-step collector on small guests.
-- Feed novelty into the corpus scheduler with deterministic tie breaks; retain
-  the complete choice evidence and replay-check it.
-- Add a live evaluation workload where marker-only, checkpoint-PC, and
-  execution coverage select materially different histories.
+## Documentation maintenance
 
-**Exit criteria:** coverage works on practical campaign workloads without
-single stepping; its identity, corpus choice, and replay behavior are stable.
+Every behavioral PR must update the relevant tutorial, reference contract,
+code comments, and audit status in the same change. CI should reject hidden
+tutorial wrappers, checkout-relative tutorial dependencies, stale causal or
+coverage terminology, unsupported platform claims, and reintroduced references
+to obsolete random-device examples.
 
-**Current implementation:** every vCPU records its PC at a fixed cadence of
-deterministic handled KVM exits and at explicit pause barriers. The collector
-leaves ordinary UART, virtio, network, and storage emulation enabled; it is
-inherited through topology COW branches as runtime checkpoint state. Campaign
-novelty defaults to those accumulated location identities; `markers` and
-`checkpoint_pcs` are replay-locked baselines that use the same corpus and
-topology-state/failure evidence. A deterministic scheduler test demonstrates
-that the three modes choose distinct extension histories. Every live campaign
-checkpoint now also verifies its pause-barrier PC is present in the matching
-vCPU's sampled set, making a broken collector fail before it can guide a
-corpus. Paused-PC and single-step collection remain diagnostics and the
-small-guest ground truth.
-
-### P17 — ordinary workload integration
-
-Make Theseus useful without a bespoke guest protocol.
-
-- Define a container/service driver contract that can wrap an existing
-  integration test, HTTP/gRPC client, or shell workload.
-- Keep serial/TTY as a supported low-level path, but provide first-class
-  readiness, operation, assertion, and correlation adapters for normal
-  services.
-- Package examples that require only released Theseus artifacts and their own
-  tutorial directory.
-
-**Exit criteria:** an unmodified multi-container integration workload can be
-run as a deterministic campaign with properties, faults, minimization, and
-replay.
-
-**Current implementation:** the published Linux runtime accepts a standard
-`docker save` archive as `guest.image` with `runtime.image_adapter`. It locks
-the image and adapter into replay, preserving the image entrypoint,
-environment, and working directory without application changes. Compose test
-and replay use the same path. `container_service` adds boot-time HTTP GET
-readiness and status/body assertions: the injected PID 1 reports each result
-as a normal Theseus check and stops the service after the contract completes.
-It also supports the standard clear-text gRPC health service for readiness and
-serving-status assertions. Named HTTP operations can drive a ready service
-with GET, POST, PUT, or DELETE requests before assertions run. The same image
-pivot also drives the standard clear-text gRPC health endpoint as a named
-operation, both in a single-service contract and in a locked Compose campaign;
-the service still needs no Theseus SDK or custom UART protocol. Named shell
-operations run a declared argv command in the image filesystem, verify its exit
-status and bounded combined output, and never evaluate a shell snippet. A
-command can also publish one parsed JSON result as a normal serial event, so
-campaign properties can inspect structured diagnostics without a guest SDK.
-For image-backed Compose services, the locked topology now assigns stable IPv4
-addresses, configures each guest NIC before the image starts, and supplies
-peer Compose names through `/etc/hosts`; images need no DHCP client, `ip`
-binary, sidecar, Theseus code, or `container_service` contract.
-Compose `hostname` and `extra_hosts` are locked into that guest-side network
-view as well. Theseus sets the image hostname before its entrypoint starts and
-writes literal local aliases to `/etc/hosts`; it never resolves a host name on
-the machine planning or replaying the campaign.
-Compose `depends_on` is locked with the topology and starts dependencies at
-deterministic boot barriers; `service_healthy` uses either the existing
-image-service readiness contract or a standard Compose health check, never
-host-time polling.
-Literal Compose `environment` values are also locked into the image entrypoint
-contract; host-environment inheritance is rejected.
-Local Compose `env_file` values follow the same path: Theseus reads literal
-`KEY=value` files under the Compose directory while planning, layers later
-files and explicit `environment` values by Compose precedence, and rejects
-host inheritance and interpolation.
-Compose `command`, `entrypoint`, and `working_dir` are likewise locked while
-the image becomes an initramfs. Theseus accepts argv lists rather than shell
-strings, so replay receives the exact process contract rather than a
-host-dependent expansion.
-Compose `user` locks numeric `uid:gid` credentials into that process contract.
-The pivot drops supplementary groups and applies those credentials before the
-image entrypoint, health checks, and campaign shell operations; host and
-image account-name lookup are deliberately out of scope.
-Compose CPU and memory limits now replace the manifest's VM resources through
-whole vCPU and MiB quantities. The resolved machine configuration is part of
-the locked plan; fractional host-scheduled quotas remain out of scope.
-Local Compose `configs` are locked as read-only files in image initramfses, so
-ordinary services can receive deterministic file configuration without a bind
-mount or host filesystem dependency.
-Local Compose `secrets` follow the same locked path with root-only file
-permissions. Their bytes remain in replay material, so secret-bearing bundles
-must be handled as sensitive artifacts.
-Local Compose bind-volume directories are also copied into derived image
-initramfses. They start from the same locked tree on every replay and are
-writable only inside each VM run; Docker named and shared volumes remain out
-of scope because they would add host-persistent state to a replay.
-Standard Compose `CMD` health checks now lock their argv and timing contract
-into the image initramfs. `service_healthy` can use that normal Compose signal
-without an application-specific Theseus readiness contract.
-
-**Campaign operations:** Compose campaigns also accept a declarative `http`
-operation for an image-backed service. Theseus locks its JSON request command
-into the campaign input, executes it through the injected pivot after the
-normal boot barrier, records the HTTP result, and emits the ordinary operation
-checkpoint used by faults, minimization, and replay. Tutorial 15 demonstrates
-the path with an unmodified container image. A `grpc_health` campaign operation
-uses the same boundary for the standard gRPC health method. A `shell` campaign
-operation does the same for an argv command; tutorial 18 demonstrates a direct
-file-read command in an unmodified BusyBox service image.
-
-**Current execution support:** image-backed test, Compose, campaigns, and
-exploration lock the image, adapter, service contract, and derived initramfs
-together. Replays boot the recorded initramfs while retaining the source image
-evidence.
-
-### P18 — multiverse debugging
-
-Turn a replay bundle into an investigation surface.
-
-- Add timeline/event queries across service logs, fault actions, topology
-  state, properties, and coverage.
-- Support comparing a failing leaf with a passing sibling and explain their
-  first causal divergence.
-- Retain all debugger input in the portable bundle; do not require a hosted
-  service to understand a failure.
-
-**Exit criteria:** a user can answer “what changed before this failure?” from a
-bundle without manually diffing serial logs or snapshots.
-
-**Current implementation:** `theseus compare <left> <right>` reads only two
-locked `campaign-result.json` bundles and identifies the first causal
-difference in selected operations and faults, applied fault actions,
-operation-boundary topology state, serial evidence, or coverage. It also
-compares retained property witnesses, accumulated coverage, final state, and
-property verdicts. `theseus compare --query /json/pointer <left> <right>`
-returns the same retained field from both bundles, including timeline actions,
-serial evidence, topology state, coverage, and properties. Use
-`theseus compare --format markdown` for a portable issue-ready divergence
-note. Tutorial 12 is a no-VM, self-contained investigation example.
-
-### P19 — public capability evaluation
-
-Prove the platform on real distributed-system failures.
-
-- Maintain a small, versioned suite of public multi-service workloads and
-  seeded injected faults with expected properties.
-- Report replay rate, unique states/coverage, checkpoint work, reduction
-  quality, and investigation time. Compare against conventional chaos runs;
-  describe Antithesis differences without unsupported claims.
-
-**Exit criteria:** a reproducible public evaluation demonstrates bugs or
-failure modes that ordinary repeated integration tests miss.
-
-**Current implementation:** `theseus evaluate [--format json|markdown]`
-validates a versioned evaluation contract against only its locked campaign
-bundles. Version 2 contracts verify a committed SHA-256 and byte-size lock for
-every regular bundle file before reading a result; changed, missing,
-unexpected, and symlinked files fail evaluation. `theseus evaluate lock`
-regenerates that deterministic lock when a corpus changes. Evaluation reports
-replay verification, selected and retained work, topology and
-instruction-location coverage, checkpoint work, minimization work, and
-retained operation-boundary evidence. Suites can record a conventional-chaos
-baseline and a manually observed investigation duration, but both are clearly
-informational rather than replay verdicts. `evaluations/replicated-counter/`
-is the first public corpus entry: it records the minimized stale-read failure
-from the three-service replicated-counter topology and its expected failed
-property. Add real public workloads and independently reproducible baseline
-observations before making comparative performance claims.
-
-`theseus evaluate capture campaign-dir --output evaluation-dir --name name`
-copies a complete KVM campaign replay bundle into a self-contained version 2
-public evaluation, derives its observed property contract, and locks every
-copied artifact. This is the publication path for new real workloads.
-
-## Rules for future PRs
-
-- Work by capability tranche, not one field or one edge case per PR.
-- A product-facing change includes execution, locked replay evidence, report,
-  tutorial/example, and tests in the same PR.
-- Never use host wall time as a test oracle, scheduler input, or replay proof.
-  Host-time metrics are optional diagnostics and must be marked as such.
-- Preserve backwards reading of old replay bundles when safe; never silently
-  weaken verification of a newly written bundle.
-- Keep tutorials self-contained. Their directory is their working directory;
-  they may depend only on published Theseus binaries or images.
+Use Antithesis documentation as a capability reference for coverage,
+scheduling, test templates, and counterfactual debugging. It is not evidence
+that Theseus implements or matches those capabilities.

@@ -126,7 +126,7 @@ impl CampaignComparison {
         );
         match &self.divergence {
             Some(divergence) => {
-                report.push_str("\n## First causal divergence\n\n");
+                report.push_str("\n## First recorded divergence\n\n");
                 report.push_str(&format!(
                     "- Run: `{}`{}\n- Reason: {}\n- Left: `{}`\n- Right: `{}`\n",
                     divergence.run,
@@ -490,7 +490,7 @@ mod tests {
             comparison.divergence.as_ref().unwrap().reason,
             "campaign property verdicts differ"
         );
-        assert!(comparison.markdown().contains("First causal divergence"));
+        assert!(comparison.markdown().contains("First recorded divergence"));
 
         let query = query_campaigns(left.path(), right.path(), "/properties/0/status").unwrap();
         assert!(!query.equal);
