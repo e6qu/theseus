@@ -49,6 +49,22 @@ synchronously and pause/probe/capture are `Vmm` methods, so no
 parallel timelines must not use host-fd-backed devices; sim backends and
 the MMIO door are pump-free by construction.
 
+## Overlapping image commands
+
+A Compose campaign can keep an ordinary image process alive across operation
+boundaries. A `shell` operation with `phase: launch` and a service-local
+`process` name forks the argv command, records its launch, and checkpoints
+without waiting. A later `phase: completion` for that name waits for the exit,
+checks its status and bounded output, and records a monotonically increasing
+completion-observation position.
+
+The running PID, output pipe, and process memory belong to the guest and are
+therefore part of a whole-topology checkpoint. Generated campaign histories
+exclude completion-before-launch and a second launch of an already-live name.
+The retained timeline assigns every boundary a stable `op-NNN-<name>` ID.
+This controls operation-level overlap; it is not general Linux thread
+scheduling.
+
 ## Properties
 
 Add `marker_seen`, `marker_not_seen`, `serial_contains`, or

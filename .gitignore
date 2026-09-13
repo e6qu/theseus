@@ -110,5 +110,10 @@ docs/tutorials/27-compose-user/rerun/
 docs/tutorials/28-compose-resources/api/work/
 docs/tutorials/28-compose-resources/campaign/
 docs/tutorials/28-compose-resources/rerun/
+docs/tutorials/29-overlap-commands/api/work/
+docs/tutorials/29-overlap-commands/plan.json
+docs/tutorials/29-overlap-commands/campaign/
+docs/tutorials/29-overlap-commands/minimized/
+docs/tutorials/29-overlap-commands/rerun/
 
 orchestrator/pivot/target/

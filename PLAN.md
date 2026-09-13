@@ -12,7 +12,9 @@ evidence, not by implemented types, accepted syntax, or test counts.
 Theseus has a Linux/KVM runtime, Compose planning and execution, container
 image conversion, simulated network and storage, exit-counted virtual time,
 bounded campaign search, minimization, replay, reports, bundle comparison, and
-an optional guest SDK.
+an optional guest SDK. Image campaigns can keep named ordinary commands in
+flight across whole-topology checkpoints and record when each completion is
+observed.
 
 The following limits define the honest baseline:
 
@@ -56,8 +58,6 @@ Deliver this as one coherent PR, with separately reviewable commits.
 
 ### Package the runtime that tests execute
 
-- Build the embedded pivot from matching source for every Linux target and
-  make CI exercise the same binary and packaging path used by release images.
 - Resolve and test Compose quantity parsing, mount overlap/path validation,
   read-only roots, tmpfs, credentials, environment, health checks, launch
   overrides, configs, secrets, seeded volumes, and service networking as one
@@ -69,15 +69,11 @@ Deliver this as one coherent PR, with separately reviewable commits.
 
 ### Find a concurrency-dependent failure
 
-- Add bounded command templates with explicit setup, launch, completion,
-  assertion, and recovery phases using ordinary service executables.
-- Generate deterministic overlapping schedules with stable operation IDs and
-  recorded completion order. Do not use host wall time as the scheduling
-  oracle.
-- Preserve in-flight operation state across a supported checkpoint boundary,
-  or reject that boundary explicitly.
-- Demonstrate one intentionally introduced concurrency bug in a multi-service
-  workload, alongside a passing schedule and a minimized failing schedule.
+- Extend the implemented named-command lifecycle from a single image service
+  to a multi-service concurrency workload with deterministic network traffic.
+- Demonstrate the intentionally introduced lost-update workload on published
+  amd64 and arm64 KVM runtimes, alongside its passing schedule and minimized
+  failing schedule.
 - Publish complete locked replay artifacts and exact retrieval/replay steps.
   Remove unsupported baseline numbers or investigation-time claims.
 

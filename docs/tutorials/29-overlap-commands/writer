@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+name=$1
+value=$(cat /state/counter)
+touch "/state/$name.ready"
+while [ ! -e "/state/$name.go" ]; do
+    sleep 0.01
+done
+printf '%s\n' "$((value + 1))" > /state/counter
+printf 'committed-%s\n' "$name"

@@ -13,7 +13,9 @@ For a deterministic operation campaign against an unmodified image, continue
 with [tutorial 15](../../tutorials/15-container-campaign/) for HTTP,
 [tutorial 17](../../tutorials/17-grpc-campaign/) for standard gRPC health, or
 [tutorial 18](../../tutorials/18-container-command/) for an argv command in
-the image filesystem.
+the image filesystem. [Tutorial 29](../../tutorials/29-overlap-commands/)
+launches two named commands concurrently and replays when each completion is
+observed.
 
 ## 2. Prepare your image
 
@@ -169,6 +171,35 @@ Theseus locks this argv command into the campaign input, runs it after the
 boot barrier, records `THES:SHELL:operation:<name>:PASS` or `FAIL`, and takes
 the usual operation checkpoint. With `output_json`, use a property predicate
 such as `fields: { /event: shell_operation, /output/state: ready }`.
+
+Split a command across deterministic operation boundaries when processes must
+overlap:
+
+```yaml
+- name: start_writer
+  shell:
+    phase: launch
+    process: writer-a
+    command: ["/app/writer", "a"]
+- name: join_writer
+  shell:
+    phase: completion
+    process: writer-a
+    expect_exit: 0
+    output_contains: committed
+```
+
+`launch` starts the named process and checkpoints immediately.
+`completion` waits for that same process and records its zero-based
+completion-observation position. The process and the pivot's open output pipe
+live in guest state, so a campaign checkpoint preserves them. The scheduler
+omits completion-first and double-launch histories. Process identities are
+local to one service.
+
+Use `phase: setup`, `phase: assertion`, and `phase: recovery` on synchronous
+commands to label the rest of the scenario. Omit `phase` for the original
+run-to-completion behavior. Commands remain bounded by the service's run
+budget; Theseus does not use host wall time to choose their order.
 
 Static and dynamically linked images work when their dependencies are inside
 the image. Use the simulated network for deterministic networking.
