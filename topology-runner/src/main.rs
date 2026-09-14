@@ -138,6 +138,8 @@ struct CampaignOperation {
     thread_schedule: Vec<u8>,
     #[serde(default)]
     thread_schedule_search: Option<CampaignThreadScheduleSearch>,
+    #[serde(default)]
+    thread_schedule_exploration: Option<CampaignThreadScheduleExploration>,
     /// `input_hex` is retained only to replay plans locked by older Theseus
     /// releases. New plans always use named `inputs`.
     #[serde(default)]
@@ -230,6 +232,13 @@ struct CampaignThreadScheduleSearch {
     period: u8,
     max_switches: u8,
     generated_schedules: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CampaignThreadScheduleExploration {
+    strategy: String,
+    max_choices: u8,
+    max_variants: u16,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -645,6 +654,8 @@ struct CampaignResult {
 struct CampaignRun {
     index: usize,
     operations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    thread_schedule_prefixes: Vec<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -935,6 +946,8 @@ struct RecordedCampaignResult {
 struct RecordedCampaignRun {
     operations: Vec<String>,
     #[serde(default)]
+    thread_schedule_prefixes: Vec<Vec<u8>>,
+    #[serde(default)]
     fault: Option<String>,
     #[serde(default)]
     faults: Vec<String>,
@@ -1028,6 +1041,10 @@ struct CampaignMinimization {
     property: String,
     original_operations: Vec<String>,
     minimized_operations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    original_thread_schedule_prefixes: Vec<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    minimized_thread_schedule_prefixes: Vec<Vec<u8>>,
     original_faults: Vec<String>,
     minimized_faults: Vec<String>,
     operation_attempts: usize,
@@ -2785,6 +2802,21 @@ fn execute_campaign(
         .campaign
         .take()
         .expect("campaign execution requires a campaign");
+    for operation in &campaign.operations {
+        if let Some(exploration) = &operation.thread_schedule_exploration {
+            if exploration.strategy != "runnable_prefixes"
+                || exploration.max_choices == 0
+                || exploration.max_choices > 128
+                || exploration.max_variants < 2
+                || exploration.max_variants > 256
+            {
+                return Err(format!(
+                    "campaign operation {:?} has an invalid runnable-prefix exploration",
+                    operation.name
+                ));
+            }
+        }
+    }
     if let Some(recorded) = recorded {
         verify_recorded_campaign_guidance(campaign.guidance, campaign.coverage, recorded)?;
     }
@@ -2794,7 +2826,7 @@ fn execute_campaign(
     let base = serde_json::to_vec(&topology)
         .map_err(|error| format!("cannot encode campaign base plan: {error}"))?;
     let mut checkpoints = CampaignCheckpointTree::new(checkpoint);
-    let schedules = campaign_schedules(&campaign);
+    let mut schedules = campaign_schedules(&campaign);
     if schedules.is_empty() {
         return Err("campaign produced no schedules".to_owned());
     }
@@ -2961,6 +2993,16 @@ fn execute_campaign(
                 .iter()
                 .map(|operation| campaign_operation_choice_name(&campaign, *operation))
                 .collect(),
+            thread_schedule_prefixes: schedule
+                .operations
+                .iter()
+                .any(|choice| {
+                    campaign.operations[choice.operation]
+                        .thread_schedule_exploration
+                        .is_some()
+                })
+                .then(|| schedule.thread_schedule_prefixes.clone())
+                .unwrap_or_default(),
             fault: (schedule.faults.len() == 1)
                 .then(|| campaign_fault_name(&campaign.faults[schedule.faults[0]])),
             faults: campaign_fault_names(&campaign, &schedule.faults),
@@ -2982,6 +3024,13 @@ fn execute_campaign(
             status: if failed { "failed" } else { "passed" },
             novelty,
         };
+        extend_runnable_prefix_schedules(
+            &campaign,
+            &schedule,
+            &run.timeline,
+            &mut schedules,
+            &mut pending,
+        );
         if let Some(expected) = expected {
             let mismatches = campaign_replay_mismatches(expected, &run);
             if !mismatches.is_empty() {
@@ -3211,11 +3260,18 @@ fn execute_campaign_minimized(
     fs::create_dir_all(&attempts).map_err(|error| error.to_string())?;
     let mut attempt = 0_usize;
     let faults = schedule.faults.clone();
+    let original_operation_choices = schedule.operations.clone();
+    let original_thread_schedule_prefixes = schedule.thread_schedule_prefixes.clone();
     let (operations, operation_attempts) =
         minimize_campaign_items(schedule.operations.clone(), 1, |operations| {
             let candidate = CampaignSchedule {
                 operations: operations.to_vec(),
                 faults: faults.clone(),
+                thread_schedule_prefixes: campaign_prefixes_for_subsequence(
+                    &original_operation_choices,
+                    &original_thread_schedule_prefixes,
+                    operations,
+                ),
             };
             if !campaign_required_faults_apply(&campaign, &candidate) {
                 return Ok(false);
@@ -3234,6 +3290,11 @@ fn execute_campaign_minimized(
             )
         })?;
     schedule.operations = operations;
+    schedule.thread_schedule_prefixes = campaign_prefixes_for_subsequence(
+        &original_operation_choices,
+        &original_thread_schedule_prefixes,
+        &schedule.operations,
+    );
     let operations = schedule.operations.clone();
     let selected_faults = schedule.faults.clone();
     let required_faults = selected_faults
@@ -3258,6 +3319,7 @@ fn execute_campaign_minimized(
             let candidate = CampaignSchedule {
                 operations: operations.clone(),
                 faults: combine_faults(optional),
+                thread_schedule_prefixes: schedule.thread_schedule_prefixes.clone(),
             };
             let directory = attempts.join(format!("{attempt:03}"));
             attempt += 1;
@@ -3323,6 +3385,26 @@ fn execute_campaign_minimized(
             property: property.name.clone(),
             original_operations,
             minimized_operations,
+            original_thread_schedule_prefixes: schedule
+                .operations
+                .iter()
+                .any(|choice| {
+                    campaign.operations[choice.operation]
+                        .thread_schedule_exploration
+                        .is_some()
+                })
+                .then(|| original_thread_schedule_prefixes.clone())
+                .unwrap_or_default(),
+            minimized_thread_schedule_prefixes: schedule
+                .operations
+                .iter()
+                .any(|choice| {
+                    campaign.operations[choice.operation]
+                        .thread_schedule_exploration
+                        .is_some()
+                })
+                .then(|| schedule.thread_schedule_prefixes.clone())
+                .unwrap_or_default(),
             original_faults,
             minimized_faults: campaign_fault_names(&campaign, &schedule.faults),
             operation_attempts,
@@ -3557,7 +3639,15 @@ fn campaign_counterexample(
                 excludes_serial_evidence: property.excludes_serial_evidence.clone(),
                 service: property.service.clone(),
             },
-            CampaignSchedule { operations, faults },
+            CampaignSchedule {
+                thread_schedule_prefixes: if recorded_run.thread_schedule_prefixes.is_empty() {
+                    vec![Vec::new(); operations.len()]
+                } else {
+                    recorded_run.thread_schedule_prefixes.clone()
+                },
+                operations,
+                faults,
+            },
         ));
     }
     Err("campaign bundle has no failing property to minimize".to_owned())
@@ -3570,6 +3660,27 @@ fn property_fails_in_run(property: &CampaignProperty, run: &Path) -> bool {
         PropertyKind::Unreachable => matched,
         PropertyKind::Sometimes | PropertyKind::Reachable => !matched,
     }
+}
+
+fn campaign_prefixes_for_subsequence(
+    original: &[CampaignOperationChoice],
+    prefixes: &[Vec<u8>],
+    selected: &[CampaignOperationChoice],
+) -> Vec<Vec<u8>> {
+    let mut cursor = 0;
+    selected
+        .iter()
+        .map(|choice| {
+            let relative = original[cursor..]
+                .iter()
+                .position(|candidate| candidate == choice)
+                .expect("minimized operations remain an ordered subsequence");
+            cursor += relative;
+            let prefix = prefixes.get(cursor).cloned().unwrap_or_default();
+            cursor += 1;
+            prefix
+        })
+        .collect()
 }
 
 fn property_matches_in_run(property: &CampaignProperty, run: &Path) -> bool {
@@ -3645,10 +3756,13 @@ fn campaign_property_services(run: &Path, service: Option<&str>) -> Vec<String> 
         })
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct CampaignSchedule {
     operations: Vec<CampaignOperationChoice>,
     faults: Vec<usize>,
+    /// One runnable-choice prefix per operation occurrence. Non-exploring
+    /// operations retain an empty entry, keeping the identity position-stable.
+    thread_schedule_prefixes: Vec<Vec<u8>>,
 }
 
 /// An operation remains the stable target for guards, stages, use bounds, and
@@ -4464,6 +4578,7 @@ fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
             schedules.push(CampaignSchedule {
                 operations: history.clone(),
                 faults,
+                thread_schedule_prefixes: vec![Vec::new(); history.len()],
             });
             if schedules.len() == MAX_CAMPAIGN_CANDIDATES {
                 return schedules;
@@ -4471,6 +4586,83 @@ fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
         }
     }
     schedules
+}
+
+/// Expand only branches that the runtime proved runnable. For each observed
+/// choice point, retain the path that reached it and fork once for every other
+/// runnable thread. Repeating this after each run builds a bounded execution
+/// tree without inventing impossible static schedules.
+fn extend_runnable_prefix_schedules(
+    campaign: &CampaignPlan,
+    source: &CampaignSchedule,
+    timeline: &[CampaignTimelineBoundary],
+    schedules: &mut Vec<CampaignSchedule>,
+    pending: &mut Vec<usize>,
+) {
+    for (operation_index, (choice, boundary)) in source.operations.iter().zip(timeline).enumerate()
+    {
+        let definition = &campaign.operations[choice.operation];
+        let Some(exploration) = &definition.thread_schedule_exploration else {
+            continue;
+        };
+        if exploration.strategy != "runnable_prefixes" {
+            continue;
+        }
+        let service = campaign_operation_service(campaign, *choice);
+        let decisions = boundary
+            .new_thread_scheduling_decisions
+            .get(service)
+            .into_iter()
+            .flatten()
+            .filter_map(|decision| {
+                let mask = decision.runnable_mask.strip_prefix("0x")?;
+                let mask = u32::from_str_radix(mask, 16).ok()?;
+                (mask.count_ones() > 1).then_some((mask, decision.selected_thread))
+            })
+            .take(usize::from(exploration.max_choices))
+            .collect::<Vec<_>>();
+        let actual = decisions
+            .iter()
+            .map(|(_, selected)| *selected)
+            .collect::<Vec<_>>();
+        for (depth, (mask, selected)) in decisions.iter().copied().enumerate() {
+            for alternative in 0_u8..32 {
+                if alternative == selected || mask & (1_u32 << alternative) == 0 {
+                    continue;
+                }
+                let variants = schedules
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.operations == source.operations
+                            && candidate.faults == source.faults
+                            && candidate
+                                .thread_schedule_prefixes
+                                .get(operation_index)
+                                .is_some_and(|prefix| !prefix.is_empty())
+                    })
+                    .count();
+                if variants.saturating_add(1) >= usize::from(exploration.max_variants)
+                    || schedules.len() == MAX_CAMPAIGN_CANDIDATES
+                {
+                    return;
+                }
+                let mut candidate = source.clone();
+                candidate.thread_schedule_prefixes[operation_index] = actual[..depth]
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(alternative))
+                    .collect();
+                for prefix in &mut candidate.thread_schedule_prefixes[operation_index + 1..] {
+                    prefix.clear();
+                }
+                if schedules.iter().any(|existing| existing == &candidate) {
+                    continue;
+                }
+                schedules.push(candidate);
+                pending.push(schedules.len() - 1);
+            }
+        }
+    }
 }
 
 /// Return every bounded selection while retaining faults marked as required.
@@ -4712,7 +4904,20 @@ fn recorded_campaign_schedules(
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(CampaignSchedule { operations, faults })
+            let thread_schedule_prefixes = if run.thread_schedule_prefixes.is_empty() {
+                vec![Vec::new(); operations.len()]
+            } else if run.thread_schedule_prefixes.len() == operations.len() {
+                run.thread_schedule_prefixes.clone()
+            } else {
+                return Err(
+                    "recorded thread schedule prefixes do not match its operations".to_owned(),
+                );
+            };
+            Ok(CampaignSchedule {
+                operations,
+                faults,
+                thread_schedule_prefixes,
+            })
         })
         .collect()
 }
@@ -4745,6 +4950,11 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     let mut mismatches = Vec::new();
     if expected.operations != actual.operations {
         mismatches.push("operations".to_owned());
+    }
+    if !expected.thread_schedule_prefixes.is_empty()
+        && expected.thread_schedule_prefixes != actual.thread_schedule_prefixes
+    {
+        mismatches.push("thread schedule prefixes".to_owned());
     }
     let expected_faults = if expected.faults.is_empty() {
         expected.fault.iter().cloned().collect::<Vec<_>>()
@@ -5462,14 +5672,62 @@ fn campaign_schedule_event(
         .filter(|candidate| campaign_fault_matches_operation(campaign, candidate, operation))
         .map(|candidate| campaign_action(candidate))
         .collect::<Result<Vec<_>, _>>()?;
+    let mut data_hex = campaign_operation_input_hex(campaign, definition, checkpoint, &input)?;
+    if let Some(exploration) = &definition.thread_schedule_exploration {
+        let prefix = schedule
+            .thread_schedule_prefixes
+            .get(index)
+            .ok_or_else(|| "campaign schedule is missing a runnable prefix".to_owned())?;
+        if prefix.len() > usize::from(exploration.max_choices)
+            || prefix.iter().any(|thread| *thread >= 32)
+        {
+            return Err("campaign schedule has an invalid runnable prefix".to_owned());
+        }
+        data_hex = campaign_input_with_runnable_prefix(&data_hex, prefix)?;
+    }
     Ok(CampaignEvent {
         service: campaign_operation_service(campaign, operation).to_owned(),
         event: EventPlan {
-            data_hex: campaign_operation_input_hex(campaign, definition, checkpoint, &input)?,
+            data_hex,
             checkpoint: Some(format!("THES:CHECKPOINT:{}", definition.name)),
             actions,
         },
     })
+}
+
+fn campaign_input_with_runnable_prefix(input_hex: &str, prefix: &[u8]) -> Result<String, String> {
+    let bytes = decode_hex(input_hex)?;
+    let command = std::str::from_utf8(&bytes)
+        .map_err(|error| format!("runnable-prefix command is not UTF-8: {error}"))?
+        .strip_prefix("THES:SHELL:operation:")
+        .and_then(|command| command.strip_suffix('\n'))
+        .ok_or_else(|| "runnable-prefix exploration requires a shell operation".to_owned())?;
+    let mut command: serde_json::Value = serde_json::from_str(command)
+        .map_err(|error| format!("runnable-prefix command is not valid JSON: {error}"))?;
+    let environment = command
+        .get_mut("environment")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| "runnable-prefix shell operation has no environment".to_owned())?;
+    if environment
+        .get("THESEUS_THREAD_SCHEDULE_MODE")
+        .and_then(serde_json::Value::as_str)
+        != Some("runnable_prefix")
+    {
+        return Err("runnable-prefix shell operation has the wrong scheduler mode".to_owned());
+    }
+    environment.insert(
+        "THESEUS_THREAD_SCHEDULE".to_owned(),
+        serde_json::Value::String(
+            prefix
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+    );
+    let command = serde_json::to_string(&command)
+        .map_err(|error| format!("cannot encode runnable-prefix command: {error}"))?;
+    Ok(hex(format!("THES:SHELL:operation:{command}\n").as_bytes()))
 }
 
 fn campaign_operation_input_hex(
@@ -11110,6 +11368,7 @@ mod tests {
                     shell_process: None,
                     thread_schedule: Vec::new(),
                     thread_schedule_search: None,
+                    thread_schedule_exploration: None,
                     input_hex: None,
                     inputs: vec![
                         CampaignOperationInput {
@@ -11174,6 +11433,7 @@ mod tests {
                     shell_process: None,
                     thread_schedule: Vec::new(),
                     thread_schedule_search: None,
+                    thread_schedule_exploration: None,
                     input_hex: Some("726561640a".to_owned()),
                     inputs: Vec::new(),
                     input_grammar: None,
@@ -11518,6 +11778,7 @@ mod tests {
                         input: 1,
                     }],
                     faults: Vec::new(),
+                    thread_schedule_prefixes: vec![Vec::new()],
                 },
                 0,
                 &checkpoint,
@@ -11534,6 +11795,7 @@ mod tests {
                 &CampaignSchedule {
                     operations: vec![choice(0)],
                     faults: Vec::new(),
+                    thread_schedule_prefixes: vec![Vec::new()],
                 },
                 0,
                 &checkpoint,
@@ -11800,6 +12062,7 @@ mod tests {
             &CampaignSchedule {
                 operations: vec![choice(0)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new()],
             },
             0,
             &checkpoint,
@@ -11868,14 +12131,17 @@ mod tests {
             CampaignSchedule {
                 operations: vec![choice(0)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new()],
             },
             CampaignSchedule {
                 operations: vec![choice(1)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new()],
             },
             CampaignSchedule {
                 operations: vec![choice(0), choice(1)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
         ];
         let (selected, reason) = select_campaign_schedule(
@@ -11905,14 +12171,17 @@ mod tests {
             CampaignSchedule {
                 operations: vec![choice(0)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new()],
             },
             CampaignSchedule {
                 operations: vec![choice(1)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new()],
             },
             CampaignSchedule {
                 operations: vec![choice(0), choice(1)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
         ];
         let (selected, reason) = select_campaign_schedule(
@@ -11942,10 +12211,12 @@ mod tests {
             CampaignSchedule {
                 operations: vec![choice(0)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new()],
             },
             CampaignSchedule {
                 operations: vec![choice(0), choice(1)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
         ];
         let (selected, reason) = select_campaign_schedule(
@@ -11982,14 +12253,17 @@ mod tests {
             CampaignSchedule {
                 operations: vec![choice(0), choice(3)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
             CampaignSchedule {
                 operations: vec![choice(1), choice(3)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
             CampaignSchedule {
                 operations: vec![choice(2), choice(3)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
         ];
         let observations = vec![
@@ -12134,10 +12408,12 @@ mod tests {
             CampaignSchedule {
                 operations: vec![choice(0), choice(2)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
             CampaignSchedule {
                 operations: vec![choice(1), choice(2)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
         ];
         let observations = vec![
@@ -12292,10 +12568,12 @@ mod tests {
             CampaignSchedule {
                 operations: vec![choice(2), choice(1)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
             CampaignSchedule {
                 operations: vec![choice(2), choice(0)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
         ];
         let observations = vec![
@@ -12352,10 +12630,12 @@ mod tests {
             CampaignSchedule {
                 operations: vec![choice(2), choice(1)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
             CampaignSchedule {
                 operations: vec![choice(2), choice(0)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
         ];
         let observations = vec![
@@ -12412,10 +12692,12 @@ mod tests {
             CampaignSchedule {
                 operations: vec![choice(2), choice(1)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
             CampaignSchedule {
                 operations: vec![choice(2), choice(0)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
             },
         ];
         let observations = vec![
@@ -12506,10 +12788,12 @@ mod tests {
             CampaignSchedule {
                 operations: vec![choice(0)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new()],
             },
             CampaignSchedule {
                 operations: vec![choice(1)],
                 faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new()],
             },
         ];
         let (selected, reason) = select_campaign_schedule(
@@ -12763,6 +13047,7 @@ mod tests {
         let actual = CampaignRun {
             index: 0,
             operations: vec!["write".to_owned()],
+            thread_schedule_prefixes: vec![vec![0, 1]],
             fault: None,
             faults: vec!["backplane:partition@write".to_owned()],
             actions: Vec::new(),
@@ -12852,6 +13137,7 @@ mod tests {
         };
         let expected = RecordedCampaignRun {
             operations: actual.operations.clone(),
+            thread_schedule_prefixes: actual.thread_schedule_prefixes.clone(),
             fault: None,
             faults: actual.faults.clone(),
             actions: Vec::new(),
@@ -13138,14 +13424,16 @@ mod tests {
             &campaign,
             &CampaignSchedule {
                 operations: vec![choice(0)],
-                faults: vec![0]
+                faults: vec![0],
+                thread_schedule_prefixes: vec![Vec::new()],
             }
         ));
         assert!(!campaign_required_faults_apply(
             &campaign,
             &CampaignSchedule {
                 operations: Vec::new(),
-                faults: vec![0]
+                faults: vec![0],
+                thread_schedule_prefixes: Vec::new(),
             }
         ));
     }
@@ -13242,6 +13530,70 @@ mod tests {
         assert!(validate_campaign_thread_schedule_input(&input)
             .unwrap_err()
             .contains("does not match"));
+    }
+
+    #[test]
+    fn runnable_prefix_command_replaces_the_locked_empty_prefix() {
+        let input = hex(
+            br#"THES:SHELL:operation:{"environment":{"THESEUS_THREAD_SCHEDULE":"","THESEUS_THREAD_SCHEDULE_MODE":"runnable_prefix"}}
+"#,
+        );
+        let changed = campaign_input_with_runnable_prefix(&input, &[0, 2, 1]).unwrap();
+        let changed = String::from_utf8(decode_hex(&changed).unwrap()).unwrap();
+        assert!(changed.contains("\"THESEUS_THREAD_SCHEDULE\":\"0,2,1\""));
+        assert!(changed.contains("\"THESEUS_THREAD_SCHEDULE_MODE\":\"runnable_prefix\""));
+    }
+
+    #[test]
+    fn runnable_prefix_search_forks_only_observed_alternatives() {
+        let campaign: CampaignPlan = serde_json::from_value(serde_json::json!({
+            "driver": "ledger",
+            "operations": [{
+                "name": "deposit",
+                "service": "ledger",
+                "thread_schedule_exploration": {
+                    "strategy": "runnable_prefixes",
+                    "max_choices": 8,
+                    "max_variants": 4
+                },
+                "input_hex": "00"
+            }],
+            "max_runs": 4,
+            "max_operations_per_run": 1
+        }))
+        .unwrap();
+        let source = CampaignSchedule {
+            operations: vec![choice(0)],
+            faults: Vec::new(),
+            thread_schedule_prefixes: vec![Vec::new()],
+        };
+        let boundary: CampaignTimelineBoundary = serde_json::from_value(serde_json::json!({
+            "operation": "deposit",
+            "service": "ledger",
+            "round": 1,
+            "new_thread_scheduling_decisions": {"ledger": [
+                {"process":"ledger","module":"deposit","build_sha256":"build","decision":1,"from_thread":0,"runnable_mask":"0x00000006","selected_thread":1,"point_offset":"0x10"},
+                {"process":"ledger","module":"deposit","build_sha256":"build","decision":2,"from_thread":1,"runnable_mask":"0x00000007","selected_thread":0,"point_offset":"0x20"},
+                {"process":"ledger","module":"deposit","build_sha256":"build","decision":3,"from_thread":0,"runnable_mask":"0x00000001","selected_thread":0,"point_offset":"0x30"}
+            ]},
+            "serial_sha256": {},
+            "state_sha256": "state"
+        }))
+        .unwrap();
+        let mut schedules = vec![source.clone()];
+        let mut pending = Vec::new();
+        extend_runnable_prefix_schedules(
+            &campaign,
+            &source,
+            &[boundary],
+            &mut schedules,
+            &mut pending,
+        );
+
+        assert_eq!(pending, [1, 2, 3]);
+        assert_eq!(schedules[1].thread_schedule_prefixes, [vec![2]]);
+        assert_eq!(schedules[2].thread_schedule_prefixes, [vec![1, 1]]);
+        assert_eq!(schedules[3].thread_schedule_prefixes, [vec![1, 2]]);
     }
 
     #[test]

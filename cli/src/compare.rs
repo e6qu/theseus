@@ -60,6 +60,8 @@ struct Run {
     #[serde(default)]
     operations: Vec<String>,
     #[serde(default)]
+    thread_schedule_prefixes: Vec<Vec<u8>>,
+    #[serde(default)]
     faults: Vec<String>,
     #[serde(default)]
     actions: Vec<Value>,
@@ -221,6 +223,15 @@ pub fn compare_campaigns(
                         "operations={:?}; state={}",
                         right.operations, right.state_sha256
                     ),
+                });
+            }
+            if left.thread_schedule_prefixes != right.thread_schedule_prefixes {
+                return Some(CampaignDivergence {
+                    run,
+                    boundary: None,
+                    reason: "selected runnable thread prefix differs".to_owned(),
+                    left: format!("prefixes={:?}", left.thread_schedule_prefixes),
+                    right: format!("prefixes={:?}", right.thread_schedule_prefixes),
                 });
             }
             if left.faults != right.faults {
@@ -534,6 +545,21 @@ mod tests {
         assert_eq!(
             divergence.reason,
             "first thread-scheduling decision differs"
+        );
+    }
+
+    #[test]
+    fn reports_a_changed_runnable_prefix_before_execution_evidence() {
+        let baseline = r#"[{"index":0,"operations":["deposit"],"thread_schedule_prefixes":[[0,1]],"state_sha256":"same"}]"#;
+        let changed = baseline.replace("[0,1]", "[0,2]");
+        let (left, right) = write_pair(&result(baseline, "[]"), &result(&changed, "[]"));
+        assert_eq!(
+            compare_campaigns(left.path(), right.path())
+                .unwrap()
+                .divergence
+                .unwrap()
+                .reason,
+            "selected runnable thread prefix differs"
         );
     }
 

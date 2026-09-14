@@ -4,7 +4,7 @@ Each directory is complete: make it your working directory and use the
 published Theseus artifact named in its README. No tutorial needs a Theseus
 source checkout.
 
-Tutorials 1–8, 10–11, and 14–33 need Linux with KVM and Docker. Tutorials 9,
+Tutorials 1–8, 10–11, and 14–34 need Linux with KVM and Docker. Tutorials 9,
 12, and 13 read recorded bundles with only the published binary. Tutorials 1
 and 2 currently use the arm64 runtime, because that is where the matching
 deterministic-CRNG kernel module is shipped.
@@ -80,6 +80,9 @@ deterministic-CRNG kernel module is shipped.
 33. [Search C thread schedules](33-search-thread-schedules/) — enumerate a
     bounded set of pthread interleavings, find a lost update, minimize it, and
     replay its exact schedule without the guest SDK.
+34. [Explore runnable thread choices](34-explore-runnable-prefixes/) — grow a
+    bounded schedule tree from observed runnable sets and replay the failing
+    choice prefix without the guest SDK.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

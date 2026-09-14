@@ -37,6 +37,7 @@ static pthread_once_t scheduler_once = PTHREAD_ONCE_INIT;
 static uint32_t choices[THESEUS_SCHEDULE_CHOICES];
 static uint32_t choice_count;
 static uint32_t choice_cursor;
+static unsigned char prefix_mode;
 static uint32_t active_mask;
 static uint32_t ended_mask;
 static uint32_t current_thread = THESEUS_NO_THREAD;
@@ -68,7 +69,12 @@ __attribute__((noreturn)) static void fatal(const char *message) {
 
 static void initialize_scheduler(void) {
     const char *schedule = getenv("THESEUS_THREAD_SCHEDULE");
-    if (schedule == NULL || *schedule == '\0') {
+    const char *mode = getenv("THESEUS_THREAD_SCHEDULE_MODE");
+    prefix_mode = mode != NULL && strcmp(mode, "runnable_prefix") == 0;
+    if (mode != NULL && !prefix_mode) {
+        fatal("THESEUS_THREAD_SCHEDULE_MODE must be runnable_prefix");
+    }
+    if (schedule == NULL || (!prefix_mode && *schedule == '\0')) {
         fatal("THESEUS_THREAD_SCHEDULE is required");
     }
     while (*schedule != '\0') {
@@ -108,6 +114,21 @@ static uint32_t first_active(void) {
 }
 
 static uint32_t choose_active(void) {
+    if (prefix_mode) {
+        /* Prefixes advance only at real choices, so their positions remain
+         * meaningful when a thread blocks or exits between scheduling points. */
+        if ((active_mask & (active_mask - 1U)) == 0) {
+            return first_active();
+        }
+        if (choice_cursor == choice_count) {
+            return first_active();
+        }
+        uint32_t selected = choices[choice_cursor++];
+        if ((active_mask & (1U << selected)) == 0) {
+            fatal("runnable prefix selected a thread outside the runnable set");
+        }
+        return selected;
+    }
     for (uint32_t scanned = 0; scanned < choice_count; scanned++) {
         uint32_t selected = choices[choice_cursor];
         choice_cursor = (choice_cursor + 1) % choice_count;

@@ -78,6 +78,8 @@ examples:
    decisions.
 10. Search bounded pthread schedule patterns, find a lost update, minimize it,
     and replay the locked failing case.
+11. Grow pthread schedule prefixes from observed runnable sets instead of
+    declaring candidate patterns in advance.
 
 Each tutorial directory is its own working directory and complete input
 context. Runnable tutorials use published Theseus images or binaries, not a

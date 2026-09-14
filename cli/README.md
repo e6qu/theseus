@@ -130,10 +130,14 @@ The same field accepts a bounded search contract such as
 `{threads: [0, 1, 2], period: 5, max_switches: 3}`. Planning expands at most
 256 periodic patterns into named, immutable input cases; normal campaign
 selection, minimization, and replay then operate on those cases.
+Use `{runnable_prefixes: {max_choices: 32, max_variants: 256}}` to start with
+an empty choice prefix and fork only alternatives found in runtime runnable
+masks. Both bounds are locked in the plan; each executed prefix is retained in
+the campaign result and reused by minimization and replay.
 Campaign results and reports retain each build-scoped scheduling point,
 runnable mask, current thread, and selected thread. Replay rejects a changed
 sequence. This bounded GCC C path is not a general Linux scheduler; see
-Tutorials 32 and 33 for its limits.
+Tutorials 32–34 for its limits.
 
 ### Hand a failure to CI or an issue
 
