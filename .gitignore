@@ -115,5 +115,13 @@ docs/tutorials/29-overlap-commands/plan.json
 docs/tutorials/29-overlap-commands/campaign/
 docs/tutorials/29-overlap-commands/minimized/
 docs/tutorials/29-overlap-commands/rerun/
+docs/tutorials/30-multiservice-lost-update/counter/work/
+docs/tutorials/30-multiservice-lost-update/worker/work/
+docs/tutorials/30-multiservice-lost-update/plan.json
+docs/tutorials/30-multiservice-lost-update/proof.json
+docs/tutorials/30-multiservice-lost-update/runtime-pivot.json
+docs/tutorials/30-multiservice-lost-update/campaign/
+docs/tutorials/30-multiservice-lost-update/minimized/
+docs/tutorials/30-multiservice-lost-update/rerun/
 
 orchestrator/pivot/target/

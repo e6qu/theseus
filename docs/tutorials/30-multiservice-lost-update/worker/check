@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+test "$(id -u)" = 65534
+test "$WORKER_MODE" = network
+test "$(cat /etc/worker.conf)" = deterministic
+test "$(cat /run/secrets/token)" = tutorial-token
+test "$(cat /fixtures/identity)" = locked-fixture

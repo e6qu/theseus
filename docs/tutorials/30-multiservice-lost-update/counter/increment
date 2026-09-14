@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+name=${QUERY_STRING#name=}
+case "$name" in
+    a|b) ;;
+    *) exit 2 ;;
+esac
+
+value=$(cat /state/counter)
+touch "/state/$name.ready"
+while [ ! -e "/state/$name.go" ]; do
+    sleep 0.01
+done
+printf '%s\n' "$((value + 1))" > /state/counter
+printf 'Content-Type: application/json\r\n\r\n'
+printf '{"worker":"%s","read":%s,"wrote":%s}\n' \
+    "$name" "$value" "$((value + 1))"
