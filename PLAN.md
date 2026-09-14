@@ -2,217 +2,316 @@
 
 ## Product objective
 
-Run ordinary Linux services under controlled inputs and faults, discover a
-failure, and let another person reproduce and investigate it from published
-artifacts. Measure progress by demonstrated runtime behavior and retained
-evidence, not by implemented types, accepted syntax, or test counts.
+Build a product close to Antithesis in outcome and workflow: run ordinary
+containerized systems in a controlled deterministic environment, explore
+inputs, faults, and schedules with feedback, detect property violations, and
+let a user replay and investigate a failure.
 
-## Current baseline
+Antithesis parity is the product direction. Open-source operation,
+self-hosting, arm64 support, offline artifacts, and implementation choices are
+useful only when they advance that direction. They are not substitutes for a
+missing Antithesis capability, and the roadmap must not prioritize novelty or
+differentiation ahead of parity.
 
-Theseus has a Linux/KVM runtime, Compose planning and execution, container
-image conversion, simulated network and storage, exit-counted virtual time,
-bounded campaign search, minimization, replay, reports, bundle comparison, and
-an optional guest SDK. Image campaigns can keep named ordinary commands in
-flight across whole-topology checkpoints and record when each completion is
-observed. The distributed lost-update workload combines three image services,
-simulated network traffic, a required partition/recovery path, and the
-supported Compose runtime contracts in one replayable campaign. Required
-campaign faults remain in every applicable schedule and survive minimization.
-Native certification resolves a signed SHA release before execution, records
-the host kernel, KVM API, digest-pinned runtime, and complete counterexample
-inventory, and publishes only a dual-architecture evidence set that the
-released CLI can verify offline.
+Measure progress by user-visible behavior demonstrated with released artifacts.
+Implemented types, accepted configuration, generated reports, and unit tests do
+not by themselves establish product capability.
 
-The packaged Linux runtime also contains a bounded GCC C instrumentation path.
-It emits versioned, build-scoped module-relative basic-block records. Campaigns
-can use those records as their primary guidance signal and retain them in
-operation boundaries, replay verification, comparisons, evaluations, and
-reports. This implementation is not yet native-runtime evidence and does not
-cover edges or other languages.
+Use these labels consistently:
 
-A second packaged GCC C path controls pthread execution at instrumented
-application basic-block boundaries. Explicit repeating schedules use stable
-creation-order thread identities. Ordered runnable-set and selection records
-are retained at operation boundaries, compared offline, reported, and checked
-during replay. The implementation is bounded and cooperative; it is not yet
-general Linux thread/process scheduling or native-runtime evidence.
+- **Implemented:** the behavior exists in source and passes appropriate tests.
+- **Demonstrated:** retained evidence shows the behavior on the claimed runtime
+  and architecture.
+- **Product-ready:** a user can perform the workflow from published artifacts,
+  reproduce it, and understand its limitations without repository-only inputs.
 
-The following limits define the honest baseline:
+## Current position against Antithesis
 
-- Pull-request CI runs mostly environment-independent checks on an amd64
-  GitHub runner. Native KVM behavior is evidence only when a matching runtime
-  job actually ran and retained its certificate.
-- Linux CSPRNG replay requires the matching published kernel and Theseus seed
-  module. Seeded virtio entropy alone does not remove stock-kernel timing mix.
-- Guest counters free-run within an exit-counted virtual-time quantum.
-- Marker and guest-PC coverage modes remain lower-fidelity baselines. Only the
-  packaged GCC C path provides application basic-block coverage; edge and
-  multi-language coverage are not implemented.
-- Thread scheduling currently supports at most 32 GCC C pthreads and 8,192
-  decisions. It intercepts `pthread_join`; blocking in other uninstrumented
-  calls is unsupported and can deadlock.
-- `compare` finds differences between retained histories. It does not perform
-  counterfactual experiments and must not claim causality.
-- Branch capture copies guest RAM into a memfd. Restored children then use
-  private copy-on-write mappings; capture is not zero-copy.
-- The recorded public evaluation fixtures explain formats but do not contain
-  complete, independently replayable runtime evidence.
+| Product capability | Theseus | Gap to close |
+| --- | --- | --- |
+| Hermetic Linux execution | Partial | Execution is controlled at selected KVM, device, operation, and instrumented application boundaries, not at whole-machine instruction and interrupt granularity. |
+| Ordinary container workloads | Partial | Image-backed services and a Compose subset work; Kubernetes and broad Compose compatibility do not. |
+| Deterministic replay | Partial | Seeds, locked inputs, schedules, faults, checkpoints, and bundles are retained, but uncontrolled kernel and application behavior can still escape the model. |
+| Feedback-guided exploration | Partial | Campaigns can use coverage, properties, runnable sets, and prior outcomes, but these signals are not yet one general decision-tree search system. |
+| Fault injection | Partial | Network, packet, partition, process, storage, and clock operations exist; asymmetric degradation, latency, clogs, CPU throttling, and a mature custom-fault interface do not. |
+| Assertions and guidance | Partial | Always, sometimes, reachable, and unreachable properties exist; language support, structured choices, and assertion-guided exploration remain narrow. |
+| Coverage guidance | Partial | GCC C basic-block coverage exists; broad compiler/language support, edges, shared libraries, source presentation, and production-scale validation do not. |
+| Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
+| Test composition | Early | Campaign operations can overlap, but there is no complete reusable test-template lifecycle comparable to setup, concurrent drivers, serial drivers, anytime actions, and teardown. |
+| Failure investigation | Early | Replay, minimization, checkpoints, reports, and history comparison exist; interactive time travel, interventions, alternative futures, temporal queries, and causal evidence do not. |
+| Product operation | Early | Theseus is primarily a local/self-hosted CLI; it lacks a comparable API, CI workflow, live campaign view, scalable parallel service, notification surface, and web debugger. |
 
-## Evidence rules
+## Verified implementation baseline
 
-Apply these rules to code, documentation, releases, and future PRs:
+Theseus currently has:
 
-1. Label a capability as implemented, runtime-demonstrated, or proposed.
-2. Treat a hash as proof of retained bytes only, never proof of execution.
-3. State the architecture, kernel/module pair, runtime digest, plan, and I/O
-   profile for KVM evidence.
-4. Preserve the replay plan, locked runtime/workload artifacts, results, logs,
-   operation boundaries, fault schedule, and property verdict for a public
-   counterexample.
-5. Keep tutorial directories self-contained. Run from the directory and use
-   published Theseus artifacts only.
-6. Put meaningful commands and expected observations in the tutorial README.
-   Keep scripts only when they are actual workloads or reusable low-level
-   tools, and make their contents reviewable before execution.
-7. Do not restore historical P-number completion ledgers as active guidance.
-   Git history is the record of completed work.
+- A Linux/KVM runtime built around Firecracker.
+- Container image conversion, image-backed services, topology execution, and a
+  strict supported subset of Compose.
+- Seeded entropy, a matching kernel random-device module, simulated networking
+  and storage, exit-counted virtual time, and explicit fault operations.
+- Bounded campaigns, static and adaptive case selection, checkpoint-prefix
+  reuse, minimization, locked replay, comparison, evaluation, and reports.
+- Serial and SDK evidence for always, sometimes, reachable, and unreachable
+  properties.
+- Versioned GCC C module-relative basic-block coverage that participates in
+  guidance, replay verification, comparisons, evaluations, and reports.
+- A bounded GCC C pthread scheduler with stable creation-order identities,
+  explicit schedules, enumerated schedules, and runnable-prefix exploration.
+  It controls `pthread_join`, default mutex lock/unlock, and untimed condition
+  wait/signal/broadcast. It retains up to 8,192 decisions, 8,192 synchronization
+  events, and 128 synchronization objects for at most 32 threads.
+- Portable campaign and counterexample formats with locked input and runtime
+  identities.
 
-## Priority 0: prove the packaged runtime on a concurrent service failure
+The baseline has important limits:
 
-Deliver this as one coherent PR, with separately reviewable commits.
+- Determinism depends on implemented interception points. Theseus does not yet
+  provide instruction-level determinism for an otherwise unmodified Linux
+  system.
+- Guest counters can advance within an exit-counted virtual-time quantum.
+- Stock-kernel `/dev/random` and `/dev/urandom` replay requires the matching
+  released kernel and Theseus random-device module.
+- Application coverage supports one bounded GCC C path. It does not yet cover
+  edges, LLVM, other languages, arbitrary shared libraries, or rich source
+  presentation.
+- Scheduling is cooperative and instrumentation-specific. Timed waits,
+  cancellation, semaphores, direct futexes, blocking syscalls, `fork`/`exec`,
+  uninstrumented threads, and general process scheduling can escape it or
+  deadlock.
+- `compare` reports differences between histories. It does not run an
+  intervention and must not claim causality.
+- Branch capture copies guest RAM into a memfd before children use private
+  copy-on-write mappings; it is not zero-copy.
+- There is no Kubernetes input, hosted campaign service, live debugger,
+  temporal log query system, or broad language SDK.
+- The current public release predates the most recent coverage and pthread
+  scheduling work. Native certification has also failed while packaging the
+  runtime bundle because its checksum step treats the `instrumentation`
+  directory as a regular file. Those capabilities are implemented, not yet
+  product-ready.
 
-### Package the runtime that tests execute
+## Priority 0: make the current product real for users
 
-- Run the combined Tutorial 30 contract on native amd64 and arm64 KVM: resource
-  quantities, launch overrides, credentials, environment, configs, secrets,
-  seeded volumes, read-only roots, tmpfs, health checks, service networking,
-  in-flight commands, checkpoint restoration, minimization, and replay.
-- Verify that the combined campaign's required partition, dropped UDP probe,
-  heal, and successful HTTP probe are retained before its independent
-  concurrency-dependent failure.
-- Retain the attested fixed-plan certificate and portable counterexample
-  archive on the exact SHA release. Leave a missing architecture explicitly
-  unverified rather than substituting unit tests or a workflow definition.
+Close the difference between merged source, published artifacts, and retained
+runtime evidence before adding another isolated runtime feature.
 
-### Find a concurrency-dependent failure
+Deliver one coherent release-and-evidence change:
 
-- Supply the self-hosted amd64 and arm64 KVM capacity, dispatch native
-  certification for a published SHA, and verify that the indexed pair contains
-  the passing sequential schedule, minimized distributed lost update, and
-  successful locked replay. GitHub-hosted runners are not a substitute for
-  native KVM and the repository currently has no registered native runners.
-- Publish exact retrieval and attestation commands with the artifacts. Do not
-  promote the implemented workload to demonstrated behavior until those
-  release assets exist.
+1. Fix runtime-bundle packaging so directories are handled correctly and both
+   Linux architectures produce verifiable archives and SBOMs.
+2. Publish the current CLI, runtime bundles, architecture images, multi-arch
+   manifest, kernel, modules, instrumentation tools, build inputs, and
+   attestations under the same short commit SHA.
+3. Run the container, fault, coverage, schedule-search, and pthread
+   synchronization tutorials on native KVM using only those published
+   artifacts.
+4. Retain the plans, locked workloads, complete result inventories, logs,
+   reports, minimized counterexamples, replay results, host facts, and runtime
+   identities.
+5. Verify that a fresh released CLI can inspect, evaluate, compare, minimize,
+   and replay the retained evidence without a source checkout.
+6. Correct documentation and comments that describe older image or pthread
+   limitations, and make claims match the released evidence.
 
-### Exit criteria
+Exit when a new user can start from the README, retrieve one released SHA, run
+a representative concurrent service campaign, inspect a failure, and replay
+the minimized counterexample without undocumented inputs.
 
-- The PR CI is green at the final commit.
-- Both advertised Linux architectures have retained native KVM evidence for
-  the exact candidate artifacts.
-- A new user can retrieve the published artifacts, reproduce the minimized
-  failure from its directory, inspect why the property failed, and replay it
-  without undocumented repository inputs.
-- `PLAN.md`, reference docs, comments, CLI wording, and tutorials describe the
-  observed result and remaining limits consistently.
+## Priority 1: deterministic execution and scheduling plane
 
-## Priority 1: application basic-block coverage
+This is the largest technical gap to Antithesis and takes precedence over
+adding more narrow wrappers.
 
-Implemented in source:
+Build a single ordered execution-decision stream that can control and replay:
 
-- Stable service/process/module/build/block identities prevent ASLR changes or
-  different rebuilds from silently conflating coverage.
-- The published-runtime build contains one bounded GCC C compiler frontend and
-  callback runtime.
-- Application blocks participate in deterministic guidance and are preserved
-  in bundles, operation boundaries, replay verification, comparison,
-  evaluation, and human-readable reports.
-- Tutorial 31 is a self-contained published-artifact path for an ordinary C
-  command without the guest SDK.
+- Linux threads and processes across `clone`, `fork`, `exec`, and exit.
+- Futex waits and wakes, blocking syscalls, signals, timers, and readiness.
+- Interrupt and device-input delivery.
+- Virtual clock reads and advancement without mid-quantum leakage.
+- Random and other external inputs consumed by the guest.
+- Network, storage, and process faults at exact replayable positions.
 
-Next work:
+Move control into the lowest practical kernel, hypervisor, or paravirtualized
+boundary. Application instrumentation may expose semantics and coverage, but
+correctness must not depend on wrapping every synchronization API used by a
+service.
 
-- Run Tutorial 31 on native amd64 and arm64 KVM and retain the exact runtime,
-  build manifest, campaign, report, and replay evidence.
-- Measure runtime and storage overhead against the same uninstrumented C
-  workload.
-- Add a fixed-budget workload where application-block guidance reaches a
-  useful state or counterexample that marker, dirty-page, checkpoint-PC, and
-  exit-sampled PC modes miss.
-- Expand toolchain support only after the first comparison is public and
-  reproducible.
+Retain stable process/thread identities, runnable sets, chosen actions,
+external inputs, and checkpoint ancestry. Reject replay when the observed
+decision stream diverges instead of silently continuing.
 
-Exit when a public workload produces replay-stable application coverage and a
-controlled comparison shows that it finds a counterexample or useful state
-that the existing signals miss.
+Exit when an otherwise ordinary multithreaded and multiprocess Linux service
+can exhibit a timing-dependent failure, be minimized, and replay from retained
+artifacts without depending on host timing.
 
-## Priority 2: thread and process scheduling
+## Priority 2: unified feedback-guided exploration
 
-Implemented in source:
+Replace separate special-purpose search paths with one bounded decision-tree
+engine modeled on the workflow Antithesis exposes.
 
-- The published-runtime build contains a bounded GCC C pthread scheduler.
-- Explicit repeating choices select stable creation-order thread identities at
-  application basic-block boundaries.
-- Runnable masks, selected threads, build identities, decision order, and
-  module-relative scheduling points are retained in results and operation
-  boundaries, compared, reported, and verified on replay.
-- Tutorial 32 demonstrates both a sequential outcome and a deterministic lost
-  update below operation-level overlap without the guest SDK.
-- Compose can enumerate up to 256 periodic thread schedules from a declared
-  thread set, period, and per-period switch bound. Every generated pattern is a
-  named locked input case, so campaign selection, minimization, and replay keep
-  the exact sequence. Tutorial 33 uses this search to find the lost update.
-- Compose can instead grow up to 256 schedule variants from runnable masks
-  observed at execution time. Prefix positions count only actual choices;
-  result bundles, minimization, replay, comparison, and reports retain the
-  exact prefix. Tutorial 34 exercises this feedback-driven path.
-- The C scheduler keeps threads blocked on default mutexes and untimed
-  condition variables out of its runnable mask. It chooses condition waiters,
-  assigns synchronization objects stable first-use identities, and retains
-  ordered waits, wakeups, acquisitions, and releases through timeline deltas,
-  replay, comparison, and reports. Tutorial 35 exercises this path.
+- Represent structured random choices, runnable selections, fault choices,
+  test actions, and environmental inputs in one versioned decision stream.
+- Reuse checkpoints at common prefixes and explore alternative suffixes.
+- Combine coverage novelty, property progress, rare states, fault outcomes,
+  schedule outcomes, and execution cost in the search policy.
+- Add structured choice APIs with immediate-use semantics so the engine can
+  learn which generated values matter.
+- Make every discovered execution replayable from an exact decision prefix;
+  keep a human-readable explanation alongside the machine record.
+- Evaluate changes on fixed-budget public workloads, including comparisons
+  with unguided seeds and each individual feedback signal.
 
-Next work:
+Exit when the unified engine finds useful states or failures more reliably
+than seed enumeration on published benchmarks and every reported improvement
+is independently reproducible.
 
-- Run Tutorials 32–35 on native amd64 and arm64 KVM and retain their
-  campaigns, reports, minimized counterexample, and replay evidence.
-- Detect or control timed waits, cancellation, semaphores, direct futex waits,
-  and blocking syscalls instead of allowing an unsupported target to deadlock.
-- Extend stable identities across `fork`/`exec` and add process scheduling.
-- Measure scheduling overhead and publish a fixed-budget comparison against
-  operation-only overlap.
+## Priority 3: broad coverage and semantic instrumentation
 
-Exit when a real race can be found, minimized, and replayed from retained
-artifacts without relying on host timing.
+Coverage must work on realistic services rather than only tutorial C binaries.
 
-## Priority 3: counterfactual investigation
+1. Add an LLVM instrumentation path covering C, C++, and Rust.
+2. Preserve stable module/build identities through PIE, ASLR, shared libraries,
+   dynamic loading, and stripped production artifacts.
+3. Add edge coverage and source association while retaining the compact
+   module-relative format needed for replay and guidance.
+4. Validate symbolization and build identity before a campaign starts.
+5. Extend supported language runtimes based on representative user workloads,
+   with Go and Java as the next explicit targets.
 
-- Navigate a retained operation/fault/property timeline offline.
-- Re-execute from an earlier checkpoint while changing one controlled event.
-- Compare the resulting behavior with the original and label conclusions by
-  the experiment actually performed.
-- Never promote chronological difference to causal language automatically.
+Exit when multi-service workloads built with supported production toolchains
+produce stable, source-associated coverage that guides exploration and
+survives replay, minimization, and artifact export.
 
-Exit when the tool can show, from reproducible experiments, that removing or
-changing one event prevents or preserves a selected failure.
+## Priority 4: test templates and fault model
 
-## Priority 4: exploration scale
+Make it possible to express the same testing workflow users expect from
+Antithesis without constructing low-level campaign schedules by hand.
 
-- Bound checkpoint retention and garbage collection.
-- Measure capture, restore, shared-page, and private-page costs on realistic
-  multi-service topologies.
-- Improve search scheduling only against public fixed-budget workloads.
-- Pursue broader integrations or hosted execution after runtime evidence and
-  artifact reproduction are reliable.
+- Define reusable lifecycle phases for one-time setup, concurrent drivers,
+  serial drivers, singleton work, anytime actions, eventual/final actions, and
+  teardown.
+- Allow a directory or image to contribute a collection of test commands with
+  explicit concurrency and lifecycle semantics.
+- Let the explorer vary command ordering, parallelism, structured inputs,
+  faults, and schedules while keeping setup and cleanup contracts intact.
+- Add asymmetric latency and loss, slow/jammed links, network clogs, process
+  stop/kill/restart, CPU throttling, clock jumps, and configurable custom
+  faults.
+- Support quiet periods and final fault windows so startup and result
+  collection are not accidentally corrupted.
+- Make useful default fault profiles available while keeping every injected
+  fault visible and replayable.
 
-## Documentation maintenance
+Exit when an ordinary distributed system can bring its existing test commands
+and have Theseus autonomously compose hundreds of replayable scenarios across
+parallelism, inputs, faults, and schedules.
 
-Every behavioral PR must update the relevant tutorial, reference contract,
-code comments, and audit status in the same change. CI should reject hidden
-tutorial wrappers, checkout-relative tutorial dependencies, stale causal or
-coverage terminology, unsupported platform claims, and reintroduced references
-to obsolete random-device examples.
+## Priority 5: properties, events, and investigation
 
-Use Antithesis documentation as a capability reference for coverage,
-scheduling, test templates, and counterfactual debugging. It is not evidence
-that Theseus implements or matches those capabilities.
+Turn retained evidence into an investigation workflow comparable to
+Antithesis reports and multiverse debugging.
+
+- Add `always_or_unreachable` and make property observations first-class search
+  feedback.
+- Provide supported assertion, event, and structured-randomness APIs for C,
+  C++, Rust, Go, and Java, while retaining a language-neutral JSON event path.
+- Capture stdout, stderr, structured events, faults, decisions, coverage,
+  properties, and user artifacts on one ordered timeline.
+- Add textual, structured, and temporal queries such as preceded-by and
+  followed-by over retained event data.
+- Navigate to any retained checkpoint, change one controlled choice or fault,
+  re-execute, and compare alternative futures.
+- Estimate and display failure probability from actual repeated experiments.
+  Use causal language only when a recorded intervention supports it.
+- Allow users to collect artifacts immediately before and after a selected
+  property violation or event.
+
+Exit when a user can move from a failed property to its relevant logs and
+decisions, fork an earlier state, test an alternative, and share the complete
+reproducible investigation.
+
+## Priority 6: product surface and workload compatibility
+
+Once the execution, exploration, and investigation loops work end to end,
+make them available as a complete product rather than a collection of CLI
+commands.
+
+- Add a stable campaign API and CI integration alongside the CLI.
+- Expose live progress, logs, properties, coverage, resource use, and retained
+  executions while a campaign is running.
+- Run many deterministic workers in parallel with explicit resource budgets
+  and reproducible work allocation.
+- Add notifications and machine-readable result retrieval.
+- Accept standard Kubernetes manifests and Helm inputs through a documented
+  supported environment, in addition to expanding Compose compatibility.
+- Add a web investigation interface only on top of the same portable evidence
+  and APIs used by the CLI.
+
+Exit when a team can launch, observe, gate CI on, and investigate Theseus
+campaigns through documented CLI and API workflows without operating internal
+repository machinery.
+
+## Delivery rules
+
+Apply these rules to every priority:
+
+1. Prefer a coherent vertical product slice over an anemic syntax-only or
+   plumbing-only PR. Keep commits separately reviewable inside that PR.
+2. Do not pursue differentiation-first work while a higher-priority Antithesis
+   capability remains absent.
+3. Label behavior as implemented, demonstrated, or product-ready. A hash proves
+   retained bytes, not execution.
+4. For KVM evidence, record the architecture, host kernel, KVM API,
+   kernel/module pair, runtime digest, plan, decision stream, and I/O profile.
+5. Preserve replay plans, locked workloads, results, logs, fault schedules,
+   property verdicts, checkpoints, and artifact inventories for public
+   counterexamples.
+6. Evaluate exploration and performance changes against fixed-budget public
+   workloads, not only unit tests or synthetic counters.
+7. Keep only one implementation PR open at a time unless the project explicitly
+   changes that policy.
+8. Do not restore historical completion ledgers. Git history records completed
+   work; this file describes the current truth and next work.
+
+## Documentation and tutorial contract
+
+Every behavioral PR must update affected tutorials, references, comments, CLI
+wording, comparisons, and this roadmap in the same change.
+
+Tutorials must:
+
+- Be directly reachable from the root README.
+- Use imperative, concise, step-by-step prose with expected observations.
+- Treat the tutorial directory as both the working directory and the complete
+  context.
+- Depend on Theseus only through already published binaries or container
+  images.
+- Include every workload, configuration, and script they need.
+- Avoid wrapper scripts when the commands can be shown directly. When a script
+  is the workload or a necessary low-level tool, show its purpose and keep it
+  reviewable before execution.
+- Never rely on hidden checkout-relative files, historical random-device
+  examples, unpublished artifacts, or unsupported product claims.
+
+CI should detect stale capability language, hidden tutorial dependencies,
+unreviewable wrappers, and claims that exceed released evidence.
+
+## Antithesis capability references
+
+Use the current Antithesis documentation as the parity reference for:
+
+- [Deterministic simulation testing](https://antithesis.com/docs/resources/deterministic_simulation_testing/)
+- [Test templates](https://antithesis.com/docs/product/writing_tests/test_templates/)
+- [Test Composer lifecycle](https://antithesis.com/docs/product/writing_tests/test_templates/test_composer_reference/)
+- [Coverage instrumentation](https://antithesis.com/docs/product/writing_tests/instrumentation/coverage_instrumentation/)
+- [Fault types](https://antithesis.com/docs/product/writing_tests/controlling_faults/fault_types/)
+- [Assertions](https://antithesis.com/docs/product/writing_tests/assertions/)
+- [Structured randomness](https://antithesis.com/docs/reference/sdk/generate_randomness/)
+- [Debugging and causality analysis](https://antithesis.com/docs/product/debugging/)
+- [Event logs and temporal queries](https://antithesis.com/docs/reference/event_logs/)
+- [Launching tests](https://antithesis.com/docs/product/launching_tests/)
+- [Kubernetes setup](https://antithesis.com/docs/setup/kubernetes/)
+
+These references define target user capabilities. They are not evidence that
+Theseus currently implements them.
