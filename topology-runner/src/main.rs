@@ -641,6 +641,7 @@ struct CampaignResult {
     unique_instruction_locations: usize,
     unique_application_blocks: usize,
     thread_scheduling_decisions: usize,
+    thread_synchronization_events: usize,
     /// A compact, deterministic account of the search work. This is separate
     /// from wall-clock timing: host scheduling must never affect a replay.
     search: CampaignSearchEvidence,
@@ -685,6 +686,8 @@ struct CampaignRun {
     application_block_novelty: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     thread_scheduling: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     checkpoint_pc_novelty: Vec<String>,
     state_sha256: String,
@@ -742,6 +745,10 @@ struct CampaignTimelineBoundary {
     thread_scheduling: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     new_thread_scheduling_decisions: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    new_thread_synchronization_events: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
     serial_sha256: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     serial_delta: BTreeMap<String, CampaignSerialDelta>,
@@ -976,6 +983,8 @@ struct RecordedCampaignRun {
     #[serde(default)]
     thread_scheduling: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
     #[serde(default)]
+    thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
+    #[serde(default)]
     checkpoint_pc_novelty: Vec<String>,
     #[serde(default)]
     novelty: Vec<String>,
@@ -1034,6 +1043,23 @@ struct ThreadSchedulingDecision {
     runnable_mask: String,
     selected_thread: u8,
     point_offset: String,
+}
+
+/// One controlled pthread synchronization transition. Synchronization objects
+/// use first-use identities assigned by the instrumented process, never host
+/// addresses, so this evidence can be compared across replay and ASLR.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+struct ThreadSynchronizationEvent {
+    process: String,
+    module: String,
+    build_sha256: String,
+    event: u64,
+    thread: u8,
+    operation: String,
+    object_kind: String,
+    object: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    peer_thread: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1580,6 +1606,7 @@ struct CampaignCheckpointBoundary {
     markers: Vec<String>,
     application_blocks: BTreeMap<String, Vec<ApplicationBlock>>,
     thread_scheduling: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
+    thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
     program_counters: BTreeMap<String, Vec<String>>,
     serial_sha256: BTreeMap<String, String>,
     serial_contents: BTreeMap<String, Vec<u8>>,
@@ -2943,6 +2970,7 @@ fn execute_campaign(
         let markers = campaign_markers(&run_dir)?;
         let application_blocks = campaign_application_blocks(&run_dir)?;
         let thread_scheduling = campaign_thread_scheduling(&run_dir)?;
+        let thread_synchronization = campaign_thread_synchronization(&run_dir)?;
         let actions = campaign_actions(&run_dir)?;
         let program_counters = campaign_checkpoint_program_counters(&prefix.checkpoint);
         let execution_locations = campaign_checkpoint_execution_locations(&prefix.checkpoint);
@@ -3019,6 +3047,7 @@ fn execute_campaign(
             application_blocks,
             application_block_novelty,
             thread_scheduling,
+            thread_synchronization,
             state_sha256,
             state_novel,
             status: if failed { "failed" } else { "passed" },
@@ -3102,6 +3131,11 @@ fn execute_campaign(
             thread_scheduling_decisions: runs
                 .iter()
                 .flat_map(|run| run.thread_scheduling.values())
+                .map(Vec::len)
+                .sum(),
+            thread_synchronization_events: runs
+                .iter()
+                .flat_map(|run| run.thread_synchronization.values())
                 .map(Vec::len)
                 .sum(),
             search,
@@ -5031,6 +5065,11 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     {
         mismatches.push("thread-scheduling decisions".to_owned());
     }
+    if !expected.thread_synchronization.is_empty()
+        && expected.thread_synchronization != actual.thread_synchronization
+    {
+        mismatches.push("thread-synchronization events".to_owned());
+    }
     if !expected.state_sha256.is_empty()
         && (expected.state_sha256 != actual.state_sha256
             || expected.state_novel != actual.state_novel)
@@ -5071,6 +5110,10 @@ fn campaign_timeline_matches(
                 if expected.application_blocks.is_empty() {
                     normalized.application_blocks.clear();
                     normalized.new_application_blocks.clear();
+                }
+                if expected.thread_synchronization.is_empty() {
+                    normalized.thread_synchronization.clear();
+                    normalized.new_thread_synchronization_events.clear();
                 }
                 *expected == normalized
             }
@@ -6204,6 +6247,86 @@ fn parse_thread_scheduling_line(line: &str) -> Option<ThreadSchedulingDecision> 
     })
 }
 
+const THREAD_SYNCHRONIZATION_PREFIX: &str = "THES:SYNC:v1:";
+
+fn campaign_thread_synchronization(
+    run: &Path,
+) -> Result<BTreeMap<String, Vec<ThreadSynchronizationEvent>>, String> {
+    Ok(campaign_thread_synchronization_from_serial(
+        &campaign_serial_logs(run)?,
+    ))
+}
+
+fn campaign_thread_synchronization_from_serial(
+    serial: &BTreeMap<String, Vec<u8>>,
+) -> BTreeMap<String, Vec<ThreadSynchronizationEvent>> {
+    serial
+        .iter()
+        .filter_map(|(service, contents)| {
+            let events = String::from_utf8_lossy(contents)
+                .lines()
+                .filter_map(parse_thread_synchronization_line)
+                .collect::<Vec<_>>();
+            (!events.is_empty()).then(|| (service.clone(), events))
+        })
+        .collect()
+}
+
+fn parse_thread_synchronization_line(line: &str) -> Option<ThreadSynchronizationEvent> {
+    let mut fields = line
+        .trim()
+        .strip_prefix(THREAD_SYNCHRONIZATION_PREFIX)?
+        .split(':');
+    let process = fields.next()?;
+    let module = fields.next()?;
+    let build_sha256 = fields.next()?;
+    let event = fields.next()?.parse::<u64>().ok()?;
+    let thread = fields.next()?.parse::<u8>().ok()?;
+    let operation = fields.next()?;
+    let object_kind = fields.next()?;
+    let object = fields.next()?.parse::<u16>().ok()?;
+    let peer = fields.next()?;
+    let peer_thread = if peer == "-" {
+        None
+    } else {
+        Some(peer.parse::<u8>().ok()?)
+    };
+    if fields.next().is_some()
+        || !valid_coverage_name(process)
+        || !valid_coverage_name(module)
+        || build_sha256.len() != 64
+        || !build_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || thread >= 32
+        || peer_thread.is_some_and(|peer| peer >= 32)
+        || !matches!(
+            operation,
+            "acquire" | "wait" | "release" | "release-for-wait" | "resume" | "signal" | "broadcast"
+        )
+        || !matches!(object_kind, "mutex" | "condition")
+        || !matches!(
+            (operation, object_kind),
+            ("acquire" | "wait" | "release" | "release-for-wait", "mutex")
+                | ("wait" | "resume" | "signal" | "broadcast", "condition")
+        )
+        || object >= 128
+    {
+        return None;
+    }
+    Some(ThreadSynchronizationEvent {
+        process: process.to_owned(),
+        module: module.to_owned(),
+        build_sha256: build_sha256.to_owned(),
+        event,
+        thread,
+        operation: operation.to_owned(),
+        object_kind: object_kind.to_owned(),
+        object,
+        peer_thread,
+    })
+}
+
 fn campaign_checkpoint_program_counters(
     checkpoint: &CampaignCheckpoint,
 ) -> BTreeMap<String, Vec<String>> {
@@ -6272,6 +6395,9 @@ fn campaign_checkpoint_boundary(
             &campaign_checkpoint_serial_contents(checkpoint),
         ),
         thread_scheduling: campaign_thread_scheduling_from_serial(
+            &campaign_checkpoint_serial_contents(checkpoint),
+        ),
+        thread_synchronization: campaign_thread_synchronization_from_serial(
             &campaign_checkpoint_serial_contents(checkpoint),
         ),
         program_counters: campaign_checkpoint_program_counters(checkpoint),
@@ -6371,6 +6497,10 @@ fn campaign_operation_timeline(
                 &previous.thread_scheduling,
                 &boundary.thread_scheduling,
             );
+            let new_thread_synchronization_events = campaign_thread_synchronization_delta(
+                &previous.thread_synchronization,
+                &boundary.thread_synchronization,
+            );
             let serial_delta = campaign_serial_delta(&previous, boundary);
             let network_traffic_delta = campaign_network_traffic_delta(&previous, boundary);
             let (changed_storage, virtual_time_delta_ns) =
@@ -6401,6 +6531,8 @@ fn campaign_operation_timeline(
                 new_application_blocks,
                 thread_scheduling: boundary.thread_scheduling.clone(),
                 new_thread_scheduling_decisions,
+                thread_synchronization: boundary.thread_synchronization.clone(),
+                new_thread_synchronization_events,
                 serial_sha256: boundary.serial_sha256.clone(),
                 serial_delta,
                 network_traffic_delta,
@@ -6425,6 +6557,23 @@ fn campaign_thread_scheduling_delta(
                 .map(Vec::len)
                 .unwrap_or(0);
             (prefix < decisions.len()).then(|| (service.clone(), decisions[prefix..].to_vec()))
+        })
+        .collect()
+}
+
+fn campaign_thread_synchronization_delta(
+    previous: &BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
+    current: &BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
+) -> BTreeMap<String, Vec<ThreadSynchronizationEvent>> {
+    current
+        .iter()
+        .filter_map(|(service, events)| {
+            let prefix = previous
+                .get(service)
+                .filter(|prior| events.starts_with(prior))
+                .map(Vec::len)
+                .unwrap_or(0);
+            (prefix < events.len()).then(|| (service.clone(), events[prefix..].to_vec()))
         })
         .collect()
 }
@@ -12403,6 +12552,34 @@ mod tests {
     }
 
     #[test]
+    fn thread_synchronization_records_are_strict_ordered_and_address_free() {
+        let digest = "0123456789abcdef".repeat(4);
+        let wait = format!("THES:SYNC:v1:worker:ledger:{digest}:0:1:wait:condition:1:-\n");
+        let signal = format!("THES:SYNC:v1:worker:ledger:{digest}:1:2:signal:condition:1:1\n");
+        let serial = BTreeMap::from([
+            (
+                "api".to_owned(),
+                format!("noise\n{wait}{signal}").into_bytes(),
+            ),
+            ("worker".to_owned(), wait.into_bytes()),
+        ]);
+        let events = campaign_thread_synchronization_from_serial(&serial);
+        assert_eq!(events["api"].len(), 2);
+        assert_eq!(events["api"][0].operation, "wait");
+        assert_eq!(events["api"][1].peer_thread, Some(1));
+        assert_eq!(events["worker"][0].object, 1);
+
+        assert!(parse_thread_synchronization_line(&format!(
+            "THES:SYNC:v1:worker:ledger:{digest}:0:1:unknown:condition:1:-"
+        ))
+        .is_none());
+        assert!(parse_thread_synchronization_line(&format!(
+            "THES:SYNC:v1:worker:ledger:{digest}:0:1:wait:condition:128:-"
+        ))
+        .is_none());
+    }
+
+    #[test]
     fn application_block_guidance_extends_the_instrumented_prefix() {
         let schedules = vec![
             CampaignSchedule {
@@ -12816,6 +12993,7 @@ mod tests {
             markers: vec!["booted".to_owned(), "ready".to_owned()],
             application_blocks: BTreeMap::new(),
             thread_scheduling: BTreeMap::new(),
+            thread_synchronization: BTreeMap::new(),
             program_counters: BTreeMap::from([
                 ("api".to_owned(), vec!["0x1000".to_owned()]),
                 ("worker".to_owned(), vec!["0x2000".to_owned()]),
@@ -12846,6 +13024,7 @@ mod tests {
             ],
             application_blocks: BTreeMap::new(),
             thread_scheduling: BTreeMap::new(),
+            thread_synchronization: BTreeMap::new(),
             program_counters: BTreeMap::from([
                 ("api".to_owned(), vec!["0x1000".to_owned()]),
                 ("worker".to_owned(), vec!["0x2004".to_owned()]),
@@ -12932,6 +13111,7 @@ mod tests {
             markers: Vec::new(),
             application_blocks: BTreeMap::new(),
             thread_scheduling: BTreeMap::new(),
+            thread_synchronization: BTreeMap::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
             serial_contents: BTreeMap::from([
@@ -12949,6 +13129,7 @@ mod tests {
             markers: Vec::new(),
             application_blocks: BTreeMap::new(),
             thread_scheduling: BTreeMap::new(),
+            thread_synchronization: BTreeMap::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
             serial_contents: BTreeMap::from([
@@ -12997,6 +13178,7 @@ mod tests {
             markers: Vec::new(),
             application_blocks: BTreeMap::new(),
             thread_scheduling: BTreeMap::new(),
+            thread_synchronization: BTreeMap::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
             serial_contents: BTreeMap::new(),
@@ -13104,6 +13286,8 @@ mod tests {
                 new_application_blocks: Vec::new(),
                 thread_scheduling: BTreeMap::new(),
                 new_thread_scheduling_decisions: BTreeMap::new(),
+                thread_synchronization: BTreeMap::new(),
+                new_thread_synchronization_events: BTreeMap::new(),
                 serial_sha256: BTreeMap::from([("api".to_owned(), "serial".to_owned())]),
                 serial_delta: BTreeMap::new(),
                 network_traffic_delta: BTreeMap::new(),
@@ -13130,6 +13314,7 @@ mod tests {
             application_blocks: BTreeMap::new(),
             application_block_novelty: Vec::new(),
             thread_scheduling: BTreeMap::new(),
+            thread_synchronization: BTreeMap::new(),
             state_sha256: "state".to_owned(),
             state_novel: true,
             status: "passed",
@@ -13153,6 +13338,7 @@ mod tests {
             application_blocks: actual.application_blocks.clone(),
             application_block_novelty: actual.application_block_novelty.clone(),
             thread_scheduling: actual.thread_scheduling.clone(),
+            thread_synchronization: actual.thread_synchronization.clone(),
             novelty: actual.novelty.clone(),
             state_sha256: actual.state_sha256.clone(),
             state_novel: true,

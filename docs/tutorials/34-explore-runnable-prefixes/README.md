@@ -102,5 +102,5 @@ rm -rf service/work plan.json campaign report minimized rerun
 ```
 
 This scheduler controls instrumented GCC C basic blocks. It supports at most
-32 pthread identities and 8,192 decisions, and models `pthread_join` as its
-only blocking operation.
+32 pthread identities and 8,192 decisions. Joins, default mutex locking, and
+untimed condition waits, signals, and broadcasts update the runnable set.

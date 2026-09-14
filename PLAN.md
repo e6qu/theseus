@@ -166,13 +166,18 @@ Implemented in source:
   observed at execution time. Prefix positions count only actual choices;
   result bundles, minimization, replay, comparison, and reports retain the
   exact prefix. Tutorial 34 exercises this feedback-driven path.
+- The C scheduler keeps threads blocked on default mutexes and untimed
+  condition variables out of its runnable mask. It chooses condition waiters,
+  assigns synchronization objects stable first-use identities, and retains
+  ordered waits, wakeups, acquisitions, and releases through timeline deltas,
+  replay, comparison, and reports. Tutorial 35 exercises this path.
 
 Next work:
 
-- Run Tutorials 32–34 on native amd64 and arm64 KVM and retain their
+- Run Tutorials 32–35 on native amd64 and arm64 KVM and retain their
   campaigns, reports, minimized counterexample, and replay evidence.
-- Detect or control mutexes, condition variables, futex waits, and blocking
-  syscalls instead of allowing an unsupported target to deadlock.
+- Detect or control timed waits, cancellation, semaphores, direct futex waits,
+  and blocking syscalls instead of allowing an unsupported target to deadlock.
 - Extend stable identities across `fork`/`exec` and add process scheduling.
 - Measure scheduling overhead and publish a fixed-budget comparison against
   operation-only overlap.

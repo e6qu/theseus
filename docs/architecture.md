@@ -64,7 +64,7 @@ door could leave `vmm` without creating a dependency cycle.
 | Exploration | `orchestrator/orchestrator` | Timeline tree, child spawning, parallel rendezvous explorer. |
 | Execution locations | `orchestrator/coverage` | Guest-PC collection by single-step or deterministic exit sampling. |
 | Application blocks | `instrumentation/c` + `topology-runner` | GCC C basic-block records with build-scoped, ASLR-independent identities. |
-| Thread scheduling | `instrumentation/c` + `cli` + `topology-runner` | Bounded GCC C pthread interleavings with explicit or statically enumerated periodic choices and replay-checked runnable sets. |
+| Thread scheduling | `instrumentation/c` + `cli` + `topology-runner` | Bounded GCC C pthread interleavings with explicit, static, or feedback-driven choices plus replay-checked mutex and condition-variable transitions. |
 
 ## Verification model
 

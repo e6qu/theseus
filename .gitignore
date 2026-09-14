@@ -139,5 +139,16 @@ docs/tutorials/33-search-thread-schedules/campaign/
 docs/tutorials/33-search-thread-schedules/report/
 docs/tutorials/33-search-thread-schedules/minimized/
 docs/tutorials/33-search-thread-schedules/rerun/
+docs/tutorials/34-explore-runnable-prefixes/service/work/
+docs/tutorials/34-explore-runnable-prefixes/plan.json
+docs/tutorials/34-explore-runnable-prefixes/campaign/
+docs/tutorials/34-explore-runnable-prefixes/report/
+docs/tutorials/34-explore-runnable-prefixes/minimized/
+docs/tutorials/34-explore-runnable-prefixes/rerun/
+docs/tutorials/35-control-pthread-synchronization/service/work/
+docs/tutorials/35-control-pthread-synchronization/plan.json
+docs/tutorials/35-control-pthread-synchronization/campaign/
+docs/tutorials/35-control-pthread-synchronization/report/
+docs/tutorials/35-control-pthread-synchronization/rerun/
 
 orchestrator/pivot/target/

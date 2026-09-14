@@ -16,7 +16,7 @@ has no independent head-to-head evaluation with Antithesis.
 | Search guidance | Coverage-guided autonomous exploration | C application blocks, markers, topology/property evidence, dirty-page footprint, and sampled guest PCs |
 | Coverage | Application basic-block instrumentation | GCC C basic-block instrumentation; no edge or multi-language instrumentation yet |
 | Faults | Network, process, clock, and storage faults | Simulated network/storage plus Compose lifecycle, clock, and packet actions |
-| Concurrency | Controlled thread/process scheduling | Operation overlap plus bounded GCC C pthread basic-block scheduling and runnable-set feedback; no general Linux scheduler control |
+| Concurrency | Controlled thread/process scheduling | Operation overlap plus bounded GCC C pthread basic-block scheduling, runnable-set feedback, default mutexes, and untimed condition variables; no general Linux scheduler control |
 | Debugging | Time-travel and causality analysis | Static reports, replay, minimization, bundle comparison, snapshot export |
 | Causality | Counterfactual re-exploration from checkpoints | Not implemented; comparison only finds recorded differences |
 | Delivery | Hosted commercial product | Open source, self-operated Linux/KVM runtime |
@@ -43,8 +43,10 @@ pthread basic blocks from an explicit repeating schedule, up to 256
 pre-enumerated periodic patterns, or a bounded tree of prefixes derived from
 runnable sets observed during execution. It assigns identities in creation
 order and retains prefixes, runnable sets, and selected threads for replay.
-It is limited to 32 threads and 8,192 decisions, handles only `pthread_join` as
-a blocking operation, has no process scheduler, and still needs native KVM
+It is limited to 32 threads and 8,192 decisions. It controls joins, default
+mutex locking, and untimed condition waits/signals/broadcasts, but not timed
+waits, cancellation, semaphores, direct futex use, blocking I/O, or
+uninstrumented libraries. It has no process scheduler and still needs native KVM
 evidence. It is not equivalent to Antithesis's general concurrency control.
 
 ### Test templates

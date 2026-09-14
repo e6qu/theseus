@@ -82,6 +82,8 @@ struct Run {
     #[serde(default)]
     thread_scheduling: Coverage,
     #[serde(default)]
+    thread_synchronization: Coverage,
+    #[serde(default)]
     state_sha256: String,
     #[serde(default)]
     timeline: Vec<Boundary>,
@@ -110,6 +112,8 @@ struct Boundary {
     application_blocks: Coverage,
     #[serde(default)]
     thread_scheduling: Coverage,
+    #[serde(default)]
+    thread_synchronization: Coverage,
 }
 
 #[derive(Serialize)]
@@ -335,6 +339,15 @@ pub fn compare_campaigns(
                         right: json_summary(&right.thread_scheduling),
                     });
                 }
+                if left.thread_synchronization != right.thread_synchronization {
+                    return Some(CampaignDivergence {
+                        run,
+                        boundary: Some(boundary),
+                        reason: "first thread-synchronization event differs".to_owned(),
+                        left: json_summary(&left.thread_synchronization),
+                        right: json_summary(&right.thread_synchronization),
+                    });
+                }
             }
             if left.timeline.len() != right.timeline.len()
                 || left.state_sha256 != right.state_sha256
@@ -363,6 +376,15 @@ pub fn compare_campaigns(
                     reason: "thread-scheduling decisions differ".to_owned(),
                     left: json_summary(&left.thread_scheduling),
                     right: json_summary(&right.thread_scheduling),
+                });
+            }
+            if left.thread_synchronization != right.thread_synchronization {
+                return Some(CampaignDivergence {
+                    run,
+                    boundary: None,
+                    reason: "thread-synchronization events differ".to_owned(),
+                    left: json_summary(&left.thread_synchronization),
+                    right: json_summary(&right.thread_synchronization),
                 });
             }
             if left.program_counters != right.program_counters
@@ -545,6 +567,25 @@ mod tests {
         assert_eq!(
             divergence.reason,
             "first thread-scheduling decision differs"
+        );
+    }
+
+    #[test]
+    fn reports_the_first_changed_thread_synchronization_event() {
+        let digest = "0123456789abcdef".repeat(4);
+        let runs = format!(
+            r#"[{{"index":0,"operations":["workers"],"state_sha256":"same","thread_synchronization":{{"workers":[{{"process":"workers","module":"condition","build_sha256":"{digest}","event":4,"thread":2,"operation":"signal","object_kind":"condition","object":1,"peer_thread":1}}]}},"timeline":[{{"operation":"workers","service":"workers","state_sha256":"same","thread_synchronization":{{"workers":[{{"process":"workers","module":"condition","build_sha256":"{digest}","event":4,"thread":2,"operation":"signal","object_kind":"condition","object":1,"peer_thread":1}}]}}}}]}}]"#
+        );
+        let changed = runs.replace("\"peer_thread\":1", "\"peer_thread\":0");
+        let (left, right) = write_pair(&result(&runs, "[]"), &result(&changed, "[]"));
+        let divergence = compare_campaigns(left.path(), right.path())
+            .unwrap()
+            .divergence
+            .unwrap();
+        assert_eq!(divergence.boundary, Some(0));
+        assert_eq!(
+            divergence.reason,
+            "first thread-synchronization event differs"
         );
     }
 

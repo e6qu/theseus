@@ -52,6 +52,9 @@ Terms used across Theseus code and documentation. See
   containing the build-scoped scheduling point, current thread, runnable
   thread mask, and selected thread. Theseus assigns thread identities in
   `pthread_create` order and verifies the complete sequence during replay.
+- **Thread-synchronization event** — an ordered wait, wakeup, acquisition, or
+  release from the bounded C scheduler. A pthread object receives a stable
+  first-use number instead of exposing its ASLR-dependent address.
 - **Thread-schedule search** — a bounded, deterministic expansion of declared
   thread identities into periodic schedule cases, filtered by a maximum count
   of switches around each period. It is not yet feedback-driven runnable-set
