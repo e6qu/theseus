@@ -238,9 +238,13 @@ Each instrumented shared library links a hidden copy of the runtime, so a DSO
 loaded with `dlopen` retains its own build, module, guard set, and address base.
 The frontend can preserve an unstripped build-scoped file under `/symbols`;
 `theseus-coverage-inspect` checks the sanitizer guards and GNU build ID, then
-uses a module-relative offset to show its function and source line. Automatic
-source joins in reports and transparent instrumentation of existing images are
-not implemented.
+uses a module-relative offset to show its function and source line. A service's
+`x-theseus.coverage` list associates each manifest with its symbol directory.
+Planning validates their identities and locks both files; the Linux runner
+revalidates the ELF guards, callback, build ID, and debug data before boot.
+Campaign results and reports then attach functions and source lines to matching
+service/process/module/build records automatically. Transparent instrumentation
+of existing images is not implemented.
 
 ## Bounded C thread scheduling
 

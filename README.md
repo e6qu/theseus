@@ -42,10 +42,11 @@ passing unit suite alone is not treated as runtime proof.
   validate, and inspect retained evidence, but cannot run Firecracker.
 - Virtual counters free-run between exit-counted tick boundaries. Theseus does
   not promise instruction-exact virtual time.
-- LLVM coverage uses explicit build frontends and retained symbol files; it
-  does not transparently instrument arbitrary existing images. Source lookup
-  is currently an explicit inspection step rather than an automatic report
-  join. Go, Java, JavaScript, and .NET instrumentation are not implemented.
+- LLVM coverage uses explicit build frontends and coverage catalogs declared
+  under each service's `x-theseus` configuration; it does not transparently
+  instrument arbitrary existing images. Declared manifests and symbols are
+  locked into replay bundles and joined into reports. Cargo dependency graphs,
+  Go, Java, JavaScript, and .NET instrumentation are not implemented.
 - Thread scheduling is a bounded GCC C path, not general Linux scheduling. It
   supports 32 pthreads and 8,192 decisions, and controls joins, default mutex
   locking, and untimed condition waits/signals/broadcasts. Timed waits,

@@ -22,6 +22,7 @@ compile_and_check() {
         "$output.theseus-coverage.json")
     [ "${#build}" -eq 64 ]
     grep -F '"maximum_edges": 8191' "$output.theseus-coverage.json" >/dev/null
+    grep -E '"gnu_build_id": "[0-9a-f]+"' "$output.theseus-coverage.json" >/dev/null
     records=$("$output" 0 2>&1 || true; "$output" 7 2>&1 || true)
     printf '%s\n' "$records" | grep -E \
         "^THES:COV:v2:fixture:${module}:${build}:[1-9][0-9]*:0x[0-9a-f]+$" >/dev/null
@@ -40,6 +41,8 @@ compile_and_check c++ cxx "$root/scripts/tests/llvm_coverage_fixture.cc" "$work/
     "$root/scripts/tests/llvm_coverage_fixture.c" >/dev/null
 cmp "$work/c-fixture.theseus-coverage.json" \
     "$work/c-rebuilt.theseus-coverage.json"
+sed '/"gnu_build_id":/d' "$work/c-fixture.theseus-coverage.json" > "$work/legacy.json"
+"$inspect" "$work/c-fixture" "$work/legacy.json" >/dev/null
 if "$inspect" "$work/c-fixture" "$work/cxx-fixture.theseus-coverage.json" \
     >/dev/null 2>&1; then
     echo 'coverage inspection accepted a manifest from another build' >&2

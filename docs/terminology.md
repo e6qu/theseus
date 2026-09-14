@@ -49,6 +49,9 @@ Terms used across Theseus code and documentation. See
   frontend. GCC v1 records identify blocks; LLVM v2 records also carry a
   build-local edge number. The identity is stable across ASLR and identical
   rebuilds, and a changed build cannot collide silently with the old module.
+- **Coverage catalog** — the manifest and symbol file pairs declared for one
+  Compose service. Planning locks their digests and build identities into the
+  replay bundle; the runner uses only those copies for source association.
 - **Thread-scheduling decision** — an ordered compiler-instrumented C record
   containing the build-scoped scheduling point, current thread, runnable
   thread mask, and selected thread. Theseus assigns thread identities in

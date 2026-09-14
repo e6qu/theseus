@@ -127,6 +127,8 @@ fi
 if [ "$shared" -eq 1 ]; then set -- -shared -fPIC "$@"; else set -- -fPIE -pie "$@"; fi
 $compiler -O1 -g -Wl,--build-id -fsanitize-coverage=trace-pc-guard \
     "$@" "$work/runtime.o" -ldl -o "$output"
+gnu_build_id=$(readelf -n "$output" | sed -n 's/.*Build ID: //p' | sed -n '1p')
+case "$gnu_build_id" in ''|*[!0-9a-f]*) echo 'compiler produced no GNU build ID' >&2; exit 1 ;; esac
 
 symbol_file=
 if [ -n "$symbols" ]; then
@@ -136,8 +138,8 @@ if [ -n "$symbols" ]; then
 fi
 
 manifest="${output}.theseus-coverage.json"
-printf '{\n  "format": "theseus-llvm-coverage-build-v1",\n  "coverage": "edges",\n  "maximum_edges": 8191,\n  "language": "%s",\n  "process": "%s",\n  "module": "%s",\n  "build_sha256": "%s",\n  "compiler": "%s",\n  "target": "%s",\n  "shared": %s,\n' \
-    "$language" "$process" "$module" "$build_sha256" "$compiler_version" "$target" \
+printf '{\n  "format": "theseus-llvm-coverage-build-v1",\n  "coverage": "edges",\n  "maximum_edges": 8191,\n  "language": "%s",\n  "process": "%s",\n  "module": "%s",\n  "build_sha256": "%s",\n  "gnu_build_id": "%s",\n  "compiler": "%s",\n  "target": "%s",\n  "shared": %s,\n' \
+    "$language" "$process" "$module" "$build_sha256" "$gnu_build_id" "$compiler_version" "$target" \
     "$(if [ "$shared" -eq 1 ]; then echo true; else echo false; fi)" > "$manifest"
 if [ -n "$symbol_file" ]; then
     printf '  "symbols": "%s",\n' "$(basename -- "$symbol_file")" >> "$manifest"
