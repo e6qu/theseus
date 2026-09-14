@@ -83,7 +83,7 @@ jobs:
             test -s /opt/theseus/vmlinux
             test -x /opt/theseus/pivot
             test -s /opt/theseus/pivot.json
-            /usr/local/bin/theseus-image pivot | grep -F '"architecture": "${{ matrix.arch }}"'
+            /usr/local/bin/theseus-image pivot | grep -F "\"architecture\": \"${{ matrix.arch }}\""
             pivot_sha256=$(sha256sum /opt/theseus/pivot | cut -d ' ' -f 1)
             grep -F "\"sha256\": \"$pivot_sha256\"" /opt/theseus/pivot.json
             /usr/local/bin/firecracker --version
@@ -353,8 +353,8 @@ jobs:
             test -s /opt/theseus/vmlinux
             test -x /opt/theseus/pivot
             test -s /opt/theseus/pivot.json
-            /usr/local/bin/theseus-image pivot | grep -F '"architecture": "${{ matrix.arch }}"'
-            grep -F '"source_commit": "${{ github.sha }}"' /opt/theseus/pivot.json
+            /usr/local/bin/theseus-image pivot | grep -F "\"architecture\": \"${{ matrix.arch }}\""
+            grep -F "\"source_commit\": \"${{ github.sha }}\"" /opt/theseus/pivot.json
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
             /usr/local/bin/theseus-image --help >/dev/null
