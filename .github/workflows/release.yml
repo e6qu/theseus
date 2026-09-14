@@ -102,6 +102,18 @@ jobs:
               --process smoke --module rust -o /tmp/coverage-rust /tmp/coverage.rs >/dev/null
             /opt/theseus/instrumentation/llvm/theseus-coverage-inspect \
               /tmp/coverage-rust /tmp/coverage-rust.theseus-coverage.json >/dev/null
+            mkdir -p /tmp/cargo-coverage/src /tmp/cargo-coverage/symbols
+            printf "%s\n" \
+              "[package]" "name = \"cargo_smoke\"" "version = \"0.1.0\"" "edition = \"2021\"" \
+              > /tmp/cargo-coverage/Cargo.toml
+            printf "%s\n" "fn main() { println!(\"cargo coverage\"); }" \
+              > /tmp/cargo-coverage/src/main.rs
+            (cd /tmp/cargo-coverage && /usr/local/bin/theseus coverage cargo \
+              --process smoke --module cargo --bin cargo_smoke \
+              --symbols symbols --output cargo-smoke --offline >/dev/null)
+            /opt/theseus/instrumentation/llvm/theseus-coverage-inspect \
+              /tmp/cargo-coverage/cargo-smoke \
+              /tmp/cargo-coverage/cargo-smoke.theseus-coverage.json >/dev/null
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
             /usr/local/bin/theseus-image --help >/dev/null
@@ -404,6 +416,18 @@ jobs:
               --process smoke --module rust -o /tmp/coverage-rust /tmp/coverage.rs >/dev/null
             /opt/theseus/instrumentation/llvm/theseus-coverage-inspect \
               /tmp/coverage-rust /tmp/coverage-rust.theseus-coverage.json >/dev/null
+            mkdir -p /tmp/cargo-coverage/src /tmp/cargo-coverage/symbols
+            printf "%s\n" \
+              "[package]" "name = \"cargo_smoke\"" "version = \"0.1.0\"" "edition = \"2021\"" \
+              > /tmp/cargo-coverage/Cargo.toml
+            printf "%s\n" "fn main() { println!(\"cargo coverage\"); }" \
+              > /tmp/cargo-coverage/src/main.rs
+            (cd /tmp/cargo-coverage && /usr/local/bin/theseus coverage cargo \
+              --process smoke --module cargo --bin cargo_smoke \
+              --symbols symbols --output cargo-smoke --offline >/dev/null)
+            /opt/theseus/instrumentation/llvm/theseus-coverage-inspect \
+              /tmp/cargo-coverage/cargo-smoke \
+              /tmp/cargo-coverage/cargo-smoke.theseus-coverage.json >/dev/null
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
             /usr/local/bin/theseus-image --help >/dev/null

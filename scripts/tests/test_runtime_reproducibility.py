@@ -34,6 +34,7 @@ def main() -> None:
     assert "instrumentation/llvm/theseus-coverage-inspect" in DOCKERFILE
     assert "instrumentation/llvm/theseus_coverage.c" in DOCKERFILE
     assert "libclang-rt-dev" in DOCKERFILE
+    assert "cargo clang" in DOCKERFILE
     assert "libseccomp2 rustc" in DOCKERFILE
 
     assert "SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}" in RELEASE
@@ -54,8 +55,10 @@ def main() -> None:
     assert RELEASE.count("test -x /opt/theseus/instrumentation/llvm/theseus-coverage-clang") == 2
     assert RELEASE.count("test -x /opt/theseus/instrumentation/llvm/theseus-coverage-rustc") == 2
     assert "test -x instrumentation/llvm/theseus-coverage-clang" in RELEASE
-    assert RELEASE.count("--process smoke --module c") == 2
+    assert RELEASE.count("--process smoke --module c -o") == 2
     assert RELEASE.count("--process smoke --module rust") == 2
+    assert RELEASE.count("theseus coverage cargo") == 2
+    assert RELEASE.count("--process smoke --module cargo") == 2
     assert "gh release download" in VERIFY
     assert "gh attestation verify" in VERIFY
     assert "ref: ${{ steps.inputs.outputs.commit }}" in VERIFY

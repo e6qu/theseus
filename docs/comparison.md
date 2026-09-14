@@ -29,14 +29,15 @@ has no independent head-to-head evaluation with Antithesis.
 Antithesis documents compiler-based basic-block instrumentation across C/C++,
 Rust, Go, Java, JavaScript, .NET, and other LLVM toolchains. Theseus packages a
 GCC C basic-block frontend and LLVM edge frontends for C, C++, and standalone
-Rust binaries. The LLVM runtime preserves independent build-scoped identities
+Rust binaries and one Cargo binary's static Rust target dependencies. The LLVM
+runtime preserves independent build-scoped identities
 for PIE executables and dynamically loaded native libraries; its inspection
 tool validates sanitizer guards and resolves retained module offsets with the
 matching symbols. Compose coverage catalogs lock manifests and symbols into
 replay bundles, revalidate them before boot, and attach functions and source
 lines to campaign reports. Campaign guidance, replay, comparison, evaluation,
-and reports retain the coverage records. Theseus does not yet instrument Cargo
-dependency graphs or support the non-LLVM language set. A controlled public
+and reports retain the coverage records. Theseus does not yet support Rust
+dynamic dependency graphs or the non-LLVM language set. A controlled public
 search comparison remains pending.
 
 Reference: [Antithesis coverage instrumentation](https://antithesis.com/docs/product/writing_tests/instrumentation/coverage_instrumentation/).

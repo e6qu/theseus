@@ -164,5 +164,11 @@ docs/tutorials/37-llvm-edge-coverage/plan.json
 docs/tutorials/37-llvm-edge-coverage/campaign/
 docs/tutorials/37-llvm-edge-coverage/report/
 docs/tutorials/37-llvm-edge-coverage/rerun/
+docs/tutorials/38-cargo-workspace-coverage/service/work/
+docs/tutorials/38-cargo-workspace-coverage/service/target/
+docs/tutorials/38-cargo-workspace-coverage/plan.json
+docs/tutorials/38-cargo-workspace-coverage/campaign/
+docs/tutorials/38-cargo-workspace-coverage/report/
+docs/tutorials/38-cargo-workspace-coverage/rerun/
 
 orchestrator/pivot/target/

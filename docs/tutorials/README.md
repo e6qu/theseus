@@ -91,7 +91,11 @@ deterministic-CRNG kernel module is shipped.
     and replay the exact decision trace without the guest SDK.
 37. [Guide a campaign with LLVM edge coverage](37-llvm-edge-coverage/) —
     instrument C++ and a dynamically loaded native module with the published
-    LLVM tools, retain build-scoped edges, symbolize one, and replay them.
+    LLVM tools, lock their symbols, report reached source lines, and replay the
+    build-scoped edges.
+38. [Cover a Cargo workspace](38-cargo-workspace-coverage/) — instrument a
+    Rust command and its static Rust workspace dependencies in one published-tool
+    build, then retain source-associated edges through reporting and replay.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

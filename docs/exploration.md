@@ -224,9 +224,10 @@ selected, records new blocks at operation boundaries, and requires the same
 sets during replay. The build digest prevents two rebuilds from being
 conflated; the module-relative offset is independent of ASLR.
 
-The packaged LLVM frontends cover C, C++, and single-file Rust programs. Clang
-uses `trace-pc-guard`; rustc uses the corresponding `sancov-module` pass. Each
-module retains at most 8,191 first-hit edges and disables additional guards.
+The packaged LLVM frontends cover C, C++, single-file Rust programs, and a
+selected Cargo binary with its static Rust target dependencies. Clang uses
+`trace-pc-guard`; rustc uses the corresponding `sancov-module` pass. Each
+module retains at most 65,535 first-hit edges and disables additional guards.
 It emits this record for every retained edge:
 
 ```text
@@ -244,7 +245,11 @@ Planning validates their identities and locks both files; the Linux runner
 revalidates the ELF guards, callback, build ID, and debug data before boot.
 Campaign results and reports then attach functions and source lines to matching
 service/process/module/build records automatically. Transparent instrumentation
-of existing images is not implemented.
+of existing images is not implemented. `theseus coverage cargo` resolves one
+binary's Cargo graph, hashes its package inputs, instruments target libraries
+through Cargo's rustc-wrapper boundary, and links one runtime into the final
+PIE. Host build dependencies and proc macros remain ordinary host tools;
+`dylib` and `cdylib` targets require their own module identity.
 
 ## Bounded C thread scheduling
 

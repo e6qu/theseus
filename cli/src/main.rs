@@ -6,12 +6,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use theseus_cli::{
-    capture_evaluation, compare_campaigns, evaluate, explore, explore_compose,
-    explore_compose_expect_counterexample, load_compose_plan, load_plan, minimize_compose_campaign,
-    minimize_compose_campaign_expect_counterexample, minimize_exploration_path, query_campaigns,
-    replay, replay_compose, replay_exploration, replay_exploration_path, report, report_file,
-    report_text, snapshot_exploration_path, test, test_compose, verify_native_evidence,
-    write_evaluation_lock, ReportFormat,
+    capture_evaluation, cargo_coverage, cargo_coverage_rustc_wrapper, compare_campaigns, evaluate,
+    explore, explore_compose, explore_compose_expect_counterexample, load_compose_plan, load_plan,
+    minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
+    minimize_exploration_path, query_campaigns, replay, replay_compose, replay_exploration,
+    replay_exploration_path, report, report_file, report_text, snapshot_exploration_path, test,
+    test_compose, verify_native_evidence, write_evaluation_lock, ReportFormat,
+    CARGO_COVERAGE_USAGE,
 };
 
 const USAGE: &str = "Usage:
@@ -32,6 +33,8 @@ const USAGE: &str = "Usage:
   theseus evaluate lock [theseus-evaluation.toml]
   theseus evaluate capture campaign-dir --output evaluation-dir --name name
   theseus evidence verify native-evidence.json
+  theseus coverage cargo --process NAME --module NAME --bin NAME --symbols DIR --output FILE
+      [--manifest-path Cargo.toml] [--package NAME] [--release] [--locked] [--offline]
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
@@ -243,6 +246,27 @@ fn run(args: Vec<String>) -> Result<(), String> {
             );
             Ok(())
         }
+        [command, subcommand, flag]
+            if command == "coverage"
+                && subcommand == "cargo"
+                && (flag == "--help" || flag == "-h") =>
+        {
+            println!("{CARGO_COVERAGE_USAGE}");
+            Ok(())
+        }
+        [command, flag] if command == "coverage" && (flag == "--help" || flag == "-h") => {
+            println!("{CARGO_COVERAGE_USAGE}");
+            Ok(())
+        }
+        [command, subcommand, rest @ ..] if command == "coverage" && subcommand == "cargo" => {
+            let result = cargo_coverage(rest)?;
+            println!(
+                "built from {} Cargo package inputs; binary: {}; manifest: {}; symbols: {}",
+                result.packages, result.binary, result.manifest, result.symbols
+            );
+            Ok(())
+        }
+        [command, ..] if command == "coverage" => Err(CARGO_COVERAGE_USAGE.to_owned()),
         [command, minimize, bundle, path_flag, path, output_flag, output]
             if command == "explore"
                 && minimize == "--minimize"
@@ -495,6 +519,15 @@ mod tests {
 }
 
 fn main() -> ExitCode {
+    if theseus_cli::is_cargo_coverage_wrapper() {
+        return match cargo_coverage_rustc_wrapper(&env::args_os().skip(1).collect::<Vec<_>>()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     match run(env::args().skip(1).collect()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

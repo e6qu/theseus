@@ -35,6 +35,156 @@ mem_size_mib = 128
     directory
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn cargo_coverage_instruments_a_workspace_dependency_graph() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::create_dir_all(directory.path().join("app/src")).unwrap();
+    fs::create_dir_all(directory.path().join("logic/src")).unwrap();
+    fs::create_dir_all(directory.path().join("devtool/src")).unwrap();
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"app\", \"logic\", \"devtool\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("app/Cargo.toml"),
+        "[package]\nname = \"classifier\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nlogic = { path = \"../logic\" }\n\n[dev-dependencies]\ndevtool = { path = \"../devtool\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("app/src/main.rs"),
+        "fn main() { let value = std::env::args().nth(1).unwrap().parse().unwrap(); println!(\"{}\", logic::classify(value)); }\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("logic/Cargo.toml"),
+        "[package]\nname = \"logic\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("logic/src/lib.rs"),
+        "#[inline(never)]\npub fn classify(value: u32) -> &'static str { if value == 7 { \"seven\" } else if value % 2 == 0 { \"even\" } else { \"odd\" } }\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("logic/build.rs"),
+        "fn main() { println!(\"cargo:rerun-if-changed=build.rs\"); }\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("devtool/Cargo.toml"),
+        "[package]\nname = \"devtool\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("devtool/src/lib.rs"),
+        "pub fn test_only() {}\n",
+    )
+    .unwrap();
+
+    let build = || {
+        Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args([
+                "coverage",
+                "cargo",
+                "--process",
+                "classifier",
+                "--module",
+                "command",
+                "--package",
+                "classifier",
+                "--bin",
+                "classifier",
+                "--manifest-path",
+                "Cargo.toml",
+                "--symbols",
+                "out/symbols",
+                "--output",
+                "out/classifier",
+                "--offline",
+            ])
+            .current_dir(directory.path())
+            .output()
+            .unwrap()
+    };
+    let first = build();
+    assert!(first.status.success(), "{first:?}");
+    let manifest_path = directory
+        .path()
+        .join("out/classifier.theseus-coverage.json");
+    let first_manifest = fs::read(&manifest_path).unwrap();
+    let manifest: serde_json::Value = serde_json::from_slice(&first_manifest).unwrap();
+    assert_eq!(manifest["maximum_edges"], 65_535);
+    assert_eq!(manifest["cargo"]["packages"], 2);
+    assert_eq!(
+        manifest["cargo"]["rust_target_dependencies_instrumented"],
+        true
+    );
+    assert_eq!(manifest["cargo"]["host_build_targets_instrumented"], false);
+    assert_eq!(
+        manifest["cargo"]["dynamic_rust_targets_instrumented"],
+        false
+    );
+    assert_eq!(
+        manifest["cargo"]["workspace_sha256"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+    assert_eq!(manifest["sources"][0]["name"], "classifier");
+    assert_eq!(manifest["sources"][1]["name"], "logic");
+
+    let run = Command::new(directory.path().join("out/classifier"))
+        .arg("7")
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "{run:?}");
+    assert_eq!(run.stdout, b"seven\n");
+    let records = String::from_utf8(run.stderr).unwrap();
+    assert!(records.contains("THES:COV:v2:classifier:command:"));
+
+    let symbols = directory
+        .path()
+        .join("out/symbols")
+        .join(manifest["symbols"].as_str().unwrap());
+    let inspect = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("instrumentation/llvm/theseus-coverage-inspect");
+    let mut locations = String::new();
+    for offset in records
+        .lines()
+        .filter_map(|line| line.rsplit(':').next())
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        let result = Command::new(&inspect)
+            .args([symbols.as_os_str(), manifest_path.as_os_str()])
+            .arg(offset)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        locations.push_str(&String::from_utf8(result.stdout).unwrap());
+    }
+    assert!(locations.contains("logic/src/lib.rs"), "{locations}");
+
+    let second = build();
+    assert!(second.status.success(), "{second:?}");
+    assert_eq!(fs::read(&manifest_path).unwrap(), first_manifest);
+
+    fs::write(
+        directory.path().join("logic/src/lib.rs"),
+        "#[inline(never)]\npub fn classify(value: u32) -> &'static str { if value == 7 { \"lucky\" } else if value % 2 == 0 { \"even\" } else { \"odd\" } }\n",
+    )
+    .unwrap();
+    let changed = build();
+    assert!(changed.status.success(), "{changed:?}");
+    let changed_manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(manifest_path).unwrap()).unwrap();
+    assert_ne!(changed_manifest["build_sha256"], manifest["build_sha256"]);
+}
+
 #[test]
 fn test_dry_run_prints_a_replayable_plan_without_kvm() {
     let directory = test_directory();
@@ -323,4 +473,14 @@ fn help_lists_bundle_local_replay_commands() {
     assert!(help.contains("evaluate lock [theseus-evaluation.toml]"));
     assert!(help.contains("evaluate capture campaign-dir --output evaluation-dir --name name"));
     assert!(help.contains("evidence verify native-evidence.json"));
+    assert!(help.contains("coverage cargo --process NAME"));
+
+    let coverage = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["coverage", "cargo", "--help"])
+        .output()
+        .unwrap();
+    assert!(coverage.status.success(), "{coverage:?}");
+    assert!(String::from_utf8(coverage.stdout)
+        .unwrap()
+        .contains("--target-dir DIR"));
 }

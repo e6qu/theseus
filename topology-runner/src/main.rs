@@ -6410,6 +6410,7 @@ fn campaign_markers(run: &Path) -> Result<Vec<String>, String> {
 
 const APPLICATION_BLOCK_COVERAGE_PREFIX: &str = "THES:COV:v1:";
 const APPLICATION_EDGE_COVERAGE_PREFIX: &str = "THES:COV:v2:";
+const APPLICATION_EDGE_COVERAGE_LIMIT: u32 = 65_536;
 
 fn campaign_application_blocks(
     run: &Path,
@@ -6486,7 +6487,7 @@ fn parse_application_coverage_line(line: &str) -> Option<ApplicationBlock> {
         let edge = fields.next()?.parse::<u32>().ok()?;
         let offset = fields.next()?;
         if edge == 0
-            || edge >= 8_192
+            || edge >= APPLICATION_EDGE_COVERAGE_LIMIT
             || fields.next().is_some()
             || !valid_application_coverage_point(process, module, build_sha256, offset)
         {
@@ -13180,15 +13181,16 @@ mod tests {
         let digest = "0123456789abcdef".repeat(4);
         let record = format!("THES:COV:v1:worker:parser:{digest}:0x42\n");
         let edge = format!("THES:COV:v2:worker:parser:{digest}:17:0x48\n");
+        let maximum_edge = format!("THES:COV:v2:worker:parser:{digest}:65535:0x4c\n");
         let serial = BTreeMap::from([
             (
                 "api".to_owned(),
-                format!("noise\n{record}{record}{edge}{edge}").into_bytes(),
+                format!("noise\n{record}{record}{edge}{edge}{maximum_edge}").into_bytes(),
             ),
             (
                 "worker".to_owned(),
                 format!(
-                    "THES:COV:v1:worker:parser:{}:0x42\nTHES:COV:v2:worker:parser:{digest}:0:0x48\nTHES:COV:v2:worker:parser:{digest}:8192:0x48\n",
+                    "THES:COV:v1:worker:parser:{}:0x42\nTHES:COV:v2:worker:parser:{digest}:0:0x48\nTHES:COV:v2:worker:parser:{digest}:65536:0x48\n",
                     digest.to_uppercase()
                 )
                 .into_bytes(),
@@ -13196,7 +13198,7 @@ mod tests {
         ]);
         let blocks = campaign_application_blocks_from_serial(&serial);
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks["api"].len(), 2);
+        assert_eq!(blocks["api"].len(), 3);
         assert_eq!(blocks["api"][0].process, "worker");
         assert_eq!(blocks["api"][0].module, "parser");
         assert_eq!(blocks["api"][0].build_sha256, digest.clone());
@@ -13204,7 +13206,9 @@ mod tests {
         assert_eq!(blocks["api"][0].offset, "0x42");
         assert_eq!(blocks["api"][1].edge, Some(17));
         assert_eq!(blocks["api"][1].offset, "0x48");
-        assert_eq!(campaign_application_block_ids(&blocks).len(), 2);
+        assert_eq!(blocks["api"][2].edge, Some(65_535));
+        assert_eq!(blocks["api"][2].offset, "0x4c");
+        assert_eq!(campaign_application_block_ids(&blocks).len(), 3);
         assert!(campaign_application_block_ids(&blocks)[1].contains("edge-17:0x48"));
     }
 

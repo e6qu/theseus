@@ -6,6 +6,7 @@
 //! It validates test inputs, produces locked plans, executes supported KVM
 //! workloads, and reads or compares retained evidence.
 
+mod cargo_coverage;
 mod compare;
 mod compose;
 mod evaluation;
@@ -15,6 +16,10 @@ mod manifest;
 mod report;
 mod runner;
 
+pub use cargo_coverage::{
+    cargo_coverage, cargo_coverage_rustc_wrapper, is_cargo_coverage_wrapper, CargoCoverageOutput,
+    CARGO_COVERAGE_USAGE,
+};
 pub use compare::{
     compare_campaigns, query_campaigns, CampaignComparison, CampaignQuery, CompareError,
 };

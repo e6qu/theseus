@@ -52,6 +52,10 @@ Terms used across Theseus code and documentation. See
 - **Coverage catalog** — the manifest and symbol file pairs declared for one
   Compose service. Planning locks their digests and build identities into the
   replay bundle; the runner uses only those copies for source association.
+- **Cargo coverage build** — one selected Rust binary, its resolved static Rust
+  target dependencies, package-input digests, LLVM edge runtime, manifest, and
+  preserved symbol file. Host build tools and Rust dynamic libraries are not
+  folded into the binary's runtime module.
 - **Thread-scheduling decision** — an ordered compiler-instrumented C record
   containing the build-scoped scheduling point, current thread, runnable
   thread mask, and selected thread. Theseus assigns thread identities in
