@@ -136,6 +136,8 @@ struct CampaignOperation {
     shell_process: Option<String>,
     #[serde(default)]
     thread_schedule: Vec<u8>,
+    #[serde(default)]
+    thread_schedule_search: Option<CampaignThreadScheduleSearch>,
     /// `input_hex` is retained only to replay plans locked by older Theseus
     /// releases. New plans always use named `inputs`.
     #[serde(default)]
@@ -205,6 +207,8 @@ struct CampaignOperationInput {
     name: String,
     input_hex: String,
     #[serde(default)]
+    thread_schedule: Vec<u8>,
+    #[serde(default)]
     input_template: Option<String>,
     #[serde(default)]
     input_captures: BTreeMap<String, CampaignOperationInputCapture>,
@@ -218,6 +222,14 @@ struct CampaignOperationInput {
     requires_state: BTreeMap<String, String>,
     #[serde(default)]
     sets_state: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CampaignThreadScheduleSearch {
+    threads: Vec<u8>,
+    period: u8,
+    max_switches: u8,
+    generated_schedules: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3669,6 +3681,7 @@ fn campaign_operation_inputs(operation: &CampaignOperation) -> Vec<CampaignOpera
             .map(|input_hex| CampaignOperationInput {
                 name: "default".to_owned(),
                 input_hex: input_hex.clone(),
+                thread_schedule: Vec::new(),
                 input_template: None,
                 input_captures: BTreeMap::new(),
                 requires: Vec::new(),
@@ -5465,6 +5478,7 @@ fn campaign_operation_input_hex(
     checkpoint: &CampaignCheckpoint,
     input: &CampaignOperationInput,
 ) -> Result<String, String> {
+    validate_campaign_thread_schedule_input(input)?;
     let Some(template) = &input.input_template else {
         return Ok(input.input_hex.clone());
     };
@@ -5513,6 +5527,37 @@ fn campaign_operation_input_hex(
     }
     rendered.push_str(&template[cursor..]);
     Ok(hex(rendered.as_bytes()))
+}
+
+fn validate_campaign_thread_schedule_input(input: &CampaignOperationInput) -> Result<(), String> {
+    if input.thread_schedule.is_empty() {
+        return Ok(());
+    }
+    let bytes = decode_hex(&input.input_hex)?;
+    let command = std::str::from_utf8(&bytes)
+        .map_err(|error| format!("thread schedule command is not UTF-8: {error}"))?
+        .strip_prefix("THES:SHELL:operation:")
+        .and_then(|command| command.strip_suffix('\n'))
+        .ok_or_else(|| "thread schedule case is not a shell operation".to_owned())?;
+    let command: serde_json::Value = serde_json::from_str(command)
+        .map_err(|error| format!("thread schedule command is not valid JSON: {error}"))?;
+    let actual = command
+        .get("environment")
+        .and_then(|environment| environment.get("THESEUS_THREAD_SCHEDULE"))
+        .and_then(serde_json::Value::as_str);
+    let expected = input
+        .thread_schedule
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    if actual != Some(expected.as_str()) {
+        return Err(format!(
+            "thread schedule case {:?} does not match its locked shell environment",
+            input.name
+        ));
+    }
+    Ok(())
 }
 
 fn campaign_input_capture_values(
@@ -11064,11 +11109,13 @@ mod tests {
                     shell_phase: None,
                     shell_process: None,
                     thread_schedule: Vec::new(),
+                    thread_schedule_search: None,
                     input_hex: None,
                     inputs: vec![
                         CampaignOperationInput {
                             name: "alpha".to_owned(),
                             input_hex: "777269746520616c7068610a".to_owned(),
+                            thread_schedule: Vec::new(),
                             input_template: None,
                             input_captures: BTreeMap::new(),
                             requires: Vec::new(),
@@ -11086,6 +11133,7 @@ mod tests {
                         CampaignOperationInput {
                             name: "beta".to_owned(),
                             input_hex: "777269746520626574610a".to_owned(),
+                            thread_schedule: Vec::new(),
                             input_template: None,
                             input_captures: BTreeMap::new(),
                             requires: vec![CampaignOperationInputReference {
@@ -11125,6 +11173,7 @@ mod tests {
                     shell_phase: None,
                     shell_process: None,
                     thread_schedule: Vec::new(),
+                    thread_schedule_search: None,
                     input_hex: Some("726561640a".to_owned()),
                     inputs: Vec::new(),
                     input_grammar: None,
@@ -11225,6 +11274,7 @@ mod tests {
         let captured_input = CampaignOperationInput {
             name: "default".to_owned(),
             input_hex: String::new(),
+            thread_schedule: Vec::new(),
             input_template: Some("retry {request}\n".to_owned()),
             input_captures: BTreeMap::from([(
                 "request".to_owned(),
@@ -13121,6 +13171,77 @@ mod tests {
                 vec![1, 1, 1],
             ]
         );
+    }
+
+    #[test]
+    fn campaign_schedule_search_cases_keep_their_locked_thread_choices() {
+        let campaign: CampaignPlan = serde_json::from_value(serde_json::json!({
+            "driver": "api",
+            "operations": [{
+                "name": "race",
+                "service": "api",
+                "thread_schedule_search": {
+                    "threads": [0, 1, 2],
+                    "period": 2,
+                    "max_switches": 1,
+                    "generated_schedules": 3
+                },
+                "inputs": [
+                    {"name": "schedule-0-0", "input_hex": "00", "thread_schedule": [0, 0]},
+                    {"name": "schedule-0-1", "input_hex": "01", "thread_schedule": [0, 1]},
+                    {"name": "schedule-0-2", "input_hex": "02", "thread_schedule": [0, 2]}
+                ]
+            }],
+            "max_runs": 3,
+            "max_faults_per_run": 1,
+            "max_operations_per_run": 1
+        }))
+        .unwrap();
+
+        let histories = campaign_operation_histories(&campaign);
+        assert_eq!(histories.len(), 3);
+        assert_eq!(
+            histories
+                .iter()
+                .map(|history| campaign_operation_choice_name(&campaign, history[0]))
+                .collect::<Vec<_>>(),
+            [
+                "race[schedule-0-0]",
+                "race[schedule-0-1]",
+                "race[schedule-0-2]"
+            ]
+        );
+        assert_eq!(
+            campaign_operation_input(&campaign, histories[1][0])
+                .unwrap()
+                .thread_schedule,
+            [0, 1]
+        );
+    }
+
+    #[test]
+    fn locked_thread_schedule_matches_the_shell_command_environment() {
+        let mut input = CampaignOperationInput {
+            name: "schedule-0-1".to_owned(),
+            input_hex: hex(
+                br#"THES:SHELL:operation:{"environment":{"THESEUS_THREAD_SCHEDULE":"0,1"}}
+"#,
+            ),
+            thread_schedule: vec![0, 1],
+            input_template: None,
+            input_captures: BTreeMap::new(),
+            requires: Vec::new(),
+            excludes: Vec::new(),
+            max_uses: None,
+            requires_state: BTreeMap::new(),
+            sets_state: BTreeMap::new(),
+        };
+        validate_campaign_thread_schedule_input(&input).unwrap();
+
+        input.thread_schedule = vec![0, 2];
+        assert!(validate_campaign_thread_schedule_input(&input)
+            .unwrap_err()
+            .contains("does not match"));
     }
 
     #[test]

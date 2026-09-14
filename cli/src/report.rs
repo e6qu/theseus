@@ -186,6 +186,8 @@ struct CampaignOperation {
     #[serde(default)]
     thread_schedule: Vec<u8>,
     #[serde(default)]
+    thread_schedule_search: Option<CampaignThreadScheduleSearch>,
+    #[serde(default)]
     input_grammar: Option<CampaignOperationInputGrammar>,
     #[serde(default)]
     inputs: Vec<CampaignOperationInput>,
@@ -236,6 +238,8 @@ struct CampaignOperationInputGrammar {
 struct CampaignOperationInput {
     name: String,
     #[serde(default)]
+    thread_schedule: Vec<u8>,
+    #[serde(default)]
     input_template: Option<String>,
     #[serde(default)]
     input_captures: BTreeMap<String, CampaignOperationInputCapture>,
@@ -249,6 +253,14 @@ struct CampaignOperationInput {
     requires_state: BTreeMap<String, String>,
     #[serde(default)]
     sets_state: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct CampaignThreadScheduleSearch {
+    threads: Vec<u8>,
+    period: u8,
+    max_switches: u8,
+    generated_schedules: usize,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1156,7 +1168,7 @@ const replay=section(m.command_label);replay.append(el('pre',m.command));
 if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));if(n.serial_log){{d.append(el('p','serial log: '+n.serial_log));}}d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
 if(Object.keys(m.campaign_state).length){{const s=section('Campaign state machine');s.append(el('pre',JSON.stringify(m.campaign_state)));const rows=[];m.campaign_operations.forEach(o=>{{if(Object.keys(o.requires_state).length||Object.keys(o.sets_state).length)rows.push([o.name,JSON.stringify(o.requires_state),JSON.stringify(o.sets_state)]);o.inputs.forEach(i=>{{if(Object.keys(i.requires_state).length||Object.keys(i.sets_state).length)rows.push([o.name+'['+i.name+']',JSON.stringify(i.requires_state),JSON.stringify(i.sets_state)]);}});}});if(rows.length)s.append(table(rows,['Transition','Requires state','Sets state']));}}
-if(m.campaign_operations.length){{const predicate=p=>p?JSON.stringify(p):'none',predicates=ps=>ps.length?JSON.stringify(ps):'none',ref=r=>r.operation+(r.input?'['+r.input+']':''),capture=(n,c)=>n+'@'+(c.service||'driver')+':'+c.pointer+' · '+JSON.stringify(c.json||c.workflow||{{sequence:c.sequence}})+' ('+(c.encoding||'text')+', '+(c.select||'latest')+')',input=i=>{{const rules=i.requires.length||i.excludes.length||i.max_uses!==null?' ('+[i.requires.length?'after '+i.requires.map(ref).join(' + '):'',i.excludes.length?'without '+i.excludes.map(ref).join(' + '):'',i.max_uses===null?'':'at most '+i.max_uses].filter(Boolean).join('; ')+')':'';const captures=i.input_template?' ← '+i.input_template+' · '+Object.entries(i.input_captures).map(([n,c])=>capture(n,c)).join(', '):'';return i.name+rules+captures}},grammar=o=>o.input_grammar?(o.input_grammar.name_template+' ← '+o.input_grammar.template+' · '+Object.entries(o.input_grammar.choices).map(([v,c])=>v+'='+Object.keys(c).join('/')).join(', ')+(Object.keys(o.input_grammar.input_captures).length?' · '+Object.entries(o.input_grammar.input_captures).map(([n,c])=>capture(n,c)).join(', '):'')):'literal cases',s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,o.shell_phase||'input',o.shell_process||'none',o.thread_schedule.join(',')||'none',grammar(o),o.inputs.map(input).join(' + ')||'default',o.stage||'any',o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',predicate(o.requires_serial),predicate(o.excludes_serial),predicates(o.requires_serial_all),predicates(o.excludes_serial_any),predicates(o.requires_serial_joins),predicates(o.excludes_serial_joins),predicate(o.requires_serial_evidence),predicate(o.excludes_serial_evidence),o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Command phase','Process','Thread schedule','Input grammar','Input cases','Stage','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Requires serial predicate','Excludes serial predicate','Requires all serial guards','Excludes any serial guard','Requires JSON joins','Excludes JSON joins','Requires serial evidence','Excludes serial evidence','Maximum uses']));}}
+if(m.campaign_operations.length){{const predicate=p=>p?JSON.stringify(p):'none',predicates=ps=>ps.length?JSON.stringify(ps):'none',ref=r=>r.operation+(r.input?'['+r.input+']':''),capture=(n,c)=>n+'@'+(c.service||'driver')+':'+c.pointer+' · '+JSON.stringify(c.json||c.workflow||{{sequence:c.sequence}})+' ('+(c.encoding||'text')+', '+(c.select||'latest')+')',input=i=>{{const rules=i.requires.length||i.excludes.length||i.max_uses!==null?' ('+[i.requires.length?'after '+i.requires.map(ref).join(' + '):'',i.excludes.length?'without '+i.excludes.map(ref).join(' + '):'',i.max_uses===null?'':'at most '+i.max_uses].filter(Boolean).join('; ')+')':'';const captures=i.input_template?' ← '+i.input_template+' · '+Object.entries(i.input_captures).map(([n,c])=>capture(n,c)).join(', '):'',schedule=i.thread_schedule.length?' · schedule '+i.thread_schedule.join(','):'';return i.name+schedule+rules+captures}},grammar=o=>o.input_grammar?(o.input_grammar.name_template+' ← '+o.input_grammar.template+' · '+Object.entries(o.input_grammar.choices).map(([v,c])=>v+'='+Object.keys(c).join('/')).join(', ')+(Object.keys(o.input_grammar.input_captures).length?' · '+Object.entries(o.input_grammar.input_captures).map(([n,c])=>capture(n,c)).join(', '):'')):'literal cases',threadSchedule=o=>o.thread_schedule_search?'search '+o.thread_schedule_search.generated_schedules+' pattern(s): threads '+o.thread_schedule_search.threads.join(',')+', period '+o.thread_schedule_search.period+', at most '+o.thread_schedule_search.max_switches+' switch(es)':o.thread_schedule.join(',')||'none',inputCases=o=>o.thread_schedule_search?o.thread_schedule_search.generated_schedules+' locked schedule cases':o.inputs.map(input).join(' + ')||'default',s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,o.shell_phase||'input',o.shell_process||'none',threadSchedule(o),grammar(o),inputCases(o),o.stage||'any',o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',predicate(o.requires_serial),predicate(o.excludes_serial),predicates(o.requires_serial_all),predicates(o.excludes_serial_any),predicates(o.requires_serial_joins),predicates(o.excludes_serial_joins),predicate(o.requires_serial_evidence),predicate(o.excludes_serial_evidence),o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Command phase','Process','Thread schedule','Input grammar','Input cases','Stage','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Requires serial predicate','Excludes serial predicate','Requires all serial guards','Excludes any serial guard','Requires JSON joins','Excludes JSON joins','Requires serial evidence','Excludes serial evidence','Maximum uses']));}}
 if(m.campaign_operations.some(o=>o.service)){{const s=section('Operation targets');s.append(el('p','Each operation sends its UART input to this service. Operations without a target in older bundles use the designated campaign driver.'));s.append(table(m.campaign_operations.filter(o=>o.service).map(o=>[o.name,o.service]),['Operation','Service']));}}
 if(m.campaign_runs.length){{const location=l=>{{if(typeof l==='string')return l;const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},locations=r=>Object.entries(r.program_counters).map(([service,pcs])=>service+': '+((r.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',applicationBlocks=r=>r.application_block_novelty.join(' ')||'none',scheduling=r=>Object.values(r.thread_scheduling).reduce((n,v)=>n+v.length,0),ledger=r=>r.guidance_ledger&&r.guidance_ledger.sha256?r.guidance_ledger.observations+' observations · '+r.guidance_ledger.sha256:'unrecorded (legacy)',posterior=r=>{{const p=r.guidance_evidence;return p.scope+' · '+p.successes+' yield(s), '+p.misses+' miss(es) · mean '+p.mean_per_mille+'‰ + '+p.uncertainty_per_mille+'‰'}},hasPosterior=m.campaign_runs.some(r=>r.guidance_evidence),rows=m.campaign_runs.map(r=>{{const row=[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',ledger(r)];if(hasPosterior)row.push(posterior(r));row.push(r.state_novel?'new':'seen',locations(r),applicationBlocks(r),String(scheduling(r)),r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none');return row}}),heads=['Run','Operations','Candidates','Selection','Guidance ledger'];if(hasPosterior)heads.push('Posterior evidence');heads.push('Topology state','Instruction locations','New application blocks','Scheduling decisions','Applied actions','Status','New markers');const s=section('Generated timelines');s.append(table(rows,heads));}}
 if(m.campaign_runs.some(r=>r.property_witnesses.length)){{const rows=m.campaign_runs.filter(r=>r.property_witnesses.length).map(r=>[String(r.index),r.operations.join(' → ')||'none',r.property_witnesses.join(', ')]),s=section('Property witnesses');s.append(el('p','These declared properties produced useful evidence in this timeline. A reachable or sometimes match is a witness; an always or unreachable witness is a counterexample.'));s.append(table(rows,['Run','Operations','Property witnesses']));}}
@@ -1215,6 +1227,32 @@ impl<'a> MachineReport<'a> {
 
 fn markdown_cell(value: &str) -> String {
     value.replace('|', "\\|").replace('\n', "<br>")
+}
+
+fn operation_thread_schedule(operation: &CampaignOperation) -> String {
+    if let Some(search) = &operation.thread_schedule_search {
+        format!(
+            "search {} pattern(s): threads {}; period {}; at most {} switch(es)",
+            search.generated_schedules,
+            search
+                .threads
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            search.period,
+            search.max_switches
+        )
+    } else if operation.thread_schedule.is_empty() {
+        "none".to_owned()
+    } else {
+        operation
+            .thread_schedule
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 }
 
 fn instruction_location_label(location: &InstructionLocation) -> String {
@@ -1616,16 +1654,7 @@ fn render_markdown(model: &ReportModel) -> String {
                     markdown_cell(&operation.name),
                     markdown_cell(phase),
                     markdown_cell(operation.shell_process.as_deref().unwrap_or("none")),
-                    if operation.thread_schedule.is_empty() {
-                        "none".to_owned()
-                    } else {
-                        operation
-                            .thread_schedule
-                            .iter()
-                            .map(u8::to_string)
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    },
+                    markdown_cell(&operation_thread_schedule(operation)),
                 ));
             }
         }
@@ -2064,7 +2093,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         write_json(
             &directory.path().join("replay-plan.json"),
-            r#"{"format":"theseus-compose-plan-v1","campaign":{"operations":[{"name":"deposit"}]}}"#,
+            r#"{"format":"theseus-compose-plan-v1","campaign":{"operations":[{"name":"deposit","shell_phase":"run","thread_schedule_search":{"threads":[0,1,2],"period":5,"max_switches":3,"generated_schedules":123},"inputs":[{"name":"schedule-0-0-0-1-2","thread_schedule":[0,0,0,1,2]}]}]}}"#,
         );
         let digest = "0123456789abcdef".repeat(4);
         write_json(
@@ -2078,6 +2107,11 @@ mod tests {
         assert!(markdown.contains("1 thread-scheduling decisions retained"));
         assert!(markdown.contains("Scheduling decisions"));
         assert!(markdown.contains("#4 t1 -> t2 among 0x00000006 @0x42"));
+        assert!(markdown.contains("search 123 pattern(s): threads 0,1,2; period 5"));
+        let index = report(directory.path(), directory.path().join("report")).unwrap();
+        let html = fs::read_to_string(index).unwrap();
+        assert!(html.contains("locked schedule cases"));
+        assert!(html.contains("\"generated_schedules\":123"));
     }
 
     #[test]
