@@ -1,0 +1,80 @@
+#!/bin/sh
+# Copyright 2026 Adrian Mârza and contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+usage() {
+    echo 'usage: theseus-coverage-cc --process NAME --module NAME -o OUTPUT SOURCE.c [GCC ARGUMENTS...]' >&2
+    exit 2
+}
+
+process=
+module=
+output=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --process) [ "$#" -ge 2 ] || usage; process=$2; shift 2 ;;
+        --module) [ "$#" -ge 2 ] || usage; module=$2; shift 2 ;;
+        -o) [ "$#" -ge 2 ] || usage; output=$2; shift 2 ;;
+        --) shift; break ;;
+        *) break ;;
+    esac
+done
+
+case "$process:$module" in
+    *[!A-Za-z0-9._:-]*|:*|*:) usage ;;
+esac
+[ "${#process}" -le 64 ] || usage
+[ "${#module}" -le 64 ] || usage
+[ -n "$output" ] || usage
+[ "$#" -gt 0 ] || usage
+
+tool_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+inputs="$work/inputs"
+sources="$work/sources"
+: > "$inputs"
+: > "$sources"
+printf 'format=theseus-c-coverage-build-v1\nprocess=%s\nmodule=%s\n' \
+    "$process" "$module" >> "$inputs"
+printf 'compiler=%s\ntarget=%s\n' "$(gcc -dumpfullversion)" "$(gcc -dumpmachine)" >> "$inputs"
+printf 'frontend=%s\n' "$(sha256sum "$tool_dir/theseus-coverage-cc" | awk '{print $1}')" >> "$inputs"
+printf 'runtime=%s\n' "$(sha256sum "$tool_dir/theseus_coverage.c" | awk '{print $1}')" >> "$inputs"
+
+source_count=0
+for argument in "$@"; do
+    if [ -f "$argument" ] && [ "${argument##*.}" = c ]; then
+        name=$(basename -- "$argument")
+        case "$name" in *[!A-Za-z0-9._-]*) usage ;; esac
+        digest=$(sha256sum "$argument" | awk '{print $1}')
+        printf 'source=%s:%s\n' "$name" "$digest" >> "$inputs"
+        printf '%s %s\n' "$name" "$digest" >> "$sources"
+        source_count=$((source_count + 1))
+    else
+        printf 'argument=%s\n' "$argument" >> "$inputs"
+    fi
+done
+[ "$source_count" -gt 0 ] || usage
+
+build_sha256=$(sha256sum "$inputs" | awk '{print $1}')
+gcc -O2 -fPIC \
+    -DTHESEUS_COVERAGE_PROCESS=\"$process\" \
+    -DTHESEUS_COVERAGE_MODULE=\"$module\" \
+    -DTHESEUS_COVERAGE_BUILD_SHA256=\"$build_sha256\" \
+    -c "$tool_dir/theseus_coverage.c" -o "$work/runtime.o"
+gcc -O1 -g -fPIE -pie -fsanitize-coverage=trace-pc \
+    "$@" "$work/runtime.o" -ldl -o "$output"
+
+manifest="${output}.theseus-coverage.json"
+printf '{\n  "format": "theseus-c-coverage-build-v1",\n  "process": "%s",\n  "module": "%s",\n  "build_sha256": "%s",\n  "compiler": "%s",\n  "target": "%s",\n  "sources": [' \
+    "$process" "$module" "$build_sha256" "$(gcc -dumpfullversion)" "$(gcc -dumpmachine)" > "$manifest"
+separator=
+while read -r name digest; do
+    printf '%s\n    {"name": "%s", "sha256": "%s"}' "$separator" "$name" "$digest" >> "$manifest"
+    separator=,
+done < "$sources"
+printf '\n  ]\n}\n' >> "$manifest"
+
+echo "$build_sha256  $output"
+echo "$build_sha256  $manifest"

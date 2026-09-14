@@ -84,6 +84,8 @@ jobs:
             test -s /opt/theseus/vmlinux
             test -x /opt/theseus/pivot
             test -s /opt/theseus/pivot.json
+            test -x /opt/theseus/instrumentation/c/theseus-coverage-cc
+            test -s /opt/theseus/instrumentation/c/theseus_coverage.c
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
             /usr/local/bin/theseus-image --help >/dev/null
@@ -364,6 +366,8 @@ jobs:
             test -s /opt/theseus/vmlinux
             test -x /opt/theseus/pivot
             test -s /opt/theseus/pivot.json
+            test -x /opt/theseus/instrumentation/c/theseus-coverage-cc
+            test -s /opt/theseus/instrumentation/c/theseus_coverage.c
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
             /usr/local/bin/theseus-image --help >/dev/null
@@ -435,6 +439,8 @@ jobs:
             test -s vmlinux
             test -x pivot
             test -s pivot.json
+            test -x instrumentation/c/theseus-coverage-cc
+            test -s instrumentation/c/theseus_coverage.c
             ./firecracker --version
             ./theseus --help >/dev/null
             ./theseus-image --help >/dev/null
