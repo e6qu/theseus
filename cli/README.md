@@ -18,6 +18,7 @@ theseus explore --minimize exploration-dir --seed-path seed,... [--output explor
 theseus explore --snapshot exploration-dir --seed-path seed,... [--output snapshot-dir]
 theseus report [--output report-dir] result-dir
 theseus report --format markdown|json|junit [--output file] result-dir
+theseus evidence verify native-evidence.json
 theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
@@ -38,6 +39,12 @@ unchanged.
 
 The CLI is released for Linux amd64/arm64 and macOS arm64. macOS supports
 validation and planning only: a Firecracker timeline needs Linux and KVM.
+
+`evidence verify` is an offline check for a native-certification release set.
+It requires the index, both architecture certificates, and both portable
+counterexample archives in one directory. It verifies their hashes and
+contents without KVM, then confirms that both replays contain the required
+partition, dropped frame, recovery, and distributed lost update.
 
 ## Explore an SDK guest
 
