@@ -76,7 +76,7 @@ open theseus-replay/theseus-report/index.html
 Compare two locked Compose campaign directories without starting a VM or
 opening a snapshot. Theseus stops at the first recorded difference: selected
 operation or fault, applied fault action, operation-boundary topology state,
-serial evidence, coverage, or property outcome.
+serial evidence, coverage, thread-scheduling choice, or property outcome.
 
 ```sh
 theseus compare campaign-before campaign-after
@@ -102,7 +102,8 @@ theseus evaluate --format markdown evaluations/replicated-counter/theseus-evalua
 ```
 
 The result counts replay verification, corpus and coverage evidence,
-checkpoint work, reduction work, and retained operation boundaries. A suite
+thread-scheduling decisions, checkpoint work, reduction work, and retained
+operation boundaries. A suite
 may include a conventional-chaos baseline and manually observed investigation
 seconds, but Theseus labels those informational: neither affects a replay
 verdict or proves a comparison with another product.
@@ -121,6 +122,14 @@ A Compose campaign can select `coverage: application_blocks` when its C
 commands were built with the packaged `theseus-coverage-cc` frontend. Reports
 then list service/process/module/build/block identities separately from sampled
 guest PCs, and replay checks the exact retained block set and novelty.
+
+Commands built with the packaged `theseus-schedule-cc` frontend accept a
+Compose shell operation's explicit `thread_schedule: [0, 1, 2]`. Planning
+validates the bound and locks it as `THESEUS_THREAD_SCHEDULE` for the command.
+Campaign results and reports retain each build-scoped scheduling point,
+runnable mask, current thread, and selected thread. Replay rejects a changed
+sequence. This bounded GCC C path is not a general Linux scheduler; see
+Tutorial 32 for its limits.
 
 ### Hand a failure to CI or an issue
 

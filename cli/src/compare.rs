@@ -78,6 +78,8 @@ struct Run {
     #[serde(default)]
     application_block_novelty: Vec<String>,
     #[serde(default)]
+    thread_scheduling: Coverage,
+    #[serde(default)]
     state_sha256: String,
     #[serde(default)]
     timeline: Vec<Boundary>,
@@ -104,6 +106,8 @@ struct Boundary {
     instruction_locations: Coverage,
     #[serde(default)]
     application_blocks: Coverage,
+    #[serde(default)]
+    thread_scheduling: Coverage,
 }
 
 #[derive(Serialize)]
@@ -311,6 +315,15 @@ pub fn compare_campaigns(
                         ),
                     });
                 }
+                if left.thread_scheduling != right.thread_scheduling {
+                    return Some(CampaignDivergence {
+                        run,
+                        boundary: Some(boundary),
+                        reason: "first thread-scheduling decision differs".to_owned(),
+                        left: json_summary(&left.thread_scheduling),
+                        right: json_summary(&right.thread_scheduling),
+                    });
+                }
             }
             if left.timeline.len() != right.timeline.len()
                 || left.state_sha256 != right.state_sha256
@@ -330,6 +343,15 @@ pub fn compare_campaigns(
                     reason: "property witnesses differ".to_owned(),
                     left: format!("{:?}", left.property_witnesses),
                     right: format!("{:?}", right.property_witnesses),
+                });
+            }
+            if left.thread_scheduling != right.thread_scheduling {
+                return Some(CampaignDivergence {
+                    run,
+                    boundary: None,
+                    reason: "thread-scheduling decisions differ".to_owned(),
+                    left: json_summary(&left.thread_scheduling),
+                    right: json_summary(&right.thread_scheduling),
                 });
             }
             if left.program_counters != right.program_counters
@@ -493,6 +515,25 @@ mod tests {
                 .unwrap()
                 .reason,
             "selected fault candidates differ"
+        );
+    }
+
+    #[test]
+    fn reports_the_first_changed_thread_schedule_choice() {
+        let digest = "0123456789abcdef".repeat(4);
+        let runs = format!(
+            r#"[{{"index":0,"operations":["deposit"],"state_sha256":"same","thread_scheduling":{{"ledger":[{{"process":"ledger","module":"deposit","build_sha256":"{digest}","decision":4,"from_thread":1,"runnable_mask":"0x00000006","selected_thread":2,"point_offset":"0x42"}}]}},"timeline":[{{"operation":"deposit","service":"ledger","state_sha256":"same","thread_scheduling":{{"ledger":[{{"process":"ledger","module":"deposit","build_sha256":"{digest}","decision":4,"from_thread":1,"runnable_mask":"0x00000006","selected_thread":2,"point_offset":"0x42"}}]}}}}]}}]"#
+        );
+        let changed = runs.replace("\"selected_thread\":2", "\"selected_thread\":1");
+        let (left, right) = write_pair(&result(&runs, "[]"), &result(&changed, "[]"));
+        let divergence = compare_campaigns(left.path(), right.path())
+            .unwrap()
+            .divergence
+            .unwrap();
+        assert_eq!(divergence.boundary, Some(0));
+        assert_eq!(
+            divergence.reason,
+            "first thread-scheduling decision differs"
         );
     }
 

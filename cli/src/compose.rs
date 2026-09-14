@@ -217,6 +217,10 @@ struct ComposeShellOperation {
     output_json: bool,
     #[serde(default)]
     environment: BTreeMap<String, String>,
+    /// A repeating sequence of stable pthread identities for a command built
+    /// with the packaged C scheduling frontend.
+    #[serde(default)]
+    thread_schedule: Vec<u8>,
 }
 
 /// Lifecycle step for an ordinary command executed inside an image VM.
@@ -1144,6 +1148,8 @@ pub struct OperationPlan {
     pub shell_phase: Option<ComposeShellPhase>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell_process: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thread_schedule: Vec<u8>,
     pub inputs: Vec<OperationInputPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_grammar: Option<OperationInputGrammarPlan>,
@@ -2557,6 +2563,7 @@ fn campaign_plan(
         }
         let mut shell_phase = None;
         let mut shell_process = None;
+        let mut thread_schedule = Vec::new();
         let http_input = if let Some(http) = http {
             if !http.url.starts_with("http://")
                 || !(100..=599).contains(&http.expect_status)
@@ -2656,8 +2663,14 @@ fn campaign_plan(
                 (false, None) => true,
                 _ => false,
             };
+            let schedule_valid = shell.thread_schedule.len() <= 128
+                && shell.thread_schedule.iter().all(|thread| *thread < 32)
+                && !shell.environment.contains_key("THESEUS_THREAD_SCHEDULE")
+                && (shell.thread_schedule.is_empty()
+                    || !matches!(shell.phase, ComposeShellPhase::Completion));
             if !command_valid
                 || !process_valid
+                || !schedule_valid
                 || (matches!(shell.phase, ComposeShellPhase::Launch)
                     && (shell.expect_exit != 0
                         || shell.output_contains.is_some()
@@ -2690,6 +2703,18 @@ fn campaign_plan(
             container.campaign = true;
             shell_phase = Some(shell.phase);
             shell_process = shell.process.clone();
+            thread_schedule = shell.thread_schedule.clone();
+            let mut environment = shell.environment;
+            if !thread_schedule.is_empty() {
+                environment.insert(
+                    "THESEUS_THREAD_SCHEDULE".to_owned(),
+                    thread_schedule
+                        .iter()
+                        .map(u8::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+            }
             let command = serde_json::json!({
                 "name": operation.name.clone(),
                 "phase": shell.phase,
@@ -2698,7 +2723,7 @@ fn campaign_plan(
                 "expect_exit": shell.expect_exit,
                 "output_contains": shell.output_contains,
                 "output_json": shell.output_json,
-                "environment": shell.environment,
+                "environment": environment,
             });
             let command = serde_json::to_string(&command).expect("shell command is serializable");
             Some(OperationInputPlan {
@@ -2881,6 +2906,7 @@ fn campaign_plan(
             service,
             shell_phase,
             shell_process,
+            thread_schedule,
             inputs,
             input_grammar: input_grammar.map(|grammar| grammar.source),
             stage: operation.stage,
@@ -6360,7 +6386,7 @@ mod tests {
     #[test]
     fn locks_a_declared_shell_operation_for_an_image_campaign_driver() {
         let directory = fixture(
-            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: read_health\n        shell:\n          command: [/bin/cat, /health]\n          output_contains: ok\n          output_json: true\n          environment: {CHECK_MODE: full}\n    faults: []\n",
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: read_health\n        shell:\n          command: [/bin/cat, /health]\n          output_contains: ok\n          output_json: true\n          environment: {CHECK_MODE: full}\n          thread_schedule: [0, 1, 2]\n    faults: []\n",
         );
         let root = directory.path().join("api");
         fs::write(root.join("runtime/theseus-image"), b"image adapter").unwrap();
@@ -6386,7 +6412,9 @@ mod tests {
                 .unwrap()
                 .campaign
         );
-        let input = &plan.campaign.as_ref().unwrap().operations[0].inputs[0].input_hex;
+        let operation = &plan.campaign.as_ref().unwrap().operations[0];
+        assert_eq!(operation.thread_schedule, [0, 1, 2]);
+        let input = &operation.inputs[0].input_hex;
         let bytes = input
             .as_bytes()
             .chunks_exact(2)
@@ -6398,6 +6426,7 @@ mod tests {
         assert!(command.contains("\"expect_exit\":0"));
         assert!(command.contains("\"output_json\":true"));
         assert!(command.contains("\"CHECK_MODE\":\"full\""));
+        assert!(command.contains("\"THESEUS_THREAD_SCHEDULE\":\"0,1,2\""));
     }
 
     #[test]
@@ -6447,6 +6476,9 @@ mod tests {
             "phase: completion\n          process: writer\n          command: [/bin/wait]",
             "phase: run\n          process: writer\n          command: [/bin/writer]",
             "phase: launch\n          process: writer\n          command: [/bin/writer]\n          output_json: true",
+            "command: [/bin/writer]\n          thread_schedule: [32]",
+            "command: [/bin/writer]\n          environment: {THESEUS_THREAD_SCHEDULE: '0,1'}",
+            "phase: completion\n          process: writer\n          thread_schedule: [0]",
         ] {
             let directory = fixture(&format!(
                 "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [test]\nnetworks:\n  test: {{}}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: command\n        shell:\n          {shell}\n    faults: []\n"
