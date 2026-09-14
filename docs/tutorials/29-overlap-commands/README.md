@@ -74,14 +74,12 @@ grep -n 'shell_phase\|shell_process' plan.json
 
 ## 4. Run the campaign
 
-The campaign is expected to return nonzero because
-`lost_update_is_unreachable` is deliberately false:
+Require the campaign to retain the deliberately false
+`lost_update_is_unreachable` property:
 
 ```sh
-if theseus compose explore --output campaign compose.yaml; then
-  echo 'expected the campaign to find the lost update' >&2
-  exit 1
-fi
+theseus compose explore --expect-counterexample lost_update_is_unreachable \
+  --output campaign compose.yaml
 grep -n '"status": "failed"' campaign/campaign-result.json
 grep -n 'lost_update_is_unreachable' campaign/campaign-result.json
 grep -R '"value":1' campaign/runs/*/services/api/serial.log
@@ -94,10 +92,8 @@ passing result in the retained run corpus.
 ## 5. Inspect, minimize, and replay the failure
 
 ```sh
-if theseus compose explore --minimize campaign --output minimized; then
-  echo 'expected the minimized property to remain failed' >&2
-  exit 1
-fi
+theseus compose explore --minimize campaign \
+  --expect-counterexample lost_update_is_unreachable --output minimized
 sed -n '1,160p' minimized/minimization.json
 theseus compose replay minimized --output rerun
 grep -R '"value":1' rerun/services/api/serial.log

@@ -14,7 +14,9 @@ image conversion, simulated network and storage, exit-counted virtual time,
 bounded campaign search, minimization, replay, reports, bundle comparison, and
 an optional guest SDK. Image campaigns can keep named ordinary commands in
 flight across whole-topology checkpoints and record when each completion is
-observed.
+observed. The distributed lost-update workload combines three image services,
+simulated network traffic, and the supported Compose runtime contracts in one
+replayable campaign.
 
 The following limits define the honest baseline:
 
@@ -58,24 +60,24 @@ Deliver this as one coherent PR, with separately reviewable commits.
 
 ### Package the runtime that tests execute
 
-- Resolve and test Compose quantity parsing, mount overlap/path validation,
-  read-only roots, tmpfs, credentials, environment, health checks, launch
-  overrides, configs, secrets, seeded volumes, and service networking as one
-  combined runtime contract.
-- Run native amd64 and arm64 KVM checks for boot, normal operation, each
-  selected fault path, checkpoint restoration, and replay.
-- Publish and retain certificates for the exact SHA artifacts. Leave a missing
-  architecture explicitly unverified rather than substituting unit tests.
+- Run the combined Tutorial 30 contract on native amd64 and arm64 KVM: resource
+  quantities, launch overrides, credentials, environment, configs, secrets,
+  seeded volumes, read-only roots, tmpfs, health checks, service networking,
+  in-flight commands, checkpoint restoration, minimization, and replay.
+- Extend that combined runtime proof through one network fault and recovery
+  without replacing the concurrency-dependent failure it is meant to test.
+- Retain the attested fixed-plan certificate and portable counterexample
+  archive on the exact SHA release. Leave a missing architecture explicitly
+  unverified rather than substituting unit tests or a workflow definition.
 
 ### Find a concurrency-dependent failure
 
-- Extend the implemented named-command lifecycle from a single image service
-  to a multi-service concurrency workload with deterministic network traffic.
-- Demonstrate the intentionally introduced lost-update workload on published
-  amd64 and arm64 KVM runtimes, alongside its passing schedule and minimized
-  failing schedule.
-- Publish complete locked replay artifacts and exact retrieval/replay steps.
-  Remove unsupported baseline numbers or investigation-time claims.
+- Dispatch the native certification workflow for a published SHA and verify
+  that both architecture-specific assets contain the passing sequential
+  schedule, minimized distributed lost update, and successful locked replay.
+- Publish exact retrieval and attestation commands with the artifacts. Do not
+  promote the implemented workload to demonstrated behavior until those
+  release assets exist.
 
 ### Exit criteria
 

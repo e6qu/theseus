@@ -53,13 +53,17 @@ in CI — run them locally in the privileged container.
 ## Runtime certification
 
 The `certify deterministic runtime` workflow defines the requested real-KVM
-support matrix.
-It runs only on self-hosted Linux metal labelled `kvm`: one `X64` worker and
-one `ARM64` worker. When those workers are available and the workflow is
-dispatched with a published SHA, each worker pulls its
-native runtime image, runs Tutorial 11's fixed topology twice, attests the
-resulting `certificate.json`, and attaches it to that release. The workflow
-file alone is not proof that either job ran.
+support matrix. It runs only on self-hosted Linux metal labelled `kvm`: one
+`X64` worker and one `ARM64` worker. The workflow checks out the exact
+published SHA rather than the moving default branch and pulls that SHA's
+native runtime image.
+
+Each worker runs Tutorial 11's fixed topology twice. It then runs Tutorial 30's
+three-service lost-update campaign, minimizes the named counterexample, and
+replays it. The attested release assets contain the fixed-plan certificate and
+a portable minimized replay with the original campaign verdict, verification
+run, readable workload source, and locked artifacts. The workflow file alone
+is not proof that either job ran; the assets must exist on the named release.
 
 The certificate is evidence for the strict `linux-kvm-simulated-io-v1`
 profile, not a claim about tap networking, host-backed disks, or every clock

@@ -65,6 +65,20 @@ The retained timeline assigns every boundary a stable `op-NNN-<name>` ID.
 This controls operation-level overlap; it is not general Linux thread
 scheduling.
 
+When a campaign deliberately contains a property to falsify, make that outcome
+part of the command contract:
+
+```sh
+theseus compose explore --expect-counterexample lost_update \
+  --output campaign compose.yaml
+theseus compose explore --minimize campaign \
+  --expect-counterexample lost_update --output minimized
+```
+
+These commands succeed only when the runner finishes and retains the named
+failed property or its completed minimization. A runner crash, a different
+failed property, or an unexpectedly passing campaign still returns nonzero.
+
 ## Properties
 
 Add `marker_seen`, `marker_not_seen`, `serial_contains`, or

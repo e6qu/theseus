@@ -29,6 +29,9 @@ def main() -> None:
     assert "SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}" in RELEASE
     assert "THESEUS_SOURCE_COMMIT=${{ github.sha }}" in RELEASE
     assert "/opt/theseus/pivot.json" in RELEASE
+    assert "docker image inspect" in RELEASE
+    assert 'docker run --rm --platform "linux/${{ matrix.arch }}"' in RELEASE
+    assert '"${IMAGE}:${TAG}-${{ matrix.arch }}" -euxc' in RELEASE
     assert "gh release download" in VERIFY
     assert "gh attestation verify" in VERIFY
     assert "ref: ${{ steps.inputs.outputs.commit }}" in VERIFY

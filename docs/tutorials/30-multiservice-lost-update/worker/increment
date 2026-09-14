@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+/work/check
+exec /bin/busybox wget -qO- "http://counter:8080/cgi-bin/increment?name=$1"

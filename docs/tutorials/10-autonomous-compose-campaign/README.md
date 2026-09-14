@@ -47,28 +47,24 @@ done
 ## 3. Find the intentional failure
 
 ```sh
-if theseus compose explore --output theseus-compose-campaign; then
-  echo 'expected the intentional stale-read property failure' >&2
-  exit 1
-fi
+theseus compose explore --expect-counterexample consistent_read \
+  --output theseus-compose-campaign
 grep -a '"name": "consistent_read"' theseus-compose-campaign/campaign-result.json
 grep -a '"status": "failed"' theseus-compose-campaign/campaign-result.json
 grep -a '"checkpoint": {' theseus-compose-campaign/campaign-result.json
 grep -a '"faults": \[' theseus-compose-campaign/campaign-result.json
 ```
 
-The command is expected to fail because it found the tutorial's planted bug.
-The result retains the operation boundary, property verdict, and applied fault
+The command succeeds only when it retains the tutorial's planted bug. The
+result includes the operation boundary, property verdict, and applied fault
 schedule. It does not by itself establish application basic-block coverage or
 counterfactual causality.
 
 ## 4. Minimize and replay
 
 ```sh
-if theseus compose explore --minimize theseus-compose-campaign --output stale-read-replay; then
-  echo 'expected the minimized stale-read counterexample' >&2
-  exit 1
-fi
+theseus compose explore --minimize theseus-compose-campaign \
+  --expect-counterexample consistent_read --output stale-read-replay
 grep -a '"property": "consistent_read"' stale-read-replay/minimization.json
 grep -a '"operation_attempts":' stale-read-replay/minimization.json
 grep -a '"fault_attempts":' stale-read-replay/minimization.json

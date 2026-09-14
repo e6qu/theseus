@@ -5397,32 +5397,10 @@ pub fn test_compose(
     let mut plan = load_compose_plan(path)?;
     plan.topology_runner = Some(installed_runner_artifact()?);
     let output = output.as_ref().to_path_buf();
-    if output.exists() {
-        return Err(ComposeError::Invalid(format!(
-            "replay output already exists: {}",
-            output.display()
-        )));
-    }
-    let plan_file = output.with_extension("topology-plan.json");
-    if plan_file.exists() {
-        return Err(ComposeError::Invalid(format!(
-            "temporary topology plan already exists: {}",
-            plan_file.display()
-        )));
-    }
-    fs::write(
-        &plan_file,
-        serde_json::to_vec_pretty(&plan).map_err(|error| {
-            ComposeError::Invalid(format!("cannot encode topology plan: {error}"))
-        })?,
-    )
-    .map_err(|source| ComposeError::Read {
-        path: plan_file.clone(),
-        source,
-    })?;
-    execute_topology(&plan_file, &output)?;
+    let plan_file = write_temporary_topology_plan(&plan, &output)?;
+    let result = execute_topology(&plan_file, &output);
     let _ = fs::remove_file(&plan_file);
-    Ok(output)
+    result.map(|()| output)
 }
 
 /// Execute the topology's declared autonomous campaign.  The command uses the
@@ -5439,6 +5417,35 @@ pub fn explore_compose(
         ));
     }
     test_compose(path, output)
+}
+
+/// Execute a campaign which is deliberately expected to falsify one named
+/// property. The command succeeds only after the runner has completed the
+/// campaign and retained that exact failed verdict.
+pub fn explore_compose_expect_counterexample(
+    path: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    property: &str,
+) -> Result<PathBuf, ComposeError> {
+    let mut plan = load_compose_plan(&path)?;
+    let campaign = plan.campaign.as_ref().ok_or_else(|| {
+        ComposeError::Invalid("Compose file has no x-theseus.campaign section".to_owned())
+    })?;
+    if !campaign
+        .properties
+        .iter()
+        .any(|candidate| candidate.name == property)
+    {
+        return Err(ComposeError::Invalid(format!(
+            "campaign has no property named {property:?}"
+        )));
+    }
+    plan.topology_runner = Some(installed_runner_artifact()?);
+    let output = output.as_ref().to_path_buf();
+    let plan_file = write_temporary_topology_plan(&plan, &output)?;
+    let result = execute_topology_expect_counterexample(&plan_file, &output, None, property);
+    let _ = fs::remove_file(&plan_file);
+    result.map(|()| output)
 }
 
 /// Re-run a recorded topology using its locked service artifacts.
@@ -5497,6 +5504,65 @@ pub fn minimize_compose_campaign(
     Ok(output)
 }
 
+/// Minimize a known campaign failure and treat reproduction of the named
+/// counterexample as the successful outcome.
+pub fn minimize_compose_campaign_expect_counterexample(
+    bundle: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    property: &str,
+) -> Result<PathBuf, ComposeError> {
+    let bundle = fs::canonicalize(bundle.as_ref()).map_err(|source| ComposeError::Read {
+        path: bundle.as_ref().to_path_buf(),
+        source,
+    })?;
+    let plan = bundle.join("replay-plan.json");
+    if !bundle.join("campaign-result.json").is_file() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign bundle has no campaign-result.json: {}",
+            bundle.display()
+        )));
+    }
+    let output = output.as_ref().to_path_buf();
+    if output.exists() {
+        return Err(ComposeError::Invalid(format!(
+            "minimized output already exists: {}",
+            output.display()
+        )));
+    }
+    execute_topology_expect_counterexample(&plan, &output, Some("--minimize"), property)?;
+    Ok(output)
+}
+
+fn write_temporary_topology_plan(
+    plan: &ComposePlan,
+    output: &Path,
+) -> Result<PathBuf, ComposeError> {
+    if output.exists() {
+        return Err(ComposeError::Invalid(format!(
+            "replay output already exists: {}",
+            output.display()
+        )));
+    }
+    let plan_file = output.with_extension("topology-plan.json");
+    if plan_file.exists() {
+        return Err(ComposeError::Invalid(format!(
+            "temporary topology plan already exists: {}",
+            plan_file.display()
+        )));
+    }
+    fs::write(
+        &plan_file,
+        serde_json::to_vec_pretty(plan).map_err(|error| {
+            ComposeError::Invalid(format!("cannot encode topology plan: {error}"))
+        })?,
+    )
+    .map_err(|source| ComposeError::Read {
+        path: plan_file.clone(),
+        source,
+    })?;
+    Ok(plan_file)
+}
+
 fn execute_topology(plan: &Path, output: &Path) -> Result<(), ComposeError> {
     execute_topology_mode(plan, output, None)
 }
@@ -5506,6 +5572,37 @@ fn execute_topology_mode(
     output: &Path,
     mode: Option<&str>,
 ) -> Result<(), ComposeError> {
+    let status = run_topology(plan, output, mode)?;
+    if !status.success() {
+        return Err(ComposeError::Invalid(format!(
+            "topology runner failed; inspect {}",
+            output.display()
+        )));
+    }
+    Ok(())
+}
+
+fn execute_topology_expect_counterexample(
+    plan: &Path,
+    output: &Path,
+    mode: Option<&str>,
+    property: &str,
+) -> Result<(), ComposeError> {
+    let status = run_topology(plan, output, mode)?;
+    if status.success() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign passed but property {property:?} was expected to fail; inspect {}",
+            output.display()
+        )));
+    }
+    verify_counterexample_result(output, property, mode == Some("--minimize"))
+}
+
+fn run_topology(
+    plan: &Path,
+    output: &Path,
+    mode: Option<&str>,
+) -> Result<std::process::ExitStatus, ComposeError> {
     let runner: TopologyRunnerPlan = serde_json::from_slice(&fs::read(plan).map_err(|source| {
         ComposeError::Read {
             path: plan.to_path_buf(),
@@ -5516,10 +5613,9 @@ fn execute_topology_mode(
     let runner = runner
         .topology_runner
         .as_ref()
-        .map(verified_runner)
-        .transpose()?
         .ok_or_else(|| ComposeError::Invalid("topology replay has no locked executor; replay it with the published runtime that created it".to_owned()))?;
-    let status = Command::new(&runner)
+    let runner = verified_runner(runner, plan)?;
+    Command::new(&runner)
         .arg("--plan")
         .arg(plan)
         .arg("--output")
@@ -5528,14 +5624,69 @@ fn execute_topology_mode(
         .status()
         .map_err(|error| {
             ComposeError::Invalid(format!("cannot start {}: {error}", runner.display()))
-        })?;
-    if !status.success() {
-        return Err(ComposeError::Invalid(format!(
-            "topology runner failed; inspect {}",
-            output.display()
-        )));
+        })
+}
+
+#[derive(Deserialize)]
+struct CounterexampleCampaignResult {
+    format: String,
+    status: String,
+    properties: Vec<CounterexamplePropertyResult>,
+}
+
+#[derive(Deserialize)]
+struct CounterexamplePropertyResult {
+    name: String,
+    status: String,
+}
+
+#[derive(Deserialize)]
+struct CounterexampleMinimizationResult {
+    property: String,
+}
+
+fn verify_counterexample_result(
+    output: &Path,
+    property: &str,
+    minimized: bool,
+) -> Result<(), ComposeError> {
+    if minimized {
+        let path = output.join("minimization.json");
+        let result: CounterexampleMinimizationResult =
+            serde_json::from_slice(&fs::read(&path).map_err(|source| ComposeError::Read {
+                path: path.clone(),
+                source,
+            })?)
+            .map_err(|error| {
+                ComposeError::Invalid(format!("cannot parse {}: {error}", path.display()))
+            })?;
+        if result.property == property && output.join("topology-result.json").is_file() {
+            return Ok(());
+        }
+    } else {
+        let path = output.join("campaign-result.json");
+        let result: CounterexampleCampaignResult =
+            serde_json::from_slice(&fs::read(&path).map_err(|source| ComposeError::Read {
+                path: path.clone(),
+                source,
+            })?)
+            .map_err(|error| {
+                ComposeError::Invalid(format!("cannot parse {}: {error}", path.display()))
+            })?;
+        if result.format == "theseus-compose-campaign-result-v1"
+            && result.status == "failed"
+            && result
+                .properties
+                .iter()
+                .any(|candidate| candidate.name == property && candidate.status == "failed")
+        {
+            return Ok(());
+        }
     }
-    Ok(())
+    Err(ComposeError::Invalid(format!(
+        "topology runner failed without retaining the expected counterexample for {property:?}; inspect {}",
+        output.display()
+    )))
 }
 
 #[derive(Deserialize)]
@@ -5565,15 +5716,28 @@ fn installed_runner_artifact() -> Result<ArtifactPlan, ComposeError> {
     artifact_for_runner(&installed_runner()?)
 }
 
-fn verified_runner(artifact: &ArtifactPlan) -> Result<PathBuf, ComposeError> {
+fn verified_runner(artifact: &ArtifactPlan, plan: &Path) -> Result<PathBuf, ComposeError> {
     let path = PathBuf::from(&artifact.path);
-    if artifact_for_runner(&path)?.sha256 != artifact.sha256 {
+    let path = if path.is_absolute() {
+        path
+    } else {
+        plan.parent()
+            .ok_or_else(|| {
+                ComposeError::Invalid(format!(
+                    "topology plan has no parent directory: {}",
+                    plan.display()
+                ))
+            })?
+            .join(path)
+    };
+    let verified = artifact_for_runner(&path)?;
+    if verified.sha256 != artifact.sha256 {
         return Err(ComposeError::Invalid(format!(
             "topology runner digest changed: {}",
             path.display()
         )));
     }
-    Ok(path)
+    Ok(PathBuf::from(verified.path))
 }
 
 fn artifact_for_runner(path: &Path) -> Result<ArtifactPlan, ComposeError> {
@@ -7819,5 +7983,53 @@ x-theseus:
         );
         let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
         assert!(error.to_string().contains("drop_ppm"));
+    }
+
+    #[test]
+    fn verifies_only_the_named_retained_counterexample() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("campaign-result.json"),
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","properties":[{"name":"lost_update","status":"failed"},{"name":"reachable","status":"passed"}]}"#,
+        )
+        .unwrap();
+
+        verify_counterexample_result(directory.path(), "lost_update", false).unwrap();
+        assert!(verify_counterexample_result(directory.path(), "reachable", false).is_err());
+        assert!(verify_counterexample_result(directory.path(), "missing", false).is_err());
+    }
+
+    #[test]
+    fn verifies_a_completed_minimized_counterexample() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("minimization.json"),
+            r#"{"property":"lost_update"}"#,
+        )
+        .unwrap();
+        fs::write(directory.path().join("topology-result.json"), "{}").unwrap();
+
+        verify_counterexample_result(directory.path(), "lost_update", true).unwrap();
+        assert!(verify_counterexample_result(directory.path(), "other", true).is_err());
+    }
+
+    #[test]
+    fn resolves_a_locked_runner_relative_to_a_moved_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original");
+        let artifacts = original.join("artifacts");
+        fs::create_dir_all(&artifacts).unwrap();
+        let runner = artifacts.join("theseus-topology");
+        fs::write(&runner, "runner").unwrap();
+        let mut artifact = artifact_for_runner(&runner).unwrap();
+        artifact.path = "artifacts/theseus-topology".to_owned();
+        fs::write(original.join("replay-plan.json"), "{}").unwrap();
+        let moved = directory.path().join("moved");
+        fs::rename(original, &moved).unwrap();
+
+        assert_eq!(
+            verified_runner(&artifact, &moved.join("replay-plan.json")).unwrap(),
+            fs::canonicalize(moved.join("artifacts/theseus-topology")).unwrap()
+        );
     }
 }

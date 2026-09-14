@@ -14,7 +14,7 @@ a demonstration.
 |---|---|---|
 | Published platforms | Implemented packaging | Linux amd64/arm64 runtimes and CLI binaries plus macOS arm64 CLI are the intended release matrix. KVM execution remains Linux-only. |
 | Image pivot provenance | Implemented packaging | Each Linux build compiles the static pivot for its explicit architecture before the image adapter. The runtime carries the pivot bytes and a source-commit/digest manifest; `theseus-image pivot` reports the embedded copy. |
-| Native runtime support | Conditional | The certification workflow requests self-hosted amd64/arm64 KVM jobs. A release is demonstrated only when its attached certificate exists and verifies the exact plan/artifacts. |
+| Native runtime support | Conditional | The certification workflow checks out the released SHA and requests self-hosted amd64/arm64 KVM jobs. A release is demonstrated only when its attached certificate or portable counterexample archive exists and verifies the exact plan/artifacts. |
 | Linux random devices | Implemented with guest cooperation | Seeded virtio entropy is insufficient for a stock Linux CSPRNG. Tutorials 1–2 use the matching published kernel/module pair and only `/dev/random` and `/dev/urandom`. |
 | Virtual time | Implemented with a known leak | Time advances at exit-counted boundaries; counter reads within a quantum can reflect host progression. No instruction-exact claim remains. |
 | Network and storage faults | Implemented | Deterministic mode uses simulated network and memory-backed storage. Host-backed nondeterministic paths are rejected by the supported profile. Runtime proof is per retained certificate/campaign. |
@@ -25,7 +25,7 @@ a demonstration.
 | Campaign comparison | Implemented offline diff | `compare` finds the first recorded difference between two bundles. “Causal divergence” was removed from CLI output, tests, and tutorials. |
 | Causality analysis | Proposed | Counterfactual re-exploration from checkpoints is Priority 3 in `PLAN.md`. |
 | General thread scheduling | Proposed | Current campaigns overlap explicit operations but do not control arbitrary application threads/processes. |
-| Command overlap | Implemented, awaiting published runtime evidence | Named image commands can span whole-topology checkpoints. Launch and completion-observation order plus stable operation IDs are replay fields; this is not arbitrary thread scheduling. |
+| Command overlap | Implemented, awaiting published runtime evidence | Named image commands can span whole-topology checkpoints and multiple simulated-network services. Launch and completion-observation order plus stable operation IDs are replay fields; this is not arbitrary thread scheduling. Tutorial 30 defines the native evidence workload; the workflow definition is not proof that it ran. |
 | Public evaluation fixture | Format example only | Tutorial 13 and the current replicated-counter material do not independently prove execution without complete replay artifacts. Hashes prove retained bytes only. |
 | Antithesis parity | Not claimed | The comparison document identifies missing application coverage, general scheduling, hosted scale, and counterfactual investigation. No performance parity claim is supported. |
 
@@ -42,7 +42,7 @@ a demonstration.
   before execution.
 - Tutorials 5–13 expose build, execution, expected-failure, inspection,
   replay, and cleanup commands directly in their READMEs.
-- Container and Compose tutorials 14–29 expose host image builds, interactive
+- Container and Compose tutorials 14–30 expose host image builds, interactive
   runtime entry, locked input preparation, execution, evidence inspection,
   replay, and optional cleanup as separate steps.
 - Generated bundles remain available until the user explicitly runs cleanup.

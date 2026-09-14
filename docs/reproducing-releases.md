@@ -55,6 +55,45 @@ the architecture, source commit, and SHA-256 of the exact PID-1 embedded by
 `theseus-image`. Run `theseus-image pivot` to inspect the embedded copy and
 compare its digest with the packaged file.
 
+## Retrieve native KVM evidence
+
+After the native certification workflow has run, each SHA release has one
+fixed-plan certificate and one complete distributed-counterexample archive per
+certified architecture:
+
+```sh
+gh release download "$TAG" --repo "$REPOSITORY" \
+  --pattern "theseus-${TAG}-runtime-certificate-${ARCH}.json" \
+  --pattern "theseus-${TAG}-multiservice-counterexample-${ARCH}.tar.gz" \
+  --dir "$work"
+for artifact in \
+  "$work/theseus-${TAG}-runtime-certificate-${ARCH}.json" \
+  "$work/theseus-${TAG}-multiservice-counterexample-${ARCH}.tar.gz"
+do
+  gh attestation verify "$artifact" --repo "$REPOSITORY" \
+    --signer-workflow "$REPOSITORY/.github/workflows/certify-deterministic-runtime.yml"
+done
+```
+
+Extract the counterexample archive and enter its `minimized` directory. Inspect
+`evidence/proof.json`, `evidence/campaign-result.json`, and
+`minimization.json`, then reproduce the portable locked plan:
+
+```sh
+tar -xzf "$work/theseus-${TAG}-multiservice-counterexample-${ARCH}.tar.gz" -C "$work"
+cd "$work/minimized"
+docker run --rm --privileged --platform "linux/$ARCH" \
+  -v "$PWD":/proof -w /proof \
+  "ghcr.io/e6qu/theseus:${TAG}-${ARCH}" \
+  theseus compose replay . --output reproduced
+```
+
+`evidence/replay/` contains the certification run used to verify that replay.
+`source/` contains the human-readable tutorial input, while `checkpoint/`
+contains the locked runtime and workload artifacts. An absent
+architecture-specific asset means that architecture has not been certified
+for that SHA.
+
 ## Create an external witness
 
 Run that workflow in a GitHub repository you control (a fork is fine). Pass

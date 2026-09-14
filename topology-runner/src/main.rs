@@ -2420,7 +2420,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
 /// certification means the second certification run exercises the exact same
 /// replay checks as an operator's normal replay command.
 fn execute_plan(
-    topology: TopologyPlan,
+    mut topology: TopologyPlan,
     plan: &Path,
     output: PathBuf,
     minimize: bool,
@@ -2428,6 +2428,7 @@ fn execute_plan(
     if topology.format != "theseus-compose-plan-v1" || topology.services.is_empty() {
         return Err("unsupported or empty topology plan".to_owned());
     }
+    resolve_topology_artifacts(&mut topology, plan)?;
     let service_names = topology.services.keys().cloned().collect::<Vec<_>>();
     let recorded_campaign = recorded_campaign_result(plan)?;
     let (
@@ -2824,11 +2825,7 @@ fn execute_campaign(
             None,
             None,
         );
-        fs::write(
-            run_dir.join("replay-plan.json"),
-            serde_json::to_vec_pretty(&replay).expect("campaign replay plan serializes"),
-        )
-        .map_err(|error| error.to_string())?;
+        write_replay_plan(&run_dir.join("replay-plan.json"), &replay)?;
         if run_dir.join("topology-result.json").exists() {
             write_campaign_prefix_actions(&run_dir, prefix.actions)?;
         }
@@ -2934,14 +2931,11 @@ fn execute_campaign(
             .map_err(|error| format!("cannot read {}: {error}", first_plan.display()))?,
     )
     .map_err(|error| format!("cannot parse {}: {error}", first_plan.display()))?;
+    resolve_topology_artifacts(&mut replay, &first_plan)?;
     let guidance = campaign.guidance;
     let coverage = campaign.coverage;
     replay.campaign = Some(campaign);
-    fs::write(
-        output.join("replay-plan.json"),
-        serde_json::to_vec_pretty(&replay).expect("campaign replay plan serializes"),
-    )
-    .map_err(|error| error.to_string())?;
+    write_replay_plan(&output.join("replay-plan.json"), &replay)?;
     fs::write(
         output.join("campaign-result.json"),
         serde_json::to_vec_pretty(&CampaignResult {
@@ -3030,11 +3024,7 @@ fn boot_campaign_checkpoint(
             .expect("topology service missing");
         lock_service_inputs(&service_dir, service)?;
     }
-    fs::write(
-        directory.join("replay-plan.json"),
-        serde_json::to_vec_pretty(&topology).expect("checkpoint replay plan serializes"),
-    )
-    .map_err(|error| error.to_string())?;
+    write_replay_plan(&directory.join("replay-plan.json"), topology)?;
     let mut switches: BTreeMap<String, SharedSimSwitch> = topology
         .networks
         .keys()
@@ -3200,11 +3190,7 @@ fn execute_campaign_minimized(
         None,
         None,
     );
-    fs::write(
-        output.join("replay-plan.json"),
-        serde_json::to_vec_pretty(&replay).expect("campaign replay plan serializes"),
-    )
-    .map_err(|error| error.to_string())?;
+    write_replay_plan(&output.join("replay-plan.json"), &replay)?;
     if output.join("topology-result.json").exists() {
         write_campaign_prefix_actions(output, prefix.actions)?;
     }
@@ -3328,11 +3314,7 @@ fn execute_campaign_minimization_attempt(
         None,
         None,
     );
-    fs::write(
-        directory.join("replay-plan.json"),
-        serde_json::to_vec_pretty(&replay).expect("campaign replay plan serializes"),
-    )
-    .map_err(|error| error.to_string())?;
+    write_replay_plan(&directory.join("replay-plan.json"), &replay)?;
     if directory.join("topology-result.json").exists() {
         write_campaign_prefix_actions(directory, prefix.actions)?;
     }
@@ -7315,11 +7297,7 @@ fn execute(
             lock_service_inputs(&service_dir, locked)?;
         }
     }
-    fs::write(
-        output.join("replay-plan.json"),
-        serde_json::to_vec_pretty(&topology).unwrap(),
-    )
-    .map_err(|error| error.to_string())?;
+    write_replay_plan(&output.join("replay-plan.json"), &topology)?;
     for name in &names {
         let service = &topology.services[name];
         let service_dir = output.join("services").join(name);
@@ -9236,6 +9214,126 @@ fn artifact_at(path: PathBuf) -> Result<Artifact, String> {
     })
 }
 
+/// Resolve bundle-local artifact paths against the plan which records them.
+/// Initial Compose plans still carry absolute source paths. Locked replay
+/// plans use relative paths so moving or extracting the complete bundle does
+/// not preserve a dependency on the machine that created it.
+fn resolve_topology_artifacts(topology: &mut TopologyPlan, plan: &Path) -> Result<(), String> {
+    let parent = plan
+        .parent()
+        .ok_or_else(|| format!("topology plan has no parent: {}", plan.display()))?;
+    let parent = fs::canonicalize(parent).map_err(|error| {
+        format!(
+            "cannot resolve topology plan directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    if let Some(runner) = &mut topology.topology_runner {
+        resolve_artifact_path(runner, &parent)?;
+    }
+    for service in topology.services.values_mut() {
+        resolve_artifact_path(&mut service.run.runtime.firecracker, &parent)?;
+        if let Some(adapter) = &mut service.run.runtime.image_adapter {
+            resolve_artifact_path(adapter, &parent)?;
+        }
+        resolve_artifact_path(&mut service.run.guest.kernel, &parent)?;
+        if let Some(initramfs) = &mut service.run.guest.initramfs {
+            resolve_artifact_path(initramfs, &parent)?;
+        }
+        if let Some(image) = &mut service.run.guest.image {
+            resolve_artifact_path(image, &parent)?;
+        }
+    }
+    Ok(())
+}
+
+fn resolve_artifact_path(artifact: &mut Artifact, parent: &Path) -> Result<(), String> {
+    let path = Path::new(&artifact.path);
+    if path.is_absolute() {
+        return Ok(());
+    }
+    artifact.path = fs::canonicalize(parent.join(path))
+        .map_err(|error| format!("cannot resolve artifact {}: {error}", path.display()))?
+        .display()
+        .to_string();
+    Ok(())
+}
+
+fn write_replay_plan(path: &Path, topology: &TopologyPlan) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("replay plan has no parent: {}", path.display()))?;
+    let parent = fs::canonicalize(parent).map_err(|error| {
+        format!(
+            "cannot resolve replay plan directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let mut value = serde_json::to_value(topology)
+        .map_err(|error| format!("cannot encode replay plan: {error}"))?;
+    make_artifact_paths_relative(&mut value, &parent)?;
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&value)
+            .map_err(|error| format!("cannot encode replay plan: {error}"))?,
+    )
+    .map_err(|error| format!("cannot write {}: {error}", path.display()))
+}
+
+fn make_artifact_paths_relative(
+    value: &mut serde_json::Value,
+    parent: &Path,
+) -> Result<(), String> {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                make_artifact_paths_relative(value, parent)?;
+            }
+        }
+        serde_json::Value::Object(object) => {
+            if object.get("sha256").is_some_and(|value| value.is_string()) {
+                if let Some(serde_json::Value::String(path)) = object.get_mut("path") {
+                    let target = Path::new(path);
+                    if target.is_absolute() {
+                        *path = relative_path(parent, target)?.display().to_string();
+                    }
+                }
+            } else {
+                for value in object.values_mut() {
+                    make_artifact_paths_relative(value, parent)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn relative_path(parent: &Path, target: &Path) -> Result<PathBuf, String> {
+    for ancestor in parent.ancestors() {
+        if let Ok(suffix) = target.strip_prefix(ancestor) {
+            let mut relative = PathBuf::new();
+            for _ in parent
+                .strip_prefix(ancestor)
+                .expect("ancestor belongs to parent")
+                .components()
+            {
+                relative.push("..");
+            }
+            relative.push(suffix);
+            if relative.as_os_str().is_empty() {
+                relative.push(".");
+            }
+            return Ok(relative);
+        }
+    }
+    Err(format!(
+        "cannot make artifact {} relative to {}",
+        target.display(),
+        parent.display()
+    ))
+}
+
 fn lock_service_inputs(service_dir: &Path, service: &mut ServicePlan) -> Result<(), String> {
     let runtime = lock_artifact(service_dir, "firecracker", &service.run.runtime.firecracker)?;
     let kernel = lock_artifact(service_dir, "kernel", &service.run.guest.kernel)?;
@@ -9409,6 +9507,89 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn locked_replay_artifacts_follow_a_moved_bundle() {
+        let directory = std::env::temp_dir().join(format!(
+            "theseus-topology-portable-replay-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bundle = directory.join("created");
+        let artifacts = bundle.join("checkpoint/services/api/artifacts");
+        fs::create_dir_all(bundle.join("runs/000")).unwrap();
+        fs::create_dir_all(&artifacts).unwrap();
+        let runner = bundle.join("checkpoint/artifacts/theseus-topology");
+        fs::create_dir_all(runner.parent().unwrap()).unwrap();
+        fs::write(&runner, "runner").unwrap();
+        let firecracker = artifacts.join("firecracker");
+        let kernel = artifacts.join("kernel");
+        let initramfs = artifacts.join("initramfs");
+        fs::write(&firecracker, "firecracker").unwrap();
+        fs::write(&kernel, "kernel").unwrap();
+        fs::write(&initramfs, "initramfs").unwrap();
+        let artifact = |path: &Path| serde_json::json!({"path": path, "sha256": "digest"});
+        let topology: TopologyPlan = serde_json::from_value(serde_json::json!({
+            "format": "theseus-compose-plan-v1",
+            "compose": "compose.yaml",
+            "topology_runner": artifact(&runner),
+            "services": {
+                "api": {
+                    "manifest": "theseus.toml",
+                    "run": {
+                        "format": "theseus-run-plan-v1",
+                        "manifest": "theseus.toml",
+                        "runtime": {"firecracker": artifact(&firecracker)},
+                        "guest": {
+                            "kernel": artifact(&kernel),
+                            "initramfs": artifact(&initramfs)
+                        },
+                        "run": {
+                            "seed": 1,
+                            "vcpu_count": 1,
+                            "mem_size_mib": 128,
+                            "timeout_secs": 1,
+                            "max_rounds": 1,
+                            "virtual_time": null
+                        },
+                        "network": {"loopback": false, "drop_ppm": 0, "partitioned": false}
+                    },
+                    "networks": []
+                }
+            },
+            "networks": {}
+        }))
+        .unwrap();
+        let plan = bundle.join("runs/000/replay-plan.json");
+        write_replay_plan(&plan, &topology).unwrap();
+        let encoded = fs::read_to_string(&plan).unwrap();
+        assert!(encoded.contains("../../checkpoint/services/api/artifacts/kernel"));
+        assert!(!encoded.contains(directory.to_str().unwrap()));
+
+        let extracted = directory.join("extracted");
+        fs::rename(&bundle, &extracted).unwrap();
+        let moved_plan = extracted.join("runs/000/replay-plan.json");
+        let mut replay: TopologyPlan =
+            serde_json::from_slice(&fs::read(&moved_plan).unwrap()).unwrap();
+        resolve_topology_artifacts(&mut replay, &moved_plan).unwrap();
+        assert_eq!(
+            replay.services["api"].run.guest.kernel.path,
+            fs::canonicalize(extracted.join("checkpoint/services/api/artifacts/kernel"))
+                .unwrap()
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            replay.topology_runner.unwrap().path,
+            fs::canonicalize(extracted.join("checkpoint/artifacts/theseus-topology"))
+                .unwrap()
+                .display()
+                .to_string()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn locks_and_materializes_a_container_image_service() {

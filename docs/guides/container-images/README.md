@@ -15,7 +15,9 @@ with [tutorial 15](../../tutorials/15-container-campaign/) for HTTP,
 [tutorial 18](../../tutorials/18-container-command/) for an argv command in
 the image filesystem. [Tutorial 29](../../tutorials/29-overlap-commands/)
 launches two named commands concurrently and replays when each completion is
-observed.
+observed. [Tutorial 30](../../tutorials/30-multiservice-lost-update/) combines
+three image services, simulated networking, overlapping commands, and the
+supported Compose runtime contract in one counterexample.
 
 ## 2. Prepare your image
 

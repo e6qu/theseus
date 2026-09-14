@@ -6,10 +6,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use theseus_cli::{
-    capture_evaluation, compare_campaigns, evaluate, explore, explore_compose, load_compose_plan,
-    load_plan, minimize_compose_campaign, minimize_exploration_path, query_campaigns, replay,
-    replay_compose, replay_exploration, replay_exploration_path, report, report_file, report_text,
-    snapshot_exploration_path, test, test_compose, write_evaluation_lock, ReportFormat,
+    capture_evaluation, compare_campaigns, evaluate, explore, explore_compose,
+    explore_compose_expect_counterexample, load_compose_plan, load_plan, minimize_compose_campaign,
+    minimize_compose_campaign_expect_counterexample, minimize_exploration_path, query_campaigns,
+    replay, replay_compose, replay_exploration, replay_exploration_path, report, report_file,
+    report_text, snapshot_exploration_path, test, test_compose, write_evaluation_lock,
+    ReportFormat,
 };
 
 const USAGE: &str = "Usage:
@@ -33,7 +35,9 @@ const USAGE: &str = "Usage:
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
   theseus compose explore [--output campaign-dir] [compose.yaml]
+  theseus compose explore --expect-counterexample property [--output campaign-dir] [compose.yaml]
   theseus compose explore --minimize campaign-dir [--output replay-dir]
+  theseus compose explore --minimize campaign-dir --expect-counterexample property [--output replay-dir]
   theseus compose replay replay-dir [--output replay-dir]
 
 The manifest path defaults to ./theseus.toml. Relative artifact paths are
@@ -350,6 +354,33 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("passed: {}", result.display());
             Ok(())
         }
+        [command, subcommand, minimize, bundle, expect, property, output_flag, output]
+            if command == "compose"
+                && subcommand == "explore"
+                && minimize == "--minimize"
+                && expect == "--expect-counterexample"
+                && output_flag == "--output" =>
+        {
+            let result = minimize_compose_campaign_expect_counterexample(bundle, output, property)
+                .map_err(|error| error.to_string())?;
+            println!("minimized campaign counterexample: {}", result.display());
+            Ok(())
+        }
+        [command, subcommand, minimize, bundle, expect, property]
+            if command == "compose"
+                && subcommand == "explore"
+                && minimize == "--minimize"
+                && expect == "--expect-counterexample" =>
+        {
+            let result = minimize_compose_campaign_expect_counterexample(
+                bundle,
+                format!("{bundle}-minimized"),
+                property,
+            )
+            .map_err(|error| error.to_string())?;
+            println!("minimized campaign counterexample: {}", result.display());
+            Ok(())
+        }
         [command, subcommand, minimize, bundle, output_flag, output]
             if command == "compose"
                 && subcommand == "explore"
@@ -367,6 +398,33 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let result = minimize_compose_campaign(bundle, format!("{bundle}-minimized"))
                 .map_err(|error| error.to_string())?;
             println!("minimized campaign counterexample: {}", result.display());
+            Ok(())
+        }
+        [command, subcommand, expect, property, output_flag, output, rest @ ..]
+            if command == "compose"
+                && subcommand == "explore"
+                && expect == "--expect-counterexample"
+                && output_flag == "--output" =>
+        {
+            let compose = compose_path(rest)?;
+            let result = explore_compose_expect_counterexample(&compose, output, property)
+                .map_err(|error| error.to_string())?;
+            println!("counterexample retained: {}", result.display());
+            Ok(())
+        }
+        [command, subcommand, expect, property, rest @ ..]
+            if command == "compose"
+                && subcommand == "explore"
+                && expect == "--expect-counterexample" =>
+        {
+            let compose = compose_path(rest)?;
+            let output = compose
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("theseus-compose-campaign");
+            let result = explore_compose_expect_counterexample(&compose, output, property)
+                .map_err(|error| error.to_string())?;
+            println!("counterexample retained: {}", result.display());
             Ok(())
         }
         [command, subcommand, flag, output, rest @ ..]
