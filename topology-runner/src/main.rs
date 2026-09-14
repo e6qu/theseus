@@ -16,7 +16,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use addr2line::Loader;
-use object::{Object, ObjectSymbol, SymbolKind};
+use object::{BinaryFormat, Object, ObjectSection, ObjectSymbol, SymbolKind};
 use regex::bytes::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json_path::JsonPath;
@@ -1038,7 +1038,7 @@ struct InstructionLocation {
     source: Option<InstructionSourceLocation>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 struct InstructionSourceLocation {
     file: String,
     line: u32,
@@ -1057,6 +1057,12 @@ struct ApplicationBlock {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     edge: Option<u32>,
     offset: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    symbol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    symbol_offset: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<InstructionSourceLocation>,
 }
 
 /// One compiler-controlled userspace scheduling choice. Thread identities are
@@ -1146,6 +1152,33 @@ struct ServicePlan {
     extra_hosts: BTreeMap<String, String>,
     #[serde(default)]
     faults: Vec<FaultPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    coverage: Vec<CoverageArtifact>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct CoverageArtifact {
+    language: String,
+    process: String,
+    module: String,
+    build_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gnu_build_id: Option<String>,
+    manifest: Artifact,
+    symbols: Artifact,
+}
+
+#[derive(Debug, Deserialize)]
+struct LlvmCoverageManifest {
+    format: String,
+    coverage: String,
+    language: String,
+    process: String,
+    module: String,
+    build_sha256: String,
+    #[serde(default)]
+    gnu_build_id: Option<String>,
+    symbols: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2891,6 +2924,7 @@ fn execute_campaign(
     let checkpoint =
         boot_campaign_checkpoint(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
     let instruction_symbolizer = CampaignInstructionSymbolizer::from_topology(&topology);
+    let application_symbolizer = CampaignApplicationSymbolizer::from_topology(&topology);
     let base = serde_json::to_vec(&topology)
         .map_err(|error| format!("cannot encode campaign base plan: {error}"))?;
     let mut checkpoints = CampaignCheckpointTree::new(checkpoint);
@@ -3012,7 +3046,8 @@ fn execute_campaign(
             write_campaign_prefix_actions(&run_dir, prefix.actions)?;
         }
         let markers = campaign_markers(&run_dir)?;
-        let application_blocks = campaign_application_blocks(&run_dir)?;
+        let mut application_blocks = campaign_application_blocks(&run_dir)?;
+        application_symbolizer.symbolize(&mut application_blocks);
         let thread_scheduling = campaign_thread_scheduling(&run_dir)?;
         let thread_synchronization = campaign_thread_synchronization(&run_dir)?;
         let structured_choices = campaign_structured_choices(&run_dir)?;
@@ -3028,6 +3063,7 @@ fn execute_campaign(
             &prefix.boundaries,
             &checkpoints.root_boundary(),
             &instruction_symbolizer,
+            &application_symbolizer,
         );
         verify_campaign_structured_choices(&campaign, &schedule, &timeline)?;
         let instruction_novelty = campaign_instruction_locations(&execution_locations)
@@ -6462,6 +6498,9 @@ fn parse_application_coverage_line(line: &str) -> Option<ApplicationBlock> {
             build_sha256: build_sha256.to_owned(),
             edge: Some(edge),
             offset: offset.to_owned(),
+            symbol: None,
+            symbol_offset: None,
+            source: None,
         });
     };
     let mut fields = record.split(':');
@@ -6480,6 +6519,9 @@ fn parse_application_coverage_line(line: &str) -> Option<ApplicationBlock> {
         build_sha256: build_sha256.to_owned(),
         edge,
         offset: offset.to_owned(),
+        symbol: None,
+        symbol_offset: None,
+        source: None,
     })
 }
 
@@ -6887,6 +6929,7 @@ fn campaign_operation_timeline(
     boundaries: &[CampaignCheckpointBoundary],
     baseline: &CampaignCheckpointBoundary,
     symbolizer: &CampaignInstructionSymbolizer,
+    application_symbolizer: &CampaignApplicationSymbolizer,
 ) -> Vec<CampaignTimelineBoundary> {
     debug_assert_eq!(schedule.operations.len(), events.len());
     debug_assert_eq!(schedule.operations.len(), barriers.len());
@@ -6931,6 +6974,8 @@ fn campaign_operation_timeline(
             let delivery =
                 campaign_uart_delivery(&event.service, &event.event, &input, &previous, boundary);
             previous = boundary.clone();
+            let mut application_blocks = boundary.application_blocks.clone();
+            application_symbolizer.symbolize(&mut application_blocks);
             CampaignTimelineBoundary {
                 id: format!(
                     "op-{index:03}-{}",
@@ -6949,7 +6994,7 @@ fn campaign_operation_timeline(
                 changed_serial,
                 program_counters: boundary.program_counters.clone(),
                 instruction_locations: symbolizer.symbolize(&boundary.program_counters),
-                application_blocks: boundary.application_blocks.clone(),
+                application_blocks,
                 new_application_blocks,
                 thread_scheduling: boundary.thread_scheduling.clone(),
                 new_thread_scheduling_decisions,
@@ -7248,6 +7293,57 @@ struct KernelSymbol {
 struct CampaignInstructionSymbolizer {
     symbols: BTreeMap<String, Vec<KernelSymbol>>,
     sources: BTreeMap<String, Loader>,
+}
+
+/// Join build-scoped userspace coverage records with the exact symbol files
+/// locked beside the campaign. The key includes the service because two
+/// guests may run the same process/module build independently.
+struct CampaignApplicationSymbolizer {
+    entries: BTreeMap<(String, String, String, String), (Vec<KernelSymbol>, Loader)>,
+}
+
+impl CampaignApplicationSymbolizer {
+    fn from_topology(topology: &TopologyPlan) -> Self {
+        let mut entries = BTreeMap::new();
+        for (service, plan) in &topology.services {
+            for coverage in &plan.coverage {
+                let path = Path::new(&coverage.symbols.path);
+                if let Ok(loader) = Loader::new(path) {
+                    entries.insert(
+                        (
+                            service.clone(),
+                            coverage.process.clone(),
+                            coverage.module.clone(),
+                            coverage.build_sha256.clone(),
+                        ),
+                        (kernel_symbols(path), loader),
+                    );
+                }
+            }
+        }
+        Self { entries }
+    }
+
+    fn symbolize(&self, coverage: &mut BTreeMap<String, Vec<ApplicationBlock>>) {
+        for (service, points) in coverage {
+            for point in points {
+                let key = (
+                    service.clone(),
+                    point.process.clone(),
+                    point.module.clone(),
+                    point.build_sha256.clone(),
+                );
+                let Some((symbols, sources)) = self.entries.get(&key) else {
+                    continue;
+                };
+                let location =
+                    symbolize_instruction_location(&point.offset, symbols, Some(sources));
+                point.symbol = location.symbol;
+                point.symbol_offset = location.offset;
+                point.source = location.source;
+            }
+        }
+    }
 }
 
 impl CampaignInstructionSymbolizer {
@@ -10555,6 +10651,10 @@ fn resolve_topology_artifacts(topology: &mut TopologyPlan, plan: &Path) -> Resul
         if let Some(image) = &mut service.run.guest.image {
             resolve_artifact_path(image, &parent)?;
         }
+        for coverage in &mut service.coverage {
+            resolve_artifact_path(&mut coverage.manifest, &parent)?;
+            resolve_artifact_path(&mut coverage.symbols, &parent)?;
+        }
     }
     Ok(())
 }
@@ -10801,6 +10901,123 @@ fn lock_service_inputs(service_dir: &Path, service: &mut ServicePlan) -> Result<
             service.run.guest.initramfs = Some(artifact_at(initramfs)?);
         }
     }
+    for (index, coverage) in service.coverage.iter_mut().enumerate() {
+        let manifest = lock_artifact(
+            service_dir,
+            &format!("coverage-{index:03}.json"),
+            &coverage.manifest,
+        )?;
+        let symbols = lock_artifact(
+            service_dir,
+            &format!("coverage-{index:03}.debug"),
+            &coverage.symbols,
+        )?;
+        coverage.manifest = artifact_at(manifest)?;
+        coverage.symbols = artifact_at(symbols)?;
+        validate_coverage_artifact(coverage)?;
+    }
+    Ok(())
+}
+
+fn validate_coverage_artifact(coverage: &CoverageArtifact) -> Result<(), String> {
+    let manifest_path = Path::new(&coverage.manifest.path);
+    let manifest: LlvmCoverageManifest = serde_json::from_slice(
+        &fs::read(manifest_path)
+            .map_err(|error| format!("cannot read {}: {error}", manifest_path.display()))?,
+    )
+    .map_err(|error| {
+        format!(
+            "cannot parse coverage manifest {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    if manifest.format != "theseus-llvm-coverage-build-v1"
+        || manifest.coverage != "edges"
+        || manifest.language != coverage.language
+        || manifest.process != coverage.process
+        || manifest.module != coverage.module
+        || manifest.build_sha256 != coverage.build_sha256
+        || manifest.gnu_build_id != coverage.gnu_build_id
+    {
+        return Err(format!(
+            "coverage manifest identity changed: {}",
+            manifest_path.display()
+        ));
+    }
+    let symbol_name = Path::new(&manifest.symbols);
+    let mut components = symbol_name.components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err(format!(
+            "coverage manifest names an invalid symbol file: {}",
+            manifest_path.display()
+        ));
+    }
+    let symbol_path = Path::new(&coverage.symbols.path);
+    let bytes = fs::read(symbol_path)
+        .map_err(|error| format!("cannot read {}: {error}", symbol_path.display()))?;
+    if !bytes
+        .windows(coverage.build_sha256.len())
+        .any(|window| window == coverage.build_sha256.as_bytes())
+    {
+        return Err(format!(
+            "coverage symbols do not contain build identity {}: {}",
+            coverage.build_sha256,
+            symbol_path.display()
+        ));
+    }
+    let file = object::File::parse(&*bytes)
+        .map_err(|error| format!("coverage symbols are not an ELF object: {error}"))?;
+    if file.format() != BinaryFormat::Elf {
+        return Err(format!(
+            "coverage symbols are not ELF: {}",
+            symbol_path.display()
+        ));
+    }
+    if file.section_by_name("__sancov_guards").is_none() {
+        return Err(format!(
+            "coverage symbols have no LLVM sanitizer guards: {}",
+            symbol_path.display()
+        ));
+    }
+    let actual_build_id = file
+        .build_id()
+        .map_err(|error| format!("cannot read coverage build ID: {error}"))?
+        .map(hex);
+    if actual_build_id.is_none()
+        || coverage
+            .gnu_build_id
+            .as_ref()
+            .is_some_and(|expected| actual_build_id.as_deref() != Some(expected.as_str()))
+    {
+        return Err(format!(
+            "coverage symbols do not match the recorded GNU build ID: {}",
+            symbol_path.display()
+        ));
+    }
+    let callback = file.symbols().any(|symbol| {
+        symbol
+            .name()
+            .is_ok_and(|name| name == "__sanitizer_cov_trace_pc_guard")
+    });
+    if !callback {
+        return Err(format!(
+            "coverage symbols have no Theseus edge callback: {}",
+            symbol_path.display()
+        ));
+    }
+    if [".debug_info", ".debug_line"].into_iter().any(|name| {
+        file.section_by_name(name)
+            .is_none_or(|section| section.size() == 0)
+    }) {
+        return Err(format!(
+            "coverage symbols have no source debug data: {}",
+            symbol_path.display()
+        ));
+    }
+    Loader::new(symbol_path)
+        .map_err(|error| format!("coverage symbols have invalid debug data: {error}"))?;
     Ok(())
 }
 
@@ -11021,6 +11238,7 @@ mod tests {
             hostname: Some("api.local".to_owned()),
             extra_hosts: BTreeMap::from([("cache.local".to_owned(), "10.9.0.7".to_owned())]),
             faults: Vec::new(),
+            coverage: Vec::new(),
         };
 
         lock_service_inputs(&directory, &mut service).unwrap();
@@ -12988,6 +13206,98 @@ mod tests {
         assert_eq!(blocks["api"][1].offset, "0x48");
         assert_eq!(campaign_application_block_ids(&blocks).len(), 2);
         assert!(campaign_application_block_ids(&blocks)[1].contains("edge-17:0x48"));
+    }
+
+    #[test]
+    fn validates_and_joins_locked_llvm_coverage_symbols() {
+        let directory = std::env::temp_dir().join(format!(
+            "theseus-llvm-symbols-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("topology runner has a repository parent");
+        let frontend = root.join("instrumentation/llvm/theseus-coverage-clang");
+        let source = root.join("scripts/tests/llvm_coverage_fixture.c");
+        let binary = directory.join("fixture");
+        let symbols = directory.join("symbols");
+        let compilation = Command::new(frontend)
+            .args(["--process", "fixture", "--module", "command", "--symbols"])
+            .arg(&symbols)
+            .arg("-o")
+            .arg(&binary)
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(compilation.status.success());
+        let manifest_path = binary.with_extension("theseus-coverage.json");
+        let manifest: LlvmCoverageManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let symbol_path = symbols.join(&manifest.symbols);
+        let mut coverage = CoverageArtifact {
+            language: manifest.language,
+            process: manifest.process,
+            module: manifest.module,
+            build_sha256: manifest.build_sha256,
+            gnu_build_id: manifest.gnu_build_id,
+            manifest: artifact_at(manifest_path).unwrap(),
+            symbols: artifact_at(symbol_path.clone()).unwrap(),
+        };
+        let locked = directory.join("locked");
+        fs::create_dir_all(locked.join("artifacts")).unwrap();
+        coverage.manifest =
+            artifact_at(lock_artifact(&locked, "coverage-000.json", &coverage.manifest).unwrap())
+                .unwrap();
+        coverage.symbols =
+            artifact_at(lock_artifact(&locked, "coverage-000.debug", &coverage.symbols).unwrap())
+                .unwrap();
+        validate_coverage_artifact(&coverage).unwrap();
+        assert_eq!(
+            Path::new(&coverage.symbols.path)
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("coverage-000.debug")
+        );
+
+        let output = Command::new(&binary).arg("7").output().unwrap();
+        let record = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .find_map(parse_application_coverage_line)
+            .unwrap();
+        let key = (
+            "api".to_owned(),
+            record.process.clone(),
+            record.module.clone(),
+            record.build_sha256.clone(),
+        );
+        let symbolizer = CampaignApplicationSymbolizer {
+            entries: BTreeMap::from([(
+                key,
+                (
+                    kernel_symbols(Path::new(&coverage.symbols.path)),
+                    Loader::new(&coverage.symbols.path).unwrap(),
+                ),
+            )]),
+        };
+        let mut points = BTreeMap::from([("api".to_owned(), vec![record])]);
+        symbolizer.symbolize(&mut points);
+        let point = &points["api"][0];
+        assert!(point.symbol.is_some());
+        assert_eq!(
+            point.source.as_ref().map(|source| source.file.as_str()),
+            Some("llvm_coverage_fixture.c")
+        );
+
+        coverage.build_sha256 = "f".repeat(64);
+        assert!(validate_coverage_artifact(&coverage)
+            .unwrap_err()
+            .contains("identity changed"));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

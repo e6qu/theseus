@@ -4,6 +4,11 @@ services:
   classifier:
     x-theseus:
       manifest: service/theseus.toml
+      coverage:
+        - manifest: service/work/classify.theseus-coverage.json
+          symbols: service/work/symbols
+        - manifest: service/work/plugin.so.theseus-coverage.json
+          symbols: service/work/symbols
     networks: [test]
 
 networks:

@@ -21,6 +21,8 @@ grep -F '"format": "theseus-llvm-coverage-build-v1"' "$manifest" >/dev/null || {
 build_sha256=$(sed -n 's/.*"build_sha256": "\([0-9a-f]*\)".*/\1/p' "$manifest")
 case "$build_sha256" in ''|*[!0-9a-f]*) echo 'manifest has no build SHA-256' >&2; exit 1 ;; esac
 [ "${#build_sha256}" -eq 64 ] || { echo 'manifest has an invalid build SHA-256' >&2; exit 1; }
+gnu_build_id=$(sed -n 's/.*"gnu_build_id": "\([0-9a-f]*\)".*/\1/p' "$manifest")
+case "$gnu_build_id" in *[!0-9a-f]*) echo 'manifest has an invalid GNU build ID' >&2; exit 1 ;; esac
 strings "$binary" | grep -Fx "$build_sha256" >/dev/null || {
     echo 'binary does not match the manifest build identity' >&2
     exit 1
@@ -29,8 +31,9 @@ readelf -S "$binary" | grep -F '__sancov_guards' >/dev/null || {
     echo 'binary has no LLVM sanitizer-coverage guards' >&2
     exit 1
 }
-readelf -n "$binary" | grep -F 'Build ID:' >/dev/null || {
-    echo 'binary has no GNU build ID' >&2
+actual_build_id=$(readelf -n "$binary" | sed -n 's/.*Build ID: //p' | sed -n '1p')
+[ -n "$actual_build_id" ] && { [ -z "$gnu_build_id" ] || [ "$actual_build_id" = "$gnu_build_id" ]; } || {
+    echo 'binary does not match the manifest GNU build ID' >&2
     exit 1
 }
 nm "$binary" | grep -F '__sanitizer_cov_trace_pc_guard' >/dev/null || {

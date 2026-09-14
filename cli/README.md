@@ -129,7 +129,22 @@ a build-local guard number to the module-relative address. C, C++, single-file
 Rust programs, PIE executables, and dynamically loaded native modules use the
 same replay path. Each module retains at most 8,191 edge identities.
 Preserve symbol files with `--symbols`; `theseus-coverage-inspect` validates the
-build and resolves an observed offset to a source line. See Tutorial 37.
+build and resolves an observed offset to a source line. Declare each manifest
+and its symbol directory on the service so planning locks the exact files and
+campaign reports resolve functions and source lines automatically:
+
+```yaml
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+      coverage:
+        - manifest: api/work/api.theseus-coverage.json
+          symbols: api/work/symbols
+```
+
+Both paths are relative to the Compose file. The manifest names the exact
+build-scoped file inside `symbols`. See Tutorial 37.
 
 Commands built with the packaged `theseus-schedule-cc` frontend accept a
 Compose shell operation's explicit `thread_schedule: [0, 1, 2]`. Planning

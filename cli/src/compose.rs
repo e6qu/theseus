@@ -1003,6 +1003,30 @@ struct ServiceTheseus {
     manifest: PathBuf,
     #[serde(default)]
     faults: Vec<ComposeFault>,
+    #[serde(default)]
+    coverage: Vec<ComposeCoverage>,
+}
+
+/// One compiler-generated coverage manifest and the directory containing the
+/// build-scoped symbol file named by that manifest.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeCoverage {
+    manifest: PathBuf,
+    symbols: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct LlvmCoverageManifest {
+    format: String,
+    coverage: String,
+    language: String,
+    process: String,
+    module: String,
+    build_sha256: String,
+    #[serde(default)]
+    gnu_build_id: Option<String>,
+    symbols: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1073,6 +1097,21 @@ pub struct ComposeServicePlan {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra_hosts: BTreeMap<String, String>,
     pub faults: Vec<FaultPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage: Vec<CoverageArtifactPlan>,
+}
+
+/// Immutable coverage metadata and symbols consumed by campaign reporting.
+#[derive(Debug, Clone, Serialize)]
+pub struct CoverageArtifactPlan {
+    pub language: String,
+    pub process: String,
+    pub module: String,
+    pub build_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gnu_build_id: Option<String>,
+    pub manifest: ArtifactPlan,
+    pub symbols: ArtifactPlan,
 }
 
 /// A read-only Compose config baked into an image-backed service initramfs.
@@ -1711,6 +1750,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
             service.theseus.faults,
             run.run.virtual_time.is_some(),
         )?;
+        let coverage = coverage_artifact_plans(&name, service.theseus.coverage, compose_dir)?;
         services.insert(
             name,
             ComposeServicePlan {
@@ -1727,6 +1767,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
                 hostname,
                 extra_hosts,
                 faults,
+                coverage,
             },
         );
     }
@@ -1746,6 +1787,208 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         networks,
         campaign,
         topology_runner: None,
+    })
+}
+
+fn coverage_artifact_plans(
+    service: &str,
+    entries: Vec<ComposeCoverage>,
+    compose_dir: &Path,
+) -> Result<Vec<CoverageArtifactPlan>, ComposeError> {
+    if entries.len() > 128 {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} declares more than 128 coverage modules"
+        )));
+    }
+    let mut identities = BTreeSet::new();
+    let mut result = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let manifest_path = compose_coverage_path(
+            service,
+            "coverage manifest",
+            compose_dir,
+            &entry.manifest,
+            false,
+        )?;
+        let symbols_dir = compose_coverage_path(
+            service,
+            "coverage symbols",
+            compose_dir,
+            &entry.symbols,
+            true,
+        )?;
+        let manifest_bytes = fs::read(&manifest_path).map_err(|source| ComposeError::Read {
+            path: manifest_path.clone(),
+            source,
+        })?;
+        let manifest: LlvmCoverageManifest =
+            serde_json::from_slice(&manifest_bytes).map_err(|error| {
+                ComposeError::Invalid(format!(
+                    "service {service:?} coverage manifest {} is invalid JSON: {error}",
+                    entry.manifest.display()
+                ))
+            })?;
+        if manifest.format != "theseus-llvm-coverage-build-v1" || manifest.coverage != "edges" {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} coverage manifest {} must contain LLVM edge coverage v1",
+                entry.manifest.display()
+            )));
+        }
+        if !matches!(manifest.language.as_str(), "c" | "c++" | "rust") {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} coverage manifest {} has unsupported language {:?}",
+                entry.manifest.display(),
+                manifest.language
+            )));
+        }
+        validate_coverage_identity(service, "process", &manifest.process)?;
+        validate_coverage_identity(service, "module", &manifest.module)?;
+        if manifest.build_sha256.len() != 64
+            || !manifest
+                .build_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} coverage manifest {} has an invalid build SHA-256",
+                entry.manifest.display()
+            )));
+        }
+        if let Some(build_id) = &manifest.gnu_build_id {
+            if build_id.is_empty()
+                || build_id.len() > 128
+                || build_id.len() % 2 != 0
+                || !build_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err(ComposeError::Invalid(format!(
+                    "service {service:?} coverage manifest {} has an invalid GNU build ID",
+                    entry.manifest.display()
+                )));
+            }
+        }
+        let symbol_name = Path::new(&manifest.symbols);
+        let mut components = symbol_name.components();
+        if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} coverage manifest {} must name one symbol file",
+                entry.manifest.display()
+            )));
+        }
+        let symbol_path = fs::canonicalize(symbols_dir.join(symbol_name)).map_err(|source| {
+            ComposeError::Read {
+                path: symbols_dir.join(symbol_name),
+                source,
+            }
+        })?;
+        if !symbol_path.starts_with(&symbols_dir) || !symbol_path.is_file() {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} coverage symbol {} must be a regular file in {}",
+                manifest.symbols,
+                entry.symbols.display()
+            )));
+        }
+        let symbol_bytes = fs::read(&symbol_path).map_err(|source| ComposeError::Read {
+            path: symbol_path.clone(),
+            source,
+        })?;
+        if !symbol_bytes.starts_with(b"\x7fELF")
+            || !symbol_bytes
+                .windows(manifest.build_sha256.len())
+                .any(|window| window == manifest.build_sha256.as_bytes())
+        {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} coverage symbol {} does not match build {}",
+                manifest.symbols, manifest.build_sha256
+            )));
+        }
+        let identity = (
+            manifest.process.clone(),
+            manifest.module.clone(),
+            manifest.build_sha256.clone(),
+        );
+        if !identities.insert(identity) {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} declares the same coverage build more than once"
+            )));
+        }
+        result.push(CoverageArtifactPlan {
+            language: manifest.language,
+            process: manifest.process,
+            module: manifest.module,
+            build_sha256: manifest.build_sha256,
+            gnu_build_id: manifest.gnu_build_id,
+            manifest: artifact_for_file(&manifest_path)?,
+            symbols: artifact_for_file(&symbol_path)?,
+        });
+    }
+    result.sort_by(|left, right| {
+        left.process
+            .cmp(&right.process)
+            .then_with(|| left.module.cmp(&right.module))
+            .then_with(|| left.build_sha256.cmp(&right.build_sha256))
+    });
+    Ok(result)
+}
+
+fn compose_coverage_path(
+    service: &str,
+    field: &str,
+    compose_dir: &Path,
+    relative: &Path,
+    directory: bool,
+) -> Result<PathBuf, ComposeError> {
+    if relative.is_absolute() {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} {field} must be relative to the Compose file"
+        )));
+    }
+    let path =
+        fs::canonicalize(compose_dir.join(relative)).map_err(|source| ComposeError::Read {
+            path: compose_dir.join(relative),
+            source,
+        })?;
+    if !path.starts_with(compose_dir)
+        || (directory && !path.is_dir())
+        || (!directory && !path.is_file())
+    {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} {field} must {} inside the Compose directory",
+            if directory {
+                "be a directory"
+            } else {
+                "name a regular file"
+            }
+        )));
+    }
+    Ok(path)
+}
+
+fn validate_coverage_identity(service: &str, field: &str, value: &str) -> Result<(), ComposeError> {
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(ComposeError::Invalid(format!(
+            "service {service:?} coverage {field} {value:?} is invalid"
+        )));
+    }
+    Ok(())
+}
+
+fn artifact_for_file(path: &Path) -> Result<ArtifactPlan, ComposeError> {
+    let bytes = fs::read(path).map_err(|source| ComposeError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(ArtifactPlan {
+        path: path.display().to_string(),
+        sha256: format!("{:x}", Sha256::digest(bytes)),
     })
 }
 
@@ -6208,6 +6451,46 @@ mod tests {
         assert_eq!(plan.format, "theseus-compose-plan-v1");
         assert_eq!(plan.networks["backplane"], ["api", "worker"]);
         assert_eq!(plan.services["api"].run.guest.kernel.sha256.len(), 64);
+    }
+
+    #[test]
+    fn locks_llvm_coverage_manifests_and_symbols() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n      coverage:\n        - manifest: api/coverage.json\n          symbols: api/symbols\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        let digest = "0123456789abcdef".repeat(4);
+        fs::create_dir(directory.path().join("api/symbols")).unwrap();
+        fs::write(
+            directory.path().join("api/symbols/api.debug"),
+            [b"\x7fELF".as_slice(), digest.as_bytes()].concat(),
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("api/coverage.json"),
+            format!(
+                "{{\"format\":\"theseus-llvm-coverage-build-v1\",\"coverage\":\"edges\",\"language\":\"c++\",\"process\":\"api\",\"module\":\"command\",\"build_sha256\":\"{digest}\",\"gnu_build_id\":\"0123456789abcdef\",\"symbols\":\"api.debug\"}}"
+            ),
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let coverage = &plan.services["api"].coverage[0];
+        assert_eq!(coverage.language, "c++");
+        assert_eq!(coverage.module, "command");
+        assert_eq!(coverage.build_sha256, digest);
+        assert_eq!(coverage.gnu_build_id.as_deref(), Some("0123456789abcdef"));
+        assert_eq!(coverage.manifest.sha256.len(), 64);
+        assert_eq!(coverage.symbols.sha256.len(), 64);
+
+        fs::write(
+            directory.path().join("api/symbols/api.debug"),
+            b"\x7fELFwrong build",
+        )
+        .unwrap();
+        assert!(load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap_err()
+            .to_string()
+            .contains("does not match build"));
     }
 
     #[test]

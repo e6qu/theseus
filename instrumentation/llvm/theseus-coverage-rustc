@@ -90,6 +90,8 @@ if [ -n "$rustc_args" ]; then
     IFS=$old_ifs
 fi
 rustc "$@" -o "$output"
+gnu_build_id=$(readelf -n "$output" | sed -n 's/.*Build ID: //p' | sed -n '1p')
+case "$gnu_build_id" in ''|*[!0-9a-f]*) echo 'rustc produced no GNU build ID' >&2; exit 1 ;; esac
 
 symbol_file=
 if [ -n "$symbols" ]; then
@@ -98,8 +100,8 @@ if [ -n "$symbols" ]; then
     cp "$output" "$symbol_file"
 fi
 manifest="${output}.theseus-coverage.json"
-printf '{\n  "format": "theseus-llvm-coverage-build-v1",\n  "coverage": "edges",\n  "maximum_edges": 8191,\n  "language": "rust",\n  "process": "%s",\n  "module": "%s",\n  "build_sha256": "%s",\n  "compiler": "%s",\n  "target": "%s",\n' \
-    "$process" "$module" "$build_sha256" "$compiler_version" "$target" > "$manifest"
+printf '{\n  "format": "theseus-llvm-coverage-build-v1",\n  "coverage": "edges",\n  "maximum_edges": 8191,\n  "language": "rust",\n  "process": "%s",\n  "module": "%s",\n  "build_sha256": "%s",\n  "gnu_build_id": "%s",\n  "compiler": "%s",\n  "target": "%s",\n' \
+    "$process" "$module" "$build_sha256" "$gnu_build_id" "$compiler_version" "$target" > "$manifest"
 if [ -n "$symbol_file" ]; then
     printf '  "symbols": "%s",\n' "$(basename -- "$symbol_file")" >> "$manifest"
 fi

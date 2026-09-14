@@ -54,9 +54,14 @@ docker run --rm --platform "linux/$THESEUS_ARCH" \
 
 The last command must report a nonzero guard count. Each manifest locks the
 language, compiler, target, sources, module name, and build identity.
+Strip the deployed files after preserving their symbols; reporting does not
+depend on debug data in the service image.
 
 ```sh
 sed -n '1,160p' service/work/classify.theseus-coverage.json
+docker run --rm --platform "linux/$THESEUS_ARCH" \
+  -v "$PWD":/tutorial -w /tutorial "$THESEUS_IMAGE" \
+  strip --strip-unneeded service/work/classify service/work/plugin.so
 docker build --load --platform "linux/$THESEUS_ARCH" \
   -t theseus-llvm-coverage-tutorial service
 docker save theseus-llvm-coverage-tutorial -o service/work/service.tar
@@ -80,7 +85,7 @@ cp /usr/local/bin/firecracker service/work/runtime/firecracker
 cp /usr/local/bin/theseus-image service/work/runtime/theseus-image
 cp /opt/theseus/vmlinux service/work/guest/vmlinux
 theseus compose plan > plan.json
-grep -n 'application_edges' plan.json
+grep -n 'application_edges\|coverage-\|build_sha256' plan.json
 ```
 
 ## 4. Run the campaign
@@ -95,21 +100,17 @@ theseus compose explore --output campaign compose.yaml
 grep -R '^THES:COV:v2:classifier:' campaign/runs/*/services/classifier/serial.log
 grep -n 'unique_application_edges\|application_block_novelty' \
   campaign/campaign-result.json
-edge_offset=$(awk -F: '/^THES:COV:v2:classifier:command:/ {print $8; exit}' \
-  campaign/runs/*/services/classifier/serial.log)
-command_symbols=$(find service/work/symbols -name 'command-*.debug' -print -quit)
-/opt/theseus/instrumentation/llvm/theseus-coverage-inspect \
-  "$command_symbols" service/work/classify.theseus-coverage.json "$edge_offset"
+find campaign/checkpoint/services/classifier/artifacts -name 'coverage-*' -print
 theseus report campaign --output report
-grep -n 'LLVM-instrumented application edge' report/report.md
+grep -n 'LLVM-instrumented application edge\|main.cc\|plugin.c' report/report.md
 theseus compose replay campaign --output rerun
 grep -n '"status": "passed"' rerun/campaign-result.json
 ```
 
-Records from both `command` and `plugin` must appear. The inspection command
-resolves one reached command edge to its function and source line. The edge
-number is scoped by the module build SHA-256, and the module-relative address
-remains stable under ASLR.
+Records from both `command` and `plugin` must appear. The report resolves their
+reached edges to functions and source lines from the locked symbols even though
+the service binaries are stripped. The edge number is scoped by the module
+build SHA-256, and the module-relative address remains stable under ASLR.
 
 ## 6. Clean up (optional)
 

@@ -46,6 +46,7 @@ resolved from the directory containing that manifest.";
 
 const COMPOSE_USAGE: &str = "Compose accepts a small Theseus-only subset. Each service must set
 x-theseus.manifest to a relative theseus.toml path; services join named networks.
+Instrumented services may list relative coverage manifests and symbol directories.
 Run `theseus compose plan` to inspect the locked service artifacts and links.";
 
 fn manifest_path(args: &[String]) -> Result<PathBuf, String> {
