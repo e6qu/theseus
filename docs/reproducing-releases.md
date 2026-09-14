@@ -94,6 +94,13 @@ contains the locked runtime and workload artifacts. An absent
 architecture-specific asset means that architecture has not been certified
 for that SHA.
 
+For Tutorial 30 evidence, `minimization.json` must retain both
+`backplane:partition@setup` and `backplane:heal@probe_partition`.
+`evidence/replay/topology-result.json` records the applied actions, and the
+network evidence records a dropped frame. The writer serial log records the
+successful post-recovery HTTP probe. These checks separate the network
+recovery path from the later concurrency-dependent lost update.
+
 ## Create an external witness
 
 Run that workflow in a GitHub repository you control (a fork is fine). Pass

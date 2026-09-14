@@ -15,8 +15,9 @@ bounded campaign search, minimization, replay, reports, bundle comparison, and
 an optional guest SDK. Image campaigns can keep named ordinary commands in
 flight across whole-topology checkpoints and record when each completion is
 observed. The distributed lost-update workload combines three image services,
-simulated network traffic, and the supported Compose runtime contracts in one
-replayable campaign.
+simulated network traffic, a required partition/recovery path, and the
+supported Compose runtime contracts in one replayable campaign. Required
+campaign faults remain in every applicable schedule and survive minimization.
 
 The following limits define the honest baseline:
 
@@ -64,8 +65,9 @@ Deliver this as one coherent PR, with separately reviewable commits.
   quantities, launch overrides, credentials, environment, configs, secrets,
   seeded volumes, read-only roots, tmpfs, health checks, service networking,
   in-flight commands, checkpoint restoration, minimization, and replay.
-- Extend that combined runtime proof through one network fault and recovery
-  without replacing the concurrency-dependent failure it is meant to test.
+- Verify that the combined campaign's required partition, dropped UDP probe,
+  heal, and successful HTTP probe are retained before its independent
+  concurrency-dependent failure.
 - Retain the attested fixed-plan certificate and portable counterexample
   archive on the exact SHA release. Leave a missing architecture explicitly
   unverified rather than substituting unit tests or a workflow definition.
