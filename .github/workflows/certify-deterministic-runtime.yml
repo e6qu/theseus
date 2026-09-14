@@ -101,6 +101,12 @@ jobs:
               theseus compose replay minimized --output rerun
               grep -R '"'"'"value"'"'":1' campaign/runs/*/services/counter/serial.log
               grep -R '"'"'"value"'"'":2' campaign/runs/*/services/counter/serial.log
+              grep -F 'backplane:partition@setup' minimized/minimization.json
+              grep -F 'backplane:heal@probe_partition' minimized/minimization.json
+              grep -E '"'"'"dropped"'"'": [1-9][0-9]*' rerun/services/*/result.json
+              grep -R '"'"'"network"'"'":"'"'"recovered"'"'"' rerun/services/writer-a/serial.log
+              grep -F '"'"'"kind"'"'": "'"'"partition"'"'"' rerun/topology-result.json
+              grep -F '"'"'"kind"'"'": "'"'"heal"'"'"' rerun/topology-result.json
               grep -R '"'"'"value"'"'":1' rerun/services/counter/serial.log
             '
           source_commit=$(git rev-parse HEAD)

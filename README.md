@@ -62,7 +62,8 @@ examples:
    images.
 6. Find and minimize a lost update by overlapping ordinary image commands.
 7. Reproduce the lost update across three unmodified image services while
-   exercising the combined Compose runtime contract.
+   exercising a required network partition, recovery, and the combined Compose
+   runtime contract.
 
 Each tutorial directory is its own working directory and complete input
 context. Runnable tutorials use published Theseus images or binaries, not a

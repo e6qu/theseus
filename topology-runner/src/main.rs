@@ -90,6 +90,10 @@ fn default_campaign_faults_per_run() -> u8 {
     2
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 fn default_campaign_operations_per_run() -> u8 {
     3
 }
@@ -265,6 +269,8 @@ struct OperationSerialGuard {
 #[derive(Debug, Deserialize, Serialize)]
 struct CampaignFault {
     kind: CampaignFaultKind,
+    #[serde(default, skip_serializing_if = "is_false")]
+    required: bool,
     #[serde(default)]
     service: Option<String>,
     #[serde(default)]
@@ -3122,6 +3128,9 @@ fn execute_campaign_minimized(
                 operations: operations.to_vec(),
                 faults: faults.clone(),
             };
+            if !campaign_required_faults_apply(&campaign, &candidate) {
+                return Ok(false);
+            }
             let directory = attempts.join(format!("{attempt:03}"));
             attempt += 1;
             execute_campaign_minimization_attempt(
@@ -3137,25 +3146,44 @@ fn execute_campaign_minimized(
         })?;
     schedule.operations = operations;
     let operations = schedule.operations.clone();
-    let (faults, fault_attempts) = minimize_campaign_items(schedule.faults.clone(), 0, |faults| {
-        let candidate = CampaignSchedule {
-            operations: operations.clone(),
-            faults: faults.to_vec(),
-        };
-        let directory = attempts.join(format!("{attempt:03}"));
-        attempt += 1;
-        execute_campaign_minimization_attempt(
-            &topology,
-            &campaign,
-            &base,
-            &mut checkpoints,
-            &candidate,
-            &property,
-            output,
-            &directory,
-        )
-    })?;
-    schedule.faults = faults;
+    let selected_faults = schedule.faults.clone();
+    let required_faults = selected_faults
+        .iter()
+        .copied()
+        .filter(|index| campaign.faults[*index].required)
+        .collect::<Vec<_>>();
+    let optional_faults = selected_faults
+        .iter()
+        .copied()
+        .filter(|index| !campaign.faults[*index].required)
+        .collect::<Vec<_>>();
+    let combine_faults = |optional: &[usize]| {
+        selected_faults
+            .iter()
+            .copied()
+            .filter(|index| required_faults.contains(index) || optional.contains(index))
+            .collect::<Vec<_>>()
+    };
+    let (optional_faults, fault_attempts) =
+        minimize_campaign_items(optional_faults, 0, |optional| {
+            let candidate = CampaignSchedule {
+                operations: operations.clone(),
+                faults: combine_faults(optional),
+            };
+            let directory = attempts.join(format!("{attempt:03}"));
+            attempt += 1;
+            execute_campaign_minimization_attempt(
+                &topology,
+                &campaign,
+                &base,
+                &mut checkpoints,
+                &candidate,
+                &property,
+                output,
+                &directory,
+            )
+        })?;
+    schedule.faults = combine_faults(&optional_faults);
     let prefix = match checkpoints
         .checkpoint_for_guarded_schedule(&topology, &campaign, &schedule, output)?
     {
@@ -4329,13 +4357,6 @@ struct CampaignTopologyState {
 fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
     let mut schedules = Vec::new();
     for history in campaign_operation_histories(campaign) {
-        schedules.push(CampaignSchedule {
-            operations: history.clone(),
-            faults: Vec::new(),
-        });
-        if schedules.len() == MAX_CAMPAIGN_CANDIDATES {
-            return schedules;
-        }
         let applicable = campaign
             .faults
             .iter()
@@ -4344,7 +4365,7 @@ fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
                 campaign_fault_applies(fault, &history, campaign).then_some(index)
             })
             .collect::<Vec<_>>();
-        for faults in campaign_fault_combinations(
+        for faults in campaign_fault_selections(
             &campaign.faults,
             &applicable,
             usize::from(campaign.max_faults_per_run),
@@ -4359,6 +4380,56 @@ fn campaign_schedules(campaign: &CampaignPlan) -> Vec<CampaignSchedule> {
         }
     }
     schedules
+}
+
+/// Return every bounded selection while retaining faults marked as required.
+/// With no applicable required fault, the empty selection stays first so
+/// existing campaign plans keep their historical search order.
+fn campaign_fault_selections(
+    faults: &[CampaignFault],
+    applicable: &[usize],
+    maximum: usize,
+) -> Vec<Vec<usize>> {
+    let required = applicable
+        .iter()
+        .copied()
+        .filter(|index| faults[*index].required)
+        .collect::<Vec<_>>();
+    if required.len() > maximum
+        || required.iter().enumerate().any(|(offset, first)| {
+            required[offset + 1..]
+                .iter()
+                .any(|second| !campaign_faults_compatible(&faults[*first], &faults[*second]))
+        })
+    {
+        return Vec::new();
+    }
+    let optional = applicable
+        .iter()
+        .copied()
+        .filter(|index| {
+            !faults[*index].required
+                && required
+                    .iter()
+                    .all(|required| campaign_faults_compatible(&faults[*required], &faults[*index]))
+        })
+        .collect::<Vec<_>>();
+    let mut optional_selections = vec![Vec::new()];
+    optional_selections.extend(campaign_fault_combinations(
+        faults,
+        &optional,
+        maximum - required.len(),
+    ));
+    optional_selections
+        .into_iter()
+        .map(|selected| {
+            applicable
+                .iter()
+                .copied()
+                .filter(|index| faults[*index].required || selected.contains(index))
+                .collect()
+        })
+        .collect()
 }
 
 /// Enumerate every ordered operation history, including repetitions, in stable
@@ -5174,6 +5245,13 @@ fn campaign_fault_applies(
                 .any(|operation| campaign_fault_matches_operation(campaign, fault, *operation))
         }
     }
+}
+
+fn campaign_required_faults_apply(campaign: &CampaignPlan, schedule: &CampaignSchedule) -> bool {
+    schedule.faults.iter().all(|index| {
+        let fault = &campaign.faults[*index];
+        !fault.required || campaign_fault_applies(fault, &schedule.operations, campaign)
+    })
 }
 
 fn apply_campaign_schedule(
@@ -12435,6 +12513,7 @@ mod tests {
     fn campaign_fault(kind: CampaignFaultKind) -> CampaignFault {
         CampaignFault {
             kind,
+            required: false,
             service: None,
             network: Some("backplane".to_owned()),
             from: None,
@@ -12482,6 +12561,60 @@ mod tests {
                 vec![2]
             ]
         );
+    }
+
+    #[test]
+    fn campaign_fault_selections_keep_required_faults_in_every_candidate() {
+        let mut required_partition = campaign_fault(CampaignFaultKind::Partition);
+        required_partition.required = true;
+        let mut required_heal = campaign_fault(CampaignFaultKind::Heal);
+        required_heal.required = true;
+        required_heal.after = Some("read".to_owned());
+        let faults = vec![
+            required_partition,
+            campaign_fault(CampaignFaultKind::LinkPartition),
+            required_heal,
+        ];
+
+        assert_eq!(
+            campaign_fault_selections(&faults, &[0, 1, 2], 3),
+            vec![vec![0, 2], vec![0, 1, 2]]
+        );
+        assert_eq!(
+            campaign_fault_selections(&faults, &[0, 1, 2], 2),
+            vec![vec![0, 2]]
+        );
+    }
+
+    #[test]
+    fn campaign_minimization_cannot_remove_a_required_fault_trigger() {
+        let campaign: CampaignPlan = serde_json::from_value(serde_json::json!({
+            "driver": "api",
+            "operations": [{"name": "start", "inputs": [{"name": "default", "input_hex": ""}]}],
+            "faults": [{
+                "kind": "partition",
+                "required": true,
+                "network": "backplane",
+                "after": "start"
+            }],
+            "max_runs": 1
+        }))
+        .unwrap();
+
+        assert!(campaign_required_faults_apply(
+            &campaign,
+            &CampaignSchedule {
+                operations: vec![choice(0)],
+                faults: vec![0]
+            }
+        ));
+        assert!(!campaign_required_faults_apply(
+            &campaign,
+            &CampaignSchedule {
+                operations: Vec::new(),
+                faults: vec![0]
+            }
+        ));
     }
 
     #[test]

@@ -310,6 +310,13 @@ each service, locked artifacts, one serial log per boot, applied faults, and
 `compose test` needs Linux and KVM. macOS keeps supporting `compose validate`
 and `compose plan`; it reports a direct missing-runner error for execution.
 
+Campaign operation-barrier fault entries are explored as optional choices by
+default. Add `required: true` when every generated schedule that reaches the
+fault's `after` operation must apply it. Required faults count toward
+`max_faults_per_run` and counterexample minimization keeps them. This supports
+fixed disruption/recovery scenarios without turning all other fault candidates
+into mandatory actions.
+
 ## Checks
 
 One-timeline results have two built-in checks: `guest_exit` requires exit

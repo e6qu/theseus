@@ -1,9 +1,12 @@
 # Tutorial 30: Reproduce a lost update across services
 
 Run two ordinary worker images against one counter image. The workers use the
-simulated Compose network and can remain in flight at the same time. A
-sequential schedule leaves the counter at two. An overlapping schedule lets
-both HTTP requests read zero before either writes, leaving the counter at one.
+simulated Compose network. Before exploring either counter outcome, the
+campaign applies a required partition, sends a UDP probe that the simulated
+network records as dropped, heals the network, and verifies that HTTP works
+again. The workers then remain in flight at the same time. A sequential
+schedule leaves the counter at two. An overlapping schedule lets both HTTP
+requests read zero before either writes, leaving the counter at one.
 
 This example also exercises one locked runtime contract: service-name
 networking, health checks, launch overrides, numeric credentials, environment
@@ -91,12 +94,18 @@ theseus compose explore \
   --expect-counterexample distributed_lost_update_is_unreachable \
   --output campaign compose.yaml
 grep -n 'distributed_lost_update_is_unreachable' campaign/campaign-result.json
+grep -n 'backplane:partition@setup\|backplane:heal@probe_partition' \
+  campaign/campaign-result.json
+grep -E '"dropped": [1-9][0-9]*' campaign/campaign-result.json
+grep -R '"network":"recovered"' campaign/runs/*/services/writer-a/serial.log
 grep -R '"value":1' campaign/runs/*/services/counter/serial.log
 grep -R '"value":2' campaign/runs/*/services/counter/serial.log
 ```
 
 The command succeeds only when the named property has a retained failed
-verdict. The two greps expose the overlapping and sequential outcomes.
+verdict. The action names, dropped-frame count, and recovery output show that
+the partition was exercised and healed before the two counter outcomes were
+explored.
 
 ## 5. Inspect, minimize, and replay
 
@@ -116,13 +125,18 @@ theseus compose explore --minimize campaign \
   --output minimized
 sed -n '1,180p' minimized/minimization.json
 theseus compose replay minimized --output rerun
+grep -n 'partition\|heal' rerun/topology-result.json
+grep -E '"dropped": [1-9][0-9]*' rerun/services/*/result.json
+grep -R '"network":"recovered"' rerun/services/writer-a/serial.log
 grep -R '"value":1' rerun/services/counter/serial.log
 ```
 
-The replay uses the minimized plan and artifacts. It does not rebuild either
-image or select a new operation schedule. Its artifact paths are relative to
-the locked bundle, so the complete `minimized` directory can be moved and
-replayed elsewhere.
+Required actions survive minimization, so this replay includes the partition,
+dropped UDP probe, recovery, successful HTTP probe, and lost update. The replay
+uses the minimized plan and artifacts. It does not rebuild either image or
+select a new operation schedule. Its artifact paths are relative to the locked
+bundle, so the complete `minimized` directory can be moved and replayed
+elsewhere.
 
 ## 6. Clean up (optional)
 

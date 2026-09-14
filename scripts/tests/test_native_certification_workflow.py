@@ -18,6 +18,12 @@ def main() -> None:
     assert "docs/tutorials/30-multiservice-lost-update" in WORKFLOW
     assert WORKFLOW.count("--expect-counterexample distributed_lost_update_is_unreachable") == 2
     assert 'theseus compose replay minimized --output rerun' in WORKFLOW
+    assert "backplane:partition@setup" in WORKFLOW
+    assert "backplane:heal@probe_partition" in WORKFLOW
+    assert '"dropped"' in WORKFLOW
+    assert "rerun/services/*/result.json" in WORKFLOW
+    assert WORKFLOW.count("rerun/topology-result.json") >= 3
+    assert "rerun/services/writer-a/serial.log" in WORKFLOW
     assert 'cp /opt/theseus/pivot.json runtime-pivot.json' in WORKFLOW
     assert '"format": "theseus-counterexample-proof-v1"' in WORKFLOW
     assert '"$tutorial/minimized/evidence"' in WORKFLOW
