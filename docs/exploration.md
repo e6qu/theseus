@@ -65,6 +65,32 @@ The retained timeline assigns every boundary a stable `op-NNN-<name>` ID.
 This controls operation-level overlap; it is not general Linux thread
 scheduling.
 
+## Require a fault and recovery path
+
+Operation-barrier faults are optional search choices unless they set
+`required: true`. A required fault is present in every generated schedule that
+reaches its `after` operation, counts toward `max_faults_per_run`, and is
+preserved by counterexample minimization. Use required actions when the
+workload must prove that a specific disruption and recovery happened before
+testing the property:
+
+```yaml
+max_faults_per_run: 2
+faults:
+  - kind: partition
+    required: true
+    network: backplane
+    after: start
+  - kind: heal
+    required: true
+    network: backplane
+    after: verify_isolation
+```
+
+Keep the property independent of the fault when that distinction matters. For
+example, Tutorial 30 heals and probes the network before it overlaps two
+writes, so the retained lost update is still a concurrency failure.
+
 When a campaign deliberately contains a property to falsify, make that outcome
 part of the command contract:
 

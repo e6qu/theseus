@@ -361,6 +361,10 @@ impl ComposeOperationSerialGuard {
 #[serde(deny_unknown_fields)]
 struct ComposeCampaignFault {
     kind: CampaignFaultKind,
+    /// Keep this action in every generated schedule that reaches its trigger.
+    /// Required actions are also preserved by counterexample minimization.
+    #[serde(default)]
+    required: bool,
     #[serde(default)]
     service: Option<String>,
     #[serde(default)]
@@ -1222,6 +1226,8 @@ pub struct OperationSerialGuardPlan {
 #[derive(Debug, Clone, Serialize)]
 pub struct CampaignFaultPlan {
     pub kind: CampaignFaultKind,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub required: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2434,6 +2440,10 @@ fn default_campaign_runs() -> u16 {
     32
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 fn default_http_status() -> u16 {
     200
 }
@@ -2885,6 +2895,12 @@ fn campaign_plan(
             CampaignFaultKind::Pause
             | CampaignFaultKind::Restart
             | CampaignFaultKind::ClockJump => {
+                if candidate.required {
+                    return Err(ComposeError::Invalid(
+                        "campaign lifecycle faults cannot be required; declare an always-applied fault under the service"
+                            .to_owned(),
+                    ));
+                }
                 let service_name = candidate.service.as_deref().ok_or_else(|| {
                     ComposeError::Invalid("campaign lifecycle fault requires service".to_owned())
                 })?;
@@ -2941,6 +2957,7 @@ fn campaign_plan(
                 let fault = validated.pop().expect("one validated campaign fault");
                 faults.push(CampaignFaultPlan {
                     kind: candidate.kind,
+                    required: candidate.required,
                     service: Some(service_name.to_owned()),
                     network: None,
                     from: None,
@@ -3009,6 +3026,7 @@ fn campaign_plan(
                 }
                 faults.push(CampaignFaultPlan {
                     kind: candidate.kind,
+                    required: candidate.required,
                     service: None,
                     network: Some(network.to_owned()),
                     from: None,
@@ -3096,6 +3114,7 @@ fn campaign_plan(
                 }
                 faults.push(CampaignFaultPlan {
                     kind: candidate.kind,
+                    required: candidate.required,
                     service: None,
                     network: Some(network.to_owned()),
                     from: Some(from.to_owned()),
@@ -3196,6 +3215,7 @@ fn campaign_plan(
                 }
                 faults.push(CampaignFaultPlan {
                     kind: candidate.kind,
+                    required: candidate.required,
                     service: Some(service_name.to_owned()),
                     network: None,
                     from: None,
@@ -3290,6 +3310,7 @@ fn campaign_plan(
                 }
                 faults.push(CampaignFaultPlan {
                     kind: candidate.kind,
+                    required: candidate.required,
                     service: None,
                     network: Some(network.to_owned()),
                     from: None,
@@ -3432,6 +3453,7 @@ fn campaign_plan(
                 }
                 faults.push(CampaignFaultPlan {
                     kind: candidate.kind,
+                    required: candidate.required,
                     service: None,
                     network: Some(network.to_owned()),
                     from: directed.map(|(from, _)| from.to_owned()),
@@ -3462,6 +3484,13 @@ fn campaign_plan(
                 });
             }
         }
+    }
+    let required_faults = faults.iter().filter(|fault| fault.required).count();
+    if required_faults > usize::from(campaign.max_faults_per_run) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign declares {required_faults} required faults but max_faults_per_run is {}",
+            campaign.max_faults_per_run
+        )));
     }
     let mut property_names = BTreeSet::new();
     let mut properties = Vec::with_capacity(campaign.properties.len());
@@ -7862,6 +7891,62 @@ x-theseus:
         );
         let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
         assert!(error.to_string().contains("max_faults_per_run"));
+    }
+
+    #[test]
+    fn normalizes_required_faults_and_enforces_the_schedule_bound() {
+        let compose = |maximum| {
+            format!(
+                r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {{}}
+x-theseus:
+  campaign:
+    driver: api
+    max_faults_per_run: {maximum}
+    operations:
+      - name: write
+        input: "write\n"
+      - name: read
+        input: "read\n"
+    faults:
+      - kind: partition
+        required: true
+        network: backplane
+        after: write
+      - kind: heal
+        required: true
+        network: backplane
+        after: read
+"#
+            )
+        };
+        let valid = fixture(&compose(2));
+        let campaign = load_compose_plan(valid.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        assert!(campaign.faults.iter().all(|fault| fault.required));
+
+        let invalid = fixture(&compose(1));
+        let error = load_compose_plan(invalid.path().join("compose.yaml")).unwrap_err();
+        assert!(error.to_string().contains("2 required faults"));
+        assert!(error.to_string().contains("max_faults_per_run is 1"));
+    }
+
+    #[test]
+    fn rejects_required_campaign_lifecycle_faults() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: request\n        input: 'request\\n'\n    faults:\n      - kind: pause\n        required: true\n        service: api\n        at_round: 1\n",
+        );
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("campaign lifecycle faults cannot be required"));
     }
 
     #[test]
