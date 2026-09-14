@@ -29,7 +29,8 @@ passing unit suite alone is not treated as runtime proof.
 - GCC-instrumented C basic-block coverage with ASLR-independent, build-scoped
   identities retained through campaign guidance, replay, comparison, and reports.
 - Bounded GCC C pthread scheduling at application basic-block boundaries, with
-  explicit schedules and runnable-set decisions retained and replay-checked.
+  explicit schedules and runnable-set decisions retained and replay-checked;
+  default mutexes and untimed condition variables update the runnable set.
 - SHA-addressed Linux runtime images for amd64 and arm64, plus published CLI
   binaries for Linux amd64/arm64 and macOS arm64.
 
@@ -43,8 +44,10 @@ passing unit suite alone is not treated as runtime proof.
   frontend and versioned serial records. Other languages use marker or sampled
   guest-PC baselines; edge coverage is not implemented.
 - Thread scheduling is a bounded GCC C path, not general Linux scheduling. It
-  supports 32 pthreads and 8,192 decisions, intercepts `pthread_join`, and
-  cannot safely control programs that block in other uninstrumented calls.
+  supports 32 pthreads and 8,192 decisions, and controls joins, default mutex
+  locking, and untimed condition waits/signals/broadcasts. Timed waits,
+  cancellation, direct futex use, blocking I/O, and processes remain outside
+  this profile.
 - `compare` finds the first difference in two recorded histories. It does not
   perform counterfactual re-exploration or prove causality.
 - Capturing a branch copies guest RAM into a memfd. Restored children then use
@@ -80,6 +83,8 @@ examples:
     and replay the locked failing case.
 11. Grow pthread schedule prefixes from observed runnable sets instead of
     declaring candidate patterns in advance.
+12. Control pthread mutex and condition-variable blocking and retain each
+    synchronization transition with stable object identities.
 
 Each tutorial directory is its own working directory and complete input
 context. Runnable tutorials use published Theseus images or binaries, not a

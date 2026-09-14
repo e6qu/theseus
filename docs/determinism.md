@@ -59,6 +59,13 @@ requires the same ordered records. Creation-order identities and the locked
 build make this path independent of ASLR and host thread timing within its
 supported boundary.
 
+Default mutex locks use nonblocking acquisition under the same scheduler.
+Mutex waiters leave the runnable mask until release. Untimed condition waits
+release their mutex and leave the mask; signal selects the lowest stable
+waiting identity, while broadcast makes every waiter runnable. Ordered
+synchronization events use stable first-use object numbers and are retained at
+operation boundaries and checked during replay.
+
 A Compose search contract deterministically expands a declared thread set,
 period, and adjacent-switch limit into at most 256 named patterns. The locked
 plan contains the complete expanded patterns, so later selection and replay do
@@ -92,10 +99,11 @@ not depend on the expansion implementation.
   host-side random calls cannot interleave.
 - **io_uring / file-backed block.** Not simulated yet; deterministic mode
   expects sim or inert storage backends.
-- **Uninstrumented thread blocking.** The bounded GCC C scheduler controls
-  application basic blocks and `pthread_join`, not arbitrary mutexes, futexes,
-  condition variables, blocking syscalls, processes, or library code. Such a
-  target can deadlock and is outside the supported scheduling profile.
+- **Unsupported thread blocking.** The bounded GCC C scheduler controls
+  application basic blocks, joins, default mutex locking, and untimed
+  condition waits/signals/broadcasts. Timed waits, cancellation, semaphores,
+  direct futex use, blocking syscalls, processes, and uninstrumented library
+  concurrency remain outside the supported scheduling profile.
 
 ## Replay fingerprints
 

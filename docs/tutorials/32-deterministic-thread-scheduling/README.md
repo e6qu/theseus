@@ -116,6 +116,6 @@ rm -rf service/work plan.json campaign report rerun
 ```
 
 This first scheduler is deliberately bounded: 32 threads, 8,192 decisions,
-GCC C programs, and application basic-block boundaries. A program must not
-block at an uninstrumented synchronization operation; `pthread_join` is the
-only blocking operation intercepted by this frontend.
+GCC C programs and application basic-block boundaries. The frontend controls
+joins, default mutex locking, and untimed condition waits, signals, and
+broadcasts. Tutorial 35 exercises those synchronization operations.

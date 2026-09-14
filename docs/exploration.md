@@ -231,8 +231,11 @@ positions count only decisions with more than one runnable thread. Results,
 minimization, and replay retain the exact prefix separately from the observed
 scheduling trace.
 
-This source implementation is bounded to 32 pthreads and 8,192 decisions. It
-controls only instrumented application basic blocks and intercepts
-`pthread_create` and `pthread_join`. A target that blocks in another
-uninstrumented synchronization call can deadlock, so this is not general Linux
-thread/process scheduling. Native amd64 and arm64 KVM evidence remains pending.
+This source implementation is bounded to 32 pthreads, 8,192 decisions, 8,192
+synchronization events, and 128 synchronization objects. It controls
+instrumented application basic blocks, joins, default mutex locking, and
+untimed condition waits, signals, and broadcasts. Stable first-use object
+numbers and every synchronization transition are retained and replay-checked.
+Timed waits, cancellation, semaphores, direct futex use, blocking I/O,
+processes, and uninstrumented library concurrency remain unsupported. Native
+amd64 and arm64 KVM evidence remains pending.

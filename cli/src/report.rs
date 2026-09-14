@@ -338,6 +338,8 @@ struct CampaignResult {
     #[serde(default)]
     thread_scheduling_decisions: usize,
     #[serde(default)]
+    thread_synchronization_events: usize,
+    #[serde(default)]
     search: Option<CampaignSearchEvidence>,
     #[serde(default)]
     replay_verification: Option<ReplayVerification>,
@@ -383,6 +385,8 @@ struct CampaignRun {
     application_block_novelty: Vec<String>,
     #[serde(default)]
     thread_scheduling: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
+    #[serde(default)]
+    thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
     #[serde(default)]
     state_novel: bool,
     status: String,
@@ -487,6 +491,10 @@ struct CampaignTimelineBoundary {
     #[serde(default)]
     new_thread_scheduling_decisions: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
     #[serde(default)]
+    thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
+    #[serde(default)]
+    new_thread_synchronization_events: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
+    #[serde(default)]
     serial_sha256: BTreeMap<String, String>,
     #[serde(default)]
     serial_delta: BTreeMap<String, CampaignSerialDelta>,
@@ -518,6 +526,20 @@ struct ThreadSchedulingDecision {
     runnable_mask: String,
     selected_thread: u8,
     point_offset: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct ThreadSynchronizationEvent {
+    process: String,
+    module: String,
+    build_sha256: String,
+    event: u64,
+    thread: u8,
+    operation: String,
+    object_kind: String,
+    object: u16,
+    #[serde(default)]
+    peer_thread: Option<u8>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -1035,12 +1057,13 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         coverage: Some(Coverage {
             label: "Campaign corpus".to_owned(),
             summary: format!(
-                "{} of {} deterministic candidates selected by {guidance} using {coverage_signal}; {} marker-guard leaves and {} serial-guard leaves skipped; {} thread-scheduling decisions retained; {} unique application blocks; {} unique instruction locations; {} unique topology states; {} root captures, {} reusable checkpoint nodes, {} prefix captures, {} prefix reuses ({} avoided recomputations), {} topology restores ({} prefix materializations + {} leaf replays); {} retained immutable bytes, {} logical COW-mapped restore bytes, {} dirty pages at capture barriers, {} snapshot-file bytes{}",
+                "{} of {} deterministic candidates selected by {guidance} using {coverage_signal}; {} marker-guard leaves and {} serial-guard leaves skipped; {} thread-scheduling decisions and {} synchronization events retained; {} unique application blocks; {} unique instruction locations; {} unique topology states; {} root captures, {} reusable checkpoint nodes, {} prefix captures, {} prefix reuses ({} avoided recomputations), {} topology restores ({} prefix materializations + {} leaf replays); {} retained immutable bytes, {} logical COW-mapped restore bytes, {} dirty pages at capture barriers, {} snapshot-file bytes{}",
                 result.runs.len(),
                 result.generated_candidates,
                 result.marker_guard_rejections,
                 result.serial_guard_rejections,
                 result.thread_scheduling_decisions,
+                result.thread_synchronization_events,
                 result.unique_application_blocks,
                 result.unique_instruction_locations,
                 result.unique_topology_states,
@@ -1204,6 +1227,7 @@ s=section('Operation boundaries');
 s.append(el('p','Each row is the paused checkpoint after one operation. Target names the service whose UART received it. UART input is an escaped, bounded copy of the exact delivered bytes; its hash covers the complete input in the locked replay plan. UART delivery records accepted bytes, guest FIFO reads, and queued bytes. UART barrier records that the named marker arrived after that input, with its post-input response hash and excerpt. The delta compares the checkpoint with the preceding one. New serial output is also escaped and bounded. Network counters, changed storage, and virtual-time deltas show state produced by this operation.'));
 s.append(table(rows,['Run','Boundary ID','Operation','Target','UART input','UART delivery','UART barrier','Round','Delta','Markers','Instruction locations','Thread scheduling','Applied actions','Serial SHA-256','New serial output','Network traffic','Changed storage','Virtual time delta','State SHA-256']));
 }}
+if(m.campaign_runs.some(r=>Object.keys(r.thread_synchronization).length)){{const rows=m.campaign_runs.flatMap(r=>Object.entries(r.thread_synchronization).flatMap(([service,events])=>events.map(e=>[String(r.index),service,'#'+e.event,'t'+e.thread,e.operation,e.object_kind+'-'+e.object,e.peer_thread===null?'none':'t'+e.peer_thread]))),s=section('Thread synchronization');s.append(table(rows,['Run','Service','Event','Thread','Operation','Object','Peer thread']));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
 if(m.campaign_minimization){{const x=m.campaign_minimization,s=section('Campaign minimization');s.append(table([[x.property,x.original_operations.join(' → ')||'none',x.minimized_operations.join(' → ')||'none',x.original_faults.join(' + ')||'none',x.minimized_faults.join(' + ')||'none',String(x.operation_attempts),String(x.fault_attempts)]],['Property','Original operations','1-minimal operations','Original faults','1-minimal faults','Operation replays','Fault replays']));}}
 if(m.replay_verification){{const s=section('Replay verification');s.append(table([[m.replay_verification.status,m.replay_verification.detail]],['Status','Detail']));}}
@@ -1501,6 +1525,14 @@ fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 19]> {
             if scheduling_count > 0 {
                 delta.push(format!("scheduling decisions: {scheduling_count}"));
             }
+            let synchronization_count = boundary
+                .new_thread_synchronization_events
+                .values()
+                .map(Vec::len)
+                .sum::<usize>();
+            if synchronization_count > 0 {
+                delta.push(format!("synchronization events: {synchronization_count}"));
+            }
             let delta = if delta.is_empty() {
                 "none".to_owned()
             } else {
@@ -1529,7 +1561,7 @@ fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 19]> {
                     &boundary.program_counters,
                     &boundary.instruction_locations,
                 ),
-                campaign_thread_scheduling_label(&boundary.new_thread_scheduling_decisions),
+                campaign_thread_execution_label(boundary),
                 boundary
                     .actions
                     .iter()
@@ -1578,6 +1610,37 @@ fn campaign_thread_scheduling_label(
         "none".to_owned()
     } else {
         labels.join(" · ")
+    }
+}
+
+fn campaign_thread_execution_label(boundary: &CampaignTimelineBoundary) -> String {
+    let scheduling = campaign_thread_scheduling_label(&boundary.new_thread_scheduling_decisions);
+    let synchronization = boundary
+        .new_thread_synchronization_events
+        .iter()
+        .flat_map(|(service, events)| {
+            events.iter().map(move |event| {
+                let peer = event
+                    .peer_thread
+                    .map(|peer| format!(" -> t{peer}"))
+                    .unwrap_or_default();
+                format!(
+                    "{service}: sync #{} t{} {} {}-{}{}",
+                    event.event,
+                    event.thread,
+                    event.operation,
+                    event.object_kind,
+                    event.object,
+                    peer
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    match (scheduling.as_str(), synchronization.is_empty()) {
+        ("none", true) => "none".to_owned(),
+        ("none", false) => synchronization.join(" · "),
+        (_, true) => scheduling,
+        (_, false) => format!("{scheduling} · {}", synchronization.join(" · ")),
     }
 }
 
@@ -1720,7 +1783,7 @@ fn render_markdown(model: &ReportModel) -> String {
             output.push_str(" | Property witnesses");
         }
         output.push_str(
-            " | Instruction locations | New application blocks | Scheduling decisions | Status |\n| --- | --- | --- | ---",
+            " | Instruction locations | New application blocks | Scheduling decisions | Synchronization events | Status |\n| --- | --- | --- | ---",
         );
         if has_posterior {
             output.push_str(" | ---");
@@ -1728,7 +1791,7 @@ fn render_markdown(model: &ReportModel) -> String {
         if has_property_witnesses {
             output.push_str(" | ---");
         }
-        output.push_str(" | --- | --- | --- | --- |\n");
+        output.push_str(" | --- | --- | --- | --- | --- |\n");
         for run in &model.campaign_runs {
             let candidates = if run.faults.is_empty() {
                 run.fault.clone().unwrap_or_else(|| "none".to_owned())
@@ -1755,10 +1818,14 @@ fn render_markdown(model: &ReportModel) -> String {
                 ));
             }
             output.push_str(&format!(
-                " | {} | {} | {} | {} |\n",
+                " | {} | {} | {} | {} | {} |\n",
                 markdown_cell(&campaign_instruction_location_labels(run)),
                 markdown_cell(&campaign_application_block_labels(run)),
                 run.thread_scheduling.values().map(Vec::len).sum::<usize>(),
+                run.thread_synchronization
+                    .values()
+                    .map(Vec::len)
+                    .sum::<usize>(),
                 markdown_cell(&run.status)
             ));
         }
@@ -1769,7 +1836,7 @@ fn render_markdown(model: &ReportModel) -> String {
         .flat_map(campaign_timeline_labels)
         .collect::<Vec<_>>();
     if !timeline.is_empty() {
-        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. Boundary ID is stable within the replayed schedule. Target is the service whose UART received it. UART input is an escaped, bounded copy of the delivered bytes; its hash covers the complete input in the locked replay plan. UART delivery records accepted bytes, guest FIFO reads, and queued bytes. UART barrier records that the named marker arrived after that input, with its post-input response hash and excerpt. The delta compares the checkpoint with the preceding one.\n\n| Run | Boundary ID | Operation | Target | UART input | UART delivery | UART barrier | Round | Delta | Markers | Instruction locations | Thread scheduling | Applied actions | Serial SHA-256 | New serial output | Network traffic | Changed storage | Virtual time delta | State SHA-256 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. Boundary ID is stable within the replayed schedule. Target is the service whose UART received it. UART input is an escaped, bounded copy of the delivered bytes; its hash covers the complete input in the locked replay plan. UART delivery records accepted bytes, guest FIFO reads, and queued bytes. UART barrier records that the named marker arrived after that input, with its post-input response hash and excerpt. The delta compares the checkpoint with the preceding one.\n\n| Run | Boundary ID | Operation | Target | UART input | UART delivery | UART barrier | Round | Delta | Markers | Instruction locations | Thread execution | Applied actions | Serial SHA-256 | New serial output | Network traffic | Changed storage | Virtual time delta | State SHA-256 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
         for [run, id, operation, target, input, delivery, barrier, round, delta, markers, locations, scheduling, actions, serial, serial_output, traffic, storage, time, state] in
             timeline
         {
@@ -2157,7 +2224,8 @@ mod tests {
         );
 
         let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
-        assert!(markdown.contains("1 thread-scheduling decisions retained"));
+        assert!(markdown
+            .contains("1 thread-scheduling decisions and 0 synchronization events retained"));
         assert!(markdown.contains("Scheduling decisions"));
         assert!(markdown.contains("#4 t1 -> t2 among 0x00000006 @0x42"));
         assert!(markdown.contains("| 0 | deposit | 0,1,2 |"));
@@ -2167,6 +2235,32 @@ mod tests {
         assert!(html.contains("locked schedule cases"));
         assert!(html.contains("\"generated_schedules\":123"));
         assert!(html.contains("Runnable prefix"));
+    }
+
+    #[test]
+    fn renders_retained_thread_synchronization_events() {
+        let directory = tempfile::tempdir().unwrap();
+        write_json(
+            &directory.path().join("replay-plan.json"),
+            r#"{"format":"theseus-compose-plan-v1","campaign":{"operations":[{"name":"workers"}]}}"#,
+        );
+        let digest = "0123456789abcdef".repeat(4);
+        write_json(
+            &directory.path().join("campaign-result.json"),
+            &format!(
+                r#"{{"format":"theseus-compose-campaign-result-v1","status":"passed","driver":"workers","thread_synchronization_events":1,"runs":[{{"index":0,"operations":["workers"],"status":"passed","thread_synchronization":{{"workers":[{{"process":"workers","module":"condition","build_sha256":"{digest}","event":4,"thread":2,"operation":"signal","object_kind":"condition","object":1,"peer_thread":1}}]}},"timeline":[{{"operation":"workers","service":"workers","new_thread_synchronization_events":{{"workers":[{{"process":"workers","module":"condition","build_sha256":"{digest}","event":4,"thread":2,"operation":"signal","object_kind":"condition","object":1,"peer_thread":1}}]}}}}]}}]}}"#
+            ),
+        );
+
+        let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
+        assert!(markdown.contains("0 thread-scheduling decisions and 1 synchronization events"));
+        assert!(markdown.contains("synchronization events: 1"));
+        assert!(markdown.contains("sync #4 t2 signal condition-1 -> t1"));
+        assert!(markdown.contains("Synchronization events"));
+        let index = report(directory.path(), directory.path().join("report")).unwrap();
+        let html = fs::read_to_string(index).unwrap();
+        assert!(html.contains("Thread synchronization"));
+        assert!(html.contains("object_kind"));
     }
 
     #[test]

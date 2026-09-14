@@ -1,0 +1,30 @@
+name: control-pthread-synchronization
+
+services:
+  workers:
+    x-theseus:
+      manifest: service/theseus.toml
+    networks: [test]
+
+networks:
+  test: {}
+
+x-theseus:
+  campaign:
+    driver: workers
+    max_runs: 32
+    max_operations_per_run: 1
+    operations:
+      - name: run_workers
+        shell:
+          command: [/usr/local/bin/workers]
+          output_json: true
+          thread_schedule:
+            runnable_prefixes:
+              max_choices: 24
+              max_variants: 32
+    properties:
+      - name: every_reader_observes_the_value
+        kind: always
+        service: workers
+        contains: '"value":42'

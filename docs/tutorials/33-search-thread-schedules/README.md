@@ -101,5 +101,6 @@ rm -rf service/work plan.json campaign report minimized rerun
 
 This search enumerates periodic patterns declared before execution. Use
 Tutorial 34 when you want Theseus to grow prefixes from observed runnable
-sets. The scheduler remains bounded to GCC C, 32 pthread identities, 8,192
-decisions, and `pthread_join` as its only modeled blocking operation.
+sets. The scheduler remains bounded to GCC C, 32 pthread identities, and
+8,192 decisions. It also controls joins, default mutex locking, and untimed
+condition waits, signals, and broadcasts.

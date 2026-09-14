@@ -9,7 +9,7 @@ TUTORIALS = ROOT / "docs" / "tutorials"
 HARNESS_TUTORIALS = {"01-replay-by-seed", "02-control-the-random", "04-read-serial"}
 
 directories = sorted(path for path in TUTORIALS.glob("[0-9][0-9]-*") if path.is_dir())
-assert len(directories) == 34, f"expected 34 tutorials, found {len(directories)}"
+assert len(directories) == 35, f"expected 35 tutorials, found {len(directories)}"
 
 for directory in directories:
     readme = directory / "README.md"
