@@ -799,7 +799,8 @@ fn run_campaign_grpc_operation(operation: CampaignGrpcOperation) -> Result<(), S
 // Large enough for either bounded C instrumentation runtime at its hard
 // record limit plus a small JSON result, while still bounding guest memory.
 const SHELL_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
-const APPLICATION_COVERAGE_PREFIX: &[u8] = b"THES:COV:v1:";
+const APPLICATION_BLOCK_COVERAGE_PREFIX: &[u8] = b"THES:COV:v1:";
+const APPLICATION_EDGE_COVERAGE_PREFIX: &[u8] = b"THES:COV:v2:";
 const THREAD_SCHEDULE_PREFIX: &[u8] = b"THES:SCHED:v1:";
 const THREAD_SCHEDULE_ERROR_PREFIX: &[u8] = b"THES:SCHED:ERROR:";
 const STRUCTURED_CHOICE_PREFIX: &[u8] = b"THES:CHOICE:";
@@ -930,7 +931,8 @@ fn forward_instrumentation_records(output: &[u8]) -> Vec<u8> {
             .unwrap_or(line)
             .strip_suffix(b"\r")
             .unwrap_or_else(|| line.strip_suffix(b"\n").unwrap_or(line));
-        if record.starts_with(APPLICATION_COVERAGE_PREFIX)
+        if record.starts_with(APPLICATION_BLOCK_COVERAGE_PREFIX)
+            || record.starts_with(APPLICATION_EDGE_COVERAGE_PREFIX)
             || record.starts_with(THREAD_SCHEDULE_PREFIX)
             || record.starts_with(THREAD_SCHEDULE_ERROR_PREFIX)
             || record.starts_with(STRUCTURED_CHOICE_PREFIX)
@@ -1436,6 +1438,12 @@ mod tests {
     }
 
     #[test]
+    fn separates_llvm_edge_coverage_from_command_json() {
+        let output = b"THES:COV:v2:worker:parser:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:17:0x42\n{\"value\":7}\n";
+        assert_eq!(forward_instrumentation_records(output), b"{\"value\":7}\n");
+    }
+
+    #[test]
     fn separates_thread_schedule_records_from_command_json() {
         let output = b"THES:SCHED:v1:worker:ledger:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:7:1:0x00000006:2:0x42\n{\"balance\":22}\n";
         assert_eq!(
@@ -1455,7 +1463,7 @@ mod tests {
 
     #[test]
     fn leaves_noncoverage_command_output_unchanged() {
-        let output = b"THES:COV:v2:not-supported\nnormal output\n";
+        let output = b"THES:COV:v3:not-supported\nnormal output\n";
         assert_eq!(forward_instrumentation_records(output), output);
     }
 

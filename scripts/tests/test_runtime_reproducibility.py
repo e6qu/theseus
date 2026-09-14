@@ -29,7 +29,12 @@ def main() -> None:
     assert "instrumentation/c/theseus_coverage.c" in DOCKERFILE
     assert "instrumentation/c/theseus-schedule-cc" in DOCKERFILE
     assert "instrumentation/c/theseus_schedule.c" in DOCKERFILE
-    assert "gcc libc6-dev libseccomp2" in DOCKERFILE
+    assert "instrumentation/llvm/theseus-coverage-clang" in DOCKERFILE
+    assert "instrumentation/llvm/theseus-coverage-rustc" in DOCKERFILE
+    assert "instrumentation/llvm/theseus-coverage-inspect" in DOCKERFILE
+    assert "instrumentation/llvm/theseus_coverage.c" in DOCKERFILE
+    assert "libclang-rt-dev" in DOCKERFILE
+    assert "libseccomp2 rustc" in DOCKERFILE
 
     assert "SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}" in RELEASE
     assert "THESEUS_SOURCE_COMMIT=${{ github.sha }}" in RELEASE
@@ -46,6 +51,11 @@ def main() -> None:
     assert "test -x instrumentation/c/theseus-coverage-cc" in RELEASE
     assert RELEASE.count("test -x /opt/theseus/instrumentation/c/theseus-schedule-cc") == 2
     assert "test -x instrumentation/c/theseus-schedule-cc" in RELEASE
+    assert RELEASE.count("test -x /opt/theseus/instrumentation/llvm/theseus-coverage-clang") == 2
+    assert RELEASE.count("test -x /opt/theseus/instrumentation/llvm/theseus-coverage-rustc") == 2
+    assert "test -x instrumentation/llvm/theseus-coverage-clang" in RELEASE
+    assert RELEASE.count("--process smoke --module c") == 2
+    assert RELEASE.count("--process smoke --module rust") == 2
     assert "gh release download" in VERIFY
     assert "gh attestation verify" in VERIFY
     assert "ref: ${{ steps.inputs.outputs.commit }}" in VERIFY

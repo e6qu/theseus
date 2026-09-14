@@ -4,7 +4,7 @@ Each directory is complete: make it your working directory and use the
 published Theseus artifact named in its README. No tutorial needs a Theseus
 source checkout.
 
-Tutorials 1–8, 10–11, and 14–36 need Linux with KVM and Docker. Tutorials 9,
+Tutorials 1–8, 10–11, and 14–37 need Linux with KVM and Docker. Tutorials 9,
 12, and 13 read recorded bundles with only the published binary. Tutorials 1
 and 2 currently use the arm64 runtime, because that is where the matching
 deterministic-CRNG kernel module is shipped.
@@ -89,6 +89,9 @@ deterministic-CRNG kernel module is shipped.
 36. [Explore structured choices](36-structured-choices/) — give a plain C
     command bounded choices, find a failing combination with unified guidance,
     and replay the exact decision trace without the guest SDK.
+37. [Guide a campaign with LLVM edge coverage](37-llvm-edge-coverage/) —
+    instrument C++ and a dynamically loaded native module with the published
+    LLVM tools, retain build-scoped edges, symbolize one, and replay them.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

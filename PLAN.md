@@ -35,7 +35,7 @@ Use these labels consistently:
 | Feedback-guided exploration | Partial | One bounded decision-prefix policy combines coverage, properties, topology states, structured choices, runnable sets, faults, and prior outcomes; it is not yet validated at production scale. |
 | Fault injection | Partial | Network, packet, partition, process, storage, and clock operations exist; asymmetric degradation, latency, clogs, CPU throttling, and a mature custom-fault interface do not. |
 | Assertions and guidance | Partial | Always, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
-| Coverage guidance | Partial | GCC C basic-block coverage exists; broad compiler/language support, edges, shared libraries, source presentation, and production-scale validation do not. |
+| Coverage guidance | Partial | GCC C basic blocks and LLVM C/C++/Rust edges cover PIE executables and native shared libraries. Symbol preservation and explicit source lookup exist; automatic report joins, Go/Java instrumentation, and production-scale validation do not. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
 | Test composition | Early | Campaign operations can overlap, but there is no complete reusable test-template lifecycle comparable to setup, concurrent drivers, serial drivers, anytime actions, and teardown. |
 | Failure investigation | Early | Replay, minimization, checkpoints, reports, and history comparison exist; interactive time travel, interventions, alternative futures, temporal queries, and causal evidence do not. |
@@ -54,8 +54,10 @@ Theseus currently has:
   reuse, minimization, locked replay, comparison, evaluation, and reports.
 - Serial and SDK evidence for always, sometimes, reachable, and unreachable
   properties.
-- Versioned GCC C module-relative basic-block coverage that participates in
-  guidance, replay verification, comparisons, evaluations, and reports.
+- Versioned GCC C block and LLVM C/C++/Rust edge coverage. Both use
+  build-scoped module-relative identities in guidance, replay, comparison,
+  evaluation, and reports. LLVM frontends preserve symbols, validate guards
+  and build IDs, and isolate dynamically loaded module runtimes.
 - A bounded GCC C pthread scheduler with stable creation-order identities,
   explicit schedules, enumerated schedules, and runnable-prefix exploration.
   It controls `pthread_join`, default mutex lock/unlock, and untimed condition
@@ -78,9 +80,10 @@ The baseline has important limits:
 - Guest counters can advance within an exit-counted virtual-time quantum.
 - Stock-kernel `/dev/random` and `/dev/urandom` replay requires the matching
   released kernel and Theseus random-device module.
-- Application coverage supports one bounded GCC C path. It does not yet cover
-  edges, LLVM, other languages, arbitrary shared libraries, or rich source
-  presentation.
+- Application coverage still requires an explicit build frontend. LLVM source
+  lookup is a separate inspection step rather than an automatic report join;
+  Cargo dependency graphs, Go, Java, JavaScript, .NET, and transparent
+  instrumentation of existing images remain unsupported.
 - Scheduling is cooperative and instrumentation-specific. Timed waits,
   cancellation, semaphores, direct futexes, blocking syscalls, `fork`/`exec`,
   uninstrumented threads, and general process scheduling can escape it or
@@ -97,31 +100,30 @@ The baseline has important limits:
   implemented rather than product-ready until a release and both native KVM
   certifications complete.
 
-## Active delivery: Priorities 0–2 as one vertical change
+## Active delivery: broad native coverage as one vertical change
 
-Do not split release closure, the execution-decision foundation, and unified
-search into separate PRs. The active change must land them together:
+Land the first useful Priority 3 slice as one product change, not separate
+frontend, wire-format, runtime, packaging, and documentation PRs:
 
-1. Repair recursive release packaging and verify the published SDK exposes the
-   point-of-use choice API.
-2. Lock bounded structured choices into Compose plans and inject exact values
-   into ordinary image commands without requiring an SDK.
-3. Forward, parse, validate, report, and replay-check choice records at their
-   operation boundaries.
-4. Retain one canonical decision trace containing exact operation inputs,
-   structured choices, runnable selections, and applied actions.
-5. Make unified decision-prefix guidance the default for new plans and combine
-   all currently available feedback signals in that policy.
-6. Ship one self-contained plain-C tutorial, update the comparison and product
-   docs, and keep limitations explicit.
-7. After merge, publish one SHA and run the release/native evidence workflow;
-   the workflow result, not the merge alone, promotes the slice from
-   implemented to demonstrated or product-ready.
+1. Package LLVM instrumentation frontends for C, C++, and standalone Rust
+   binaries beside the existing GCC C frontend.
+2. Emit bounded, build-scoped edge records with module-relative addresses and
+   accept them through operation forwarding, guidance, replay, comparison,
+   evaluation, and reports.
+3. Give PIE executables and dynamically loaded shared libraries independent
+   module runtimes and guard namespaces.
+4. Preserve unstripped symbol artifacts, validate sanitizer guards and GNU
+   build IDs, and resolve a retained edge address to a source location.
+5. Ship the toolchain in both Linux runtime architectures and verify C, C++,
+   Rust, DSO, invalid-record, and release-packaging paths in CI.
+6. Add one self-contained published-artifact tutorial and correct every stale
+   coverage claim, limitation, comparison, audit, and code comment.
 
-This slice does not close general Linux scheduling. Priority 1 remains open
-until process, futex, syscall, signal, timer, interrupt, and device delivery
-are controlled below application wrappers. Priority 2 remains open until the
-unified policy wins fixed-budget public benchmark comparisons.
+This slice is implemented only after its PR passes. It becomes demonstrated
+after the merged SHA publishes and both architectures run the tutorial on
+native KVM. Priority 3 remains open until source catalogs are locked into plans
+and automatically joined into reports, Cargo dependency graphs and the next
+representative languages work, and public workloads validate search value.
 
 ## Priority 0: make the current product real for users
 
@@ -203,14 +205,22 @@ is independently reproducible.
 
 Coverage must work on realistic services rather than only tutorial C binaries.
 
-1. Add an LLVM instrumentation path covering C, C++, and Rust.
-2. Preserve stable module/build identities through PIE, ASLR, shared libraries,
-   dynamic loading, and stripped production artifacts.
-3. Add edge coverage and source association while retaining the compact
-   module-relative format needed for replay and guidance.
-4. Validate symbolization and build identity before a campaign starts.
-5. Extend supported language runtimes based on representative user workloads,
-   with Go and Java as the next explicit targets.
+The source tree has GCC C blocks plus LLVM C/C++/Rust edges with stable
+module/build identities through PIE, ASLR, and dynamic loading. The next work
+is:
+
+1. Lock coverage manifests and symbol artifacts into campaign plans and replay
+   bundles, verify their build identities before boot, and automatically join
+   functions and source locations into reports.
+2. Turn the standalone rustc frontend into a Cargo-integrated path that covers
+   selected workspace crates and dependencies without manual single-file
+   compilation.
+3. Validate stripped executables, split debug files, multiple DSOs, and large
+   multi-service symbol catalogs on both released Linux architectures.
+4. Add representative Go and Java instrumentation paths, then select
+   JavaScript and .NET work from real workload demand.
+5. Compare block, edge, sampled-PC, and unguided search under the same public
+   campaign budgets; retain every workload and result.
 
 Exit when multi-service workloads built with supported production toolchains
 produce stable, source-associated coverage that guides exploration and

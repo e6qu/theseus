@@ -26,8 +26,10 @@ passing unit suite alone is not treated as runtime proof.
   property is retained as failed.
 - In-memory branch capture and private copy-on-write child mappings.
 - Container-image conversion for ordinary Linux service images.
-- GCC-instrumented C basic-block coverage with ASLR-independent, build-scoped
-  identities retained through campaign guidance, replay, comparison, and reports.
+- GCC C basic-block coverage and LLVM C/C++/Rust edge coverage with
+  ASLR-independent, build-scoped identities retained through campaign
+  guidance, replay, comparison, and reports. LLVM shared libraries keep their
+  own module identity, and packaged tools validate and symbolize their builds.
 - Bounded GCC C pthread scheduling at application basic-block boundaries, with
   explicit schedules and runnable-set decisions retained and replay-checked;
   default mutexes and untimed condition variables update the runnable set.
@@ -40,9 +42,10 @@ passing unit suite alone is not treated as runtime proof.
   validate, and inspect retained evidence, but cannot run Firecracker.
 - Virtual counters free-run between exit-counted tick boundaries. Theseus does
   not promise instruction-exact virtual time.
-- Application basic-block coverage currently supports the packaged GCC C
-  frontend and versioned serial records. Other languages use marker or sampled
-  guest-PC baselines; edge coverage is not implemented.
+- LLVM coverage uses explicit build frontends and retained symbol files; it
+  does not transparently instrument arbitrary existing images. Source lookup
+  is currently an explicit inspection step rather than an automatic report
+  join. Go, Java, JavaScript, and .NET instrumentation are not implemented.
 - Thread scheduling is a bounded GCC C path, not general Linux scheduling. It
   supports 32 pthreads and 8,192 decisions, and controls joins, default mutex
   locking, and untimed condition waits/signals/broadcasts. Timed waits,
@@ -87,6 +90,8 @@ examples:
     synchronization transition with stable object identities.
 13. Give a plain C command bounded choices, search their combinations with
     unified feedback, and replay the exact choice records.
+14. Instrument C++, a dynamically loaded library, or Rust with LLVM edge
+    coverage, resolve a reached source location, and replay the edge set.
 
 Each tutorial directory is its own working directory and complete input
 context. Runnable tutorials use published Theseus images or binaries, not a

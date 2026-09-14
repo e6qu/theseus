@@ -1148,8 +1148,9 @@ pub enum CampaignGuidance {
 }
 
 /// Choose the primary deterministic signal used to rank campaign schedules.
-/// Application blocks are explicit records emitted by an instrumented process;
-/// the other modes are lower-fidelity baselines collected by the runtime.
+/// Application blocks and edges are explicit records emitted by an
+/// instrumented process; the other modes are lower-fidelity baselines
+/// collected by the runtime.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CampaignCoverage {
@@ -1158,6 +1159,7 @@ pub enum CampaignCoverage {
     #[default]
     ExecutionLocations,
     ApplicationBlocks,
+    ApplicationEdges,
 }
 
 fn is_default_campaign_coverage(value: &CampaignCoverage) -> bool {
@@ -7179,6 +7181,18 @@ mod tests {
         assert_eq!(
             plan.campaign.expect("campaign is normalized").coverage,
             CampaignCoverage::ApplicationBlocks
+        );
+    }
+
+    #[test]
+    fn normalizes_application_edge_campaign_coverage() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    coverage: application_edges\n    max_runs: 1\n    operations:\n      - name: probe\n        input: \"probe\\n\"\n",
+        );
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(
+            plan.campaign.expect("campaign is normalized").coverage,
+            CampaignCoverage::ApplicationEdges
         );
     }
 

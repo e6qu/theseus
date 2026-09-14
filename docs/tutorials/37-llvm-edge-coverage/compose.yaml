@@ -1,0 +1,36 @@
+name: llvm-edge-coverage
+
+services:
+  classifier:
+    x-theseus:
+      manifest: service/theseus.toml
+    networks: [test]
+
+networks:
+  test: {}
+
+x-theseus:
+  campaign:
+    driver: classifier
+    guidance: unified
+    coverage: application_edges
+    max_runs: 3
+    max_operations_per_run: 1
+    operations:
+      - name: classify_even
+        shell:
+          command: [/usr/local/bin/classify, /usr/local/lib/plugin.so, '2']
+          output_contains: class=even
+      - name: classify_seven
+        shell:
+          command: [/usr/local/bin/classify, /usr/local/lib/plugin.so, '7']
+          output_contains: class=seven
+      - name: classify_odd
+        shell:
+          command: [/usr/local/bin/classify, /usr/local/lib/plugin.so, '3']
+          output_contains: class=odd
+    properties:
+      - name: plugin_branch_is_reachable
+        kind: reachable
+        service: classifier
+        contains: THES:SHELL:operation:classify_seven:PASS

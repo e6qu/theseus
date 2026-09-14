@@ -115,6 +115,8 @@ struct CampaignResult {
     #[serde(default)]
     unique_application_blocks: usize,
     #[serde(default)]
+    unique_application_edges: usize,
+    #[serde(default)]
     thread_scheduling_decisions: usize,
     #[serde(default)]
     thread_synchronization_events: usize,
@@ -231,6 +233,7 @@ pub struct SearchMetric {
     pub unique_topology_states: usize,
     pub unique_instruction_locations: usize,
     pub unique_application_blocks: usize,
+    pub unique_application_edges: usize,
     pub thread_scheduling_decisions: usize,
     pub thread_synchronization_events: usize,
     pub structured_choice_decisions: usize,
@@ -275,7 +278,7 @@ impl EvaluationSummary {
         );
         output.push_str("## Replay and search evidence\n\n");
         output.push_str(&format!(
-            "- Replay verification: {}/{} bundles\n- Generated candidates: {}\n- Retained runs: {}\n- Unique topology states: {}\n- Unique instruction locations: {}\n- Unique application blocks: {}\n- Structured choice decisions: {}\n- Thread scheduling decisions: {}\n- Thread synchronization events: {}\n- Checkpoint work: {} root captures, {} prefix captures, {} nodes, {} prefix reuses, {} avoided recomputations\n",
+            "- Replay verification: {}/{} bundles\n- Generated candidates: {}\n- Retained runs: {}\n- Unique topology states: {}\n- Unique instruction locations: {}\n- Unique application coverage points: {} ({} LLVM edges)\n- Structured choice decisions: {}\n- Thread scheduling decisions: {}\n- Thread synchronization events: {}\n- Checkpoint work: {} root captures, {} prefix captures, {} nodes, {} prefix reuses, {} avoided recomputations\n",
             self.replay.verified,
             self.replay.total,
             self.search.generated_candidates,
@@ -283,6 +286,7 @@ impl EvaluationSummary {
             self.search.unique_topology_states,
             self.search.unique_instruction_locations,
             self.search.unique_application_blocks,
+            self.search.unique_application_edges,
             self.search.structured_choice_decisions,
             self.search.thread_scheduling_decisions,
             self.search.thread_synchronization_events,
@@ -379,6 +383,7 @@ pub fn evaluate(path: impl AsRef<Path>) -> Result<EvaluationSummary, EvaluationE
         search.unique_topology_states += result.unique_topology_states;
         search.unique_instruction_locations += result.unique_instruction_locations;
         search.unique_application_blocks += result.unique_application_blocks;
+        search.unique_application_edges += result.unique_application_edges;
         search.thread_scheduling_decisions += result.thread_scheduling_decisions;
         search.thread_synchronization_events += result.thread_synchronization_events;
         search.structured_choice_decisions += result.structured_choice_decisions;

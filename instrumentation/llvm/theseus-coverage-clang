@@ -1,0 +1,156 @@
+#!/bin/sh
+# Copyright 2026 Adrian Mârza and contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+usage() {
+    echo 'usage: theseus-coverage-clang --process NAME --module NAME [--language c|c++] [--shared] [--symbols DIR] -o OUTPUT SOURCE... [-- COMPILER_ARG...]' >&2
+    exit 2
+}
+
+process=
+module=
+language=
+shared=0
+symbols=
+output=
+sources=
+compiler_args=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --process) [ "$#" -ge 2 ] || usage; process=$2; shift 2 ;;
+        --module) [ "$#" -ge 2 ] || usage; module=$2; shift 2 ;;
+        --language) [ "$#" -ge 2 ] || usage; language=$2; shift 2 ;;
+        --shared) shared=1; shift ;;
+        --symbols) [ "$#" -ge 2 ] || usage; symbols=$2; shift 2 ;;
+        -o) [ "$#" -ge 2 ] || usage; output=$2; shift 2 ;;
+        --)
+            shift
+            while [ "$#" -gt 0 ]; do
+                compiler_args="${compiler_args}${compiler_args:+
+}$1"
+                shift
+            done
+            break
+            ;;
+        -*) usage ;;
+        *) sources="${sources}${sources:+
+}$1"; shift ;;
+    esac
+done
+
+case "$process" in ''|*[!A-Za-z0-9._-]*) usage ;; esac
+case "$module" in ''|*[!A-Za-z0-9._-]*) usage ;; esac
+[ "${#process}" -le 64 ] || usage
+[ "${#module}" -le 64 ] || usage
+[ -n "$output" ] || usage
+[ -n "$sources" ] || usage
+old_ifs=$IFS
+
+if [ -z "$language" ]; then
+    language=c
+    IFS='
+'
+    for source in $sources; do
+        case "$source" in *.cc|*.cpp|*.cxx|*.C) language=c++ ;; esac
+    done
+    IFS=$old_ifs
+fi
+case "$language" in c) compiler=${CC:-clang} ;; c++) compiler=${CXX:-clang++} ;; *) usage ;; esac
+command -v "$compiler" >/dev/null 2>&1 || {
+    echo "$compiler is required" >&2
+    exit 1
+}
+
+tool_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+inputs="$work/inputs"
+source_rows="$work/sources"
+: > "$inputs"
+: > "$source_rows"
+compiler_version=$($compiler --version | sed -n '1p')
+target=$($compiler -dumpmachine)
+printf 'format=theseus-llvm-coverage-build-v1\nprocess=%s\nmodule=%s\nlanguage=%s\nshared=%s\ncompiler=%s\ntarget=%s\n' \
+    "$process" "$module" "$language" "$shared" "$compiler_version" "$target" > "$inputs"
+printf 'frontend=%s\nruntime=%s\n' \
+    "$(sha256sum "$tool_dir/theseus-coverage-clang" | awk '{print $1}')" \
+    "$(sha256sum "$tool_dir/theseus_coverage.c" | awk '{print $1}')" >> "$inputs"
+IFS='
+'
+for argument in $compiler_args; do
+    printf 'compiler-argument=%s\n' "$argument" >> "$inputs"
+done
+IFS=$old_ifs
+
+source_count=0
+old_ifs=$IFS
+IFS='
+'
+for source in $sources; do
+    [ -f "$source" ] || usage
+    name=$(basename -- "$source")
+    case "$name" in *[!A-Za-z0-9._+-]*) usage ;; esac
+    case "$language:$name" in
+        c:*.c|c++:*.cc|c++:*.cpp|c++:*.cxx|c++:*.C) ;;
+        *) usage ;;
+    esac
+    source_count=$((source_count + 1))
+    digest=$(sha256sum "$source" | awk '{print $1}')
+    $compiler -E -P "$source" > "$work/preprocessed-$source_count"
+    preprocessed=$(sha256sum "$work/preprocessed-$source_count" | awk '{print $1}')
+    printf 'translation-unit=%s:%s:%s\n' "$name" "$digest" "$preprocessed" >> "$inputs"
+    printf '%s %s %s\n' "$name" "$digest" "$preprocessed" >> "$source_rows"
+done
+IFS=$old_ifs
+
+build_sha256=$(sha256sum "$inputs" | awk '{print $1}')
+runtime_arch_flags=
+case "$(clang -dumpmachine)" in aarch64*) runtime_arch_flags=-mno-outline-atomics ;; esac
+clang -O2 -fPIC -fvisibility=hidden $runtime_arch_flags \
+    -DTHESEUS_COVERAGE_PROCESS=\"$process\" \
+    -DTHESEUS_COVERAGE_MODULE=\"$module\" \
+    -DTHESEUS_COVERAGE_BUILD_SHA256=\"$build_sha256\" \
+    -c "$tool_dir/theseus_coverage.c" -o "$work/runtime.o"
+
+set --
+IFS='
+'
+for source in $sources; do set -- "$@" "$source"; done
+IFS=$old_ifs
+if [ -n "$compiler_args" ]; then
+    IFS='
+'
+    for argument in $compiler_args; do set -- "$@" "$argument"; done
+    IFS=$old_ifs
+fi
+if [ "$shared" -eq 1 ]; then set -- -shared -fPIC "$@"; else set -- -fPIE -pie "$@"; fi
+$compiler -O1 -g -Wl,--build-id -fsanitize-coverage=trace-pc-guard \
+    "$@" "$work/runtime.o" -ldl -o "$output"
+
+symbol_file=
+if [ -n "$symbols" ]; then
+    mkdir -p "$symbols"
+    symbol_file="$symbols/${module}-${build_sha256}.debug"
+    cp "$output" "$symbol_file"
+fi
+
+manifest="${output}.theseus-coverage.json"
+printf '{\n  "format": "theseus-llvm-coverage-build-v1",\n  "coverage": "edges",\n  "maximum_edges": 8191,\n  "language": "%s",\n  "process": "%s",\n  "module": "%s",\n  "build_sha256": "%s",\n  "compiler": "%s",\n  "target": "%s",\n  "shared": %s,\n' \
+    "$language" "$process" "$module" "$build_sha256" "$compiler_version" "$target" \
+    "$(if [ "$shared" -eq 1 ]; then echo true; else echo false; fi)" > "$manifest"
+if [ -n "$symbol_file" ]; then
+    printf '  "symbols": "%s",\n' "$(basename -- "$symbol_file")" >> "$manifest"
+fi
+printf '  "sources": [' >> "$manifest"
+separator=
+while read -r name digest preprocessed; do
+    printf '%s\n    {"name": "%s", "source_sha256": "%s", "preprocessed_sha256": "%s"}' \
+        "$separator" "$name" "$digest" "$preprocessed" >> "$manifest"
+    separator=,
+done < "$source_rows"
+printf '\n  ]\n}\n' >> "$manifest"
+
+echo "$build_sha256  $output"
+echo "$build_sha256  $manifest"
+[ -z "$symbol_file" ] || echo "$build_sha256  $symbol_file"
