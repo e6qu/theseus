@@ -25,3 +25,5 @@ printf '%s\n' "$records" | grep -E \
 [ "$(printf '%s\n' "$records" | grep -c '^THES:COV:v1:')" -ge 3 ]
 grep -F '"format": "theseus-c-coverage-build-v1"' \
     "$work/fixture.theseus-coverage.json" >/dev/null
+grep -E '"preprocessed_sha256": "[0-9a-f]{64}"' \
+    "$work/fixture.theseus-coverage.json" >/dev/null

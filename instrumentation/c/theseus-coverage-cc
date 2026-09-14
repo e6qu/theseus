@@ -4,7 +4,7 @@
 set -eu
 
 usage() {
-    echo 'usage: theseus-coverage-cc --process NAME --module NAME -o OUTPUT SOURCE.c [GCC ARGUMENTS...]' >&2
+    echo 'usage: theseus-coverage-cc --process NAME --module NAME -o OUTPUT SOURCE.c [SOURCE.c ...]' >&2
     exit 2
 }
 
@@ -48,11 +48,13 @@ for argument in "$@"; do
         name=$(basename -- "$argument")
         case "$name" in *[!A-Za-z0-9._-]*) usage ;; esac
         digest=$(sha256sum "$argument" | awk '{print $1}')
-        printf 'source=%s:%s\n' "$name" "$digest" >> "$inputs"
-        printf '%s %s\n' "$name" "$digest" >> "$sources"
         source_count=$((source_count + 1))
+        gcc -E -P "$argument" > "$work/preprocessed-$source_count"
+        preprocessed=$(sha256sum "$work/preprocessed-$source_count" | awk '{print $1}')
+        printf 'translation-unit=%s:%s:%s\n' "$name" "$digest" "$preprocessed" >> "$inputs"
+        printf '%s %s %s\n' "$name" "$digest" "$preprocessed" >> "$sources"
     else
-        printf 'argument=%s\n' "$argument" >> "$inputs"
+        usage
     fi
 done
 [ "$source_count" -gt 0 ] || usage
@@ -70,8 +72,9 @@ manifest="${output}.theseus-coverage.json"
 printf '{\n  "format": "theseus-c-coverage-build-v1",\n  "process": "%s",\n  "module": "%s",\n  "build_sha256": "%s",\n  "compiler": "%s",\n  "target": "%s",\n  "sources": [' \
     "$process" "$module" "$build_sha256" "$(gcc -dumpfullversion)" "$(gcc -dumpmachine)" > "$manifest"
 separator=
-while read -r name digest; do
-    printf '%s\n    {"name": "%s", "sha256": "%s"}' "$separator" "$name" "$digest" >> "$manifest"
+while read -r name digest preprocessed; do
+    printf '%s\n    {"name": "%s", "source_sha256": "%s", "preprocessed_sha256": "%s"}' \
+        "$separator" "$name" "$digest" "$preprocessed" >> "$manifest"
     separator=,
 done < "$sources"
 printf '\n  ]\n}\n' >> "$manifest"

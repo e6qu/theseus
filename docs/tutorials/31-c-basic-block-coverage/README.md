@@ -28,8 +28,8 @@ sed -n '1,120p' service/main.c
 ```
 
 Use the compiler frontend from the published runtime. It records the compiler,
-target, source hashes, process name, module name, and build identity next to
-the binary.
+target, source and preprocessed-input hashes, process name, module name, and
+build identity next to the binary.
 
 ```sh
 mkdir -p service/work
