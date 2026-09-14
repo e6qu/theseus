@@ -76,6 +76,8 @@ examples:
    application basic-block identities.
 9. Reproduce a pthread lost update from explicit, replay-checked scheduling
    decisions.
+10. Search bounded pthread schedule patterns, find a lost update, minimize it,
+    and replay the locked failing case.
 
 Each tutorial directory is its own working directory and complete input
 context. Runnable tutorials use published Theseus images or binaries, not a

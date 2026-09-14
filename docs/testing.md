@@ -49,6 +49,8 @@ pushes, never on `main`). One job on pinned Ubuntu 24.04:
 5. The GCC C coverage and scheduling frontends, including stable rebuild
    identities, deterministic pthread interleavings, a lost-update witness, and
    versioned records, without starting a VM.
+6. Bounded thread-schedule expansion, locked schedule cases, invalid-search
+   rejection, campaign selection, reporting, and tutorial structure.
 
 KVM-backed tests (branch boots, explorer, coverage) are intentionally not
 in CI — run them locally in the privileged container.

@@ -133,5 +133,11 @@ docs/tutorials/32-deterministic-thread-scheduling/plan.json
 docs/tutorials/32-deterministic-thread-scheduling/campaign/
 docs/tutorials/32-deterministic-thread-scheduling/report/
 docs/tutorials/32-deterministic-thread-scheduling/rerun/
+docs/tutorials/33-search-thread-schedules/service/work/
+docs/tutorials/33-search-thread-schedules/plan.json
+docs/tutorials/33-search-thread-schedules/campaign/
+docs/tutorials/33-search-thread-schedules/report/
+docs/tutorials/33-search-thread-schedules/minimized/
+docs/tutorials/33-search-thread-schedules/rerun/
 
 orchestrator/pivot/target/

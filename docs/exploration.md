@@ -215,6 +215,14 @@ boundary. Replay compares runnable masks, selected threads, order, build
 identity, and scheduling-point offsets. Reports show the choices beside the
 operation that produced them.
 
+An operation can instead declare a bounded search with `threads`, `period`,
+and `max_switches` around each period. Planning enumerates the patterns in
+declaration order, rejects a search wider than 256 patterns, and stores each as a
+named operation input. The ordinary deterministic campaign scheduler explores
+those cases; minimization and replay refer to the locked case rather than
+regenerating it. This is static bounded enumeration, not feedback-driven
+branching from the runnable masks observed during execution.
+
 This source implementation is bounded to 32 pthreads and 8,192 decisions. It
 controls only instrumented application basic blocks and intercepts
 `pthread_create` and `pthread_join`. A target that blocks in another

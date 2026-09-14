@@ -59,6 +59,11 @@ requires the same ordered records. Creation-order identities and the locked
 build make this path independent of ASLR and host thread timing within its
 supported boundary.
 
+A Compose search contract deterministically expands a declared thread set,
+period, and adjacent-switch limit into at most 256 named patterns. The locked
+plan contains the complete expanded patterns, so later selection and replay do
+not depend on the expansion implementation.
+
 ### Everything else the guest can touch
 
 - Rate limiters use host timerfds — **rejected** when virtual time is

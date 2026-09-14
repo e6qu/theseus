@@ -158,13 +158,17 @@ Implemented in source:
   boundaries, compared, reported, and verified on replay.
 - Tutorial 32 demonstrates both a sequential outcome and a deterministic lost
   update below operation-level overlap without the guest SDK.
+- Compose can enumerate up to 256 periodic thread schedules from a declared
+  thread set, period, and per-period switch bound. Every generated pattern is a
+  named locked input case, so campaign selection, minimization, and replay keep
+  the exact sequence. Tutorial 33 uses this search to find the lost update.
 
 Next work:
 
-- Run Tutorial 32 on native amd64 and arm64 KVM and retain its campaign,
-  report, minimized counterexample, and replay evidence.
-- Move from explicit repeating patterns to bounded search over runnable thread
-  choices while keeping the complete choice sequence in the replay plan.
+- Run Tutorials 32 and 33 on native amd64 and arm64 KVM and retain their
+  campaigns, reports, minimized counterexample, and replay evidence.
+- Derive new schedule prefixes from runnable sets observed during execution,
+  instead of enumerating only bounded periodic patterns before execution.
 - Detect or control mutexes, condition variables, futex waits, and blocking
   syscalls instead of allowing an unsupported target to deadlock.
 - Extend stable identities across `fork`/`exec` and add process scheduling.
