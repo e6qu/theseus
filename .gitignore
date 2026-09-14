@@ -128,5 +128,10 @@ docs/tutorials/31-c-basic-block-coverage/plan.json
 docs/tutorials/31-c-basic-block-coverage/campaign/
 docs/tutorials/31-c-basic-block-coverage/report/
 docs/tutorials/31-c-basic-block-coverage/rerun/
+docs/tutorials/32-deterministic-thread-scheduling/service/work/
+docs/tutorials/32-deterministic-thread-scheduling/plan.json
+docs/tutorials/32-deterministic-thread-scheduling/campaign/
+docs/tutorials/32-deterministic-thread-scheduling/report/
+docs/tutorials/32-deterministic-thread-scheduling/rerun/
 
 orchestrator/pivot/target/

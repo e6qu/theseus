@@ -64,6 +64,7 @@ door could leave `vmm` without creating a dependency cycle.
 | Exploration | `orchestrator/orchestrator` | Timeline tree, child spawning, parallel rendezvous explorer. |
 | Execution locations | `orchestrator/coverage` | Guest-PC collection by single-step or deterministic exit sampling. |
 | Application blocks | `instrumentation/c` + `topology-runner` | GCC C basic-block records with build-scoped, ASLR-independent identities. |
+| Thread scheduling | `instrumentation/c` + `topology-runner` | Bounded GCC C pthread interleavings with explicit choices and replay-checked runnable sets. |
 
 ## Verification model
 
@@ -79,3 +80,11 @@ that memfd privately, so child writes use kernel copy-on-write. Single-step and
 sampled PCs identify guest instruction addresses and remain baseline signals.
 The separate C instrumentation path records application basic blocks; it does
 not turn the PC collectors into block or edge coverage.
+
+The C scheduling frontend uses the same compiler basic-block hook with a
+separate runtime. It assigns stable thread identities in creation order,
+serializes application blocks according to `THESEUS_THREAD_SCHEDULE`, and
+emits every choice through the image pivot. The topology runner retains those
+ordered records at operation boundaries and rejects a replay that changes
+them. This is cooperative userspace instrumentation, not a kernel scheduler or
+hypervisor-wide thread controller.

@@ -1,0 +1,32 @@
+name: deterministic-thread-scheduling
+
+services:
+  ledger:
+    x-theseus:
+      manifest: service/theseus.toml
+    networks: [test]
+
+networks:
+  test: {}
+
+x-theseus:
+  campaign:
+    driver: ledger
+    max_runs: 2
+    max_operations_per_run: 1
+    operations:
+      - name: sequential
+        shell:
+          command: [/usr/local/bin/ledger]
+          output_json: true
+          thread_schedule: [0, 1, 2]
+      - name: lost_update
+        shell:
+          command: [/usr/local/bin/ledger]
+          output_json: true
+          thread_schedule: [0, 0, 0, 1, 2]
+    properties:
+      - name: lost_update_is_reachable
+        kind: reachable
+        service: ledger
+        contains: '"balance":22'

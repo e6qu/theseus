@@ -48,6 +48,10 @@ Terms used across Theseus code and documentation. See
   SHA-256, and module-relative block address emitted by the packaged GCC C
   instrumentation. It is stable across ASLR and identical rebuilds, and a
   changed build cannot collide silently with the old module.
+- **Thread-scheduling decision** — an ordered compiler-instrumented C record
+  containing the build-scoped scheduling point, current thread, runnable
+  thread mask, and selected thread. Theseus assigns thread identities in
+  `pthread_create` order and verifies the complete sequence during replay.
 
 ## Execution machinery
 
