@@ -18,6 +18,10 @@ observed. The distributed lost-update workload combines three image services,
 simulated network traffic, a required partition/recovery path, and the
 supported Compose runtime contracts in one replayable campaign. Required
 campaign faults remain in every applicable schedule and survive minimization.
+Native certification resolves a signed SHA release before execution, records
+the host kernel, KVM API, digest-pinned runtime, and complete counterexample
+inventory, and publishes only a dual-architecture evidence set that the
+released CLI can verify offline.
 
 The following limits define the honest baseline:
 
@@ -74,9 +78,11 @@ Deliver this as one coherent PR, with separately reviewable commits.
 
 ### Find a concurrency-dependent failure
 
-- Dispatch the native certification workflow for a published SHA and verify
-  that both architecture-specific assets contain the passing sequential
-  schedule, minimized distributed lost update, and successful locked replay.
+- Supply the self-hosted amd64 and arm64 KVM capacity, dispatch native
+  certification for a published SHA, and verify that the indexed pair contains
+  the passing sequential schedule, minimized distributed lost update, and
+  successful locked replay. GitHub-hosted runners are not a substitute for
+  native KVM and the repository currently has no registered native runners.
 - Publish exact retrieval and attestation commands with the artifacts. Do not
   promote the implemented workload to demonstrated behavior until those
   release assets exist.

@@ -10,8 +10,8 @@ use theseus_cli::{
     explore_compose_expect_counterexample, load_compose_plan, load_plan, minimize_compose_campaign,
     minimize_compose_campaign_expect_counterexample, minimize_exploration_path, query_campaigns,
     replay, replay_compose, replay_exploration, replay_exploration_path, report, report_file,
-    report_text, snapshot_exploration_path, test, test_compose, write_evaluation_lock,
-    ReportFormat,
+    report_text, snapshot_exploration_path, test, test_compose, verify_native_evidence,
+    write_evaluation_lock, ReportFormat,
 };
 
 const USAGE: &str = "Usage:
@@ -31,6 +31,7 @@ const USAGE: &str = "Usage:
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
   theseus evaluate lock [theseus-evaluation.toml]
   theseus evaluate capture campaign-dir --output evaluation-dir --name name
+  theseus evidence verify native-evidence.json
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
@@ -228,6 +229,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&query).map_err(|error| error.to_string())?
+            );
+            Ok(())
+        }
+        [command, verify, index] if command == "evidence" && verify == "verify" => {
+            let summary = verify_native_evidence(index).map_err(|error| error.to_string())?;
+            println!(
+                "verified native KVM evidence for {} at {}: {}",
+                summary.architectures.join(", "),
+                summary.source_commit,
+                summary.runtime_tag
             );
             Ok(())
         }

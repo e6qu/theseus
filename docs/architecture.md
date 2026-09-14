@@ -68,8 +68,10 @@ door could leave `vmm` without creating a dependency cycle.
 
 Pull-request CI compiles the workspace and runs environment-independent tests
 on an amd64 GitHub runner. KVM behavior needs separate native execution. The
-manual certification workflow targets self-hosted amd64 and arm64 KVM hosts;
-only a retained certificate from an actual run is runtime evidence.
+manual certification workflow targets self-hosted amd64 and arm64 KVM hosts.
+It stages both results, verifies their signed-release provenance and complete
+archive inventories, and publishes one indexed architecture pair; only those
+retained, verifiable assets are runtime evidence.
 
 Branch capture first copies all guest RAM into a memfd. Restored children map
 that memfd privately, so child writes use kernel copy-on-write. Single-step and

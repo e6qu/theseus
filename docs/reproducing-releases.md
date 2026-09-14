@@ -57,22 +57,33 @@ compare its digest with the packaged file.
 
 ## Retrieve native KVM evidence
 
-After the native certification workflow has run, each SHA release has one
-fixed-plan certificate and one complete distributed-counterexample archive per
-certified architecture:
+After the native certification workflow has completed, the SHA release has one
+fixed-plan certificate and one complete distributed-counterexample archive for
+each supported architecture, plus an index that commits to the complete pair.
+Download all five files:
 
 ```sh
 gh release download "$TAG" --repo "$REPOSITORY" \
-  --pattern "theseus-${TAG}-runtime-certificate-${ARCH}.json" \
-  --pattern "theseus-${TAG}-multiservice-counterexample-${ARCH}.tar.gz" \
+  --pattern "theseus-${TAG}-native-evidence.json" \
+  --pattern "theseus-${TAG}-runtime-certificate-*.json" \
+  --pattern "theseus-${TAG}-multiservice-counterexample-*.tar.gz" \
   --dir "$work"
-for artifact in \
-  "$work/theseus-${TAG}-runtime-certificate-${ARCH}.json" \
-  "$work/theseus-${TAG}-multiservice-counterexample-${ARCH}.tar.gz"
+for artifact in "$work"/theseus-${TAG}-native-evidence.json \
+  "$work"/theseus-${TAG}-runtime-certificate-*.json \
+  "$work"/theseus-${TAG}-multiservice-counterexample-*.tar.gz
 do
   gh attestation verify "$artifact" --repo "$REPOSITORY" \
     --signer-workflow "$REPOSITORY/.github/workflows/certify-deterministic-runtime.yml"
 done
+```
+
+Run the portable verifier from the same SHA release. It rejects a missing
+architecture, a renamed or changed asset, a mismatched certificate, an unsafe
+archive, a changed file inventory, or a replay that lacks the required
+partition, dropped frame, recovery probe, and lost update:
+
+```sh
+theseus evidence verify "$work/theseus-${TAG}-native-evidence.json"
 ```
 
 Extract the counterexample archive and enter its `minimized` directory. Inspect
@@ -88,11 +99,16 @@ docker run --rm --privileged --platform "linux/$ARCH" \
   theseus compose replay . --output reproduced
 ```
 
-`evidence/replay/` contains the certification run used to verify that replay.
+`evidence/runtime-certificate.json` is byte-for-byte identical to the separate
+certificate asset. The certificate embeds the exact fixed plan covered by its
+plan digest. `evidence/replay/` contains the certification run used to verify
+that replay.
 `source/` contains the human-readable tutorial input, while `checkpoint/`
 contains the locked runtime and workload artifacts. An absent
-architecture-specific asset means that architecture has not been certified
-for that SHA.
+architecture-specific asset or the pair index means that the SHA does not have
+a complete native certification set. The workflow stages both architectures,
+verifies the set with the released CLI, attests all five files, and only then
+uploads them to the release.
 
 For Tutorial 30 evidence, `minimization.json` must retain both
 `backplane:partition@setup` and `backplane:heal@probe_partition`.

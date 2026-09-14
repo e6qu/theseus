@@ -110,8 +110,9 @@ property contract.
 The pull-request workflow runs compilation, unit tests, deterministic subsystem
 tests, tutorial structure checks, and release-input checks on an amd64 GitHub
 runner. Native KVM certification is a separate manually triggered self-hosted
-amd64/arm64 workflow; it produces evidence only when it actually runs and its
-certificate is retained.
+amd64/arm64 workflow. It resolves and verifies one published SHA before the
+native work, then publishes only a complete, indexed, CLI-verifiable evidence
+pair. A workflow definition or a partial native run is not runtime evidence.
 
 ```sh
 cargo test --manifest-path cli/Cargo.toml --locked

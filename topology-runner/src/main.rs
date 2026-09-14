@@ -1301,6 +1301,10 @@ struct RuntimeSupportProfile {
 struct CertificateSource {
     plan_sha256: String,
     plan: String,
+    /// Exact UTF-8 bytes hashed by `plan_sha256`. Keeping the normalized plan
+    /// in the certificate makes the fixed-plan witness independently
+    /// inspectable after it leaves the execution directory.
+    plan_contents: String,
 }
 
 #[derive(Serialize)]
@@ -2565,6 +2569,8 @@ fn certify(plan: &str, output: &Path) -> Result<(), String> {
         source: CertificateSource {
             plan_sha256: format!("{:x}", Sha256::digest(&input)),
             plan: plan.to_owned(),
+            plan_contents: String::from_utf8(input.clone())
+                .expect("a parsed JSON plan is valid UTF-8"),
         },
         repeatability: CertificateRepeatability {
             executions: 2,

@@ -9,6 +9,7 @@
 mod compare;
 mod compose;
 mod evaluation;
+mod evidence;
 mod explore;
 mod manifest;
 mod report;
@@ -25,6 +26,7 @@ pub use compose::{
 pub use evaluation::{
     capture_evaluation, evaluate, write_evaluation_lock, EvaluationError, EvaluationSummary,
 };
+pub use evidence::{verify_native_evidence, EvidenceError, NativeEvidenceSummary};
 pub use explore::{
     explore, minimize_exploration_path, replay_exploration, replay_exploration_path,
     snapshot_exploration_path, ExploreError,

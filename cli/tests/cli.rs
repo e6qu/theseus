@@ -322,4 +322,5 @@ fn help_lists_bundle_local_replay_commands() {
     assert!(help.contains("evaluate [--format json|markdown]"));
     assert!(help.contains("evaluate lock [theseus-evaluation.toml]"));
     assert!(help.contains("evaluate capture campaign-dir --output evaluation-dir --name name"));
+    assert!(help.contains("evidence verify native-evidence.json"));
 }
