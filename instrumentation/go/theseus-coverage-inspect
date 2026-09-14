@@ -29,7 +29,7 @@ grep -F '"language": "go"' "$manifest" >/dev/null || {
 build_sha256=$(sed -n 's/.*"build_sha256": "\([0-9a-f]*\)".*/\1/p' "$manifest")
 case "$build_sha256" in ''|*[!0-9a-f]*) echo 'manifest has no build SHA-256' >&2; exit 1 ;; esac
 [ "${#build_sha256}" -eq 64 ] || { echo 'manifest has an invalid build SHA-256' >&2; exit 1; }
-strings "$binary" | grep -Fx "$build_sha256" >/dev/null || {
+LC_ALL=C grep -aF "$build_sha256" "$binary" >/dev/null || {
     echo 'binary does not match the manifest build identity' >&2
     exit 1
 }
