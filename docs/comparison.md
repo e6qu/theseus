@@ -13,10 +13,11 @@ has no independent head-to-head evaluation with Antithesis.
 | Test interface | Test templates and SDK assertions | Compose campaigns, UART operations, serial properties, optional SDK |
 | Determinism | Custom deterministic hypervisor | KVM plus seeded devices, simulated I/O, and exit-counted virtual time |
 | Replay | Instruction-level deterministic reproduction | Locked-input replay with recorded fingerprints; mid-quantum clock caveat |
-| Search guidance | Coverage-guided autonomous exploration | C application blocks, markers, topology/property evidence, dirty-page footprint, and sampled guest PCs |
+| Search guidance | Coverage-guided autonomous exploration | One bounded decision-prefix policy combines structured choices, C application blocks, runnable selections, faults, properties, topology states, and sampled guest PCs |
 | Coverage | Application basic-block instrumentation | GCC C basic-block instrumentation; no edge or multi-language instrumentation yet |
 | Faults | Network, process, clock, and storage faults | Simulated network/storage plus Compose lifecycle, clock, and packet actions |
 | Concurrency | Controlled thread/process scheduling | Operation overlap plus bounded GCC C pthread basic-block scheduling, runnable-set feedback, default mutexes, and untimed condition variables; no general Linux scheduler control |
+| Structured choices | SDK choices consumed at the point of use | Language-neutral bounded shell-operation choices and a Rust SDK helper, retained and replay-checked at the operation boundary |
 | Debugging | Time-travel and causality analysis | Static reports, replay, minimization, bundle comparison, snapshot export |
 | Causality | Counterfactual re-exploration from checkpoints | Not implemented; comparison only finds recorded differences |
 | Delivery | Hosted commercial product | Open source, self-operated Linux/KVM runtime |
@@ -48,6 +49,17 @@ mutex locking, and untimed condition waits/signals/broadcasts, but not timed
 waits, cancellation, semaphores, direct futex use, blocking I/O, or
 uninstrumented libraries. It has no process scheduler and still needs native KVM
 evidence. It is not equivalent to Antithesis's general concurrency control.
+
+### Unified choices and search
+
+Theseus can now lock named bounded values, require a point-of-use choice
+record, and search operation inputs, choice assignments, runnable prefixes,
+and faults through one decision-prefix policy. Coverage, property witnesses,
+topology novelty, choice novelty, and scheduling novelty contribute to that
+policy, and replay checks a canonical decision trace. The remaining gap is
+substantial: choices are currently finite Compose shell inputs, the policy has
+not been validated on published fixed-budget benchmarks, and lower-level Linux
+execution events can still escape control.
 
 ### Test templates
 

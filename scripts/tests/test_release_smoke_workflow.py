@@ -18,6 +18,8 @@ def main() -> None:
     assert WORKFLOW.count("jq -r .architecture") == 2
     assert WORKFLOW.count("jq -r .sha256") == 6
     assert WORKFLOW.count("jq -r .source_commit") == 2
+    assert WORKFLOW.count("find . -type f ! -name SHA256SUMS -print0") == 2
+    assert "sha256sum ./* > SHA256SUMS" not in WORKFLOW
 
 
 if __name__ == "__main__":

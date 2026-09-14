@@ -98,9 +98,10 @@ fn default_campaign_operations_per_run() -> u8 {
     3
 }
 
-/// Campaign selection remains deterministic for a fixed plan and seed. The
-/// adaptive policy adds observed action yield to the existing coverage signal;
-/// it is an empirical scheduler, not a nondeterministic ML service.
+/// Campaign selection remains deterministic for a fixed plan and seed. Legacy
+/// plans default to coverage; newly normalized plans explicitly select the
+/// unified policy. All policies use retained observations, not a remote or
+/// nondeterministic model.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum CampaignGuidance {
@@ -109,6 +110,9 @@ enum CampaignGuidance {
     Adaptive,
     Posterior,
     Property,
+    /// Rank the complete controlled decision prefix using coverage, state,
+    /// property, structured-choice, scheduling, and fault evidence together.
+    Unified,
 }
 
 /// Select one primary coverage signal when comparing scheduler strategies.
@@ -140,6 +144,10 @@ struct CampaignOperation {
     thread_schedule_search: Option<CampaignThreadScheduleSearch>,
     #[serde(default)]
     thread_schedule_exploration: Option<CampaignThreadScheduleExploration>,
+    /// Bounds for named choices made by the running command. Concrete input
+    /// cases retain the selected values used for this execution.
+    #[serde(default)]
+    choice_bounds: BTreeMap<String, u16>,
     /// `input_hex` is retained only to replay plans locked by older Theseus
     /// releases. New plans always use named `inputs`.
     #[serde(default)]
@@ -208,6 +216,8 @@ struct CampaignOperationInputGrammar {
 struct CampaignOperationInput {
     name: String,
     input_hex: String,
+    #[serde(default)]
+    choices: BTreeMap<String, u16>,
     #[serde(default)]
     thread_schedule: Vec<u8>,
     #[serde(default)]
@@ -628,6 +638,7 @@ enum PropertyKind {
 #[derive(Debug, Serialize)]
 struct CampaignResult {
     format: &'static str,
+    decision_trace_format: &'static str,
     status: &'static str,
     driver: String,
     guidance: CampaignGuidance,
@@ -642,6 +653,7 @@ struct CampaignResult {
     unique_application_blocks: usize,
     thread_scheduling_decisions: usize,
     thread_synchronization_events: usize,
+    structured_choice_decisions: usize,
     /// A compact, deterministic account of the search work. This is separate
     /// from wall-clock timing: host scheduling must never affect a replay.
     search: CampaignSearchEvidence,
@@ -655,6 +667,10 @@ struct CampaignResult {
 struct CampaignRun {
     index: usize,
     operations: Vec<String>,
+    /// Canonical, human-readable execution decisions in boundary order. This
+    /// is replay-checked in addition to the richer typed evidence below.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    decision_trace: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     thread_schedule_prefixes: Vec<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -688,6 +704,8 @@ struct CampaignRun {
     thread_scheduling: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     checkpoint_pc_novelty: Vec<String>,
     state_sha256: String,
@@ -749,6 +767,10 @@ struct CampaignTimelineBoundary {
     thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     new_thread_synchronization_events: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    new_structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
     serial_sha256: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     serial_delta: BTreeMap<String, CampaignSerialDelta>,
@@ -953,6 +975,8 @@ struct RecordedCampaignResult {
 struct RecordedCampaignRun {
     operations: Vec<String>,
     #[serde(default)]
+    decision_trace: Vec<String>,
+    #[serde(default)]
     thread_schedule_prefixes: Vec<Vec<u8>>,
     #[serde(default)]
     fault: Option<String>,
@@ -984,6 +1008,8 @@ struct RecordedCampaignRun {
     thread_scheduling: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
     #[serde(default)]
     thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
+    #[serde(default)]
+    structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
     #[serde(default)]
     checkpoint_pc_novelty: Vec<String>,
     #[serde(default)]
@@ -1060,6 +1086,17 @@ struct ThreadSynchronizationEvent {
     object: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     peer_thread: Option<u8>,
+}
+
+/// One named value consumed by a workload at the decision point. The input
+/// case fixes the value; the emitted record proves the workload actually used
+/// it with the declared exclusive bound.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+struct StructuredChoiceDecision {
+    ordinal: u64,
+    name: String,
+    upper_exclusive: u16,
+    selected: u16,
 }
 
 #[derive(Debug, Serialize)]
@@ -1607,6 +1644,7 @@ struct CampaignCheckpointBoundary {
     application_blocks: BTreeMap<String, Vec<ApplicationBlock>>,
     thread_scheduling: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
     thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
+    structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
     program_counters: BTreeMap<String, Vec<String>>,
     serial_sha256: BTreeMap<String, String>,
     serial_contents: BTreeMap<String, Vec<u8>>,
@@ -2867,6 +2905,8 @@ fn execute_campaign(
     let mut seen_instruction_locations = std::collections::BTreeSet::new();
     let mut seen_checkpoint_pcs = std::collections::BTreeSet::new();
     let mut seen_application_blocks = std::collections::BTreeSet::new();
+    let mut seen_structured_choices = std::collections::BTreeSet::new();
+    let mut seen_scheduling_decisions = std::collections::BTreeSet::new();
     let mut pending = (0..schedules.len()).collect::<Vec<_>>();
     let mut observations = Vec::new();
     let mut replay_mismatches = Vec::new();
@@ -2971,6 +3011,7 @@ fn execute_campaign(
         let application_blocks = campaign_application_blocks(&run_dir)?;
         let thread_scheduling = campaign_thread_scheduling(&run_dir)?;
         let thread_synchronization = campaign_thread_synchronization(&run_dir)?;
+        let structured_choices = campaign_structured_choices(&run_dir)?;
         let actions = campaign_actions(&run_dir)?;
         let program_counters = campaign_checkpoint_program_counters(&prefix.checkpoint);
         let execution_locations = campaign_checkpoint_execution_locations(&prefix.checkpoint);
@@ -2984,6 +3025,7 @@ fn execute_campaign(
             &checkpoints.root_boundary(),
             &instruction_symbolizer,
         );
+        verify_campaign_structured_choices(&campaign, &schedule, &timeline)?;
         let instruction_novelty = campaign_instruction_locations(&execution_locations)
             .into_iter()
             .filter(|location| seen_instruction_locations.insert(location.clone()))
@@ -2996,6 +3038,33 @@ fn execute_campaign(
             .into_iter()
             .filter(|block| seen_application_blocks.insert(block.clone()))
             .collect::<Vec<_>>();
+        let structured_choice_novelty = structured_choices
+            .iter()
+            .flat_map(|(service, decisions)| {
+                decisions.iter().map(move |decision| {
+                    format!(
+                        "{service}:{}:{}:{}",
+                        decision.name, decision.upper_exclusive, decision.selected
+                    )
+                })
+            })
+            .filter(|decision| seen_structured_choices.insert(decision.clone()))
+            .count();
+        let scheduling_novelty = thread_scheduling
+            .iter()
+            .flat_map(|(service, decisions)| {
+                decisions.iter().map(move |decision| {
+                    format!(
+                        "{service}:{}:{}:{}:{}",
+                        decision.build_sha256,
+                        decision.point_offset,
+                        decision.runnable_mask,
+                        decision.selected_thread
+                    )
+                })
+            })
+            .filter(|decision| seen_scheduling_decisions.insert(decision.clone()))
+            .count();
         let state_sha256 = campaign_topology_state_sha256(&run_dir, &program_counters)?;
         let state_novel = seen_topology_states.insert(state_sha256.clone());
         let novelty = markers
@@ -3004,12 +3073,22 @@ fn execute_campaign(
             .collect::<Vec<_>>();
         let failed = status.is_err();
         let property_witnesses = campaign_property_witnesses(&campaign, &run_dir);
+        let decision_trace = campaign_decision_trace(&campaign, &schedule, &timeline);
         observations.push(CampaignGuidanceObservation {
             operations: schedule.operations.clone(),
+            decision_prefix: (campaign.guidance == CampaignGuidance::Unified)
+                .then(|| campaign_schedule_decision_prefix(&schedule))
+                .unwrap_or_default(),
             novel_markers: novelty.len(),
             novel_instructions: instruction_novelty.len(),
             novel_checkpoint_pcs: checkpoint_pc_novelty.len(),
             novel_application_blocks: application_block_novelty.len(),
+            novel_structured_choices: (campaign.guidance == CampaignGuidance::Unified)
+                .then_some(structured_choice_novelty)
+                .unwrap_or_default(),
+            novel_scheduling_decisions: (campaign.guidance == CampaignGuidance::Unified)
+                .then_some(scheduling_novelty)
+                .unwrap_or_default(),
             novel_state: state_novel,
             failed,
             property_witnesses: property_witnesses.clone(),
@@ -3021,6 +3100,7 @@ fn execute_campaign(
                 .iter()
                 .map(|operation| campaign_operation_choice_name(&campaign, *operation))
                 .collect(),
+            decision_trace,
             thread_schedule_prefixes: schedule
                 .operations
                 .iter()
@@ -3048,6 +3128,7 @@ fn execute_campaign(
             application_block_novelty,
             thread_scheduling,
             thread_synchronization,
+            structured_choices,
             state_sha256,
             state_novel,
             status: if failed { "failed" } else { "passed" },
@@ -3107,6 +3188,7 @@ fn execute_campaign(
         output.join("campaign-result.json"),
         serde_json::to_vec_pretty(&CampaignResult {
             format: "theseus-compose-campaign-result-v1",
+            decision_trace_format: "theseus-campaign-decision-trace-v1",
             status: if passed && replay_verified {
                 "passed"
             } else {
@@ -3136,6 +3218,11 @@ fn execute_campaign(
             thread_synchronization_events: runs
                 .iter()
                 .flat_map(|run| run.thread_synchronization.values())
+                .map(Vec::len)
+                .sum(),
+            structured_choice_decisions: runs
+                .iter()
+                .flat_map(|run| run.structured_choices.values())
                 .map(Vec::len)
                 .sum(),
             search,
@@ -3807,6 +3894,71 @@ struct CampaignOperationChoice {
     input: usize,
 }
 
+fn campaign_schedule_decision_prefix(schedule: &CampaignSchedule) -> Vec<String> {
+    let mut prefix = Vec::new();
+    for (position, choice) in schedule.operations.iter().enumerate() {
+        prefix.push(format!("operation:{}:{}", choice.operation, choice.input));
+        if let Some(choices) = schedule.thread_schedule_prefixes.get(position) {
+            prefix.extend(
+                choices
+                    .iter()
+                    .enumerate()
+                    .map(|(index, selected)| format!("thread:{index}:{selected}")),
+            );
+        }
+    }
+    prefix.extend(schedule.faults.iter().map(|fault| format!("fault:{fault}")));
+    prefix
+}
+
+fn campaign_decision_trace(
+    campaign: &CampaignPlan,
+    schedule: &CampaignSchedule,
+    timeline: &[CampaignTimelineBoundary],
+) -> Vec<String> {
+    let mut trace = Vec::new();
+    for (position, (choice, boundary)) in schedule.operations.iter().zip(timeline).enumerate() {
+        trace.push(format!(
+            "boundary:{position}:operation:{}",
+            campaign_operation_choice_name(campaign, *choice)
+        ));
+        trace.push(format!(
+            "boundary:{position}:input:{}:{}",
+            boundary.service, boundary.input.sha256
+        ));
+        for (service, choices) in &boundary.new_structured_choices {
+            trace.extend(choices.iter().map(|choice| {
+                format!(
+                    "boundary:{position}:choice:{service}:{}:{}/{}",
+                    choice.name, choice.selected, choice.upper_exclusive
+                )
+            }));
+        }
+        for (service, decisions) in &boundary.new_thread_scheduling_decisions {
+            trace.extend(decisions.iter().map(|decision| {
+                format!(
+                    "boundary:{position}:thread:{service}:{}:{}:{}",
+                    decision.decision, decision.runnable_mask, decision.selected_thread
+                )
+            }));
+        }
+        trace.extend(boundary.actions.iter().map(|action| {
+            format!(
+                "boundary:{position}:action:{}:{}:{}",
+                action.kind, action.target, action.detail
+            )
+        }));
+    }
+    trace
+}
+
+fn common_decision_prefix(left: &[String], right: &[String]) -> usize {
+    left.iter()
+        .zip(right)
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
 /// Older locked plans have no operation service and retain the designated
 /// campaign driver as their target. New normalized plans always name it.
 fn campaign_operation_service<'a>(
@@ -3829,6 +3981,7 @@ fn campaign_operation_inputs(operation: &CampaignOperation) -> Vec<CampaignOpera
             .map(|input_hex| CampaignOperationInput {
                 name: "default".to_owned(),
                 input_hex: input_hex.clone(),
+                choices: BTreeMap::new(),
                 thread_schedule: Vec::new(),
                 input_template: None,
                 input_captures: BTreeMap::new(),
@@ -3875,6 +4028,81 @@ fn campaign_operation_input(
                 operation.name, choice.input
             )
         })
+}
+
+fn verify_campaign_structured_choices(
+    campaign: &CampaignPlan,
+    schedule: &CampaignSchedule,
+    timeline: &[CampaignTimelineBoundary],
+) -> Result<(), String> {
+    for (choice, boundary) in schedule.operations.iter().zip(timeline) {
+        let operation = &campaign.operations[choice.operation];
+        let input = campaign_operation_input(campaign, *choice)?;
+        let mut observed = BTreeMap::new();
+        for (service, decisions) in &boundary.new_structured_choices {
+            if service != &boundary.service {
+                return Err(format!(
+                    "campaign operation {:?} observed a structured choice from unexpected service {service:?}",
+                    operation.name
+                ));
+            }
+            for decision in decisions {
+                if observed
+                    .insert(
+                        decision.name.clone(),
+                        (decision.upper_exclusive, decision.selected),
+                    )
+                    .is_some()
+                {
+                    return Err(format!(
+                        "campaign operation {:?} used structured choice {:?} more than once",
+                        operation.name, decision.name
+                    ));
+                }
+                let expected_bound =
+                    operation.choice_bounds.get(&decision.name).ok_or_else(|| {
+                        format!(
+                            "campaign operation {:?} used undeclared structured choice {:?}",
+                            operation.name, decision.name
+                        )
+                    })?;
+                let expected_selected = input.choices.get(&decision.name).ok_or_else(|| {
+                    format!(
+                        "campaign operation {:?} input {:?} has no assignment for structured choice {:?}",
+                        operation.name, input.name, decision.name
+                    )
+                })?;
+                if decision.upper_exclusive != *expected_bound
+                    || decision.selected != *expected_selected
+                {
+                    return Err(format!(
+                        "campaign operation {:?} structured choice {:?} diverged: expected bound {} value {}, observed bound {} value {}",
+                        operation.name,
+                        decision.name,
+                        expected_bound,
+                        expected_selected,
+                        decision.upper_exclusive,
+                        decision.selected,
+                    ));
+                }
+            }
+        }
+        for (name, expected_selected) in &input.choices {
+            let expected_bound = operation.choice_bounds.get(name).ok_or_else(|| {
+                format!(
+                    "campaign operation {:?} input {:?} assigned undeclared structured choice {name:?}",
+                    operation.name, input.name
+                )
+            })?;
+            if !observed.contains_key(name) {
+                return Err(format!(
+                    "campaign operation {:?} did not record assigned structured choice {name:?} at its point of use (expected bound {} value {})",
+                    operation.name, expected_bound, expected_selected
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn campaign_input_reference_matches(
@@ -4544,10 +4772,16 @@ fn campaign_checkpoint_markers(
 #[derive(Clone, Debug, Serialize)]
 struct CampaignGuidanceObservation {
     operations: Vec<CampaignOperationChoice>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    decision_prefix: Vec<String>,
     novel_markers: usize,
     novel_instructions: usize,
     novel_checkpoint_pcs: usize,
     novel_application_blocks: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    novel_structured_choices: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    novel_scheduling_decisions: usize,
     novel_state: bool,
     failed: bool,
     property_witnesses: Vec<String>,
@@ -4985,6 +5219,9 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     if expected.operations != actual.operations {
         mismatches.push("operations".to_owned());
     }
+    if !expected.decision_trace.is_empty() && expected.decision_trace != actual.decision_trace {
+        mismatches.push("decision trace".to_owned());
+    }
     if !expected.thread_schedule_prefixes.is_empty()
         && expected.thread_schedule_prefixes != actual.thread_schedule_prefixes
     {
@@ -5070,6 +5307,11 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     {
         mismatches.push("thread-synchronization events".to_owned());
     }
+    if !expected.structured_choices.is_empty()
+        && expected.structured_choices != actual.structured_choices
+    {
+        mismatches.push("structured-choice decisions".to_owned());
+    }
     if !expected.state_sha256.is_empty()
         && (expected.state_sha256 != actual.state_sha256
             || expected.state_novel != actual.state_novel)
@@ -5114,6 +5356,10 @@ fn campaign_timeline_matches(
                 if expected.thread_synchronization.is_empty() {
                     normalized.thread_synchronization.clear();
                     normalized.new_thread_synchronization_events.clear();
+                }
+                if expected.structured_choices.is_empty() {
+                    normalized.structured_choices.clear();
+                    normalized.new_structured_choices.clear();
                 }
                 *expected == normalized
             }
@@ -5278,6 +5524,46 @@ fn select_campaign_schedule(
                     ),
                 )
             }
+            CampaignGuidance::Unified => {
+                let prefix = campaign_schedule_decision_prefix(candidate);
+                let related = observations
+                    .iter()
+                    .map(|observation| {
+                        (
+                            common_decision_prefix(&prefix, &observation.decision_prefix),
+                            observation,
+                        )
+                    })
+                    .max_by_key(|(shared, observation)| {
+                        (*shared, campaign_unified_guidance_signal(observation))
+                    });
+                let (shared, observed_signal, observed_properties) =
+                    related.map_or((0, 0, 0), |(shared, observation)| {
+                        (
+                            shared,
+                            campaign_unified_guidance_signal(observation),
+                            observation.property_witnesses.len(),
+                        )
+                    });
+                let visits = observations
+                    .iter()
+                    .filter(|observation| {
+                        common_decision_prefix(&prefix, &observation.decision_prefix) >= shared
+                    })
+                    .count();
+                let exploration_bonus = observations.len().saturating_add(1).saturating_mul(1_000)
+                    / visits.saturating_add(1);
+                (
+                    coverage_score
+                        .saturating_add(observed_signal.saturating_mul(256))
+                        .saturating_add(shared.saturating_mul(64))
+                        .saturating_add(exploration_bonus),
+                    observed_properties,
+                    format!(
+                        "unified decision prefix shares {shared} point(s); observed reward {observed_signal}; exploration bonus {exploration_bonus}"
+                    ),
+                )
+            }
         };
         if property_witnesses > selected_property_witnesses
             || (property_witnesses == selected_property_witnesses && score > selected_score)
@@ -5289,6 +5575,20 @@ fn select_campaign_schedule(
         }
     }
     (selected, selected_reason)
+}
+
+fn campaign_unified_guidance_signal(observation: &CampaignGuidanceObservation) -> usize {
+    observation
+        .novel_markers
+        .saturating_mul(1_000)
+        .saturating_add(observation.novel_instructions.saturating_mul(500))
+        .saturating_add(observation.novel_checkpoint_pcs.saturating_mul(500))
+        .saturating_add(observation.novel_application_blocks.saturating_mul(1_000))
+        .saturating_add(observation.novel_structured_choices.saturating_mul(2_000))
+        .saturating_add(observation.novel_scheduling_decisions.saturating_mul(2_000))
+        .saturating_add(usize::from(observation.novel_state).saturating_mul(2_000))
+        .saturating_add(observation.property_witnesses.len().saturating_mul(100_000))
+        .saturating_add(usize::from(observation.failed).saturating_mul(10_000))
 }
 
 fn campaign_guidance_signal(
@@ -6327,6 +6627,61 @@ fn parse_thread_synchronization_line(line: &str) -> Option<ThreadSynchronization
     })
 }
 
+const STRUCTURED_CHOICE_PREFIX: &str = "THES:CHOICE:";
+
+fn campaign_structured_choices(
+    run: &Path,
+) -> Result<BTreeMap<String, Vec<StructuredChoiceDecision>>, String> {
+    Ok(campaign_structured_choices_from_serial(
+        &campaign_serial_logs(run)?,
+    ))
+}
+
+fn campaign_structured_choices_from_serial(
+    serial: &BTreeMap<String, Vec<u8>>,
+) -> BTreeMap<String, Vec<StructuredChoiceDecision>> {
+    serial
+        .iter()
+        .filter_map(|(service, contents)| {
+            let mut ordinal = 0_u64;
+            let decisions = String::from_utf8_lossy(contents)
+                .lines()
+                .filter_map(|line| {
+                    let mut decision = parse_structured_choice_line(line)?;
+                    decision.ordinal = ordinal;
+                    ordinal = ordinal.saturating_add(1);
+                    Some(decision)
+                })
+                .collect::<Vec<_>>();
+            (!decisions.is_empty()).then(|| (service.clone(), decisions))
+        })
+        .collect()
+}
+
+fn parse_structured_choice_line(line: &str) -> Option<StructuredChoiceDecision> {
+    let mut fields = line
+        .trim()
+        .strip_prefix(STRUCTURED_CHOICE_PREFIX)?
+        .split(':');
+    let name = fields.next()?;
+    let upper_exclusive = fields.next()?.parse::<u16>().ok()?;
+    let selected = fields.next()?.parse::<u16>().ok()?;
+    if fields.next().is_some()
+        || !valid_coverage_name(name)
+        || upper_exclusive == 0
+        || upper_exclusive > 256
+        || selected >= upper_exclusive
+    {
+        return None;
+    }
+    Some(StructuredChoiceDecision {
+        ordinal: 0,
+        name: name.to_owned(),
+        upper_exclusive,
+        selected,
+    })
+}
+
 fn campaign_checkpoint_program_counters(
     checkpoint: &CampaignCheckpoint,
 ) -> BTreeMap<String, Vec<String>> {
@@ -6398,6 +6753,9 @@ fn campaign_checkpoint_boundary(
             &campaign_checkpoint_serial_contents(checkpoint),
         ),
         thread_synchronization: campaign_thread_synchronization_from_serial(
+            &campaign_checkpoint_serial_contents(checkpoint),
+        ),
+        structured_choices: campaign_structured_choices_from_serial(
             &campaign_checkpoint_serial_contents(checkpoint),
         ),
         program_counters: campaign_checkpoint_program_counters(checkpoint),
@@ -6501,6 +6859,10 @@ fn campaign_operation_timeline(
                 &previous.thread_synchronization,
                 &boundary.thread_synchronization,
             );
+            let new_structured_choices = campaign_structured_choice_delta(
+                &previous.structured_choices,
+                &boundary.structured_choices,
+            );
             let serial_delta = campaign_serial_delta(&previous, boundary);
             let network_traffic_delta = campaign_network_traffic_delta(&previous, boundary);
             let (changed_storage, virtual_time_delta_ns) =
@@ -6533,6 +6895,8 @@ fn campaign_operation_timeline(
                 new_thread_scheduling_decisions,
                 thread_synchronization: boundary.thread_synchronization.clone(),
                 new_thread_synchronization_events,
+                structured_choices: boundary.structured_choices.clone(),
+                new_structured_choices,
                 serial_sha256: boundary.serial_sha256.clone(),
                 serial_delta,
                 network_traffic_delta,
@@ -6574,6 +6938,23 @@ fn campaign_thread_synchronization_delta(
                 .map(Vec::len)
                 .unwrap_or(0);
             (prefix < events.len()).then(|| (service.clone(), events[prefix..].to_vec()))
+        })
+        .collect()
+}
+
+fn campaign_structured_choice_delta(
+    previous: &BTreeMap<String, Vec<StructuredChoiceDecision>>,
+    current: &BTreeMap<String, Vec<StructuredChoiceDecision>>,
+) -> BTreeMap<String, Vec<StructuredChoiceDecision>> {
+    current
+        .iter()
+        .filter_map(|(service, decisions)| {
+            let prefix = previous
+                .get(service)
+                .filter(|prior| decisions.starts_with(prior))
+                .map(Vec::len)
+                .unwrap_or(0);
+            (prefix < decisions.len()).then(|| (service.clone(), decisions[prefix..].to_vec()))
         })
         .collect()
 }
@@ -11516,6 +11897,7 @@ mod tests {
                     shell_phase: None,
                     shell_process: None,
                     thread_schedule: Vec::new(),
+                    choice_bounds: BTreeMap::new(),
                     thread_schedule_search: None,
                     thread_schedule_exploration: None,
                     input_hex: None,
@@ -11524,6 +11906,7 @@ mod tests {
                             name: "alpha".to_owned(),
                             input_hex: "777269746520616c7068610a".to_owned(),
                             thread_schedule: Vec::new(),
+                            choices: BTreeMap::new(),
                             input_template: None,
                             input_captures: BTreeMap::new(),
                             requires: Vec::new(),
@@ -11542,6 +11925,7 @@ mod tests {
                             name: "beta".to_owned(),
                             input_hex: "777269746520626574610a".to_owned(),
                             thread_schedule: Vec::new(),
+                            choices: BTreeMap::new(),
                             input_template: None,
                             input_captures: BTreeMap::new(),
                             requires: vec![CampaignOperationInputReference {
@@ -11581,6 +11965,7 @@ mod tests {
                     shell_phase: None,
                     shell_process: None,
                     thread_schedule: Vec::new(),
+                    choice_bounds: BTreeMap::new(),
                     thread_schedule_search: None,
                     thread_schedule_exploration: None,
                     input_hex: Some("726561640a".to_owned()),
@@ -11684,6 +12069,7 @@ mod tests {
             name: "default".to_owned(),
             input_hex: String::new(),
             thread_schedule: Vec::new(),
+            choices: BTreeMap::new(),
             input_template: Some("retry {request}\n".to_owned()),
             input_captures: BTreeMap::from([(
                 "request".to_owned(),
@@ -12298,10 +12684,13 @@ mod tests {
             &[1, 2],
             &[CampaignGuidanceObservation {
                 operations: vec![choice(0)],
+                decision_prefix: Vec::new(),
                 novel_markers: 2,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -12338,10 +12727,13 @@ mod tests {
             &[2],
             &[CampaignGuidanceObservation {
                 operations: vec![choice(0)],
+                decision_prefix: Vec::new(),
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: true,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -12373,10 +12765,13 @@ mod tests {
             &[1],
             &[CampaignGuidanceObservation {
                 operations: vec![choice(0)],
+                decision_prefix: Vec::new(),
                 novel_markers: 0,
                 novel_instructions: 2,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -12418,30 +12813,39 @@ mod tests {
         let observations = vec![
             CampaignGuidanceObservation {
                 operations: vec![choice(0)],
+                decision_prefix: Vec::new(),
                 novel_markers: 1,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
             },
             CampaignGuidanceObservation {
                 operations: vec![choice(1)],
+                decision_prefix: Vec::new(),
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 1,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
             },
             CampaignGuidanceObservation {
                 operations: vec![choice(2)],
+                decision_prefix: Vec::new(),
                 novel_markers: 0,
                 novel_instructions: 1,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -12552,6 +12956,94 @@ mod tests {
     }
 
     #[test]
+    fn structured_choice_records_are_strict_ordered_and_service_scoped() {
+        let serial = BTreeMap::from([
+            (
+                "api".to_owned(),
+                b"noise\nTHES:CHOICE:mode:2:1\nTHES:CHOICE:retry:3:2\n".to_vec(),
+            ),
+            ("worker".to_owned(), b"THES:CHOICE:mode:2:0\n".to_vec()),
+        ]);
+        let choices = campaign_structured_choices_from_serial(&serial);
+        assert_eq!(choices["api"].len(), 2);
+        assert_eq!(choices["api"][0].ordinal, 0);
+        assert_eq!(choices["api"][1].ordinal, 1);
+        assert_eq!(choices["api"][1].name, "retry");
+        assert_eq!(choices["api"][1].upper_exclusive, 3);
+        assert_eq!(choices["api"][1].selected, 2);
+        assert_eq!(choices["worker"][0].ordinal, 0);
+
+        assert!(parse_structured_choice_line("THES:CHOICE:bad:name:2:1").is_none());
+        assert!(parse_structured_choice_line("THES:CHOICE:mode:0:0").is_none());
+        assert!(parse_structured_choice_line("THES:CHOICE:mode:2:2").is_none());
+        assert!(parse_structured_choice_line("THES:CHOICE:mode:257:1").is_none());
+    }
+
+    #[test]
+    fn structured_choice_verification_requires_the_locked_point_of_use_record() {
+        let campaign: CampaignPlan = serde_json::from_value(serde_json::json!({
+            "driver": "api",
+            "operations": [{
+                "name": "calculate",
+                "service": "api",
+                "choice_bounds": {"mode": 2},
+                "inputs": [{
+                    "name": "mode-1",
+                    "input_hex": "00",
+                    "choices": {"mode": 1}
+                }]
+            }],
+            "max_runs": 1
+        }))
+        .unwrap();
+        let schedule = CampaignSchedule {
+            operations: vec![choice(0)],
+            faults: Vec::new(),
+            thread_schedule_prefixes: vec![Vec::new()],
+        };
+        let boundary = |records: serde_json::Value| {
+            serde_json::from_value::<CampaignTimelineBoundary>(serde_json::json!({
+                "operation": "calculate[mode-1]",
+                "service": "api",
+                "round": 1,
+                "new_structured_choices": records,
+                "serial_sha256": {},
+                "state_sha256": "state"
+            }))
+            .unwrap()
+        };
+        let decision = serde_json::json!({
+            "ordinal": 0,
+            "name": "mode",
+            "upper_exclusive": 2,
+            "selected": 1
+        });
+
+        assert!(verify_campaign_structured_choices(
+            &campaign,
+            &schedule,
+            &[boundary(serde_json::json!({"api": [decision.clone()]}))]
+        )
+        .is_ok());
+        assert!(verify_campaign_structured_choices(
+            &campaign,
+            &schedule,
+            &[boundary(serde_json::json!({}))]
+        )
+        .unwrap_err()
+        .contains("did not record assigned structured choice"));
+        assert!(verify_campaign_structured_choices(
+            &campaign,
+            &schedule,
+            &[boundary(
+                serde_json::json!({"api": [decision.clone(), decision]})
+            )]
+        )
+        .unwrap_err()
+        .contains("more than once"));
+    }
+
+    #[test]
     fn thread_synchronization_records_are_strict_ordered_and_address_free() {
         let digest = "0123456789abcdef".repeat(4);
         let wait = format!("THES:SYNC:v1:worker:ledger:{digest}:0:1:wait:condition:1:-\n");
@@ -12596,20 +13088,26 @@ mod tests {
         let observations = vec![
             CampaignGuidanceObservation {
                 operations: vec![choice(0)],
+                decision_prefix: Vec::new(),
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
             },
             CampaignGuidanceObservation {
                 operations: vec![choice(1)],
+                decision_prefix: Vec::new(),
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 2,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -12756,30 +13254,39 @@ mod tests {
         let observations = vec![
             CampaignGuidanceObservation {
                 operations: vec![choice(0)],
+                decision_prefix: Vec::new(),
                 novel_markers: 2,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
             },
             CampaignGuidanceObservation {
                 operations: vec![choice(1)],
+                decision_prefix: Vec::new(),
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
             },
             CampaignGuidanceObservation {
                 operations: vec![choice(2)],
+                decision_prefix: Vec::new(),
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -12802,6 +13309,47 @@ mod tests {
     }
 
     #[test]
+    fn unified_guidance_extends_a_rewarding_decision_prefix() {
+        let schedules = vec![
+            CampaignSchedule {
+                operations: vec![choice(2), choice(0)],
+                faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
+            },
+            CampaignSchedule {
+                operations: vec![choice(2), choice(1)],
+                faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new(), Vec::new()],
+            },
+        ];
+        let observations = vec![CampaignGuidanceObservation {
+            operations: vec![choice(2)],
+            decision_prefix: vec!["operation:2:0".to_owned()],
+            novel_markers: 0,
+            novel_instructions: 0,
+            novel_checkpoint_pcs: 0,
+            novel_application_blocks: 0,
+            novel_structured_choices: 1,
+            novel_scheduling_decisions: 1,
+            novel_state: true,
+            failed: false,
+            property_witnesses: vec!["target_is_reachable".to_owned()],
+        }];
+
+        let (selected, reason) = select_campaign_schedule(
+            &schedules,
+            &[0, 1],
+            &observations,
+            CampaignGuidance::Unified,
+            CampaignCoverage::ExecutionLocations,
+        );
+
+        assert_eq!(selected, 0);
+        assert!(reason.contains("unified decision prefix shares 1 point(s)"));
+        assert!(reason.contains("observed reward 106000"));
+    }
+
+    #[test]
     fn posterior_guidance_prefers_a_successful_action_with_global_evidence() {
         let schedules = vec![
             CampaignSchedule {
@@ -12818,20 +13366,26 @@ mod tests {
         let observations = vec![
             CampaignGuidanceObservation {
                 operations: vec![choice(0)],
+                decision_prefix: Vec::new(),
                 novel_markers: 1,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
             },
             CampaignGuidanceObservation {
                 operations: vec![choice(1)],
+                decision_prefix: Vec::new(),
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -12880,20 +13434,26 @@ mod tests {
         let observations = vec![
             CampaignGuidanceObservation {
                 operations: vec![choice(0)],
+                decision_prefix: Vec::new(),
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: vec!["stale_read_is_reachable".to_owned()],
             },
             CampaignGuidanceObservation {
                 operations: vec![choice(1)],
+                decision_prefix: Vec::new(),
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
+                novel_structured_choices: 0,
+                novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -12994,6 +13554,7 @@ mod tests {
             application_blocks: BTreeMap::new(),
             thread_scheduling: BTreeMap::new(),
             thread_synchronization: BTreeMap::new(),
+            structured_choices: BTreeMap::new(),
             program_counters: BTreeMap::from([
                 ("api".to_owned(), vec!["0x1000".to_owned()]),
                 ("worker".to_owned(), vec!["0x2000".to_owned()]),
@@ -13025,6 +13586,7 @@ mod tests {
             application_blocks: BTreeMap::new(),
             thread_scheduling: BTreeMap::new(),
             thread_synchronization: BTreeMap::new(),
+            structured_choices: BTreeMap::new(),
             program_counters: BTreeMap::from([
                 ("api".to_owned(), vec!["0x1000".to_owned()]),
                 ("worker".to_owned(), vec!["0x2004".to_owned()]),
@@ -13112,6 +13674,7 @@ mod tests {
             application_blocks: BTreeMap::new(),
             thread_scheduling: BTreeMap::new(),
             thread_synchronization: BTreeMap::new(),
+            structured_choices: BTreeMap::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
             serial_contents: BTreeMap::from([
@@ -13130,6 +13693,7 @@ mod tests {
             application_blocks: BTreeMap::new(),
             thread_scheduling: BTreeMap::new(),
             thread_synchronization: BTreeMap::new(),
+            structured_choices: BTreeMap::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
             serial_contents: BTreeMap::from([
@@ -13179,6 +13743,7 @@ mod tests {
             application_blocks: BTreeMap::new(),
             thread_scheduling: BTreeMap::new(),
             thread_synchronization: BTreeMap::new(),
+            structured_choices: BTreeMap::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
             serial_contents: BTreeMap::new(),
@@ -13229,6 +13794,7 @@ mod tests {
         let actual = CampaignRun {
             index: 0,
             operations: vec!["write".to_owned()],
+            decision_trace: vec!["boundary:0:operation:write".to_owned()],
             thread_schedule_prefixes: vec![vec![0, 1]],
             fault: None,
             faults: vec!["backplane:partition@write".to_owned()],
@@ -13288,6 +13854,8 @@ mod tests {
                 new_thread_scheduling_decisions: BTreeMap::new(),
                 thread_synchronization: BTreeMap::new(),
                 new_thread_synchronization_events: BTreeMap::new(),
+                structured_choices: BTreeMap::new(),
+                new_structured_choices: BTreeMap::new(),
                 serial_sha256: BTreeMap::from([("api".to_owned(), "serial".to_owned())]),
                 serial_delta: BTreeMap::new(),
                 network_traffic_delta: BTreeMap::new(),
@@ -13315,6 +13883,7 @@ mod tests {
             application_block_novelty: Vec::new(),
             thread_scheduling: BTreeMap::new(),
             thread_synchronization: BTreeMap::new(),
+            structured_choices: BTreeMap::new(),
             state_sha256: "state".to_owned(),
             state_novel: true,
             status: "passed",
@@ -13322,6 +13891,7 @@ mod tests {
         };
         let expected = RecordedCampaignRun {
             operations: actual.operations.clone(),
+            decision_trace: actual.decision_trace.clone(),
             thread_schedule_prefixes: actual.thread_schedule_prefixes.clone(),
             fault: None,
             faults: actual.faults.clone(),
@@ -13339,6 +13909,7 @@ mod tests {
             application_block_novelty: actual.application_block_novelty.clone(),
             thread_scheduling: actual.thread_scheduling.clone(),
             thread_synchronization: actual.thread_synchronization.clone(),
+            structured_choices: actual.structured_choices.clone(),
             novelty: actual.novelty.clone(),
             state_sha256: actual.state_sha256.clone(),
             state_novel: true,
@@ -13346,6 +13917,10 @@ mod tests {
         };
 
         assert!(campaign_replay_mismatches(&expected, &actual).is_empty());
+        let mut changed_decision = expected.clone();
+        changed_decision.decision_trace[0] = "boundary:0:operation:other".to_owned();
+        assert!(campaign_replay_mismatches(&changed_decision, &actual)
+            .contains(&"decision trace".to_owned()));
         let mut legacy_timeline = expected.clone();
         legacy_timeline.timeline[0].service.clear();
         legacy_timeline.timeline[0].input = CampaignInputEvidence::default();
@@ -13422,10 +13997,13 @@ mod tests {
     fn campaign_guidance_ledger_is_stable_and_sensitive_to_observations() {
         let observations = vec![CampaignGuidanceObservation {
             operations: vec![choice(0)],
+            decision_prefix: Vec::new(),
             novel_markers: 1,
             novel_instructions: 0,
             novel_checkpoint_pcs: 0,
             novel_application_blocks: 0,
+            novel_structured_choices: 0,
+            novel_scheduling_decisions: 0,
             novel_state: false,
             failed: false,
             property_witnesses: Vec::new(),
@@ -13435,6 +14013,10 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(first.observations, 1);
         assert_eq!(first.sha256.len(), 64);
+        let legacy_shape = serde_json::to_string(&observations).unwrap();
+        assert!(!legacy_shape.contains("decision_prefix"));
+        assert!(!legacy_shape.contains("novel_structured_choices"));
+        assert!(!legacy_shape.contains("novel_scheduling_decisions"));
 
         let mut changed = observations;
         changed[0].failed = true;
@@ -13702,6 +14284,7 @@ mod tests {
 "#,
             ),
             thread_schedule: vec![0, 1],
+            choices: BTreeMap::new(),
             input_template: None,
             input_captures: BTreeMap::new(),
             requires: Vec::new(),

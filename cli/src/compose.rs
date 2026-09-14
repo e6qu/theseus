@@ -3,10 +3,10 @@
 
 //! Strict Docker Compose-shaped topology input for Theseus guests.
 //!
-//! Compose is used here only as a familiar topology notation. Theseus does
-//! does not accept Docker images, host ports, or host networks: each service
-//! points at its own locked Theseus manifest instead. Image-backed services
-//! may seed a writable directory from a local Compose bind mount.
+//! Compose is a familiar input for services, image launch settings, networks,
+//! and campaigns. Theseus accepts a strict deterministic subset: a service
+//! either names an image or a locked Theseus manifest, while host ports and
+//! host networks remain unsupported.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -217,6 +217,10 @@ struct ComposeShellOperation {
     output_json: bool,
     #[serde(default)]
     environment: BTreeMap<String, String>,
+    /// Named runtime choices. A bound of N creates the values 0..N and each
+    /// generated input case injects one exact assignment into the command.
+    #[serde(default)]
+    choices: BTreeMap<String, u16>,
     /// A repeating sequence of stable pthread identities for a command built
     /// with the packaged C scheduling frontend, a bounded search over such
     /// repeating sequences, or feedback-driven runnable-prefix exploration.
@@ -1133,11 +1137,14 @@ pub struct DependencyPlan {
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CampaignGuidance {
-    #[default]
     Coverage,
     Adaptive,
     Posterior,
     Property,
+    /// One decision-tree policy across inputs, faults, schedules, coverage,
+    /// topology state, and property evidence.
+    #[default]
+    Unified,
 }
 
 /// Choose the primary deterministic signal used to rank campaign schedules.
@@ -1190,6 +1197,8 @@ pub struct OperationPlan {
     pub thread_schedule_search: Option<ThreadScheduleSearchPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_schedule_exploration: Option<ThreadScheduleExplorationPlan>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub choice_bounds: BTreeMap<String, u16>,
     pub inputs: Vec<OperationInputPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_grammar: Option<OperationInputGrammarPlan>,
@@ -1242,6 +1251,8 @@ pub struct OperationInputGrammarPlan {
 pub struct OperationInputPlan {
     pub name: String,
     pub input_hex: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub choices: BTreeMap<String, u16>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thread_schedule: Vec<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2550,6 +2561,79 @@ fn default_campaign_operations_per_run() -> u8 {
 
 const MAX_THREAD_SCHEDULE_SEARCH_PATTERNS: usize = 256;
 const MAX_THREAD_SCHEDULE_SEARCH_PERIOD: u8 = 16;
+const MAX_STRUCTURED_CHOICE_CASES: usize = 256;
+
+fn structured_choice_assignments(
+    bounds: &BTreeMap<String, u16>,
+    operation: &str,
+) -> Result<Vec<BTreeMap<String, u16>>, ComposeError> {
+    let mut assignments = vec![BTreeMap::new()];
+    for (name, bound) in bounds {
+        validate_name("structured choice", name)?;
+        if name.len() > 64 {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} structured choice {name:?} must be at most 64 bytes"
+            )));
+        }
+        if *bound == 0 || *bound > 256 {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} structured choice {name:?} must have a bound between 1 and 256"
+            )));
+        }
+        if assignments.len().saturating_mul(usize::from(*bound)) > MAX_STRUCTURED_CHOICE_CASES {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} generates more than {MAX_STRUCTURED_CHOICE_CASES} structured choice assignments"
+            )));
+        }
+        assignments = assignments
+            .into_iter()
+            .flat_map(|assignment| {
+                (0..*bound).map(move |selected| {
+                    let mut candidate = assignment.clone();
+                    candidate.insert(name.clone(), selected);
+                    candidate
+                })
+            })
+            .collect();
+    }
+    Ok(assignments)
+}
+
+fn structured_choices_environment(choices: &BTreeMap<String, u16>) -> String {
+    choices
+        .iter()
+        .map(|(name, selected)| format!("{name}={selected}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn shell_input_name(
+    schedule: &[u8],
+    searched_schedule: bool,
+    choices: &BTreeMap<String, u16>,
+) -> String {
+    let mut parts = Vec::new();
+    if searched_schedule {
+        parts.push(format!(
+            "schedule-{}",
+            schedule
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join("-")
+        ));
+    }
+    parts.extend(
+        choices
+            .iter()
+            .map(|(name, selected)| format!("{name}-{selected}")),
+    );
+    if parts.is_empty() {
+        "default".to_owned()
+    } else {
+        parts.join("+")
+    }
+}
 
 fn thread_schedule_search_patterns(
     search: &ComposeThreadScheduleSearch,
@@ -2702,6 +2786,7 @@ fn campaign_plan(
         let mut thread_schedule = Vec::new();
         let mut thread_schedule_search = None;
         let mut thread_schedule_exploration = None;
+        let mut choice_bounds = BTreeMap::new();
         let service_inputs = if let Some(http) = http {
             if !http.url.starts_with("http://")
                 || !(100..=599).contains(&http.expect_status)
@@ -2734,6 +2819,7 @@ fn campaign_plan(
             Some(vec![OperationInputPlan {
                 name: "default".to_owned(),
                 input_hex: hex(format!("THES:HTTP:operation:{command}\n").as_bytes()),
+                choices: BTreeMap::new(),
                 thread_schedule: Vec::new(),
                 input_template: None,
                 input_captures: BTreeMap::new(),
@@ -2770,6 +2856,7 @@ fn campaign_plan(
             Some(vec![OperationInputPlan {
                 name: "default".to_owned(),
                 input_hex: hex(format!("THES:GRPC:operation:{command}\n").as_bytes()),
+                choices: BTreeMap::new(),
                 thread_schedule: Vec::new(),
                 input_template: None,
                 input_captures: BTreeMap::new(),
@@ -2780,6 +2867,25 @@ fn campaign_plan(
                 sets_state: BTreeMap::new(),
             }])
         } else if let Some(shell) = shell {
+            let choice_assignments =
+                structured_choice_assignments(&shell.choices, &operation.name)?;
+            if choice_assignments
+                .len()
+                .saturating_mul(match &shell.thread_schedule {
+                    ComposeThreadSchedule::Exact(_) => 1,
+                    ComposeThreadSchedule::Search(search) => {
+                        thread_schedule_search_patterns(search, &operation.name)?.len()
+                    }
+                    ComposeThreadSchedule::Exploration(_) => 1,
+                })
+                > MAX_STRUCTURED_CHOICE_CASES
+            {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign operation {:?} generates more than {MAX_STRUCTURED_CHOICE_CASES} combined schedule and structured choice cases",
+                    operation.name
+                )));
+            }
+            choice_bounds = shell.choices.clone();
             let named_process = matches!(
                 shell.phase,
                 ComposeShellPhase::Launch | ComposeShellPhase::Completion
@@ -2873,6 +2979,7 @@ fn campaign_plan(
                         || key.contains('\0')
                         || value.contains('\0')
                         || key == "THESEUS_CHANNEL"
+                        || key == "THESEUS_CHOICES"
                 })
             {
                 return Err(ComposeError::Invalid(format!(
@@ -2896,65 +3003,64 @@ fn campaign_plan(
                 thread_schedule = schedule_patterns[0].clone();
             }
             thread_schedule_search = search;
-            Some(
-                schedule_patterns
-                    .into_iter()
-                    .map(|schedule| {
-                        let mut environment = shell.environment.clone();
-                        if exploring_schedule {
-                            environment.insert(
-                                "THESEUS_THREAD_SCHEDULE_MODE".to_owned(),
-                                "runnable_prefix".to_owned(),
-                            );
-                            environment.insert("THESEUS_THREAD_SCHEDULE".to_owned(), String::new());
-                        } else if !schedule.is_empty() {
-                            environment.insert(
-                                "THESEUS_THREAD_SCHEDULE".to_owned(),
-                                schedule
-                                    .iter()
-                                    .map(u8::to_string)
-                                    .collect::<Vec<_>>()
-                                    .join(","),
-                            );
-                        }
-                        let command = serde_json::json!({
-                            "name": operation.name.clone(),
-                            "phase": shell.phase,
-                            "process": shell.process,
-                            "command": shell.command,
-                            "expect_exit": shell.expect_exit,
-                            "output_contains": shell.output_contains,
-                            "output_json": shell.output_json,
-                            "environment": environment,
-                        });
-                        let command =
-                            serde_json::to_string(&command).expect("shell command is serializable");
-                        OperationInputPlan {
-                            name: if thread_schedule_search.is_some() {
-                                format!(
-                                    "schedule-{}",
-                                    schedule
-                                        .iter()
-                                        .map(u8::to_string)
-                                        .collect::<Vec<_>>()
-                                        .join("-")
-                                )
-                            } else {
-                                "default".to_owned()
-                            },
-                            input_hex: hex(format!("THES:SHELL:operation:{command}\n").as_bytes()),
-                            thread_schedule: schedule,
-                            input_template: None,
-                            input_captures: BTreeMap::new(),
-                            requires: Vec::new(),
-                            excludes: Vec::new(),
-                            max_uses: None,
-                            requires_state: BTreeMap::new(),
-                            sets_state: BTreeMap::new(),
-                        }
-                    })
-                    .collect(),
-            )
+            let mut inputs = Vec::new();
+            for schedule in schedule_patterns {
+                for choices in &choice_assignments {
+                    let mut environment = shell.environment.clone();
+                    if exploring_schedule {
+                        environment.insert(
+                            "THESEUS_THREAD_SCHEDULE_MODE".to_owned(),
+                            "runnable_prefix".to_owned(),
+                        );
+                        environment.insert("THESEUS_THREAD_SCHEDULE".to_owned(), String::new());
+                    } else if !schedule.is_empty() {
+                        environment.insert(
+                            "THESEUS_THREAD_SCHEDULE".to_owned(),
+                            schedule
+                                .iter()
+                                .map(u8::to_string)
+                                .collect::<Vec<_>>()
+                                .join(","),
+                        );
+                    }
+                    if !choices.is_empty() {
+                        environment.insert(
+                            "THESEUS_CHOICES".to_owned(),
+                            structured_choices_environment(choices),
+                        );
+                    }
+                    let command = serde_json::json!({
+                        "name": operation.name.clone(),
+                        "phase": shell.phase,
+                        "process": shell.process,
+                        "command": shell.command,
+                        "expect_exit": shell.expect_exit,
+                        "output_contains": shell.output_contains,
+                        "output_json": shell.output_json,
+                        "environment": environment,
+                    });
+                    let command =
+                        serde_json::to_string(&command).expect("shell command is serializable");
+                    inputs.push(OperationInputPlan {
+                        name: shell_input_name(
+                            &schedule,
+                            thread_schedule_search.is_some(),
+                            choices,
+                        ),
+                        input_hex: hex(format!("THES:SHELL:operation:{command}\n").as_bytes()),
+                        choices: choices.clone(),
+                        thread_schedule: schedule.clone(),
+                        input_template: None,
+                        input_captures: BTreeMap::new(),
+                        requires: Vec::new(),
+                        excludes: Vec::new(),
+                        max_uses: None,
+                        requires_state: BTreeMap::new(),
+                        sets_state: BTreeMap::new(),
+                    });
+                }
+            }
+            Some(inputs)
         } else {
             None
         };
@@ -2989,6 +3095,7 @@ fn campaign_plan(
             (None, Some(input)) => vec![OperationInputPlan {
                 name: "default".to_owned(),
                 input_hex: hex(input.as_bytes()),
+                choices: BTreeMap::new(),
                 thread_schedule: Vec::new(),
                 requires: Vec::new(),
                 excludes: Vec::new(),
@@ -3015,6 +3122,7 @@ fn campaign_plan(
                 vec![OperationInputPlan {
                     name: "default".to_owned(),
                     input_hex: String::new(),
+                    choices: BTreeMap::new(),
                     thread_schedule: Vec::new(),
                     input_template: Some(template.clone()),
                     input_captures: captures.clone(),
@@ -3052,6 +3160,7 @@ fn campaign_plan(
                         Ok(OperationInputPlan {
                             name: input.name,
                             input_hex: hex(input.input.as_bytes()),
+                            choices: BTreeMap::new(),
                             thread_schedule: Vec::new(),
                             input_template: None,
                             input_captures: BTreeMap::new(),
@@ -3130,6 +3239,7 @@ fn campaign_plan(
             thread_schedule,
             thread_schedule_search,
             thread_schedule_exploration,
+            choice_bounds,
             inputs,
             input_grammar: input_grammar.map(|grammar| grammar.source),
             stage: operation.stage,
@@ -5478,6 +5588,7 @@ fn normalize_operation_input_grammar(
                 .is_empty()
                 .then(|| hex(input.as_bytes()))
                 .unwrap_or_default(),
+            choices: BTreeMap::new(),
             thread_schedule: Vec::new(),
             input_template: (!captures.is_empty()).then_some(input),
             input_captures: captures.clone(),
@@ -6610,7 +6721,7 @@ mod tests {
     #[test]
     fn locks_a_declared_shell_operation_for_an_image_campaign_driver() {
         let directory = fixture(
-            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: read_health\n        shell:\n          command: [/bin/cat, /health]\n          output_contains: ok\n          output_json: true\n          environment: {CHECK_MODE: full}\n          thread_schedule: [0, 1, 2]\n    faults: []\n",
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 1\n    operations:\n      - name: read_health\n        shell:\n          command: [/bin/cat, /health]\n          output_contains: ok\n          output_json: true\n          environment: {CHECK_MODE: full}\n          choices: {mode: 2, retry: 2}\n          thread_schedule: [0, 1, 2]\n    faults: []\n",
         );
         let root = directory.path().join("api");
         fs::write(root.join("runtime/theseus-image"), b"image adapter").unwrap();
@@ -6637,7 +6748,20 @@ mod tests {
                 .campaign
         );
         let operation = &plan.campaign.as_ref().unwrap().operations[0];
+        assert_eq!(
+            plan.campaign.as_ref().unwrap().guidance,
+            CampaignGuidance::Unified
+        );
         assert_eq!(operation.thread_schedule, [0, 1, 2]);
+        assert_eq!(
+            operation.choice_bounds,
+            BTreeMap::from([("mode".to_owned(), 2), ("retry".to_owned(), 2)])
+        );
+        assert_eq!(operation.inputs.len(), 4);
+        assert_eq!(operation.inputs[0].name, "mode-0+retry-0");
+        assert_eq!(operation.inputs[3].name, "mode-1+retry-1");
+        assert_eq!(operation.inputs[3].choices["mode"], 1);
+        assert_eq!(operation.inputs[3].choices["retry"], 1);
         assert_eq!(operation.inputs[0].thread_schedule, [0, 1, 2]);
         let input = &operation.inputs[0].input_hex;
         let bytes = input
@@ -6651,6 +6775,7 @@ mod tests {
         assert!(command.contains("\"expect_exit\":0"));
         assert!(command.contains("\"output_json\":true"));
         assert!(command.contains("\"CHECK_MODE\":\"full\""));
+        assert!(command.contains("\"THESEUS_CHOICES\":\"mode=0,retry=0\""));
         assert!(command.contains("\"THESEUS_THREAD_SCHEDULE\":\"0,1,2\""));
     }
 
@@ -6776,6 +6901,30 @@ mod tests {
             let error = thread_schedule_search_patterns(&search, "race").unwrap_err();
             assert!(error.to_string().contains("thread schedule search"));
         }
+    }
+
+    #[test]
+    fn rejects_invalid_or_explosive_structured_choices() {
+        for bound in [0, 257] {
+            let error = structured_choice_assignments(
+                &BTreeMap::from([("mode".to_owned(), bound)]),
+                "calculate",
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("bound between 1 and 256"));
+        }
+        let error = structured_choice_assignments(
+            &BTreeMap::from([
+                ("first".to_owned(), 8),
+                ("second".to_owned(), 8),
+                ("third".to_owned(), 8),
+            ]),
+            "calculate",
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("more than 256 structured choice assignments"));
     }
 
     #[test]

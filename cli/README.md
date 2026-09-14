@@ -139,6 +139,21 @@ runnable mask, current thread, and selected thread. Replay rejects a changed
 sequence. This bounded GCC C path is not a general Linux scheduler; see
 Tutorials 32–34 for its limits.
 
+A shell operation may also declare bounded, named `choices`:
+
+```yaml
+shell:
+  command: [/usr/local/bin/chooser]
+  choices: {mode: 2, retry: 3}
+```
+
+Planning locks every assignment and supplies it as `THESEUS_CHOICES`. The
+command emits `THES:CHOICE:<name>:<upper-bound>:<value>` immediately before it
+uses a value; `theseus-sdk` provides `TtyChannel::choice`, and plain programs
+can use the same line protocol. Unified guidance combines choice and schedule
+decisions with coverage, property, fault, and topology-state feedback. Results
+retain a human-readable decision trace, and replay rejects divergence.
+
 ### Hand a failure to CI or an issue
 
 The same locked result can be rendered without a browser. `markdown` writes a

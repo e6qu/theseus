@@ -32,9 +32,9 @@ Use these labels consistently:
 | Hermetic Linux execution | Partial | Execution is controlled at selected KVM, device, operation, and instrumented application boundaries, not at whole-machine instruction and interrupt granularity. |
 | Ordinary container workloads | Partial | Image-backed services and a Compose subset work; Kubernetes and broad Compose compatibility do not. |
 | Deterministic replay | Partial | Seeds, locked inputs, schedules, faults, checkpoints, and bundles are retained, but uncontrolled kernel and application behavior can still escape the model. |
-| Feedback-guided exploration | Partial | Campaigns can use coverage, properties, runnable sets, and prior outcomes, but these signals are not yet one general decision-tree search system. |
+| Feedback-guided exploration | Partial | One bounded decision-prefix policy combines coverage, properties, topology states, structured choices, runnable sets, faults, and prior outcomes; it is not yet validated at production scale. |
 | Fault injection | Partial | Network, packet, partition, process, storage, and clock operations exist; asymmetric degradation, latency, clogs, CPU throttling, and a mature custom-fault interface do not. |
-| Assertions and guidance | Partial | Always, sometimes, reachable, and unreachable properties exist; language support, structured choices, and assertion-guided exploration remain narrow. |
+| Assertions and guidance | Partial | Always, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
 | Coverage guidance | Partial | GCC C basic-block coverage exists; broad compiler/language support, edges, shared libraries, source presentation, and production-scale validation do not. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
 | Test composition | Early | Campaign operations can overlap, but there is no complete reusable test-template lifecycle comparable to setup, concurrent drivers, serial drivers, anytime actions, and teardown. |
@@ -63,6 +63,12 @@ Theseus currently has:
   events, and 128 synchronization objects for at most 32 threads.
 - Portable campaign and counterexample formats with locked input and runtime
   identities.
+- Named bounded choices for image commands, point-of-use choice evidence, and
+  a unified policy over operation, choice, schedule, fault, coverage,
+  property, and topology-state signals.
+- A replay-checked, human-readable decision trace for each Compose campaign
+  run, covering operation inputs, observed choices, thread selections, and
+  applied actions at deterministic operation boundaries.
 
 The baseline has important limits:
 
@@ -85,11 +91,37 @@ The baseline has important limits:
   copy-on-write mappings; it is not zero-copy.
 - There is no Kubernetes input, hosted campaign service, live debugger,
   temporal log query system, or broad language SDK.
-- The current public release predates the most recent coverage and pthread
-  scheduling work. Native certification has also failed while packaging the
-  runtime bundle because its checksum step treats the `instrumentation`
-  directory as a regular file. Those capabilities are implemented, not yet
-  product-ready.
+- The current public release predates the most recent coverage, pthread
+  scheduling, structured-choice, and unified-search work. The source workflow
+  fixes recursive runtime-bundle checksums, but those capabilities remain
+  implemented rather than product-ready until a release and both native KVM
+  certifications complete.
+
+## Active delivery: Priorities 0–2 as one vertical change
+
+Do not split release closure, the execution-decision foundation, and unified
+search into separate PRs. The active change must land them together:
+
+1. Repair recursive release packaging and verify the published SDK exposes the
+   point-of-use choice API.
+2. Lock bounded structured choices into Compose plans and inject exact values
+   into ordinary image commands without requiring an SDK.
+3. Forward, parse, validate, report, and replay-check choice records at their
+   operation boundaries.
+4. Retain one canonical decision trace containing exact operation inputs,
+   structured choices, runnable selections, and applied actions.
+5. Make unified decision-prefix guidance the default for new plans and combine
+   all currently available feedback signals in that policy.
+6. Ship one self-contained plain-C tutorial, update the comparison and product
+   docs, and keep limitations explicit.
+7. After merge, publish one SHA and run the release/native evidence workflow;
+   the workflow result, not the merge alone, promotes the slice from
+   implemented to demonstrated or product-ready.
+
+This slice does not close general Linux scheduling. Priority 1 remains open
+until process, futex, syscall, signal, timer, interrupt, and device delivery
+are controlled below application wrappers. Priority 2 remains open until the
+unified policy wins fixed-budget public benchmark comparisons.
 
 ## Priority 0: make the current product real for users
 
@@ -147,11 +179,12 @@ artifacts without depending on host timing.
 
 ## Priority 2: unified feedback-guided exploration
 
-Replace separate special-purpose search paths with one bounded decision-tree
-engine modeled on the workflow Antithesis exposes.
+Extend the bounded unified decision-prefix engine into a general decision-tree
+search system modeled on the workflow Antithesis exposes.
 
-- Represent structured random choices, runnable selections, fault choices,
-  test actions, and environmental inputs in one versioned decision stream.
+- Move structured choices, runnable selections, fault choices, test actions,
+  and environmental inputs from operation-boundary records into one
+  lower-level versioned decision stream.
 - Reuse checkpoints at common prefixes and explore alternative suffixes.
 - Combine coverage novelty, property progress, rare states, fault outcomes,
   schedule outcomes, and execution cost in the search policy.

@@ -147,6 +147,13 @@ pub mod linux {
     /// An operation barrier emitted by a workload after it has made a request
     /// durable enough for the host to begin the next deterministic step.
     pub const CHECKPOINT_PREFIX: &str = "THES:CHECKPOINT:";
+    /// A choice consumed at the point where the workload makes a decision.
+    /// The line records name, exclusive upper bound, and selected value.
+    pub const CHOICE_PREFIX: &str = "THES:CHOICE:";
+    /// Comma-separated `name=value` assignments supplied by a locked campaign
+    /// input. Applications should consume a value through [`TtyChannel::choice`]
+    /// instead of using it to seed another random generator.
+    pub const CHOICES_ENV: &str = "THESEUS_CHOICES";
 
     /// The serial-console control channel.
     pub struct TtyChannel {
@@ -183,6 +190,58 @@ pub mod linux {
         /// serial checkpoint protocol without requiring the SDK.
         pub fn checkpoint(&mut self, name: &str) -> io::Result<()> {
             writeln!(self.out, "{CHECKPOINT_PREFIX}{name}")
+        }
+
+        /// Consume one named structured choice and record it immediately.
+        ///
+        /// Theseus injects the exact assignment through [`CHOICES_ENV`]. The
+        /// name and bound are checked at the call site so a replay fails early
+        /// if the workload changes its decision contract.
+        pub fn choice(&mut self, name: &str, upper_exclusive: u16) -> io::Result<u16> {
+            if upper_exclusive == 0
+                || upper_exclusive > 256
+                || name.is_empty()
+                || name.len() > 64
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "choice needs a stable name and a bound from 1 through 256",
+                ));
+            }
+            let encoded = std::env::var(CHOICES_ENV).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "THESEUS_CHOICES does not contain this campaign assignment",
+                )
+            })?;
+            let selected = encoded
+                .split(',')
+                .filter_map(|assignment| assignment.split_once('='))
+                .find_map(|(candidate, value)| {
+                    (candidate == name)
+                        .then(|| value.parse::<u16>().ok())
+                        .flatten()
+                })
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "structured choice is absent from THESEUS_CHOICES",
+                    )
+                })?;
+            if selected >= upper_exclusive {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "structured choice is outside the requested bound",
+                ));
+            }
+            writeln!(
+                self.out,
+                "{CHOICE_PREFIX}{name}:{upper_exclusive}:{selected}"
+            )?;
+            Ok(selected)
         }
 
         /// Read the next event byte (blocking; skips non-channel lines such

@@ -43,7 +43,7 @@ a demonstration.
   before execution.
 - Tutorials 5–13 expose build, execution, expected-failure, inspection,
   replay, and cleanup commands directly in their READMEs.
-- Container and Compose tutorials 14–35 expose host image builds, interactive
+- Container and Compose tutorials 14–36 expose host image builds, interactive
   runtime entry, locked input preparation, execution, evidence inspection,
   replay, and optional cleanup as separate steps.
 - Generated bundles remain available until the user explicitly runs cleanup.
