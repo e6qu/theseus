@@ -49,6 +49,16 @@ loopback, total partition, and seeded per-frame drops (`drop_ppm`).
 Children of one branch point can receive different fault schedules (the
 sim config is rewritten in the captured state at spawn).
 
+### Instrumented C threads
+
+Programs built with `theseus-schedule-cc` take an explicit repeating pthread
+schedule from `THESEUS_THREAD_SCHEDULE`. The runtime permits one instrumented
+application basic block at a time. It records the current thread, runnable
+mask, selected thread, and build-scoped point for every choice; campaign replay
+requires the same ordered records. Creation-order identities and the locked
+build make this path independent of ASLR and host thread timing within its
+supported boundary.
+
 ### Everything else the guest can touch
 
 - Rate limiters use host timerfds — **rejected** when virtual time is
@@ -77,6 +87,10 @@ sim config is rewritten in the captured state at spawn).
   host-side random calls cannot interleave.
 - **io_uring / file-backed block.** Not simulated yet; deterministic mode
   expects sim or inert storage backends.
+- **Uninstrumented thread blocking.** The bounded GCC C scheduler controls
+  application basic blocks and `pthread_join`, not arbitrary mutexes, futexes,
+  condition variables, blocking syscalls, processes, or library code. Such a
+  target can deadlock and is outside the supported scheduling profile.
 
 ## Replay fingerprints
 

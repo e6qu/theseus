@@ -37,6 +37,9 @@ docker run --rm --platform "linux/$THESEUS_ARCH" \
   -v "$PWD":/tutorial -w /tutorial "$THESEUS_IMAGE" \
   /opt/theseus/instrumentation/c/theseus-coverage-cc \
   --process classifier --module branching -o service/work/classify service/main.c
+docker run --rm --platform "linux/$THESEUS_ARCH" \
+  -v "$PWD":/tutorial -w /tutorial "$THESEUS_IMAGE" \
+  gcc -O2 -o service/work/ready service/ready.c
 sed -n '1,120p' service/work/classify.theseus-coverage.json
 ```
 

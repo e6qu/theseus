@@ -46,8 +46,9 @@ pushes, never on `main`). One job on pinned Ubuntu 24.04:
    `orchestrator/` (`branch::tests`, `orchestrator::tree`)
 4. The deterministic `vmm` unit suites selected by exact module paths so the
    suite stays independent of `/dev/kvm` and `/dev/net/tun`.
-5. The GCC C coverage frontend, including stable rebuild identity and
-   versioned basic-block records, without starting a VM.
+5. The GCC C coverage and scheduling frontends, including stable rebuild
+   identities, deterministic pthread interleavings, a lost-update witness, and
+   versioned records, without starting a VM.
 
 KVM-backed tests (branch boots, explorer, coverage) are intentionally not
 in CI — run them locally in the privileged container.

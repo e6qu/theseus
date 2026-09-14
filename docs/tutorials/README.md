@@ -4,7 +4,7 @@ Each directory is complete: make it your working directory and use the
 published Theseus artifact named in its README. No tutorial needs a Theseus
 source checkout.
 
-Tutorials 1–8, 10–11, and 14–31 need Linux with KVM and Docker. Tutorials 9,
+Tutorials 1–8, 10–11, and 14–32 need Linux with KVM and Docker. Tutorials 9,
 12, and 13 read recorded bundles with only the published binary. Tutorials 1
 and 2 currently use the arm64 runtime, because that is where the matching
 deterministic-CRNG kernel module is shipped.
@@ -74,6 +74,9 @@ deterministic-CRNG kernel module is shipped.
 31. [Guide a campaign with C basic-block coverage](31-c-basic-block-coverage/) —
     compile an ordinary C command with the published runtime, retain stable
     application-block identities, and verify them on replay.
+32. [Reproduce a C thread race](32-deterministic-thread-scheduling/) — control
+    application basic-block interleavings, retain every runnable-set choice,
+    and replay a lost update without the guest SDK.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

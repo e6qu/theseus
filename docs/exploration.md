@@ -196,3 +196,27 @@ selected, records new blocks at operation boundaries, and requires the same
 sets during replay. The build digest prevents two rebuilds from being
 conflated; the module-relative offset is independent of ASLR. This bounded path
 does not provide edge coverage or instrumentation for other languages.
+
+## Bounded C thread scheduling
+
+The packaged `theseus-schedule-cc` frontend compiles a GCC C pthread program
+with application basic-block scheduling points. Set `thread_schedule` on a
+Compose shell operation to a repeating sequence of thread identities; Theseus
+locks it into the command environment as `THESEUS_THREAD_SCHEDULE`. Thread `0`
+is the initial thread; children are numbered in `pthread_create` order. Each
+emitted record has this form:
+
+```text
+THES:SCHED:v1:<process>:<module>:<build-sha256>:<decision>:<from-thread>:<runnable-mask>:<selected-thread>:<module-offset>
+```
+
+Campaign results retain the ordered records per service and operation
+boundary. Replay compares runnable masks, selected threads, order, build
+identity, and scheduling-point offsets. Reports show the choices beside the
+operation that produced them.
+
+This source implementation is bounded to 32 pthreads and 8,192 decisions. It
+controls only instrumented application basic blocks and intercepts
+`pthread_create` and `pthread_join`. A target that blocks in another
+uninstrumented synchronization call can deadlock, so this is not general Linux
+thread/process scheduling. Native amd64 and arm64 KVM evidence remains pending.

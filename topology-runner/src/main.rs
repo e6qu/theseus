@@ -134,6 +134,8 @@ struct CampaignOperation {
     shell_phase: Option<CampaignShellPhase>,
     #[serde(default)]
     shell_process: Option<String>,
+    #[serde(default)]
+    thread_schedule: Vec<u8>,
     /// `input_hex` is retained only to replay plans locked by older Theseus
     /// releases. New plans always use named `inputs`.
     #[serde(default)]
@@ -617,6 +619,7 @@ struct CampaignResult {
     unique_topology_states: usize,
     unique_instruction_locations: usize,
     unique_application_blocks: usize,
+    thread_scheduling_decisions: usize,
     /// A compact, deterministic account of the search work. This is separate
     /// from wall-clock timing: host scheduling must never affect a replay.
     search: CampaignSearchEvidence,
@@ -657,6 +660,8 @@ struct CampaignRun {
     application_blocks: BTreeMap<String, Vec<ApplicationBlock>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     application_block_novelty: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    thread_scheduling: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     checkpoint_pc_novelty: Vec<String>,
     state_sha256: String,
@@ -710,6 +715,10 @@ struct CampaignTimelineBoundary {
     application_blocks: BTreeMap<String, Vec<ApplicationBlock>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     new_application_blocks: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    thread_scheduling: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    new_thread_scheduling_decisions: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
     serial_sha256: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     serial_delta: BTreeMap<String, CampaignSerialDelta>,
@@ -940,6 +949,8 @@ struct RecordedCampaignRun {
     #[serde(default)]
     application_block_novelty: Vec<String>,
     #[serde(default)]
+    thread_scheduling: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
+    #[serde(default)]
     checkpoint_pc_novelty: Vec<String>,
     #[serde(default)]
     novelty: Vec<String>,
@@ -983,6 +994,21 @@ struct ApplicationBlock {
     module: String,
     build_sha256: String,
     offset: String,
+}
+
+/// One compiler-controlled userspace scheduling choice. Thread identities are
+/// assigned in pthread creation order; the build digest and module-relative
+/// point prevent an unrelated build or ASLR relocation from matching it.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+struct ThreadSchedulingDecision {
+    process: String,
+    module: String,
+    build_sha256: String,
+    decision: u64,
+    from_thread: u8,
+    runnable_mask: String,
+    selected_thread: u8,
+    point_offset: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1524,6 +1550,7 @@ struct CampaignCheckpointBoundary {
     round: u64,
     markers: Vec<String>,
     application_blocks: BTreeMap<String, Vec<ApplicationBlock>>,
+    thread_scheduling: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
     program_counters: BTreeMap<String, Vec<String>>,
     serial_sha256: BTreeMap<String, String>,
     serial_contents: BTreeMap<String, Vec<u8>>,
@@ -2871,6 +2898,7 @@ fn execute_campaign(
         }
         let markers = campaign_markers(&run_dir)?;
         let application_blocks = campaign_application_blocks(&run_dir)?;
+        let thread_scheduling = campaign_thread_scheduling(&run_dir)?;
         let actions = campaign_actions(&run_dir)?;
         let program_counters = campaign_checkpoint_program_counters(&prefix.checkpoint);
         let execution_locations = campaign_checkpoint_execution_locations(&prefix.checkpoint);
@@ -2936,6 +2964,7 @@ fn execute_campaign(
             checkpoint_pc_novelty,
             application_blocks,
             application_block_novelty,
+            thread_scheduling,
             state_sha256,
             state_novel,
             status: if failed { "failed" } else { "passed" },
@@ -3009,6 +3038,11 @@ fn execute_campaign(
             unique_topology_states: seen_topology_states.len(),
             unique_instruction_locations: seen_instruction_locations.len(),
             unique_application_blocks: seen_application_blocks.len(),
+            thread_scheduling_decisions: runs
+                .iter()
+                .flat_map(|run| run.thread_scheduling.values())
+                .map(Vec::len)
+                .sum(),
             search,
             replay_verification: recorded.map(|recorded| CampaignReplayVerification {
                 status: if replay_verified { "passed" } else { "failed" },
@@ -4769,6 +4803,11 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     {
         mismatches.push("application-block novelty".to_owned());
     }
+    if !expected.thread_scheduling.is_empty()
+        && expected.thread_scheduling != actual.thread_scheduling
+    {
+        mismatches.push("thread-scheduling decisions".to_owned());
+    }
     if !expected.state_sha256.is_empty()
         && (expected.state_sha256 != actual.state_sha256
             || expected.state_novel != actual.state_novel)
@@ -5672,14 +5711,32 @@ const APPLICATION_COVERAGE_PREFIX: &str = "THES:COV:v1:";
 fn campaign_application_blocks(
     run: &Path,
 ) -> Result<BTreeMap<String, Vec<ApplicationBlock>>, String> {
+    Ok(campaign_application_blocks_from_serial(
+        &campaign_serial_logs(run)?,
+    ))
+}
+
+fn campaign_serial_logs(run: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let mut serial = BTreeMap::<String, Vec<u8>>::new();
     let services = fs::read_dir(run.join("services")).map_err(|error| error.to_string())?;
     for service in services {
         let service = service.map_err(|error| error.to_string())?;
         let name = service.file_name().to_string_lossy().into_owned();
         let mut contents = Vec::new();
-        for log in fs::read_dir(service.path()).map_err(|error| error.to_string())? {
-            let log = log.map_err(|error| error.to_string())?;
+        let mut logs = fs::read_dir(service.path())
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        logs.sort_by_key(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.strip_prefix("serial-")
+                .and_then(|suffix| suffix.strip_suffix(".log"))
+                .and_then(|index| index.parse::<usize>().ok())
+                .map(|index| index + 1)
+                .unwrap_or(0)
+        });
+        for log in logs {
             let file_name = log.file_name();
             let file_name = file_name.to_string_lossy();
             if file_name == "serial.log"
@@ -5691,7 +5748,7 @@ fn campaign_application_blocks(
         }
         serial.insert(name, contents);
     }
-    Ok(campaign_application_blocks_from_serial(&serial))
+    Ok(serial)
 }
 
 fn campaign_application_blocks_from_serial(
@@ -5775,6 +5832,75 @@ fn campaign_application_block_ids(blocks: &BTreeMap<String, Vec<ApplicationBlock
         .collect()
 }
 
+const THREAD_SCHEDULING_PREFIX: &str = "THES:SCHED:v1:";
+
+fn campaign_thread_scheduling(
+    run: &Path,
+) -> Result<BTreeMap<String, Vec<ThreadSchedulingDecision>>, String> {
+    Ok(campaign_thread_scheduling_from_serial(
+        &campaign_serial_logs(run)?,
+    ))
+}
+
+fn campaign_thread_scheduling_from_serial(
+    serial: &BTreeMap<String, Vec<u8>>,
+) -> BTreeMap<String, Vec<ThreadSchedulingDecision>> {
+    serial
+        .iter()
+        .filter_map(|(service, contents)| {
+            let decisions = String::from_utf8_lossy(contents)
+                .lines()
+                .filter_map(parse_thread_scheduling_line)
+                .collect::<Vec<_>>();
+            (!decisions.is_empty()).then(|| (service.clone(), decisions))
+        })
+        .collect()
+}
+
+fn parse_thread_scheduling_line(line: &str) -> Option<ThreadSchedulingDecision> {
+    let mut fields = line
+        .trim()
+        .strip_prefix(THREAD_SCHEDULING_PREFIX)?
+        .split(':');
+    let process = fields.next()?;
+    let module = fields.next()?;
+    let build_sha256 = fields.next()?;
+    let decision = fields.next()?.parse::<u64>().ok()?;
+    let from_thread = fields.next()?.parse::<u8>().ok()?;
+    let runnable_mask = fields.next()?;
+    let selected_thread = fields.next()?.parse::<u8>().ok()?;
+    let point_offset = fields.next()?;
+    let mask = u32::from_str_radix(runnable_mask.strip_prefix("0x")?, 16).ok()?;
+    if fields.next().is_some()
+        || !valid_coverage_name(process)
+        || !valid_coverage_name(module)
+        || build_sha256.len() != 64
+        || !build_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || runnable_mask.len() != 10
+        || !runnable_mask[2..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || from_thread >= 32
+        || selected_thread >= 32
+        || mask & (1_u32 << selected_thread) == 0
+        || !valid_coverage_offset(point_offset)
+    {
+        return None;
+    }
+    Some(ThreadSchedulingDecision {
+        process: process.to_owned(),
+        module: module.to_owned(),
+        build_sha256: build_sha256.to_owned(),
+        decision,
+        from_thread,
+        runnable_mask: runnable_mask.to_owned(),
+        selected_thread,
+        point_offset: point_offset.to_owned(),
+    })
+}
+
 fn campaign_checkpoint_program_counters(
     checkpoint: &CampaignCheckpoint,
 ) -> BTreeMap<String, Vec<String>> {
@@ -5840,6 +5966,9 @@ fn campaign_checkpoint_boundary(
             .into_iter()
             .collect(),
         application_blocks: campaign_application_blocks_from_serial(
+            &campaign_checkpoint_serial_contents(checkpoint),
+        ),
+        thread_scheduling: campaign_thread_scheduling_from_serial(
             &campaign_checkpoint_serial_contents(checkpoint),
         ),
         program_counters: campaign_checkpoint_program_counters(checkpoint),
@@ -5935,6 +6064,10 @@ fn campaign_operation_timeline(
                     .into_iter()
                     .filter(|block| !previous_application_blocks.contains(block))
                     .collect();
+            let new_thread_scheduling_decisions = campaign_thread_scheduling_delta(
+                &previous.thread_scheduling,
+                &boundary.thread_scheduling,
+            );
             let serial_delta = campaign_serial_delta(&previous, boundary);
             let network_traffic_delta = campaign_network_traffic_delta(&previous, boundary);
             let (changed_storage, virtual_time_delta_ns) =
@@ -5963,6 +6096,8 @@ fn campaign_operation_timeline(
                 instruction_locations: symbolizer.symbolize(&boundary.program_counters),
                 application_blocks: boundary.application_blocks.clone(),
                 new_application_blocks,
+                thread_scheduling: boundary.thread_scheduling.clone(),
+                new_thread_scheduling_decisions,
                 serial_sha256: boundary.serial_sha256.clone(),
                 serial_delta,
                 network_traffic_delta,
@@ -5970,6 +6105,23 @@ fn campaign_operation_timeline(
                 virtual_time_delta_ns,
                 state_sha256: campaign_boundary_state_sha256(boundary),
             }
+        })
+        .collect()
+}
+
+fn campaign_thread_scheduling_delta(
+    previous: &BTreeMap<String, Vec<ThreadSchedulingDecision>>,
+    current: &BTreeMap<String, Vec<ThreadSchedulingDecision>>,
+) -> BTreeMap<String, Vec<ThreadSchedulingDecision>> {
+    current
+        .iter()
+        .filter_map(|(service, decisions)| {
+            let prefix = previous
+                .get(service)
+                .filter(|prior| decisions.starts_with(prior))
+                .map(Vec::len)
+                .unwrap_or(0);
+            (prefix < decisions.len()).then(|| (service.clone(), decisions[prefix..].to_vec()))
         })
         .collect()
 }
@@ -10911,6 +11063,7 @@ mod tests {
                     service: "api".to_owned(),
                     shell_phase: None,
                     shell_process: None,
+                    thread_schedule: Vec::new(),
                     input_hex: None,
                     inputs: vec![
                         CampaignOperationInput {
@@ -10971,6 +11124,7 @@ mod tests {
                     service: "api".to_owned(),
                     shell_phase: None,
                     shell_process: None,
+                    thread_schedule: Vec::new(),
                     input_hex: Some("726561640a".to_owned()),
                     inputs: Vec::new(),
                     input_grammar: None,
@@ -11891,6 +12045,40 @@ mod tests {
     }
 
     #[test]
+    fn thread_schedule_records_are_strict_ordered_and_service_scoped() {
+        let digest = "0123456789abcdef".repeat(4);
+        let first = format!("THES:SCHED:v1:worker:ledger:{digest}:0:0:0x00000007:1:0x42\n");
+        let second = format!("THES:SCHED:v1:worker:ledger:{digest}:1:1:0x00000006:2:0x46\n");
+        let serial = BTreeMap::from([
+            (
+                "api".to_owned(),
+                format!("noise\n{first}{second}{first}").into_bytes(),
+            ),
+            (
+                "worker".to_owned(),
+                format!("THES:SCHED:v1:worker:ledger:{digest}:2:1:0x00000004:2:0x48\n")
+                    .into_bytes(),
+            ),
+        ]);
+        let decisions = campaign_thread_scheduling_from_serial(&serial);
+        assert_eq!(decisions["api"].len(), 3);
+        assert_eq!(decisions["api"][0].decision, 0);
+        assert_eq!(decisions["api"][1].selected_thread, 2);
+        assert_eq!(decisions["api"][2].decision, 0);
+        assert_eq!(decisions["worker"].len(), 1);
+
+        assert!(parse_thread_scheduling_line(&format!(
+            "THES:SCHED:v1:worker:ledger:{digest}:0:0:0x00000001:2:0x42"
+        ))
+        .is_none());
+        assert!(parse_thread_scheduling_line(&format!(
+            "THES:SCHED:v1:worker:ledger:{}:0:0:0x00000001:0:0x42",
+            digest.to_uppercase()
+        ))
+        .is_none());
+    }
+
+    #[test]
     fn application_block_guidance_extends_the_instrumented_prefix() {
         let schedules = vec![
             CampaignSchedule {
@@ -12293,6 +12481,7 @@ mod tests {
             round: 0,
             markers: vec!["booted".to_owned(), "ready".to_owned()],
             application_blocks: BTreeMap::new(),
+            thread_scheduling: BTreeMap::new(),
             program_counters: BTreeMap::from([
                 ("api".to_owned(), vec!["0x1000".to_owned()]),
                 ("worker".to_owned(), vec!["0x2000".to_owned()]),
@@ -12322,6 +12511,7 @@ mod tests {
                 "written".to_owned(),
             ],
             application_blocks: BTreeMap::new(),
+            thread_scheduling: BTreeMap::new(),
             program_counters: BTreeMap::from([
                 ("api".to_owned(), vec!["0x1000".to_owned()]),
                 ("worker".to_owned(), vec!["0x2004".to_owned()]),
@@ -12407,6 +12597,7 @@ mod tests {
             round: 0,
             markers: Vec::new(),
             application_blocks: BTreeMap::new(),
+            thread_scheduling: BTreeMap::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
             serial_contents: BTreeMap::from([
@@ -12423,6 +12614,7 @@ mod tests {
             round: 1,
             markers: Vec::new(),
             application_blocks: BTreeMap::new(),
+            thread_scheduling: BTreeMap::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
             serial_contents: BTreeMap::from([
@@ -12470,6 +12662,7 @@ mod tests {
             round: 0,
             markers: Vec::new(),
             application_blocks: BTreeMap::new(),
+            thread_scheduling: BTreeMap::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
             serial_contents: BTreeMap::new(),
@@ -12574,6 +12767,8 @@ mod tests {
                 instruction_locations: BTreeMap::new(),
                 application_blocks: BTreeMap::new(),
                 new_application_blocks: Vec::new(),
+                thread_scheduling: BTreeMap::new(),
+                new_thread_scheduling_decisions: BTreeMap::new(),
                 serial_sha256: BTreeMap::from([("api".to_owned(), "serial".to_owned())]),
                 serial_delta: BTreeMap::new(),
                 network_traffic_delta: BTreeMap::new(),
@@ -12599,6 +12794,7 @@ mod tests {
             checkpoint_pc_novelty: Vec::new(),
             application_blocks: BTreeMap::new(),
             application_block_novelty: Vec::new(),
+            thread_scheduling: BTreeMap::new(),
             state_sha256: "state".to_owned(),
             state_novel: true,
             status: "passed",
@@ -12620,6 +12816,7 @@ mod tests {
             checkpoint_pc_novelty: actual.checkpoint_pc_novelty.clone(),
             application_blocks: actual.application_blocks.clone(),
             application_block_novelty: actual.application_block_novelty.clone(),
+            thread_scheduling: actual.thread_scheduling.clone(),
             novelty: actual.novelty.clone(),
             state_sha256: actual.state_sha256.clone(),
             state_novel: true,

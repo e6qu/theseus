@@ -28,6 +28,8 @@ passing unit suite alone is not treated as runtime proof.
 - Container-image conversion for ordinary Linux service images.
 - GCC-instrumented C basic-block coverage with ASLR-independent, build-scoped
   identities retained through campaign guidance, replay, comparison, and reports.
+- Bounded GCC C pthread scheduling at application basic-block boundaries, with
+  explicit schedules and runnable-set decisions retained and replay-checked.
 - SHA-addressed Linux runtime images for amd64 and arm64, plus published CLI
   binaries for Linux amd64/arm64 and macOS arm64.
 
@@ -40,6 +42,9 @@ passing unit suite alone is not treated as runtime proof.
 - Application basic-block coverage currently supports the packaged GCC C
   frontend and versioned serial records. Other languages use marker or sampled
   guest-PC baselines; edge coverage is not implemented.
+- Thread scheduling is a bounded GCC C path, not general Linux scheduling. It
+  supports 32 pthreads and 8,192 decisions, intercepts `pthread_join`, and
+  cannot safely control programs that block in other uninstrumented calls.
 - `compare` finds the first difference in two recorded histories. It does not
   perform counterfactual re-exploration or prove causality.
 - Capturing a branch copies guest RAM into a memfd. Restored children then use
@@ -69,6 +74,8 @@ examples:
    runtime contract.
 8. Instrument an ordinary C command and guide a campaign with stable
    application basic-block identities.
+9. Reproduce a pthread lost update from explicit, replay-checked scheduling
+   decisions.
 
 Each tutorial directory is its own working directory and complete input
 context. Runnable tutorials use published Theseus images or binaries, not a

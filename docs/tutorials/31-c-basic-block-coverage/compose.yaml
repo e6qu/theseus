@@ -4,6 +4,10 @@ services:
   classifier:
     x-theseus:
       manifest: service/theseus.toml
+    networks: [test]
+
+networks:
+  test: {}
 
 x-theseus:
   campaign:

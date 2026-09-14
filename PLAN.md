@@ -30,6 +30,13 @@ operation boundaries, replay verification, comparisons, evaluations, and
 reports. This implementation is not yet native-runtime evidence and does not
 cover edges or other languages.
 
+A second packaged GCC C path controls pthread execution at instrumented
+application basic-block boundaries. Explicit repeating schedules use stable
+creation-order thread identities. Ordered runnable-set and selection records
+are retained at operation boundaries, compared offline, reported, and checked
+during replay. The implementation is bounded and cooperative; it is not yet
+general Linux thread/process scheduling or native-runtime evidence.
+
 The following limits define the honest baseline:
 
 - Pull-request CI runs mostly environment-independent checks on an amd64
@@ -41,6 +48,9 @@ The following limits define the honest baseline:
 - Marker and guest-PC coverage modes remain lower-fidelity baselines. Only the
   packaged GCC C path provides application basic-block coverage; edge and
   multi-language coverage are not implemented.
+- Thread scheduling currently supports at most 32 GCC C pthreads and 8,192
+  decisions. It intercepts `pthread_join`; blocking in other uninstrumented
+  calls is unsupported and can deadlock.
 - `compare` finds differences between retained histories. It does not perform
   counterfactual experiments and must not claim causality.
 - Branch capture copies guest RAM into a memfd. Restored children then use
@@ -138,11 +148,28 @@ that the existing signals miss.
 
 ## Priority 2: thread and process scheduling
 
-- Introduce explicit replayable scheduling choices for a bounded Linux target.
-- Record runnable entities and selected decisions with stable identities.
-- Add deterministic perturbations and race examples below operation-level
-  overlap.
-- Carry scheduling state through checkpoint, minimization, and replay.
+Implemented in source:
+
+- The published-runtime build contains a bounded GCC C pthread scheduler.
+- Explicit repeating choices select stable creation-order thread identities at
+  application basic-block boundaries.
+- Runnable masks, selected threads, build identities, decision order, and
+  module-relative scheduling points are retained in results and operation
+  boundaries, compared, reported, and verified on replay.
+- Tutorial 32 demonstrates both a sequential outcome and a deterministic lost
+  update below operation-level overlap without the guest SDK.
+
+Next work:
+
+- Run Tutorial 32 on native amd64 and arm64 KVM and retain its campaign,
+  report, minimized counterexample, and replay evidence.
+- Move from explicit repeating patterns to bounded search over runnable thread
+  choices while keeping the complete choice sequence in the replay plan.
+- Detect or control mutexes, condition variables, futex waits, and blocking
+  syscalls instead of allowing an unsupported target to deadlock.
+- Extend stable identities across `fork`/`exec` and add process scheduling.
+- Measure scheduling overhead and publish a fixed-budget comparison against
+  operation-only overlap.
 
 Exit when a real race can be found, minimized, and replayed from retained
 artifacts without relying on host timing.
