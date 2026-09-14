@@ -68,7 +68,14 @@ struct RuntimeCertificate {
     format: String,
     status: String,
     profile: CertificateProfile,
+    source: CertificateSource,
     repeatability: CertificateRepeatability,
+}
+
+#[derive(Deserialize)]
+struct CertificateSource {
+    plan_sha256: String,
+    plan_contents: String,
 }
 
 #[derive(Deserialize)]
@@ -222,6 +229,23 @@ fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(
     require(
         certificate.profile.architecture == architecture,
         "runtime certificate architecture differs from its asset",
+    )?;
+    require_sha256(&certificate.source.plan_sha256, "certificate plan")?;
+    require(
+        sha256(certificate.source.plan_contents.as_bytes()) == certificate.source.plan_sha256,
+        "runtime certificate plan digest does not match its embedded plan",
+    )?;
+    let plan: serde_json::Value = parse_json_bytes(
+        certificate.source.plan_contents.as_bytes(),
+        "certificate plan",
+    )?;
+    require(
+        plan["format"] == "theseus-compose-plan-v1"
+            && plan["services"]
+                .as_object()
+                .is_some_and(|services| !services.is_empty())
+            && plan.get("campaign").is_none_or(serde_json::Value::is_null),
+        "runtime certificate does not embed a fixed topology plan",
     )?;
     require(
         certificate.repeatability.executions == 2,
@@ -578,10 +602,15 @@ mod tests {
 
     fn write_architecture(directory: &Path, architecture: &str, replay_status: &str) {
         let certificate_name = format!("theseus-{TAG}-runtime-certificate-{architecture}.json");
+        let plan_contents = r#"{"format":"theseus-compose-plan-v1","services":{"service":{}}}"#;
         let certificate = serde_json::to_vec_pretty(&serde_json::json!({
             "format": CERTIFICATE_FORMAT,
             "status": "passed",
             "profile": {"id": "linux-kvm-simulated-io-v1", "architecture": architecture},
+            "source": {
+                "plan_sha256": sha256(plan_contents.as_bytes()),
+                "plan_contents": plan_contents
+            },
             "repeatability": {"executions": 2}
         }))
         .unwrap();

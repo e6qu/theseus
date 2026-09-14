@@ -100,8 +100,9 @@ docker run --rm --privileged --platform "linux/$ARCH" \
 ```
 
 `evidence/runtime-certificate.json` is byte-for-byte identical to the separate
-certificate asset. `evidence/replay/` contains the certification run used to
-verify that replay.
+certificate asset. The certificate embeds the exact fixed plan covered by its
+plan digest. `evidence/replay/` contains the certification run used to verify
+that replay.
 `source/` contains the human-readable tutorial input, while `checkpoint/`
 contains the locked runtime and workload artifacts. An absent
 architecture-specific asset or the pair index means that the SHA does not have

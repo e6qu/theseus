@@ -64,8 +64,9 @@ partition and recovery before exploring the concurrency failure. The worker
 then minimizes the named counterexample, checks that both required actions
 survived, and replays it. The attested release assets contain the fixed-plan
 certificate and a portable minimized replay with the original campaign
-verdict, verification run, readable workload source, locked artifacts, host
-kernel release, KVM API version, and a digest-pinned runtime image. A final
+verdict, verification run, readable workload source, locked artifacts, exact
+fixed certification plan, host kernel release, KVM API version, and a
+digest-pinned runtime image. A final
 hosted job refuses partial evidence, validates both archives with the released
 CLI, signs the complete five-file set, and uploads it. The workflow file alone
 is not proof that either native job ran; the indexed assets must exist and
