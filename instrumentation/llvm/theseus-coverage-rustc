@@ -1,0 +1,111 @@
+#!/bin/sh
+# Copyright 2026 Adrian Mârza and contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+usage() {
+    echo 'usage: theseus-coverage-rustc --process NAME --module NAME [--crate-name NAME] [--symbols DIR] -o OUTPUT SOURCE.rs [-- RUSTC_ARG...]' >&2
+    exit 2
+}
+
+process=
+module=
+crate_name=theseus_instrumented
+symbols=
+output=
+source=
+rustc_args=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --process) [ "$#" -ge 2 ] || usage; process=$2; shift 2 ;;
+        --module) [ "$#" -ge 2 ] || usage; module=$2; shift 2 ;;
+        --crate-name) [ "$#" -ge 2 ] || usage; crate_name=$2; shift 2 ;;
+        --symbols) [ "$#" -ge 2 ] || usage; symbols=$2; shift 2 ;;
+        -o) [ "$#" -ge 2 ] || usage; output=$2; shift 2 ;;
+        --)
+            shift
+            while [ "$#" -gt 0 ]; do
+                rustc_args="${rustc_args}${rustc_args:+
+}$1"
+                shift
+            done
+            break
+            ;;
+        -*) usage ;;
+        *) [ -z "$source" ] || usage; source=$1; shift ;;
+    esac
+done
+
+case "$process" in ''|*[!A-Za-z0-9._-]*) usage ;; esac
+case "$module" in ''|*[!A-Za-z0-9._-]*) usage ;; esac
+case "$crate_name" in ''|*[!A-Za-z0-9_]*) usage ;; esac
+[ "${#process}" -le 64 ] || usage
+[ "${#module}" -le 64 ] || usage
+[ -n "$output" ] || usage
+[ -f "$source" ] || usage
+command -v rustc >/dev/null 2>&1 || { echo 'rustc is required' >&2; exit 1; }
+command -v clang >/dev/null 2>&1 || { echo 'clang is required' >&2; exit 1; }
+
+tool_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+compiler_version=$(rustc --version --verbose | tr '\n' ';')
+target=$(rustc -vV | sed -n 's/^host: //p')
+source_name=$(basename -- "$source")
+case "$source_name" in *[!A-Za-z0-9._-]*) usage ;; esac
+case "$source_name" in *.rs) ;; *) usage ;; esac
+source_sha256=$(sha256sum "$source" | awk '{print $1}')
+printf 'format=theseus-llvm-coverage-build-v1\nprocess=%s\nmodule=%s\nlanguage=rust\ncompiler=%s\ntarget=%s\nfrontend=%s\nruntime=%s\nsource=%s:%s\n' \
+    "$process" "$module" "$compiler_version" "$target" \
+    "$(sha256sum "$tool_dir/theseus-coverage-rustc" | awk '{print $1}')" \
+    "$(sha256sum "$tool_dir/theseus_coverage.c" | awk '{print $1}')" \
+    "$source_name" "$source_sha256" > "$work/inputs"
+old_ifs=$IFS
+IFS='
+'
+for argument in $rustc_args; do
+    printf 'rustc-argument=%s\n' "$argument" >> "$work/inputs"
+done
+IFS=$old_ifs
+build_sha256=$(sha256sum "$work/inputs" | awk '{print $1}')
+
+runtime_arch_flags=
+case "$(clang -dumpmachine)" in aarch64*) runtime_arch_flags=-mno-outline-atomics ;; esac
+clang -O2 -fPIC -fvisibility=hidden $runtime_arch_flags \
+    -DTHESEUS_COVERAGE_PROCESS=\"$process\" \
+    -DTHESEUS_COVERAGE_MODULE=\"$module\" \
+    -DTHESEUS_COVERAGE_BUILD_SHA256=\"$build_sha256\" \
+    -c "$tool_dir/theseus_coverage.c" -o "$work/runtime.o"
+
+set -- "$source" --crate-name "$crate_name" -Ccodegen-units=1 \
+    -Cpasses=sancov-module \
+    -Cllvm-args=-sanitizer-coverage-level=3 \
+    -Cllvm-args=-sanitizer-coverage-trace-pc-guard \
+    -Clink-arg=-Wl,--build-id \
+    -Clink-arg="$work/runtime.o"
+if [ -n "$rustc_args" ]; then
+    IFS='
+'
+    for argument in $rustc_args; do set -- "$@" "$argument"; done
+    IFS=$old_ifs
+fi
+rustc "$@" -o "$output"
+
+symbol_file=
+if [ -n "$symbols" ]; then
+    mkdir -p "$symbols"
+    symbol_file="$symbols/${module}-${build_sha256}.debug"
+    cp "$output" "$symbol_file"
+fi
+manifest="${output}.theseus-coverage.json"
+printf '{\n  "format": "theseus-llvm-coverage-build-v1",\n  "coverage": "edges",\n  "maximum_edges": 8191,\n  "language": "rust",\n  "process": "%s",\n  "module": "%s",\n  "build_sha256": "%s",\n  "compiler": "%s",\n  "target": "%s",\n' \
+    "$process" "$module" "$build_sha256" "$compiler_version" "$target" > "$manifest"
+if [ -n "$symbol_file" ]; then
+    printf '  "symbols": "%s",\n' "$(basename -- "$symbol_file")" >> "$manifest"
+fi
+printf '  "sources": [\n    {"name": "%s", "source_sha256": "%s"}\n  ]\n}\n' \
+    "$source_name" "$source_sha256" >> "$manifest"
+
+echo "$build_sha256  $output"
+echo "$build_sha256  $manifest"
+[ -z "$symbol_file" ] || echo "$build_sha256  $symbol_file"

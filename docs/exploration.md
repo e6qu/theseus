@@ -222,8 +222,25 @@ basic-block callbacks. Instrumented commands emit
 deduplicates them per service, uses them when `coverage: application_blocks` is
 selected, records new blocks at operation boundaries, and requires the same
 sets during replay. The build digest prevents two rebuilds from being
-conflated; the module-relative offset is independent of ASLR. This bounded path
-does not provide edge coverage or instrumentation for other languages.
+conflated; the module-relative offset is independent of ASLR.
+
+The packaged LLVM frontends cover C, C++, and single-file Rust programs. Clang
+uses `trace-pc-guard`; rustc uses the corresponding `sancov-module` pass. Each
+module retains at most 8,191 first-hit edges and disables additional guards.
+It emits this record for every retained edge:
+
+```text
+THES:COV:v2:<process>:<module>:<build-sha256>:<edge>:<module-offset>
+```
+
+Select `coverage: application_edges` to guide a campaign with these records.
+Each instrumented shared library links a hidden copy of the runtime, so a DSO
+loaded with `dlopen` retains its own build, module, guard set, and address base.
+The frontend can preserve an unstripped build-scoped file under `/symbols`;
+`theseus-coverage-inspect` checks the sanitizer guards and GNU build ID, then
+uses a module-relative offset to show its function and source line. Automatic
+source joins in reports and transparent instrumentation of existing images are
+not implemented.
 
 ## Bounded C thread scheduling
 

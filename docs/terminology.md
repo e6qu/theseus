@@ -44,10 +44,11 @@ Terms used across Theseus code and documentation. See
   guests. Compose campaigns normally use PCs sampled at deterministic handled
   exits and pause barriers; markers and final checkpoint PCs are replay-locked
   baseline signals. Neither form is application basic-block coverage.
-- **Application-block identity** — service, process, module name, build-input
-  SHA-256, and module-relative block address emitted by the packaged GCC C
-  instrumentation. It is stable across ASLR and identical rebuilds, and a
-  changed build cannot collide silently with the old module.
+- **Application-coverage identity** — service, process, module name,
+  build-input SHA-256, and module-relative address emitted by a compiler
+  frontend. GCC v1 records identify blocks; LLVM v2 records also carry a
+  build-local edge number. The identity is stable across ASLR and identical
+  rebuilds, and a changed build cannot collide silently with the old module.
 - **Thread-scheduling decision** — an ordered compiler-instrumented C record
   containing the build-scoped scheduling point, current thread, runnable
   thread mask, and selected thread. Theseus assigns thread identities in

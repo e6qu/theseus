@@ -22,8 +22,8 @@ RUN printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99
         /etc/apt/sources.list.d/debian.sources \
     && apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
-        bc bison busybox-static cpio curl dwarves file flex gcc git libclang-dev \
-        libelf-dev libseccomp-dev libssl-dev make patch squashfs-tools tree \
+        bc binutils bison busybox-static clang cpio curl dwarves file flex gcc git \
+        libclang-dev libclang-rt-dev libelf-dev libseccomp-dev libssl-dev make patch squashfs-tools tree \
         musl-tools \
     && rm -rf /var/lib/apt/lists/*
 
@@ -44,13 +44,20 @@ RUN ./orchestrator/pivot/build.sh --target "$TARGETARCH" \
     && test -x topology-runner/target/release/theseus-topology \
     && test -x image-runner/target/release/theseus-image \
     && test -x explorer-runner/target/release/theseus-explorer \
-    && mkdir -p /out/instrumentation/c \
+    && mkdir -p /out/instrumentation/c /out/instrumentation/llvm \
     && cp instrumentation/c/theseus-coverage-cc /out/instrumentation/c/ \
     && cp instrumentation/c/theseus_coverage.c /out/instrumentation/c/ \
     && cp instrumentation/c/theseus-schedule-cc /out/instrumentation/c/ \
     && cp instrumentation/c/theseus_schedule.c /out/instrumentation/c/ \
+    && cp instrumentation/llvm/theseus-coverage-clang /out/instrumentation/llvm/ \
+    && cp instrumentation/llvm/theseus-coverage-rustc /out/instrumentation/llvm/ \
+    && cp instrumentation/llvm/theseus-coverage-inspect /out/instrumentation/llvm/ \
+    && cp instrumentation/llvm/theseus_coverage.c /out/instrumentation/llvm/ \
     && chmod +x /out/instrumentation/c/theseus-coverage-cc \
         /out/instrumentation/c/theseus-schedule-cc \
+        /out/instrumentation/llvm/theseus-coverage-clang \
+        /out/instrumentation/llvm/theseus-coverage-rustc \
+        /out/instrumentation/llvm/theseus-coverage-inspect \
     && cp orchestrator/pivot.bin /out/pivot \
     && image-runner/target/release/theseus-image pivot > /out/embedded-pivot.json \
     && architecture=$(dpkg --print-architecture) \
@@ -78,7 +85,7 @@ RUN printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99
         /etc/apt/sources.list.d/debian.sources \
     && apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
-        busybox-static cpio curl gcc libc6-dev libseccomp2 \
+        binutils busybox-static clang cpio curl gcc libc6-dev libclang-rt-dev libseccomp2 rustc \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/firecracker/target/release/firecracker /usr/local/bin/firecracker

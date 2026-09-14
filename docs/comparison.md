@@ -14,7 +14,7 @@ has no independent head-to-head evaluation with Antithesis.
 | Determinism | Custom deterministic hypervisor | KVM plus seeded devices, simulated I/O, and exit-counted virtual time |
 | Replay | Instruction-level deterministic reproduction | Locked-input replay with recorded fingerprints; mid-quantum clock caveat |
 | Search guidance | Coverage-guided autonomous exploration | One bounded decision-prefix policy combines structured choices, C application blocks, runnable selections, faults, properties, topology states, and sampled guest PCs |
-| Coverage | Application basic-block instrumentation | GCC C basic-block instrumentation; no edge or multi-language instrumentation yet |
+| Coverage | Application basic-block instrumentation across documented language toolchains, symbol ingestion, and report validation | GCC C blocks plus LLVM C/C++/Rust edges, including dynamically loaded native modules and explicit symbol lookup; no Go/Java instrumentation or automatic source joins yet |
 | Faults | Network, process, clock, and storage faults | Simulated network/storage plus Compose lifecycle, clock, and packet actions |
 | Concurrency | Controlled thread/process scheduling | Operation overlap plus bounded GCC C pthread basic-block scheduling, runnable-set feedback, default mutexes, and untimed condition variables; no general Linux scheduler control |
 | Structured choices | SDK choices consumed at the point of use | Language-neutral bounded shell-operation choices and a Rust SDK helper, retained and replay-checked at the operation boundary |
@@ -26,12 +26,16 @@ has no independent head-to-head evaluation with Antithesis.
 
 ### Application coverage
 
-Antithesis documents compiler-based basic-block instrumentation across its
-supported toolchains. Theseus now has one bounded path: the packaged GCC C
-frontend emits build-scoped, module-relative basic-block identities and the
-campaign engine retains and replays them. Other Theseus workloads still use
-markers or sampled guest PCs, and Theseus has neither edge coverage nor broad
-toolchain support. A controlled public search comparison remains pending.
+Antithesis documents compiler-based basic-block instrumentation across C/C++,
+Rust, Go, Java, JavaScript, .NET, and other LLVM toolchains. Theseus packages a
+GCC C basic-block frontend and LLVM edge frontends for C, C++, and standalone
+Rust binaries. The LLVM runtime preserves independent build-scoped identities
+for PIE executables and dynamically loaded native libraries; its inspection
+tool validates sanitizer guards and resolves retained module offsets with the
+matching symbols. Campaign guidance, replay, comparison, evaluation, and
+reports retain the coverage records. Theseus does not yet ingest symbols into
+reports automatically, instrument Cargo dependency graphs, or support the
+non-LLVM language set. A controlled public search comparison remains pending.
 
 Reference: [Antithesis coverage instrumentation](https://antithesis.com/docs/product/writing_tests/instrumentation/coverage_instrumentation/).
 

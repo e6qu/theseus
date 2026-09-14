@@ -88,6 +88,20 @@ jobs:
             test -s /opt/theseus/instrumentation/c/theseus_coverage.c
             test -x /opt/theseus/instrumentation/c/theseus-schedule-cc
             test -s /opt/theseus/instrumentation/c/theseus_schedule.c
+            test -x /opt/theseus/instrumentation/llvm/theseus-coverage-clang
+            test -x /opt/theseus/instrumentation/llvm/theseus-coverage-rustc
+            test -x /opt/theseus/instrumentation/llvm/theseus-coverage-inspect
+            test -s /opt/theseus/instrumentation/llvm/theseus_coverage.c
+            printf "%s\n" "int main(void) { return 0; }" > /tmp/coverage.c
+            /opt/theseus/instrumentation/llvm/theseus-coverage-clang \
+              --process smoke --module c -o /tmp/coverage-c /tmp/coverage.c >/dev/null
+            /opt/theseus/instrumentation/llvm/theseus-coverage-inspect \
+              /tmp/coverage-c /tmp/coverage-c.theseus-coverage.json >/dev/null
+            printf "%s\n" "fn main() {}" > /tmp/coverage.rs
+            /opt/theseus/instrumentation/llvm/theseus-coverage-rustc \
+              --process smoke --module rust -o /tmp/coverage-rust /tmp/coverage.rs >/dev/null
+            /opt/theseus/instrumentation/llvm/theseus-coverage-inspect \
+              /tmp/coverage-rust /tmp/coverage-rust.theseus-coverage.json >/dev/null
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
             /usr/local/bin/theseus-image --help >/dev/null
@@ -376,6 +390,20 @@ jobs:
             test -s /opt/theseus/instrumentation/c/theseus_coverage.c
             test -x /opt/theseus/instrumentation/c/theseus-schedule-cc
             test -s /opt/theseus/instrumentation/c/theseus_schedule.c
+            test -x /opt/theseus/instrumentation/llvm/theseus-coverage-clang
+            test -x /opt/theseus/instrumentation/llvm/theseus-coverage-rustc
+            test -x /opt/theseus/instrumentation/llvm/theseus-coverage-inspect
+            test -s /opt/theseus/instrumentation/llvm/theseus_coverage.c
+            printf "%s\n" "int main(void) { return 0; }" > /tmp/coverage.c
+            /opt/theseus/instrumentation/llvm/theseus-coverage-clang \
+              --process smoke --module c -o /tmp/coverage-c /tmp/coverage.c >/dev/null
+            /opt/theseus/instrumentation/llvm/theseus-coverage-inspect \
+              /tmp/coverage-c /tmp/coverage-c.theseus-coverage.json >/dev/null
+            printf "%s\n" "fn main() {}" > /tmp/coverage.rs
+            /opt/theseus/instrumentation/llvm/theseus-coverage-rustc \
+              --process smoke --module rust -o /tmp/coverage-rust /tmp/coverage.rs >/dev/null
+            /opt/theseus/instrumentation/llvm/theseus-coverage-inspect \
+              /tmp/coverage-rust /tmp/coverage-rust.theseus-coverage.json >/dev/null
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
             /usr/local/bin/theseus-image --help >/dev/null
@@ -451,6 +479,10 @@ jobs:
             test -s instrumentation/c/theseus_coverage.c
             test -x instrumentation/c/theseus-schedule-cc
             test -s instrumentation/c/theseus_schedule.c
+            test -x instrumentation/llvm/theseus-coverage-clang
+            test -x instrumentation/llvm/theseus-coverage-rustc
+            test -x instrumentation/llvm/theseus-coverage-inspect
+            test -s instrumentation/llvm/theseus_coverage.c
             ./firecracker --version
             ./theseus --help >/dev/null
             ./theseus-image --help >/dev/null

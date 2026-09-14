@@ -1,0 +1,49 @@
+#!/bin/sh
+# Copyright 2026 Adrian Mârza and contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+usage() {
+    echo 'usage: theseus-coverage-inspect BINARY MANIFEST [MODULE_OFFSET]' >&2
+    exit 2
+}
+
+[ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage
+binary=$1
+manifest=$2
+offset=${3:-}
+[ -f "$binary" ] && [ -f "$manifest" ] || usage
+
+grep -F '"format": "theseus-llvm-coverage-build-v1"' "$manifest" >/dev/null || {
+    echo 'not a Theseus LLVM coverage manifest' >&2
+    exit 1
+}
+build_sha256=$(sed -n 's/.*"build_sha256": "\([0-9a-f]*\)".*/\1/p' "$manifest")
+case "$build_sha256" in ''|*[!0-9a-f]*) echo 'manifest has no build SHA-256' >&2; exit 1 ;; esac
+[ "${#build_sha256}" -eq 64 ] || { echo 'manifest has an invalid build SHA-256' >&2; exit 1; }
+strings "$binary" | grep -Fx "$build_sha256" >/dev/null || {
+    echo 'binary does not match the manifest build identity' >&2
+    exit 1
+}
+readelf -S "$binary" | grep -F '__sancov_guards' >/dev/null || {
+    echo 'binary has no LLVM sanitizer-coverage guards' >&2
+    exit 1
+}
+readelf -n "$binary" | grep -F 'Build ID:' >/dev/null || {
+    echo 'binary has no GNU build ID' >&2
+    exit 1
+}
+nm "$binary" | grep -F '__sanitizer_cov_trace_pc_guard' >/dev/null || {
+    echo 'binary has no Theseus coverage callback' >&2
+    exit 1
+}
+
+guard_hex=$(readelf -S --wide "$binary" | awk '$2 == "__sancov_guards" { print $6 }')
+[ -n "$guard_hex" ] || { echo 'cannot read LLVM coverage guard count' >&2; exit 1; }
+guards=$((0x$guard_hex / 4))
+echo "instrumented: $guards LLVM coverage guards"
+if [ -n "$offset" ]; then
+    case "$offset" in 0x|0x*[!0-9a-f]*) usage ;; 0x*) ;; *) usage ;; esac
+    [ "${#offset}" -le 18 ] || usage
+    addr2line -C -f -e "$binary" "$offset"
+fi

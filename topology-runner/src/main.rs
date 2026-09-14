@@ -127,6 +127,7 @@ enum CampaignCoverage {
     #[default]
     ExecutionLocations,
     ApplicationBlocks,
+    ApplicationEdges,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -651,6 +652,7 @@ struct CampaignResult {
     unique_topology_states: usize,
     unique_instruction_locations: usize,
     unique_application_blocks: usize,
+    unique_application_edges: usize,
     thread_scheduling_decisions: usize,
     thread_synchronization_events: usize,
     structured_choice_decisions: usize,
@@ -1044,15 +1046,16 @@ struct InstructionSourceLocation {
     column: Option<u32>,
 }
 
-/// A compiler-emitted application basic-block hit. The build digest scopes a
-/// module across rebuilds, while the module-relative address is unaffected by
-/// ASLR. Process and service names prevent otherwise identical modules from
-/// being conflated in a distributed topology.
+/// A compiler-emitted application coverage point. GCC v1 records identify a
+/// block by its module-relative address; LLVM v2 records add a build-local
+/// edge number. The build digest scopes both forms across rebuilds and ASLR.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 struct ApplicationBlock {
     process: String,
     module: String,
     build_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    edge: Option<u32>,
     offset: String,
 }
 
@@ -2905,6 +2908,7 @@ fn execute_campaign(
     let mut seen_instruction_locations = std::collections::BTreeSet::new();
     let mut seen_checkpoint_pcs = std::collections::BTreeSet::new();
     let mut seen_application_blocks = std::collections::BTreeSet::new();
+    let mut seen_application_edges = std::collections::BTreeSet::new();
     let mut seen_structured_choices = std::collections::BTreeSet::new();
     let mut seen_scheduling_decisions = std::collections::BTreeSet::new();
     let mut pending = (0..schedules.len()).collect::<Vec<_>>();
@@ -3038,6 +3042,12 @@ fn execute_campaign(
             .into_iter()
             .filter(|block| seen_application_blocks.insert(block.clone()))
             .collect::<Vec<_>>();
+        seen_application_edges.extend(application_blocks.iter().flat_map(|(service, blocks)| {
+            blocks
+                .iter()
+                .filter(|block| block.edge.is_some())
+                .map(|block| campaign_application_block_id(service, block))
+        }));
         let structured_choice_novelty = structured_choices
             .iter()
             .flat_map(|(service, decisions)| {
@@ -3210,6 +3220,7 @@ fn execute_campaign(
             unique_topology_states: seen_topology_states.len(),
             unique_instruction_locations: seen_instruction_locations.len(),
             unique_application_blocks: seen_application_blocks.len(),
+            unique_application_edges: seen_application_edges.len(),
             thread_scheduling_decisions: runs
                 .iter()
                 .flat_map(|run| run.thread_scheduling.values())
@@ -5290,12 +5301,12 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     if !expected.application_blocks.is_empty()
         && expected.application_blocks != actual.application_blocks
     {
-        mismatches.push("application-block coverage".to_owned());
+        mismatches.push("application coverage".to_owned());
     }
     if !expected.application_block_novelty.is_empty()
         && expected.application_block_novelty != actual.application_block_novelty
     {
-        mismatches.push("application-block novelty".to_owned());
+        mismatches.push("application coverage novelty".to_owned());
     }
     if !expected.thread_scheduling.is_empty()
         && expected.thread_scheduling != actual.thread_scheduling
@@ -5599,7 +5610,7 @@ fn campaign_guidance_signal(
         CampaignCoverage::Markers => observation.novel_markers.saturating_mul(1_000),
         CampaignCoverage::CheckpointPcs => observation.novel_checkpoint_pcs.saturating_mul(500),
         CampaignCoverage::ExecutionLocations => observation.novel_instructions.saturating_mul(500),
-        CampaignCoverage::ApplicationBlocks => {
+        CampaignCoverage::ApplicationBlocks | CampaignCoverage::ApplicationEdges => {
             observation.novel_application_blocks.saturating_mul(1_000)
         }
     };
@@ -5798,10 +5809,19 @@ fn campaign_guidance_reason(
             observation.novel_instructions
         ));
     }
-    if coverage == CampaignCoverage::ApplicationBlocks && observation.novel_application_blocks > 0 {
+    if matches!(
+        coverage,
+        CampaignCoverage::ApplicationBlocks | CampaignCoverage::ApplicationEdges
+    ) && observation.novel_application_blocks > 0
+    {
         signals.push(format!(
-            "{} new application block(s)",
-            observation.novel_application_blocks
+            "{} new application {}(s)",
+            observation.novel_application_blocks,
+            if coverage == CampaignCoverage::ApplicationEdges {
+                "edge"
+            } else {
+                "block"
+            }
         ));
     }
     if coverage == CampaignCoverage::CheckpointPcs && observation.novel_checkpoint_pcs > 0 {
@@ -6352,7 +6372,8 @@ fn campaign_markers(run: &Path) -> Result<Vec<String>, String> {
     Ok(markers.into_iter().collect())
 }
 
-const APPLICATION_COVERAGE_PREFIX: &str = "THES:COV:v1:";
+const APPLICATION_BLOCK_COVERAGE_PREFIX: &str = "THES:COV:v1:";
+const APPLICATION_EDGE_COVERAGE_PREFIX: &str = "THES:COV:v2:";
 
 fn campaign_application_blocks(
     run: &Path,
@@ -6415,22 +6436,41 @@ fn campaign_application_blocks_from_serial(
 }
 
 fn parse_application_coverage_line(line: &str) -> Option<ApplicationBlock> {
-    let mut fields = line
-        .trim()
-        .strip_prefix(APPLICATION_COVERAGE_PREFIX)?
-        .split(':');
+    let line = line.trim();
+    let (record, edge) = if let Some(record) = line.strip_prefix(APPLICATION_BLOCK_COVERAGE_PREFIX)
+    {
+        (record, None)
+    } else {
+        let mut fields = line
+            .strip_prefix(APPLICATION_EDGE_COVERAGE_PREFIX)?
+            .split(':');
+        let process = fields.next()?;
+        let module = fields.next()?;
+        let build_sha256 = fields.next()?;
+        let edge = fields.next()?.parse::<u32>().ok()?;
+        let offset = fields.next()?;
+        if edge == 0
+            || edge >= 8_192
+            || fields.next().is_some()
+            || !valid_application_coverage_point(process, module, build_sha256, offset)
+        {
+            return None;
+        }
+        return Some(ApplicationBlock {
+            process: process.to_owned(),
+            module: module.to_owned(),
+            build_sha256: build_sha256.to_owned(),
+            edge: Some(edge),
+            offset: offset.to_owned(),
+        });
+    };
+    let mut fields = record.split(':');
     let process = fields.next()?;
     let module = fields.next()?;
     let build_sha256 = fields.next()?;
     let offset = fields.next()?;
     if fields.next().is_some()
-        || !valid_coverage_name(process)
-        || !valid_coverage_name(module)
-        || build_sha256.len() != 64
-        || !build_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        || !valid_coverage_offset(offset)
+        || !valid_application_coverage_point(process, module, build_sha256, offset)
     {
         return None;
     }
@@ -6438,8 +6478,24 @@ fn parse_application_coverage_line(line: &str) -> Option<ApplicationBlock> {
         process: process.to_owned(),
         module: module.to_owned(),
         build_sha256: build_sha256.to_owned(),
+        edge,
         offset: offset.to_owned(),
     })
+}
+
+fn valid_application_coverage_point(
+    process: &str,
+    module: &str,
+    build_sha256: &str,
+    offset: &str,
+) -> bool {
+    valid_coverage_name(process)
+        && valid_coverage_name(module)
+        && build_sha256.len() == 64
+        && build_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && valid_coverage_offset(offset)
 }
 
 fn valid_coverage_name(value: &str) -> bool {
@@ -6461,9 +6517,13 @@ fn valid_coverage_offset(value: &str) -> bool {
 }
 
 fn campaign_application_block_id(service: &str, block: &ApplicationBlock) -> String {
+    let point = block
+        .edge
+        .map(|edge| format!("edge-{edge}:{}", block.offset))
+        .unwrap_or_else(|| block.offset.clone());
     format!(
-        "{service}:{}:{}@{}:{}",
-        block.process, block.module, block.build_sha256, block.offset
+        "{service}:{}:{}@{}:{point}",
+        block.process, block.module, block.build_sha256
     )
 }
 
@@ -12901,24 +12961,33 @@ mod tests {
     fn application_coverage_records_are_strict_deduplicated_and_service_scoped() {
         let digest = "0123456789abcdef".repeat(4);
         let record = format!("THES:COV:v1:worker:parser:{digest}:0x42\n");
+        let edge = format!("THES:COV:v2:worker:parser:{digest}:17:0x48\n");
         let serial = BTreeMap::from([
             (
                 "api".to_owned(),
-                format!("noise\n{record}{record}").into_bytes(),
+                format!("noise\n{record}{record}{edge}{edge}").into_bytes(),
             ),
             (
                 "worker".to_owned(),
-                format!("THES:COV:v1:worker:parser:{}:0x42\n", digest.to_uppercase()).into_bytes(),
+                format!(
+                    "THES:COV:v1:worker:parser:{}:0x42\nTHES:COV:v2:worker:parser:{digest}:0:0x48\nTHES:COV:v2:worker:parser:{digest}:8192:0x48\n",
+                    digest.to_uppercase()
+                )
+                .into_bytes(),
             ),
         ]);
         let blocks = campaign_application_blocks_from_serial(&serial);
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks["api"].len(), 1);
+        assert_eq!(blocks["api"].len(), 2);
         assert_eq!(blocks["api"][0].process, "worker");
         assert_eq!(blocks["api"][0].module, "parser");
-        assert_eq!(blocks["api"][0].build_sha256, digest);
+        assert_eq!(blocks["api"][0].build_sha256, digest.clone());
+        assert_eq!(blocks["api"][0].edge, None);
         assert_eq!(blocks["api"][0].offset, "0x42");
-        assert_eq!(campaign_application_block_ids(&blocks).len(), 1);
+        assert_eq!(blocks["api"][1].edge, Some(17));
+        assert_eq!(blocks["api"][1].offset, "0x48");
+        assert_eq!(campaign_application_block_ids(&blocks).len(), 2);
+        assert!(campaign_application_block_ids(&blocks)[1].contains("edge-17:0x48"));
     }
 
     #[test]
@@ -13124,6 +13193,18 @@ mod tests {
         assert_eq!(
             reason,
             "extends 1-operation prefix with 2 new application block(s)"
+        );
+        let (selected, reason) = select_campaign_schedule(
+            &schedules,
+            &[0, 1],
+            &observations,
+            CampaignGuidance::Coverage,
+            CampaignCoverage::ApplicationEdges,
+        );
+        assert_eq!(selected, 1);
+        assert_eq!(
+            reason,
+            "extends 1-operation prefix with 2 new application edge(s)"
         );
     }
 

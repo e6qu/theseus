@@ -159,5 +159,10 @@ docs/tutorials/36-structured-choices/campaign/
 docs/tutorials/36-structured-choices/report/
 docs/tutorials/36-structured-choices/minimized/
 docs/tutorials/36-structured-choices/rerun/
+docs/tutorials/37-llvm-edge-coverage/service/work/
+docs/tutorials/37-llvm-edge-coverage/plan.json
+docs/tutorials/37-llvm-edge-coverage/campaign/
+docs/tutorials/37-llvm-edge-coverage/report/
+docs/tutorials/37-llvm-edge-coverage/rerun/
 
 orchestrator/pivot/target/

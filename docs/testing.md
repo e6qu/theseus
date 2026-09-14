@@ -46,8 +46,9 @@ pushes, never on `main`). One job on pinned Ubuntu 24.04:
    `orchestrator/` (`branch::tests`, `orchestrator::tree`)
 4. The deterministic `vmm` unit suites selected by exact module paths so the
    suite stays independent of `/dev/kvm` and `/dev/net/tun`.
-5. The GCC C coverage and scheduling frontends, including stable rebuild
-   identities, deterministic pthread interleavings, controlled mutex and
+5. The GCC C coverage and scheduling frontends plus LLVM C/C++/Rust edge
+   coverage, including stable rebuild and DSO identities, symbol validation,
+   deterministic pthread interleavings, controlled mutex and
    condition-variable blocking, a lost-update witness, and
    versioned records, without starting a VM.
 6. Bounded thread-schedule expansion, locked schedule cases, invalid-search

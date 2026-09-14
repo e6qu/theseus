@@ -123,6 +123,14 @@ commands were built with the packaged `theseus-coverage-cc` frontend. Reports
 then list service/process/module/build/block identities separately from sampled
 guest PCs, and replay checks the exact retained block set and novelty.
 
+Use `coverage: application_edges` for binaries built by the packaged
+`theseus-coverage-clang` or `theseus-coverage-rustc` frontend. Edge records add
+a build-local guard number to the module-relative address. C, C++, single-file
+Rust programs, PIE executables, and dynamically loaded native modules use the
+same replay path. Each module retains at most 8,191 edge identities.
+Preserve symbol files with `--symbols`; `theseus-coverage-inspect` validates the
+build and resolves an observed offset to a source line. See Tutorial 37.
+
 Commands built with the packaged `theseus-schedule-cc` frontend accept a
 Compose shell operation's explicit `thread_schedule: [0, 1, 2]`. Planning
 validates the bound and locks it as `THESEUS_THREAD_SCHEDULE` for the command.
