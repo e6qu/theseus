@@ -14,8 +14,51 @@ permissions:
   id-token: write
 
 jobs:
+  resolve:
+    name: resolve published SHA
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - id: release
+        name: Verify the published release and runtime inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ghcr.io/e6qu/theseus
+          TAG: ${{ inputs.tag }}
+        run: |
+          printf '%s\n' "$TAG" | grep -E '^[0-9a-f]{12}$'
+          release=$(mktemp -d)
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,targetCommitish > "$release/release.json"
+          test "$(jq -r .isDraft "$release/release.json")" = false
+          commit=$(jq -r .targetCommitish "$release/release.json")
+          printf '%s\n' "$commit" | grep -E '^[0-9a-f]{40}$'
+          test "${commit::12}" = "$TAG"
+          git merge-base --is-ancestor "$commit" origin/main
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "theseus-${TAG}-build-inputs.json" --dir "$release"
+          inputs="$release/theseus-${TAG}-build-inputs.json"
+          gh attestation verify "$inputs" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main
+          test "$(jq -r .source.commit "$inputs")" = "$commit"
+          test "$(jq -r .runtime.tag "$inputs")" = "$TAG"
+          for arch in amd64 arm64; do
+            gh attestation verify "oci://${IMAGE}:${TAG}-${arch}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref refs/heads/main
+          done
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
   certify:
     name: certify (${{ matrix.arch }} KVM metal)
+    needs: resolve
     strategy:
       fail-fast: false
       matrix:
@@ -28,7 +71,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.resolve.outputs.commit }}
 
       - name: Check native KVM and pull the exact runtime
         env:
@@ -40,7 +83,10 @@ jobs:
           test -c /dev/kvm
           test -r /dev/kvm
           test -w /dev/kvm
+          kvm_api=$(python3 -c 'import fcntl, os; fd = os.open("/dev/kvm", os.O_RDWR); print(fcntl.ioctl(fd, 0xAE00, 0))')
+          test "$kvm_api" = 12
           docker pull "$IMAGE:$TAG-$ARCH"
+          test "$(docker image inspect "$IMAGE:$TAG-$ARCH" --format '{{.Architecture}}')" = "$ARCH"
 
       - name: Certify fixed-plan replay
         env:
@@ -111,15 +157,14 @@ jobs:
             '
           source_commit=$(git rev-parse HEAD)
           image_digest=$(docker image inspect "$IMAGE:$TAG-$ARCH" --format '{{index .RepoDigests 0}}')
-          campaign_sha256=$(sha256sum "$tutorial/campaign/campaign-result.json" | cut -d ' ' -f 1)
-          minimized_sha256=$(sha256sum "$tutorial/minimized/replay-plan.json" | cut -d ' ' -f 1)
-          replay_sha256=$(sha256sum "$tutorial/rerun/topology-result.json" | cut -d ' ' -f 1)
           evidence="$tutorial/minimized/evidence"
           source="$tutorial/minimized/source"
           mkdir -p "$evidence/replay/services" "$source/counter" "$source/worker" "$source/inputs/fixture"
           cp "$tutorial/campaign/campaign-result.json" "$evidence/campaign-result.json"
           cp "$tutorial/rerun/topology-result.json" "$evidence/replay/topology-result.json"
           cp "$tutorial/runtime-pivot.json" "$evidence/runtime-pivot.json"
+          cp docs/tutorials/11-certify-runtime/certificate/certificate.json \
+            "$evidence/runtime-certificate.json"
           for service in counter writer-a writer-b; do
             mkdir -p "$evidence/replay/services/$service"
             cp "$tutorial/rerun/services/$service/result.json" "$evidence/replay/services/$service/result.json"
@@ -133,27 +178,78 @@ jobs:
           cp "$tutorial/inputs/worker.conf" "$tutorial/inputs/worker.env" \
             "$tutorial/inputs/token" "$source/inputs/"
           cp "$tutorial/inputs/fixture/identity" "$source/inputs/fixture/"
-          printf '{\n  "format": "theseus-counterexample-proof-v1",\n  "architecture": "%s",\n  "source_commit": "%s",\n  "runtime_image": "%s",\n  "campaign_result_sha256": "%s",\n  "minimized_plan_sha256": "%s",\n  "replay_result_sha256": "%s"\n}\n' \
-            "$ARCH" "$source_commit" "$image_digest" "$campaign_sha256" \
-            "$minimized_sha256" "$replay_sha256" > "$evidence/proof.json"
+          kvm_api=$(python3 -c 'import fcntl, os; fd = os.open("/dev/kvm", os.O_RDWR); print(fcntl.ioctl(fd, 0xAE00, 0))')
+          python3 scripts/native_runtime_evidence.py seal \
+            --root "$tutorial/minimized" \
+            --architecture "$ARCH" \
+            --source-commit "$source_commit" \
+            --runtime-image "$image_digest" \
+            --runtime-tag "$TAG-$ARCH" \
+            --host-kernel "$(uname -r)" \
+            --kvm-api-version "$kvm_api"
           source_date_epoch=$(git show -s --format=%ct "$source_commit")
           archive="theseus-${TAG}-multiservice-counterexample-${ARCH}.tar.gz"
           python3 scripts/reproducible_tar.py \
             --mtime "$source_date_epoch" --output "$archive" "$tutorial/minimized"
 
-      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
-        with:
-          subject-path: |
-            theseus-${{ inputs.tag }}-runtime-certificate-${{ matrix.arch }}.json
-            theseus-${{ inputs.tag }}-multiservice-counterexample-${{ matrix.arch }}.tar.gz
-
-      - name: Attach native runtime evidence to the SHA release
+      - name: Stage architecture evidence
         env:
           ARCH: ${{ matrix.arch }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir native-evidence
+          mv "theseus-${TAG}-runtime-certificate-${ARCH}.json" native-evidence/
+          mv "theseus-${TAG}-multiservice-counterexample-${ARCH}.tar.gz" native-evidence/
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-evidence-${{ matrix.arch }}
+          path: native-evidence/*
+          if-no-files-found: error
+
+  publish:
+    name: verify and publish complete evidence set
+    needs: [resolve, certify]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: native-evidence-*
+          path: native-evidence
+          merge-multiple: true
+
+      - name: Index and verify both native architectures
+        env:
+          COMMIT: ${{ needs.resolve.outputs.commit }}
+          IMAGE: ghcr.io/e6qu/theseus
+          TAG: ${{ inputs.tag }}
+        run: |
+          index="native-evidence/theseus-${TAG}-native-evidence.json"
+          python3 scripts/native_runtime_evidence.py index \
+            --directory native-evidence --tag "$TAG" --source-commit "$COMMIT" \
+            --output "$index"
+          docker pull "$IMAGE:$TAG-amd64"
+          docker run --rm --platform linux/amd64 \
+            -v "$GITHUB_WORKSPACE/native-evidence":/evidence:ro \
+            --entrypoint /usr/local/bin/theseus "$IMAGE:$TAG-amd64" \
+            evidence verify "/evidence/$(basename "$index")"
+
+      - name: Attest the complete native evidence set
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: native-evidence/*
+
+      - name: Attach the complete evidence set to the SHA release
+        env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
         run: |
           gh release upload "$TAG" \
-            "theseus-${TAG}-runtime-certificate-${ARCH}.json" \
-            "theseus-${TAG}-multiservice-counterexample-${ARCH}.tar.gz" \
-            --clobber
+            native-evidence/*-runtime-certificate-*.json \
+            native-evidence/*-multiservice-counterexample-*.tar.gz --clobber
+          gh release upload "$TAG" \
+            "native-evidence/theseus-${TAG}-native-evidence.json" --clobber
