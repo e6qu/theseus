@@ -81,3 +81,4 @@ jobs:
           python3 scripts/tests/test_rebuild_witness.py
           python3 scripts/tests/test_native_certification_workflow.py
           python3 scripts/tests/test_native_runtime_evidence.py
+          python3 scripts/tests/test_release_smoke_workflow.py
