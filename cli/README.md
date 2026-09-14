@@ -126,10 +126,14 @@ guest PCs, and replay checks the exact retained block set and novelty.
 Commands built with the packaged `theseus-schedule-cc` frontend accept a
 Compose shell operation's explicit `thread_schedule: [0, 1, 2]`. Planning
 validates the bound and locks it as `THESEUS_THREAD_SCHEDULE` for the command.
+The same field accepts a bounded search contract such as
+`{threads: [0, 1, 2], period: 5, max_switches: 3}`. Planning expands at most
+256 periodic patterns into named, immutable input cases; normal campaign
+selection, minimization, and replay then operate on those cases.
 Campaign results and reports retain each build-scoped scheduling point,
 runnable mask, current thread, and selected thread. Replay rejects a changed
 sequence. This bounded GCC C path is not a general Linux scheduler; see
-Tutorial 32 for its limits.
+Tutorials 32 and 33 for its limits.
 
 ### Hand a failure to CI or an issue
 

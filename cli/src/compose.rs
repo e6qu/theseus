@@ -218,9 +218,31 @@ struct ComposeShellOperation {
     #[serde(default)]
     environment: BTreeMap<String, String>,
     /// A repeating sequence of stable pthread identities for a command built
-    /// with the packaged C scheduling frontend.
+    /// with the packaged C scheduling frontend, or a bounded search over such
+    /// repeating sequences.
     #[serde(default)]
-    thread_schedule: Vec<u8>,
+    thread_schedule: ComposeThreadSchedule,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ComposeThreadSchedule {
+    Exact(Vec<u8>),
+    Search(ComposeThreadScheduleSearch),
+}
+
+impl Default for ComposeThreadSchedule {
+    fn default() -> Self {
+        Self::Exact(Vec::new())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeThreadScheduleSearch {
+    threads: Vec<u8>,
+    period: u8,
+    max_switches: u8,
 }
 
 /// Lifecycle step for an ordinary command executed inside an image VM.
@@ -1150,6 +1172,8 @@ pub struct OperationPlan {
     pub shell_process: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thread_schedule: Vec<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_schedule_search: Option<ThreadScheduleSearchPlan>,
     pub inputs: Vec<OperationInputPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_grammar: Option<OperationInputGrammarPlan>,
@@ -1202,6 +1226,8 @@ pub struct OperationInputGrammarPlan {
 pub struct OperationInputPlan {
     pub name: String,
     pub input_hex: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thread_schedule: Vec<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_template: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1216,6 +1242,14 @@ pub struct OperationInputPlan {
     pub requires_state: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sets_state: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadScheduleSearchPlan {
+    pub threads: Vec<u8>,
+    pub period: u8,
+    pub max_switches: u8,
+    pub generated_schedules: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2491,6 +2525,85 @@ fn default_campaign_operations_per_run() -> u8 {
     3
 }
 
+const MAX_THREAD_SCHEDULE_SEARCH_PATTERNS: usize = 256;
+const MAX_THREAD_SCHEDULE_SEARCH_PERIOD: u8 = 16;
+
+fn thread_schedule_search_patterns(
+    search: &ComposeThreadScheduleSearch,
+    operation: &str,
+) -> Result<Vec<Vec<u8>>, ComposeError> {
+    let unique = search.threads.iter().copied().collect::<BTreeSet<_>>();
+    if search.threads.len() < 2
+        || unique.len() != search.threads.len()
+        || !unique.contains(&0)
+        || search.threads.iter().any(|thread| *thread >= 32)
+        || search.period == 0
+        || search.period > MAX_THREAD_SCHEDULE_SEARCH_PERIOD
+        || search.max_switches > search.period
+    {
+        return Err(ComposeError::Invalid(format!(
+            "campaign operation {operation:?} has an invalid thread schedule search"
+        )));
+    }
+
+    fn extend(
+        threads: &[u8],
+        period: usize,
+        maximum_switches: usize,
+        prefix: &mut Vec<u8>,
+        switches: usize,
+        output: &mut Vec<Vec<u8>>,
+    ) -> bool {
+        if prefix.len() == period {
+            let wrap_switch = usize::from(
+                prefix
+                    .first()
+                    .zip(prefix.last())
+                    .is_some_and(|(first, last)| first != last),
+            );
+            if switches + wrap_switch <= maximum_switches {
+                output.push(prefix.clone());
+            }
+            return output.len() <= MAX_THREAD_SCHEDULE_SEARCH_PATTERNS;
+        }
+        for thread in threads {
+            let next_switches =
+                switches + usize::from(prefix.last().is_some_and(|previous| previous != thread));
+            if next_switches > maximum_switches {
+                continue;
+            }
+            prefix.push(*thread);
+            if !extend(
+                threads,
+                period,
+                maximum_switches,
+                prefix,
+                next_switches,
+                output,
+            ) {
+                return false;
+            }
+            prefix.pop();
+        }
+        true
+    }
+
+    let mut patterns = Vec::new();
+    if !extend(
+        &search.threads,
+        usize::from(search.period),
+        usize::from(search.max_switches),
+        &mut Vec::with_capacity(usize::from(search.period)),
+        0,
+        &mut patterns,
+    ) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign operation {operation:?} thread schedule search generates more than {MAX_THREAD_SCHEDULE_SEARCH_PATTERNS} patterns"
+        )));
+    }
+    Ok(patterns)
+}
+
 fn campaign_plan(
     campaign: Option<ComposeTheseus>,
     services: &mut BTreeMap<String, ComposeServicePlan>,
@@ -2564,7 +2677,8 @@ fn campaign_plan(
         let mut shell_phase = None;
         let mut shell_process = None;
         let mut thread_schedule = Vec::new();
-        let http_input = if let Some(http) = http {
+        let mut thread_schedule_search = None;
+        let service_inputs = if let Some(http) = http {
             if !http.url.starts_with("http://")
                 || !(100..=599).contains(&http.expect_status)
                 || http.body_contains.as_deref() == Some("")
@@ -2593,9 +2707,10 @@ fn campaign_plan(
                 "body_contains": http.body_contains,
             });
             let command = serde_json::to_string(&command).expect("HTTP command is serializable");
-            Some(OperationInputPlan {
+            Some(vec![OperationInputPlan {
                 name: "default".to_owned(),
                 input_hex: hex(format!("THES:HTTP:operation:{command}\n").as_bytes()),
+                thread_schedule: Vec::new(),
                 input_template: None,
                 input_captures: BTreeMap::new(),
                 requires: Vec::new(),
@@ -2603,7 +2718,7 @@ fn campaign_plan(
                 max_uses: None,
                 requires_state: BTreeMap::new(),
                 sets_state: BTreeMap::new(),
-            })
+            }])
         } else if let Some(grpc_health) = grpc_health {
             if !grpc_health.url.starts_with("http://") {
                 return Err(ComposeError::Invalid(format!(
@@ -2628,9 +2743,10 @@ fn campaign_plan(
                 "expect_status": grpc_health.expect_status,
             });
             let command = serde_json::to_string(&command).expect("gRPC command is serializable");
-            Some(OperationInputPlan {
+            Some(vec![OperationInputPlan {
                 name: "default".to_owned(),
                 input_hex: hex(format!("THES:GRPC:operation:{command}\n").as_bytes()),
+                thread_schedule: Vec::new(),
                 input_template: None,
                 input_captures: BTreeMap::new(),
                 requires: Vec::new(),
@@ -2638,7 +2754,7 @@ fn campaign_plan(
                 max_uses: None,
                 requires_state: BTreeMap::new(),
                 sets_state: BTreeMap::new(),
-            })
+            }])
         } else if let Some(shell) = shell {
             let named_process = matches!(
                 shell.phase,
@@ -2663,11 +2779,32 @@ fn campaign_plan(
                 (false, None) => true,
                 _ => false,
             };
-            let schedule_valid = shell.thread_schedule.len() <= 128
-                && shell.thread_schedule.iter().all(|thread| *thread < 32)
-                && !shell.environment.contains_key("THESEUS_THREAD_SCHEDULE")
-                && (shell.thread_schedule.is_empty()
-                    || !matches!(shell.phase, ComposeShellPhase::Completion));
+            let (schedule_patterns, search) = match &shell.thread_schedule {
+                ComposeThreadSchedule::Exact(schedule) => {
+                    if schedule.len() > 128 || schedule.iter().any(|thread| *thread >= 32) {
+                        return Err(ComposeError::Invalid(format!(
+                            "campaign operation {:?} has an invalid thread schedule",
+                            operation.name
+                        )));
+                    }
+                    (vec![schedule.clone()], None)
+                }
+                ComposeThreadSchedule::Search(search) => {
+                    let patterns = thread_schedule_search_patterns(search, &operation.name)?;
+                    let plan = ThreadScheduleSearchPlan {
+                        threads: search.threads.clone(),
+                        period: search.period,
+                        max_switches: search.max_switches,
+                        generated_schedules: patterns.len(),
+                    };
+                    (patterns, Some(plan))
+                }
+            };
+            let schedules_enabled = schedule_patterns
+                .iter()
+                .any(|schedule| !schedule.is_empty());
+            let schedule_valid = !shell.environment.contains_key("THESEUS_THREAD_SCHEDULE")
+                && (!schedules_enabled || !matches!(shell.phase, ComposeShellPhase::Completion));
             if !command_valid
                 || !process_valid
                 || !schedule_valid
@@ -2703,40 +2840,63 @@ fn campaign_plan(
             container.campaign = true;
             shell_phase = Some(shell.phase);
             shell_process = shell.process.clone();
-            thread_schedule = shell.thread_schedule.clone();
-            let mut environment = shell.environment;
-            if !thread_schedule.is_empty() {
-                environment.insert(
-                    "THESEUS_THREAD_SCHEDULE".to_owned(),
-                    thread_schedule
-                        .iter()
-                        .map(u8::to_string)
-                        .collect::<Vec<_>>()
-                        .join(","),
-                );
+            if search.is_none() {
+                thread_schedule = schedule_patterns[0].clone();
             }
-            let command = serde_json::json!({
-                "name": operation.name.clone(),
-                "phase": shell.phase,
-                "process": shell.process,
-                "command": shell.command,
-                "expect_exit": shell.expect_exit,
-                "output_contains": shell.output_contains,
-                "output_json": shell.output_json,
-                "environment": environment,
-            });
-            let command = serde_json::to_string(&command).expect("shell command is serializable");
-            Some(OperationInputPlan {
-                name: "default".to_owned(),
-                input_hex: hex(format!("THES:SHELL:operation:{command}\n").as_bytes()),
-                input_template: None,
-                input_captures: BTreeMap::new(),
-                requires: Vec::new(),
-                excludes: Vec::new(),
-                max_uses: None,
-                requires_state: BTreeMap::new(),
-                sets_state: BTreeMap::new(),
-            })
+            thread_schedule_search = search;
+            Some(
+                schedule_patterns
+                    .into_iter()
+                    .map(|schedule| {
+                        let mut environment = shell.environment.clone();
+                        if !schedule.is_empty() {
+                            environment.insert(
+                                "THESEUS_THREAD_SCHEDULE".to_owned(),
+                                schedule
+                                    .iter()
+                                    .map(u8::to_string)
+                                    .collect::<Vec<_>>()
+                                    .join(","),
+                            );
+                        }
+                        let command = serde_json::json!({
+                            "name": operation.name.clone(),
+                            "phase": shell.phase,
+                            "process": shell.process,
+                            "command": shell.command,
+                            "expect_exit": shell.expect_exit,
+                            "output_contains": shell.output_contains,
+                            "output_json": shell.output_json,
+                            "environment": environment,
+                        });
+                        let command =
+                            serde_json::to_string(&command).expect("shell command is serializable");
+                        OperationInputPlan {
+                            name: if thread_schedule_search.is_some() {
+                                format!(
+                                    "schedule-{}",
+                                    schedule
+                                        .iter()
+                                        .map(u8::to_string)
+                                        .collect::<Vec<_>>()
+                                        .join("-")
+                                )
+                            } else {
+                                "default".to_owned()
+                            },
+                            input_hex: hex(format!("THES:SHELL:operation:{command}\n").as_bytes()),
+                            thread_schedule: schedule,
+                            input_template: None,
+                            input_captures: BTreeMap::new(),
+                            requires: Vec::new(),
+                            excludes: Vec::new(),
+                            max_uses: None,
+                            requires_state: BTreeMap::new(),
+                            sets_state: BTreeMap::new(),
+                        }
+                    })
+                    .collect(),
+            )
         } else {
             None
         };
@@ -2759,8 +2919,8 @@ fn campaign_plan(
                 operation.name
             )));
         }
-        let inputs = match (http_input, operation.input) {
-            (Some(input), None) => vec![input],
+        let inputs = match (service_inputs, operation.input) {
+            (Some(inputs), None) => inputs,
             (Some(_), Some(_)) => unreachable!("service operation input forms were validated"),
             (None, Some(input)) if input.is_empty() => {
                 return Err(ComposeError::Invalid(format!(
@@ -2771,6 +2931,7 @@ fn campaign_plan(
             (None, Some(input)) => vec![OperationInputPlan {
                 name: "default".to_owned(),
                 input_hex: hex(input.as_bytes()),
+                thread_schedule: Vec::new(),
                 requires: Vec::new(),
                 excludes: Vec::new(),
                 max_uses: None,
@@ -2796,6 +2957,7 @@ fn campaign_plan(
                 vec![OperationInputPlan {
                     name: "default".to_owned(),
                     input_hex: String::new(),
+                    thread_schedule: Vec::new(),
                     input_template: Some(template.clone()),
                     input_captures: captures.clone(),
                     requires: Vec::new(),
@@ -2832,6 +2994,7 @@ fn campaign_plan(
                         Ok(OperationInputPlan {
                             name: input.name,
                             input_hex: hex(input.input.as_bytes()),
+                            thread_schedule: Vec::new(),
                             input_template: None,
                             input_captures: BTreeMap::new(),
                             requires: normalize_operation_input_references(
@@ -2907,6 +3070,7 @@ fn campaign_plan(
             shell_phase,
             shell_process,
             thread_schedule,
+            thread_schedule_search,
             inputs,
             input_grammar: input_grammar.map(|grammar| grammar.source),
             stage: operation.stage,
@@ -5255,6 +5419,7 @@ fn normalize_operation_input_grammar(
                 .is_empty()
                 .then(|| hex(input.as_bytes()))
                 .unwrap_or_default(),
+            thread_schedule: Vec::new(),
             input_template: (!captures.is_empty()).then_some(input),
             input_captures: captures.clone(),
             requires: normalize_operation_input_references(rules.requires, "requires", operation)?,
@@ -6414,6 +6579,7 @@ mod tests {
         );
         let operation = &plan.campaign.as_ref().unwrap().operations[0];
         assert_eq!(operation.thread_schedule, [0, 1, 2]);
+        assert_eq!(operation.inputs[0].thread_schedule, [0, 1, 2]);
         let input = &operation.inputs[0].input_hex;
         let bytes = input
             .as_bytes()
@@ -6427,6 +6593,120 @@ mod tests {
         assert!(command.contains("\"output_json\":true"));
         assert!(command.contains("\"CHECK_MODE\":\"full\""));
         assert!(command.contains("\"THESEUS_THREAD_SCHEDULE\":\"0,1,2\""));
+    }
+
+    #[test]
+    fn expands_a_bounded_thread_schedule_search_into_locked_cases() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [test]\nnetworks:\n  test: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 123\n    max_operations_per_run: 1\n    operations:\n      - name: race\n        shell:\n          command: [/usr/local/bin/race]\n          output_json: true\n          thread_schedule:\n            threads: [0, 1, 2]\n            period: 5\n            max_switches: 3\n    faults: []\n",
+        );
+        let root = directory.path().join("api");
+        fs::write(root.join("runtime/theseus-image"), b"image adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            root.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(root.join("guest/service.tar"), b"image").unwrap();
+        fs::write(
+            root.join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'guest/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[container_service.ready]\nurl = 'http://127.0.0.1:8080/health'\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let operation = &plan.campaign.as_ref().unwrap().operations[0];
+        let search = operation.thread_schedule_search.as_ref().unwrap();
+        assert_eq!(search.generated_schedules, 123);
+        assert!(operation.thread_schedule.is_empty());
+        assert_eq!(operation.inputs.len(), 123);
+        assert_eq!(operation.inputs[0].name, "schedule-0-0-0-0-0");
+        let lost_update = operation
+            .inputs
+            .iter()
+            .find(|input| input.thread_schedule == [0, 0, 0, 1, 2])
+            .unwrap();
+        let bytes = lost_update
+            .input_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        let command = String::from_utf8(bytes).unwrap();
+        assert!(command.contains("\"THESEUS_THREAD_SCHEDULE\":\"0,0,0,1,2\""));
+    }
+
+    #[test]
+    fn rejects_unbounded_or_ambiguous_thread_schedule_searches() {
+        for search in [
+            ComposeThreadScheduleSearch {
+                threads: vec![0],
+                period: 5,
+                max_switches: 2,
+            },
+            ComposeThreadScheduleSearch {
+                threads: vec![0, 1, 1],
+                period: 5,
+                max_switches: 2,
+            },
+            ComposeThreadScheduleSearch {
+                threads: vec![1, 2],
+                period: 5,
+                max_switches: 2,
+            },
+            ComposeThreadScheduleSearch {
+                threads: vec![0, 32],
+                period: 5,
+                max_switches: 2,
+            },
+            ComposeThreadScheduleSearch {
+                threads: vec![0, 1],
+                period: 17,
+                max_switches: 2,
+            },
+            ComposeThreadScheduleSearch {
+                threads: vec![0, 1],
+                period: 5,
+                max_switches: 6,
+            },
+            ComposeThreadScheduleSearch {
+                threads: vec![0, 1, 2, 3],
+                period: 8,
+                max_switches: 3,
+            },
+        ] {
+            let error = thread_schedule_search_patterns(&search, "race").unwrap_err();
+            assert!(error.to_string().contains("thread schedule search"));
+        }
+    }
+
+    #[test]
+    fn thread_schedule_switch_bound_includes_the_period_boundary() {
+        let only_constant = thread_schedule_search_patterns(
+            &ComposeThreadScheduleSearch {
+                threads: vec![0, 1],
+                period: 2,
+                max_switches: 1,
+            },
+            "race",
+        )
+        .unwrap();
+        assert_eq!(only_constant, [vec![0, 0], vec![1, 1]]);
+
+        let one_change_and_wrap = thread_schedule_search_patterns(
+            &ComposeThreadScheduleSearch {
+                threads: vec![0, 1],
+                period: 2,
+                max_switches: 2,
+            },
+            "race",
+        )
+        .unwrap();
+        assert_eq!(
+            one_change_and_wrap,
+            [vec![0, 0], vec![0, 1], vec![1, 0], vec![1, 1]]
+        );
     }
 
     #[test]
@@ -6499,7 +6779,8 @@ mod tests {
             .unwrap();
             let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
             assert!(
-                error.to_string().contains("invalid shell contract"),
+                error.to_string().contains("invalid shell contract")
+                    || error.to_string().contains("invalid thread schedule"),
                 "unexpected error for {shell:?}: {error}"
             );
         }

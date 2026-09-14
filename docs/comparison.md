@@ -39,8 +39,10 @@ Reference: [Antithesis coverage instrumentation](https://antithesis.com/docs/pro
 Antithesis controls execution deeply enough to pause threads and explore
 scheduling choices across supported workloads. Theseus now has a narrower
 source implementation: its packaged GCC C frontend serializes instrumented
-pthread basic blocks from an explicit repeating schedule, assigns identities
-in creation order, and retains runnable sets and selected threads for replay.
+pthread basic blocks from an explicit repeating schedule or up to 256
+pre-enumerated periodic patterns, assigns identities in creation order, and
+retains runnable sets and selected threads for replay. It does not yet derive
+new schedule prefixes from runnable sets observed during execution.
 It is limited to 32 threads and 8,192 decisions, handles only `pthread_join` as
 a blocking operation, has no process scheduler, and still needs native KVM
 evidence. It is not equivalent to Antithesis's general concurrency control.
