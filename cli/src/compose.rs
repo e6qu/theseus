@@ -218,8 +218,8 @@ struct ComposeShellOperation {
     #[serde(default)]
     environment: BTreeMap<String, String>,
     /// A repeating sequence of stable pthread identities for a command built
-    /// with the packaged C scheduling frontend, or a bounded search over such
-    /// repeating sequences.
+    /// with the packaged C scheduling frontend, a bounded search over such
+    /// repeating sequences, or feedback-driven runnable-prefix exploration.
     #[serde(default)]
     thread_schedule: ComposeThreadSchedule,
 }
@@ -229,6 +229,7 @@ struct ComposeShellOperation {
 enum ComposeThreadSchedule {
     Exact(Vec<u8>),
     Search(ComposeThreadScheduleSearch),
+    Exploration(ComposeThreadScheduleExploration),
 }
 
 impl Default for ComposeThreadSchedule {
@@ -243,6 +244,19 @@ struct ComposeThreadScheduleSearch {
     threads: Vec<u8>,
     period: u8,
     max_switches: u8,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeThreadScheduleExploration {
+    runnable_prefixes: ComposeRunnablePrefixExploration,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeRunnablePrefixExploration {
+    max_choices: u8,
+    max_variants: u16,
 }
 
 /// Lifecycle step for an ordinary command executed inside an image VM.
@@ -1174,6 +1188,8 @@ pub struct OperationPlan {
     pub thread_schedule: Vec<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_schedule_search: Option<ThreadScheduleSearchPlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_schedule_exploration: Option<ThreadScheduleExplorationPlan>,
     pub inputs: Vec<OperationInputPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_grammar: Option<OperationInputGrammarPlan>,
@@ -1250,6 +1266,13 @@ pub struct ThreadScheduleSearchPlan {
     pub period: u8,
     pub max_switches: u8,
     pub generated_schedules: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadScheduleExplorationPlan {
+    pub strategy: &'static str,
+    pub max_choices: u8,
+    pub max_variants: u16,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2678,6 +2701,7 @@ fn campaign_plan(
         let mut shell_process = None;
         let mut thread_schedule = Vec::new();
         let mut thread_schedule_search = None;
+        let mut thread_schedule_exploration = None;
         let service_inputs = if let Some(http) = http {
             if !http.url.starts_with("http://")
                 || !(100..=599).contains(&http.expect_status)
@@ -2799,12 +2823,40 @@ fn campaign_plan(
                     };
                     (patterns, Some(plan))
                 }
+                ComposeThreadSchedule::Exploration(exploration) => {
+                    let exploration = &exploration.runnable_prefixes;
+                    if exploration.max_choices == 0
+                        || exploration.max_choices > 128
+                        || exploration.max_variants < 2
+                        || usize::from(exploration.max_variants)
+                            > MAX_THREAD_SCHEDULE_SEARCH_PATTERNS
+                    {
+                        return Err(ComposeError::Invalid(format!(
+                            "campaign operation {:?} has an invalid runnable-prefix exploration",
+                            operation.name
+                        )));
+                    }
+                    thread_schedule_exploration = Some(ThreadScheduleExplorationPlan {
+                        strategy: "runnable_prefixes",
+                        max_choices: exploration.max_choices,
+                        max_variants: exploration.max_variants,
+                    });
+                    (vec![Vec::new()], None)
+                }
             };
             let schedules_enabled = schedule_patterns
                 .iter()
                 .any(|schedule| !schedule.is_empty());
+            let exploring_schedule = thread_schedule_exploration.is_some();
             let schedule_valid = !shell.environment.contains_key("THESEUS_THREAD_SCHEDULE")
-                && (!schedules_enabled || !matches!(shell.phase, ComposeShellPhase::Completion));
+                && !shell
+                    .environment
+                    .contains_key("THESEUS_THREAD_SCHEDULE_MODE")
+                && ((!schedules_enabled && !exploring_schedule)
+                    || !matches!(
+                        shell.phase,
+                        ComposeShellPhase::Launch | ComposeShellPhase::Completion
+                    ));
             if !command_valid
                 || !process_valid
                 || !schedule_valid
@@ -2849,7 +2901,13 @@ fn campaign_plan(
                     .into_iter()
                     .map(|schedule| {
                         let mut environment = shell.environment.clone();
-                        if !schedule.is_empty() {
+                        if exploring_schedule {
+                            environment.insert(
+                                "THESEUS_THREAD_SCHEDULE_MODE".to_owned(),
+                                "runnable_prefix".to_owned(),
+                            );
+                            environment.insert("THESEUS_THREAD_SCHEDULE".to_owned(), String::new());
+                        } else if !schedule.is_empty() {
                             environment.insert(
                                 "THESEUS_THREAD_SCHEDULE".to_owned(),
                                 schedule
@@ -3071,6 +3129,7 @@ fn campaign_plan(
             shell_process,
             thread_schedule,
             thread_schedule_search,
+            thread_schedule_exploration,
             inputs,
             input_grammar: input_grammar.map(|grammar| grammar.source),
             stage: operation.stage,
@@ -6635,6 +6694,44 @@ mod tests {
             .collect::<Vec<_>>();
         let command = String::from_utf8(bytes).unwrap();
         assert!(command.contains("\"THESEUS_THREAD_SCHEDULE\":\"0,0,0,1,2\""));
+    }
+
+    #[test]
+    fn locks_runnable_prefix_exploration_without_precomputing_schedules() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [test]\nnetworks:\n  test: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_runs: 32\n    max_operations_per_run: 1\n    operations:\n      - name: race\n        shell:\n          command: [/usr/local/bin/race]\n          output_json: true\n          thread_schedule:\n            runnable_prefixes:\n              max_choices: 16\n              max_variants: 32\n    faults: []\n",
+        );
+        let root = directory.path().join("api");
+        fs::write(root.join("runtime/theseus-image"), b"image adapter").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            root.join("runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(root.join("guest/service.tar"), b"image").unwrap();
+        fs::write(
+            root.join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'guest/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[container_service.ready]\nurl = 'http://127.0.0.1:8080/health'\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let operation = &plan.campaign.as_ref().unwrap().operations[0];
+        let exploration = operation.thread_schedule_exploration.as_ref().unwrap();
+        assert_eq!(exploration.strategy, "runnable_prefixes");
+        assert_eq!(exploration.max_choices, 16);
+        assert_eq!(exploration.max_variants, 32);
+        assert_eq!(operation.inputs.len(), 1);
+        let bytes = operation.inputs[0]
+            .input_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        let command = String::from_utf8(bytes).unwrap();
+        assert!(command.contains("\"THESEUS_THREAD_SCHEDULE_MODE\":\"runnable_prefix\""));
+        assert!(command.contains("\"THESEUS_THREAD_SCHEDULE\":\"\""));
     }
 
     #[test]

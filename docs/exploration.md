@@ -220,8 +220,16 @@ and `max_switches` around each period. Planning enumerates the patterns in
 declaration order, rejects a search wider than 256 patterns, and stores each as a
 named operation input. The ordinary deterministic campaign scheduler explores
 those cases; minimization and replay refer to the locked case rather than
-regenerating it. This is static bounded enumeration, not feedback-driven
-branching from the runnable masks observed during execution.
+regenerating it.
+
+For feedback-driven exploration, declare `runnable_prefixes` with
+`max_choices` and `max_variants`. Theseus first runs an empty prefix and picks
+the lowest runnable identity after the prefix ends. It then reads the retained
+runnable masks, forks alternate prefixes only for identities observed in each
+mask, and repeats until the campaign or variant bound is reached. Prefix
+positions count only decisions with more than one runnable thread. Results,
+minimization, and replay retain the exact prefix separately from the observed
+scheduling trace.
 
 This source implementation is bounded to 32 pthreads and 8,192 decisions. It
 controls only instrumented application basic blocks and intercepts

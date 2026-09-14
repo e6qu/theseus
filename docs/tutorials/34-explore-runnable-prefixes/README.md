@@ -1,8 +1,9 @@
-# Tutorial 33: Search C thread schedules
+# Tutorial 34: Explore runnable thread choices
 
-Compile a pthread program with the Theseus scheduler. Ask Theseus to enumerate
-a bounded set of thread schedules, find a lost update, minimize the failing
-timeline, and replay it. The program does not link the Theseus SDK.
+Build a pthread program with the Theseus scheduler. Let Theseus run the
+program, observe which threads are runnable, and fork new schedules only at
+those choices. The search finds a lost update without a handwritten schedule
+or the Theseus SDK.
 
 ## Before you start
 
@@ -19,7 +20,7 @@ esac
 export THESEUS_IMAGE=ghcr.io/e6qu/theseus:${THESEUS_TAG}-${THESEUS_ARCH}
 ```
 
-## 1. Build the race
+## 1. Build the program
 
 ```sh
 sed -n '1,160p' service/main.c
@@ -32,12 +33,12 @@ docker run --rm --platform "linux/$THESEUS_ARCH" \
   -v "$PWD":/tutorial -w /tutorial "$THESEUS_IMAGE" \
   gcc -O2 -o service/work/ready service/ready.c
 docker build --load --platform "linux/$THESEUS_ARCH" \
-  -t theseus-thread-search-tutorial service
-docker save theseus-thread-search-tutorial -o service/work/service.tar
+  -t theseus-runnable-prefix-tutorial service
+docker save theseus-runnable-prefix-tutorial -o service/work/service.tar
 ```
 
-Each worker loads an atomic balance and later stores its own update. The
-individual accesses are valid C, but the transaction is not atomic.
+Both workers load the balance and then store their own update. Each atomic
+access is valid, but the pair is not one atomic transaction.
 
 ## 2. Enter the published runtime
 
@@ -48,7 +49,7 @@ docker run --rm -it --privileged --platform "linux/$THESEUS_ARCH" \
 
 Run steps 3–5 inside this shell.
 
-## 3. Prepare and inspect the search
+## 3. Prepare and inspect the exploration bound
 
 ```sh
 mkdir -p service/work/runtime service/work/guest
@@ -56,41 +57,42 @@ cp /usr/local/bin/firecracker service/work/runtime/firecracker
 cp /usr/local/bin/theseus-image service/work/runtime/theseus-image
 cp /opt/theseus/vmlinux service/work/guest/vmlinux
 theseus compose plan > plan.json
-grep -n 'thread_schedule_search\|generated_schedules\|schedule-0-0-0-1-2' plan.json
+grep -n 'thread_schedule_exploration\|runnable_prefixes\|max_choices' plan.json
 ```
 
-The Compose file names threads `0`, `1`, and `2`, sets a five-choice repeating
-period, and permits at most three switches around that period. Theseus expands
-that contract into 123 schedules. Every generated case and its exact choice
-sequence are stored in `plan.json`; replay never regenerates the search space.
+`max_choices` limits the observed choice depth. `max_variants` limits the
+schedule tree. The plan contains one initial command, not a precomputed list
+of thread sequences.
 
-## 4. Run the search
+## 4. Run the exploration
 
 ```sh
 theseus compose explore --expect-counterexample lost_update_is_unreachable \
   --output campaign compose.yaml
-grep -n 'lost_update_is_unreachable\|schedule-0-0-0-1-2' \
+grep -n 'thread_schedule_prefixes\|lost_update_is_unreachable' \
   campaign/campaign-result.json
 ```
 
-The counterexample reports balance `22`: both workers loaded zero before
-either worker stored its update.
+The first run chooses the lowest runnable thread after its prefix ends. Each
+later run changes one choice that the previous execution proved runnable. A
+counterexample reports balance `22`: both workers loaded zero before either
+worker stored its update.
 
-## 5. Inspect, minimize, and replay the failure
+## 5. Inspect, minimize, and replay it
 
 ```sh
 theseus report campaign --output report
-grep -n 'search 123 pattern\|Scheduling decisions' report/report.md
+grep -n 'Runnable prefix\|Scheduling decisions' report/report.md
 theseus compose explore --minimize campaign \
   --expect-counterexample lost_update_is_unreachable --output minimized
-grep -n 'schedule-\|THESEUS_THREAD_SCHEDULE' minimized/replay-plan.json
+grep -n 'thread_schedule_prefixes\|THESEUS_THREAD_SCHEDULE' \
+  minimized/minimization.json minimized/replay-plan.json
 theseus compose replay minimized --output rerun
 grep -R '"balance":22' rerun/services/ledger/serial.log
 ```
 
-The minimized bundle keeps the failing schedule case. Replay also checks the
-ordered runnable masks, selected threads, build identity, and scheduling-point
-offsets recorded by that case.
+The result records the chosen prefix and every observed runnable mask. Replay
+uses the recorded prefix and rejects a changed scheduling trace.
 
 ## 6. Clean up (optional)
 
@@ -99,7 +101,6 @@ exit
 rm -rf service/work plan.json campaign report minimized rerun
 ```
 
-This search enumerates periodic patterns declared before execution. Use
-Tutorial 34 when you want Theseus to grow prefixes from observed runnable
-sets. The scheduler remains bounded to GCC C, 32 pthread identities, 8,192
-decisions, and `pthread_join` as its only modeled blocking operation.
+This scheduler controls instrumented GCC C basic blocks. It supports at most
+32 pthread identities and 8,192 decisions, and models `pthread_join` as its
+only blocking operation.

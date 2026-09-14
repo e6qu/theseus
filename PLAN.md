@@ -162,13 +162,15 @@ Implemented in source:
   thread set, period, and per-period switch bound. Every generated pattern is a
   named locked input case, so campaign selection, minimization, and replay keep
   the exact sequence. Tutorial 33 uses this search to find the lost update.
+- Compose can instead grow up to 256 schedule variants from runnable masks
+  observed at execution time. Prefix positions count only actual choices;
+  result bundles, minimization, replay, comparison, and reports retain the
+  exact prefix. Tutorial 34 exercises this feedback-driven path.
 
 Next work:
 
-- Run Tutorials 32 and 33 on native amd64 and arm64 KVM and retain their
+- Run Tutorials 32–34 on native amd64 and arm64 KVM and retain their
   campaigns, reports, minimized counterexample, and replay evidence.
-- Derive new schedule prefixes from runnable sets observed during execution,
-  instead of enumerating only bounded periodic patterns before execution.
 - Detect or control mutexes, condition variables, futex waits, and blocking
   syscalls instead of allowing an unsupported target to deadlock.
 - Extend stable identities across `fork`/`exec` and add process scheduling.

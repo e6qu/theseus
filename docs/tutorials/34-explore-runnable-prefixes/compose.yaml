@@ -1,0 +1,30 @@
+name: explore-runnable-prefixes
+
+services:
+  ledger:
+    x-theseus:
+      manifest: service/theseus.toml
+    networks: [test]
+
+networks:
+  test: {}
+
+x-theseus:
+  campaign:
+    driver: ledger
+    max_runs: 256
+    max_operations_per_run: 1
+    operations:
+      - name: deposit_pair
+        shell:
+          command: [/usr/local/bin/ledger]
+          output_json: true
+          thread_schedule:
+            runnable_prefixes:
+              max_choices: 32
+              max_variants: 256
+    properties:
+      - name: lost_update_is_unreachable
+        kind: unreachable
+        service: ledger
+        contains: '"balance":22'
