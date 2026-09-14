@@ -35,7 +35,7 @@ Use these labels consistently:
 | Feedback-guided exploration | Partial | One bounded decision-prefix policy combines coverage, properties, topology states, structured choices, runnable sets, faults, and prior outcomes; it is not yet validated at production scale. |
 | Fault injection | Partial | Network, packet, partition, process, storage, and clock operations exist; asymmetric degradation, latency, clogs, CPU throttling, and a mature custom-fault interface do not. |
 | Assertions and guidance | Partial | Always, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
-| Coverage guidance | Partial | GCC C basic blocks and LLVM C/C++/Rust edges cover PIE executables and native shared libraries. Compose locks declared LLVM manifests and symbols, validates them before boot, and joins source locations into reports; Cargo graphs, Go/Java instrumentation, and production-scale validation do not exist. |
+| Coverage guidance | Partial | GCC C basic blocks and LLVM C/C++/Rust edges cover PIE executables, native shared libraries, and a selected Cargo binary's static Rust target dependencies. Compose locks declared manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go/Java instrumentation, and production-scale validation do not exist. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
 | Test composition | Early | Campaign operations can overlap, but there is no complete reusable test-template lifecycle comparable to setup, concurrent drivers, serial drivers, anytime actions, and teardown. |
 | Failure investigation | Early | Replay, minimization, checkpoints, reports, and history comparison exist; interactive time travel, interventions, alternative futures, temporal queries, and causal evidence do not. |
@@ -58,7 +58,9 @@ Theseus currently has:
   build-scoped module-relative identities in guidance, replay, comparison,
   evaluation, and reports. Compose locks LLVM manifests and symbols; the
   runner validates them before boot and joins functions and source lines into
-  reports while isolating dynamically loaded module runtimes.
+  reports while isolating dynamically loaded native module runtimes. The CLI
+  can instrument one Cargo binary and its resolved static Rust target dependencies
+  as a single module while retaining package-input digests.
 - A bounded GCC C pthread scheduler with stable creation-order identities,
   explicit schedules, enumerated schedules, and runnable-prefix exploration.
   It controls `pthread_join`, default mutex lock/unlock, and untimed condition
@@ -82,8 +84,8 @@ The baseline has important limits:
 - Stock-kernel `/dev/random` and `/dev/urandom` replay requires the matching
   released kernel and Theseus random-device module.
 - Application coverage still requires an explicit build frontend and coverage
-  catalog. Cargo dependency graphs, Go, Java, JavaScript, .NET, and transparent
-  instrumentation of existing images remain unsupported.
+  catalog. Rust dynamic dependencies, Go, Java, JavaScript, .NET, and
+  transparent instrumentation of existing images remain unsupported.
 - Scheduling is cooperative and instrumentation-specific. Timed waits,
   cancellation, semaphores, direct futexes, blocking syscalls, `fork`/`exec`,
   uninstrumented threads, and general process scheduling can escape it or
@@ -100,30 +102,33 @@ The baseline has important limits:
   implemented rather than product-ready until a release and both native KVM
   certifications complete.
 
-## Active delivery: locked coverage evidence and source reports
+## Active delivery: Cargo workspace coverage
 
-Land coverage artifact integrity and source presentation as one vertical
-change, not separate schema, bundling, validation, report, and tutorial PRs:
+Land a usable Rust build workflow as one vertical change, not separate wrapper,
+manifest, packaging, tutorial, and documentation PRs:
 
-1. Let every Compose service declare LLVM coverage manifests and a symbol
-   directory without embedding generated build hashes in the Compose file.
-2. Parse strict module/build metadata, reject escaping or mismatched files,
-   deduplicate identities, and lock exact manifest and symbol digests into the
-   normalized plan.
-3. Copy every catalog entry into campaign and replay bundles and resolve it
-   relative to the bundle after moving or extraction.
-4. Before boot, revalidate the manifest identity, embedded build identity,
-   sanitizer guards, callback, GNU build ID, and debug data.
-5. Join module-relative edges to functions and sanitized source locations in
-   retained results, replay verification, Markdown, JSON, and HTML reports.
-6. Run the public tutorial with stripped deployed binaries, two independently
-   instrumented modules, locked symbols, automatic source reporting, and exact
-   replay; correct all stale product and comparison claims in the same change.
+1. Add `theseus coverage cargo` for one explicitly selected package and binary,
+   with locked/offline, profile, feature, output, symbol, and target-directory
+   controls.
+2. Resolve the selected Cargo graph and compute a build identity from the
+   frontend/runtime, compiler/toolchain, build options, workspace configuration,
+   and content of every resolved package without embedding host paths.
+3. Isolate artifacts under a build-scoped target directory so an ordinary or
+   differently instrumented Cargo build cannot satisfy the request from cache.
+4. Instrument the final Rust binary and every static target library through
+   Cargo's rustc-wrapper boundary while leaving host build scripts, proc macros,
+   and dynamic-library modules outside that identity.
+5. Preserve an unstripped symbol file and emit the same strict coverage
+   manifest consumed by Compose, pre-boot validation, replay, and automatic
+   source reports.
+6. Package Cargo in both Linux runtime images, exercise the complete path in
+   release smoke tests, and add one self-contained tutorial whose report shows
+   reached lines in both a binary and its workspace dependency.
 
 This slice is implemented only after its PR passes. It becomes demonstrated
-after the merged SHA publishes and both architectures run Tutorial 37 on
-native KVM. Priority 3 then continues with Cargo graphs, broader languages, and
-fixed-budget public coverage benchmarks.
+after the merged SHA publishes and both architectures run Tutorial 38 on
+native KVM. Priority 3 then continues with large multi-service catalogs,
+broader languages, and fixed-budget public coverage benchmarks.
 
 ## Priority 0: make the current product real for users
 
@@ -206,20 +211,18 @@ is independently reproducible.
 Coverage must work on realistic services rather than only tutorial C binaries.
 
 The source tree has GCC C blocks plus LLVM C/C++/Rust edges with stable
-module/build identities through PIE, ASLR, and dynamic loading. Compose locks
-declared LLVM manifests and symbols, verifies them before boot, and joins them
-to report source locations even when deployed binaries are stripped. The next
-work is:
+module/build identities through PIE, ASLR, and dynamic loading. It can build a
+selected Cargo binary with its static Rust target dependencies as one instrumented
+module. Compose locks declared manifests and symbols, verifies them before
+boot, and joins them to report source locations even when deployed binaries
+are stripped. The next work is:
 
-1. Turn the standalone rustc frontend into a Cargo-integrated path that covers
-   selected workspace crates and dependencies without manual single-file
-   compilation.
-2. Validate large multi-service symbol catalogs on both released Linux
+1. Validate large multi-service symbol catalogs on both released Linux
    architectures and retain native-KVM evidence for stripped executables and
    multiple DSOs.
-3. Add representative Go and Java instrumentation paths, then select
+2. Add representative Go and Java instrumentation paths, then select
    JavaScript and .NET work from real workload demand.
-4. Compare block, edge, sampled-PC, and unguided search under the same public
+3. Compare block, edge, sampled-PC, and unguided search under the same public
    campaign budgets; retain every workload and result.
 
 Exit when multi-service workloads built with supported production toolchains

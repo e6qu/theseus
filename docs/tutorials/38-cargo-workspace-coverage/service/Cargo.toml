@@ -1,0 +1,3 @@
+[workspace]
+members = ["classifier", "logic"]
+resolver = "2"

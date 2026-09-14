@@ -63,7 +63,7 @@ door could leave `vmm` without creating a dependency cycle.
 | Branching | `orchestrator/branch` | In-memory (memfd) timeline forks with kernel copy-on-write. |
 | Exploration | `orchestrator/orchestrator` | Timeline tree, child spawning, parallel rendezvous explorer. |
 | Execution locations | `orchestrator/coverage` | Guest-PC collection by single-step or deterministic exit sampling. |
-| Application coverage | `instrumentation/c`, `instrumentation/llvm` + `cli` + `topology-runner` | GCC C blocks and LLVM C/C++/Rust edges with build-scoped, ASLR-independent identities. Compose locks LLVM manifests and symbols; the runner validates and joins them into reports for executables and DSOs. |
+| Application coverage | `instrumentation/c`, `instrumentation/llvm` + `cli` + `topology-runner` | GCC C blocks and LLVM C/C++/Rust edges with build-scoped, ASLR-independent identities. The CLI instruments selected Cargo static Rust graphs. Compose locks manifests and symbols; the runner validates and joins them into reports for executables and DSOs. |
 | Thread scheduling | `instrumentation/c` + `cli` + `topology-runner` | Bounded GCC C pthread interleavings with explicit, static, or feedback-driven choices plus replay-checked mutex and condition-variable transitions. |
 
 ## Verification model

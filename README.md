@@ -29,7 +29,8 @@ passing unit suite alone is not treated as runtime proof.
 - GCC C basic-block coverage and LLVM C/C++/Rust edge coverage with
   ASLR-independent, build-scoped identities retained through campaign
   guidance, replay, comparison, and reports. LLVM shared libraries keep their
-  own module identity, and packaged tools validate and symbolize their builds.
+  own module identity; the CLI covers a selected Cargo binary's static Rust target
+  dependencies, and packaged tools validate and symbolize their builds.
 - Bounded GCC C pthread scheduling at application basic-block boundaries, with
   explicit schedules and runnable-set decisions retained and replay-checked;
   default mutexes and untimed condition variables update the runnable set.
@@ -45,8 +46,9 @@ passing unit suite alone is not treated as runtime proof.
 - LLVM coverage uses explicit build frontends and coverage catalogs declared
   under each service's `x-theseus` configuration; it does not transparently
   instrument arbitrary existing images. Declared manifests and symbols are
-  locked into replay bundles and joined into reports. Cargo dependency graphs,
-  Go, Java, JavaScript, and .NET instrumentation are not implemented.
+  locked into replay bundles and joined into reports. `theseus coverage cargo`
+  covers one selected Rust binary and its static Rust target dependencies; Go,
+  Java, JavaScript, and .NET instrumentation are not implemented.
 - Thread scheduling is a bounded GCC C path, not general Linux scheduling. It
   supports 32 pthreads and 8,192 decisions, and controls joins, default mutex
   locking, and untimed condition waits/signals/broadcasts. Timed waits,

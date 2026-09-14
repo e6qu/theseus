@@ -124,10 +124,11 @@ then list service/process/module/build/block identities separately from sampled
 guest PCs, and replay checks the exact retained block set and novelty.
 
 Use `coverage: application_edges` for binaries built by the packaged
-`theseus-coverage-clang` or `theseus-coverage-rustc` frontend. Edge records add
+`theseus-coverage-clang`, `theseus-coverage-rustc`, or `theseus coverage cargo`
+frontend. Edge records add
 a build-local guard number to the module-relative address. C, C++, single-file
 Rust programs, PIE executables, and dynamically loaded native modules use the
-same replay path. Each module retains at most 8,191 edge identities.
+same replay path. Each module retains at most 65,535 edge identities.
 Preserve symbol files with `--symbols`; `theseus-coverage-inspect` validates the
 build and resolves an observed offset to a source line. Declare each manifest
 and its symbol directory on the service so planning locks the exact files and
@@ -144,7 +145,24 @@ services:
 ```
 
 Both paths are relative to the Compose file. The manifest names the exact
-build-scoped file inside `symbols`. See Tutorial 37.
+build-scoped file inside `symbols`.
+
+On Linux, build a Cargo binary and its static Rust target dependency graph
+without replacing each crate's compiler command:
+
+```sh
+theseus coverage cargo \
+  --manifest-path Cargo.toml --package api --bin api \
+  --process api --module command --symbols work/symbols --output work/api \
+  --release --locked
+```
+
+The command resolves the selected graph, hashes each package tree and the
+workspace build configuration, isolates the build under a build-scoped target
+directory, preserves an unstripped symbol file, and writes
+`work/api.theseus-coverage.json`. Host build scripts and proc macros are build
+inputs but are not instrumented; Rust dynamic-library targets still need
+independent module handling. See Tutorials 37 and 38.
 
 Commands built with the packaged `theseus-schedule-cc` frontend accept a
 Compose shell operation's explicit `thread_schedule: [0, 1, 2]`. Planning

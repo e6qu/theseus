@@ -24,7 +24,7 @@
 #endif
 
 /* Keep runtime memory and serial output bounded even for large services. */
-#define THESEUS_COVERAGE_GUARDS 8192U
+#define THESEUS_COVERAGE_GUARDS 65536U
 
 static _Atomic uint32_t next_guard = 1;
 static _Atomic unsigned char seen[THESEUS_COVERAGE_GUARDS];

@@ -21,7 +21,7 @@ compile_and_check() {
     build=$(sed -n 's/.*"build_sha256": "\([0-9a-f]*\)".*/\1/p' \
         "$output.theseus-coverage.json")
     [ "${#build}" -eq 64 ]
-    grep -F '"maximum_edges": 8191' "$output.theseus-coverage.json" >/dev/null
+    grep -F '"maximum_edges": 65535' "$output.theseus-coverage.json" >/dev/null
     grep -E '"gnu_build_id": "[0-9a-f]+"' "$output.theseus-coverage.json" >/dev/null
     records=$("$output" 0 2>&1 || true; "$output" 7 2>&1 || true)
     printf '%s\n' "$records" | grep -E \

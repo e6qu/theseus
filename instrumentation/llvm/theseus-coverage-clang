@@ -138,7 +138,7 @@ if [ -n "$symbols" ]; then
 fi
 
 manifest="${output}.theseus-coverage.json"
-printf '{\n  "format": "theseus-llvm-coverage-build-v1",\n  "coverage": "edges",\n  "maximum_edges": 8191,\n  "language": "%s",\n  "process": "%s",\n  "module": "%s",\n  "build_sha256": "%s",\n  "gnu_build_id": "%s",\n  "compiler": "%s",\n  "target": "%s",\n  "shared": %s,\n' \
+printf '{\n  "format": "theseus-llvm-coverage-build-v1",\n  "coverage": "edges",\n  "maximum_edges": 65535,\n  "language": "%s",\n  "process": "%s",\n  "module": "%s",\n  "build_sha256": "%s",\n  "gnu_build_id": "%s",\n  "compiler": "%s",\n  "target": "%s",\n  "shared": %s,\n' \
     "$language" "$process" "$module" "$build_sha256" "$gnu_build_id" "$compiler_version" "$target" \
     "$(if [ "$shared" -eq 1 ]; then echo true; else echo false; fi)" > "$manifest"
 if [ -n "$symbol_file" ]; then
