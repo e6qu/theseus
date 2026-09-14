@@ -89,7 +89,7 @@ RUN printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99
         /etc/apt/sources.list.d/debian.sources \
     && apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
-        binutils busybox-static cargo clang cpio curl gcc libc6-dev libclang-rt-dev libseccomp2 rustc \
+        binutils busybox-static cargo clang cpio curl gcc libc6-dev libclang-rt-dev libseccomp2 llvm rustc \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=go-toolchain /usr/local/go /usr/local/go

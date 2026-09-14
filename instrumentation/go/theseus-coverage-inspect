@@ -51,5 +51,9 @@ echo "instrumented: $callbacks Go source files"
 if [ -n "$counter" ]; then
     case "$counter" in 0x|0x*[!0-9a-f]*) usage ;; 0x*) ;; *) usage ;; esac
     [ "${#counter}" -le 18 ] || usage
-    addr2line -C -f -e "$binary" "$counter"
+    if command -v llvm-addr2line >/dev/null 2>&1; then
+        llvm-addr2line -C -f -e "$binary" "$counter"
+    else
+        addr2line -C -f -e "$binary" "$counter"
+    fi
 fi

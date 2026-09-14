@@ -39,7 +39,7 @@ def main() -> None:
     assert "golang:1.27.1-bookworm@sha256:" in DOCKERFILE
     assert "COPY --from=go-toolchain /usr/local/go /usr/local/go" in DOCKERFILE
     assert 'ENV PATH="/usr/local/go/bin:${PATH}"' in DOCKERFILE
-    assert "libseccomp2 rustc" in DOCKERFILE
+    assert "libseccomp2 llvm rustc" in DOCKERFILE
 
     assert "SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}" in RELEASE
     assert "THESEUS_SOURCE_COMMIT=${{ github.sha }}" in RELEASE
