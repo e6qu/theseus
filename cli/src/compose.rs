@@ -92,6 +92,8 @@ struct ComposeCampaign {
     #[serde(default)]
     guidance: CampaignGuidance,
     #[serde(default)]
+    coverage: CampaignCoverage,
+    #[serde(default)]
     state: BTreeMap<String, String>,
     operations: Vec<ComposeOperation>,
     #[serde(default)]
@@ -1098,11 +1100,30 @@ pub enum CampaignGuidance {
     Property,
 }
 
+/// Choose the primary deterministic signal used to rank campaign schedules.
+/// Application blocks are explicit records emitted by an instrumented process;
+/// the other modes are lower-fidelity baselines collected by the runtime.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CampaignCoverage {
+    Markers,
+    CheckpointPcs,
+    #[default]
+    ExecutionLocations,
+    ApplicationBlocks,
+}
+
+fn is_default_campaign_coverage(value: &CampaignCoverage) -> bool {
+    *value == CampaignCoverage::ExecutionLocations
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CampaignPlan {
     pub driver: String,
     #[serde(default)]
     pub guidance: CampaignGuidance,
+    #[serde(default, skip_serializing_if = "is_default_campaign_coverage")]
+    pub coverage: CampaignCoverage,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub state: BTreeMap<String, String>,
     pub operations: Vec<OperationPlan>,
@@ -3627,6 +3648,7 @@ fn campaign_plan(
     Ok(Some(CampaignPlan {
         driver: campaign.driver,
         guidance: campaign.guidance,
+        coverage: campaign.coverage,
         state: initial_state,
         operations,
         stages: campaign.stages,
@@ -6586,6 +6608,18 @@ mod tests {
         assert_eq!(
             plan.campaign.expect("campaign is normalized").guidance,
             CampaignGuidance::Adaptive
+        );
+    }
+
+    #[test]
+    fn normalizes_application_block_campaign_coverage() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    coverage: application_blocks\n    max_runs: 1\n    operations:\n      - name: probe\n        input: \"probe\\n\"\n",
+        );
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(
+            plan.campaign.expect("campaign is normalized").coverage,
+            CampaignCoverage::ApplicationBlocks
         );
     }
 
