@@ -44,7 +44,10 @@ RUN ./orchestrator/pivot/build.sh --target "$TARGETARCH" \
     && test -x topology-runner/target/release/theseus-topology \
     && test -x image-runner/target/release/theseus-image \
     && test -x explorer-runner/target/release/theseus-explorer \
-    && mkdir -p /out \
+    && mkdir -p /out/instrumentation/c \
+    && cp instrumentation/c/theseus-coverage-cc /out/instrumentation/c/ \
+    && cp instrumentation/c/theseus_coverage.c /out/instrumentation/c/ \
+    && chmod +x /out/instrumentation/c/theseus-coverage-cc \
     && cp orchestrator/pivot.bin /out/pivot \
     && image-runner/target/release/theseus-image pivot > /out/embedded-pivot.json \
     && architecture=$(dpkg --print-architecture) \
@@ -72,7 +75,7 @@ RUN printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99
         /etc/apt/sources.list.d/debian.sources \
     && apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
-        busybox-static cpio curl gcc libseccomp2 \
+        busybox-static cpio curl gcc libc6-dev libseccomp2 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/firecracker/target/release/firecracker /usr/local/bin/firecracker

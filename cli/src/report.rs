@@ -307,6 +307,8 @@ struct CampaignResult {
     #[serde(default)]
     unique_instruction_locations: usize,
     #[serde(default)]
+    unique_application_blocks: usize,
+    #[serde(default)]
     search: Option<CampaignSearchEvidence>,
     #[serde(default)]
     replay_verification: Option<ReplayVerification>,
@@ -344,6 +346,10 @@ struct CampaignRun {
     instruction_novelty: Vec<String>,
     #[serde(default)]
     checkpoint_pc_novelty: Vec<String>,
+    #[serde(default)]
+    application_blocks: BTreeMap<String, Vec<ApplicationBlock>>,
+    #[serde(default)]
+    application_block_novelty: Vec<String>,
     #[serde(default)]
     state_novel: bool,
     status: String,
@@ -440,6 +446,10 @@ struct CampaignTimelineBoundary {
     #[serde(default)]
     instruction_locations: BTreeMap<String, Vec<InstructionLocation>>,
     #[serde(default)]
+    application_blocks: BTreeMap<String, Vec<ApplicationBlock>>,
+    #[serde(default)]
+    new_application_blocks: Vec<String>,
+    #[serde(default)]
     serial_sha256: BTreeMap<String, String>,
     #[serde(default)]
     serial_delta: BTreeMap<String, CampaignSerialDelta>,
@@ -451,6 +461,14 @@ struct CampaignTimelineBoundary {
     virtual_time_delta_ns: BTreeMap<String, Vec<u64>>,
     #[serde(default)]
     state_sha256: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct ApplicationBlock {
+    process: String,
+    module: String,
+    build_sha256: String,
+    offset: String,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -929,6 +947,7 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         "markers" => "marker novelty",
         "checkpoint_pcs" => "paused checkpoint-PC novelty",
         "execution_locations" | "" => "exit-sampled execution-location novelty",
+        "application_blocks" => "compiler-instrumented application basic-block novelty",
         _ => "recorded coverage novelty",
     };
     let checkpoint = result
@@ -967,11 +986,12 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         coverage: Some(Coverage {
             label: "Campaign corpus".to_owned(),
             summary: format!(
-                "{} of {} deterministic candidates selected by {guidance} using {coverage_signal}; {} marker-guard leaves and {} serial-guard leaves skipped; {} unique instruction locations; {} unique topology states; {} root captures, {} reusable checkpoint nodes, {} prefix captures, {} prefix reuses ({} avoided recomputations), {} topology restores ({} prefix materializations + {} leaf replays); {} retained immutable bytes, {} logical COW-mapped restore bytes, {} dirty pages at capture barriers, {} snapshot-file bytes{}",
+                "{} of {} deterministic candidates selected by {guidance} using {coverage_signal}; {} marker-guard leaves and {} serial-guard leaves skipped; {} unique application blocks; {} unique instruction locations; {} unique topology states; {} root captures, {} reusable checkpoint nodes, {} prefix captures, {} prefix reuses ({} avoided recomputations), {} topology restores ({} prefix materializations + {} leaf replays); {} retained immutable bytes, {} logical COW-mapped restore bytes, {} dirty pages at capture barriers, {} snapshot-file bytes{}",
                 result.runs.len(),
                 result.generated_candidates,
                 result.marker_guard_rejections,
                 result.serial_guard_rejections,
+                result.unique_application_blocks,
                 result.unique_instruction_locations,
                 result.unique_topology_states,
                 checkpoint.root_captures,
@@ -1115,12 +1135,12 @@ if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.sum
 if(Object.keys(m.campaign_state).length){{const s=section('Campaign state machine');s.append(el('pre',JSON.stringify(m.campaign_state)));const rows=[];m.campaign_operations.forEach(o=>{{if(Object.keys(o.requires_state).length||Object.keys(o.sets_state).length)rows.push([o.name,JSON.stringify(o.requires_state),JSON.stringify(o.sets_state)]);o.inputs.forEach(i=>{{if(Object.keys(i.requires_state).length||Object.keys(i.sets_state).length)rows.push([o.name+'['+i.name+']',JSON.stringify(i.requires_state),JSON.stringify(i.sets_state)]);}});}});if(rows.length)s.append(table(rows,['Transition','Requires state','Sets state']));}}
 if(m.campaign_operations.length){{const predicate=p=>p?JSON.stringify(p):'none',predicates=ps=>ps.length?JSON.stringify(ps):'none',ref=r=>r.operation+(r.input?'['+r.input+']':''),capture=(n,c)=>n+'@'+(c.service||'driver')+':'+c.pointer+' · '+JSON.stringify(c.json||c.workflow||{{sequence:c.sequence}})+' ('+(c.encoding||'text')+', '+(c.select||'latest')+')',input=i=>{{const rules=i.requires.length||i.excludes.length||i.max_uses!==null?' ('+[i.requires.length?'after '+i.requires.map(ref).join(' + '):'',i.excludes.length?'without '+i.excludes.map(ref).join(' + '):'',i.max_uses===null?'':'at most '+i.max_uses].filter(Boolean).join('; ')+')':'';const captures=i.input_template?' ← '+i.input_template+' · '+Object.entries(i.input_captures).map(([n,c])=>capture(n,c)).join(', '):'';return i.name+rules+captures}},grammar=o=>o.input_grammar?(o.input_grammar.name_template+' ← '+o.input_grammar.template+' · '+Object.entries(o.input_grammar.choices).map(([v,c])=>v+'='+Object.keys(c).join('/')).join(', ')+(Object.keys(o.input_grammar.input_captures).length?' · '+Object.entries(o.input_grammar.input_captures).map(([n,c])=>capture(n,c)).join(', '):'')):'literal cases',s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,o.shell_phase||'input',o.shell_process||'none',grammar(o),o.inputs.map(input).join(' + ')||'default',o.stage||'any',o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',predicate(o.requires_serial),predicate(o.excludes_serial),predicates(o.requires_serial_all),predicates(o.excludes_serial_any),predicates(o.requires_serial_joins),predicates(o.excludes_serial_joins),predicate(o.requires_serial_evidence),predicate(o.excludes_serial_evidence),o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Command phase','Process','Input grammar','Input cases','Stage','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Requires serial predicate','Excludes serial predicate','Requires all serial guards','Excludes any serial guard','Requires JSON joins','Excludes JSON joins','Requires serial evidence','Excludes serial evidence','Maximum uses']));}}
 if(m.campaign_operations.some(o=>o.service)){{const s=section('Operation targets');s.append(el('p','Each operation sends its UART input to this service. Operations without a target in older bundles use the designated campaign driver.'));s.append(table(m.campaign_operations.filter(o=>o.service).map(o=>[o.name,o.service]),['Operation','Service']));}}
-if(m.campaign_runs.length){{const location=l=>{{if(typeof l==='string')return l;const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},locations=r=>Object.entries(r.program_counters).map(([service,pcs])=>service+': '+((r.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',ledger=r=>r.guidance_ledger&&r.guidance_ledger.sha256?r.guidance_ledger.observations+' observations · '+r.guidance_ledger.sha256:'unrecorded (legacy)',posterior=r=>{{const p=r.guidance_evidence;return p.scope+' · '+p.successes+' yield(s), '+p.misses+' miss(es) · mean '+p.mean_per_mille+'‰ + '+p.uncertainty_per_mille+'‰'}},hasPosterior=m.campaign_runs.some(r=>r.guidance_evidence),rows=m.campaign_runs.map(r=>{{const row=[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',ledger(r)];if(hasPosterior)row.push(posterior(r));row.push(r.state_novel?'new':'seen',locations(r),r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none');return row}}),heads=['Run','Operations','Candidates','Selection','Guidance ledger'];if(hasPosterior)heads.push('Posterior evidence');heads.push('Topology state','Instruction locations','Applied actions','Status','New markers');const s=section('Generated timelines');s.append(table(rows,heads));}}
+if(m.campaign_runs.length){{const location=l=>{{if(typeof l==='string')return l;const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},locations=r=>Object.entries(r.program_counters).map(([service,pcs])=>service+': '+((r.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',applicationBlocks=r=>r.application_block_novelty.join(' ')||'none',ledger=r=>r.guidance_ledger&&r.guidance_ledger.sha256?r.guidance_ledger.observations+' observations · '+r.guidance_ledger.sha256:'unrecorded (legacy)',posterior=r=>{{const p=r.guidance_evidence;return p.scope+' · '+p.successes+' yield(s), '+p.misses+' miss(es) · mean '+p.mean_per_mille+'‰ + '+p.uncertainty_per_mille+'‰'}},hasPosterior=m.campaign_runs.some(r=>r.guidance_evidence),rows=m.campaign_runs.map(r=>{{const row=[String(r.index),r.operations.join(' → ')||'none',(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',ledger(r)];if(hasPosterior)row.push(posterior(r));row.push(r.state_novel?'new':'seen',locations(r),applicationBlocks(r),r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none');return row}}),heads=['Run','Operations','Candidates','Selection','Guidance ledger'];if(hasPosterior)heads.push('Posterior evidence');heads.push('Topology state','Instruction locations','New application blocks','Applied actions','Status','New markers');const s=section('Generated timelines');s.append(table(rows,heads));}}
 if(m.campaign_runs.some(r=>r.property_witnesses.length)){{const rows=m.campaign_runs.filter(r=>r.property_witnesses.length).map(r=>[String(r.index),r.operations.join(' → ')||'none',r.property_witnesses.join(', ')]),s=section('Property witnesses');s.append(el('p','These declared properties produced useful evidence in this timeline. A reachable or sometimes match is a witness; an always or unreachable witness is a counterexample.'));s.append(table(rows,['Run','Operations','Property witnesses']));}}
 if(m.campaign_runs.some(r=>r.timeline.length)){{
 const location=l=>{{const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},
 locations=b=>Object.entries(b.program_counters).map(([service,pcs])=>service+': '+((b.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',
-delta=b=>[['new markers',b.new_markers.join(' ')],['changed PCs',b.changed_program_counters.join(', ')],['changed serial',b.changed_serial.join(', ')]].filter(([,value])=>value).map(([label,value])=>label+': '+value).join('; ')||'none',
+delta=b=>[['new markers',b.new_markers.join(' ')],['new application blocks',b.new_application_blocks.join(' ')],['changed PCs',b.changed_program_counters.join(', ')],['changed serial',b.changed_serial.join(', ')]].filter(([,value])=>value).map(([label,value])=>label+': '+value).join('; ')||'none',
 serial=b=>Object.entries(b.serial_delta).map(([service,d])=>service+': '+d.excerpt+' ['+d.bytes+' bytes; sha256 '+d.sha256+(d.omitted_bytes?'; +'+d.omitted_bytes+' bytes':'')+']').join(' · ')||'none',
 input=b=>b.input.sha256?b.input.excerpt+' ['+b.input.bytes+' bytes; sha256 '+b.input.sha256+(b.input.omitted_bytes?'; +'+b.input.omitted_bytes+' bytes':'')+']':'unrecorded (legacy)',
 delivery=b=>b.delivery.recorded?'accepted '+b.delivery.accepted_bytes+' bytes; guest read '+b.delivery.guest_read_bytes+'; queued '+b.delivery.pending_before+' → '+b.delivery.pending_after+(b.delivery.checkpoint?' · waited for '+b.delivery.checkpoint:' · no marker barrier'):'unrecorded (legacy)',
@@ -1197,6 +1217,14 @@ fn instruction_location_label(location: &InstructionLocation) -> String {
 
 fn campaign_instruction_location_labels(run: &CampaignRun) -> String {
     instruction_location_labels(&run.program_counters, &run.instruction_locations)
+}
+
+fn campaign_application_block_labels(run: &CampaignRun) -> String {
+    if run.application_block_novelty.is_empty() {
+        "none".to_owned()
+    } else {
+        run.application_block_novelty.join(" ")
+    }
 }
 
 fn instruction_location_labels(
@@ -1551,14 +1579,16 @@ fn render_markdown(model: &ReportModel) -> String {
         if has_property_witnesses {
             output.push_str(" | Property witnesses");
         }
-        output.push_str(" | Instruction locations | Status |\n| --- | --- | ---");
+        output.push_str(
+            " | Instruction locations | New application blocks | Status |\n| --- | --- | ---",
+        );
         if has_posterior {
             output.push_str(" | ---");
         }
         if has_property_witnesses {
             output.push_str(" | ---");
         }
-        output.push_str(" | --- | --- |\n");
+        output.push_str(" | --- | --- | --- |\n");
         for run in &model.campaign_runs {
             let candidates = if run.faults.is_empty() {
                 run.fault.clone().unwrap_or_else(|| "none".to_owned())
@@ -1584,8 +1614,9 @@ fn render_markdown(model: &ReportModel) -> String {
                 ));
             }
             output.push_str(&format!(
-                " | {} | {} |\n",
+                " | {} | {} | {} |\n",
                 markdown_cell(&campaign_instruction_location_labels(run)),
+                markdown_cell(&campaign_application_block_labels(run)),
                 markdown_cell(&run.status)
             ));
         }

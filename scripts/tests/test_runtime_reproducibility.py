@@ -25,6 +25,9 @@ def main() -> None:
     assert 'orchestrator/pivot/build.sh --target "$TARGETARCH"' in DOCKERFILE
     assert "theseus-image pivot > /out/embedded-pivot.json" in DOCKERFILE
     assert "cp orchestrator/pivot.bin /out/pivot" in DOCKERFILE
+    assert "instrumentation/c/theseus-coverage-cc" in DOCKERFILE
+    assert "instrumentation/c/theseus_coverage.c" in DOCKERFILE
+    assert "gcc libc6-dev libseccomp2" in DOCKERFILE
 
     assert "SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}" in RELEASE
     assert "THESEUS_SOURCE_COMMIT=${{ github.sha }}" in RELEASE
@@ -37,6 +40,8 @@ def main() -> None:
     assert RELEASE.count("pivot_file_sha256=$(docker run") == 2
     assert RELEASE.count('jq -r .architecture <<< "$pivot_metadata"') == 2
     assert RELEASE.count('jq -r .source_commit <<< "$pivot_manifest"') == 2
+    assert RELEASE.count("test -x /opt/theseus/instrumentation/c/theseus-coverage-cc") == 2
+    assert "test -x instrumentation/c/theseus-coverage-cc" in RELEASE
     assert "gh release download" in VERIFY
     assert "gh attestation verify" in VERIFY
     assert "ref: ${{ steps.inputs.outputs.commit }}" in VERIFY

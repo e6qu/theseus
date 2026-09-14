@@ -113,6 +113,8 @@ struct CampaignResult {
     #[serde(default)]
     unique_instruction_locations: usize,
     #[serde(default)]
+    unique_application_blocks: usize,
+    #[serde(default)]
     search: SearchEvidence,
     #[serde(default)]
     replay_verification: Option<ReplayVerification>,
@@ -222,6 +224,7 @@ pub struct SearchMetric {
     pub retained_runs: usize,
     pub unique_topology_states: usize,
     pub unique_instruction_locations: usize,
+    pub unique_application_blocks: usize,
     pub root_captures: usize,
     pub prefix_captures: usize,
     pub checkpoint_nodes: usize,
@@ -263,13 +266,14 @@ impl EvaluationSummary {
         );
         output.push_str("## Replay and search evidence\n\n");
         output.push_str(&format!(
-            "- Replay verification: {}/{} bundles\n- Generated candidates: {}\n- Retained runs: {}\n- Unique topology states: {}\n- Unique instruction locations: {}\n- Checkpoint work: {} root captures, {} prefix captures, {} nodes, {} prefix reuses, {} avoided recomputations\n",
+            "- Replay verification: {}/{} bundles\n- Generated candidates: {}\n- Retained runs: {}\n- Unique topology states: {}\n- Unique instruction locations: {}\n- Unique application blocks: {}\n- Checkpoint work: {} root captures, {} prefix captures, {} nodes, {} prefix reuses, {} avoided recomputations\n",
             self.replay.verified,
             self.replay.total,
             self.search.generated_candidates,
             self.search.retained_runs,
             self.search.unique_topology_states,
             self.search.unique_instruction_locations,
+            self.search.unique_application_blocks,
             self.search.root_captures,
             self.search.prefix_captures,
             self.search.checkpoint_nodes,
@@ -362,6 +366,7 @@ pub fn evaluate(path: impl AsRef<Path>) -> Result<EvaluationSummary, EvaluationE
         search.retained_runs += result.runs.len();
         search.unique_topology_states += result.unique_topology_states;
         search.unique_instruction_locations += result.unique_instruction_locations;
+        search.unique_application_blocks += result.unique_application_blocks;
         search.root_captures += result.search.checkpoint.root_captures;
         search.prefix_captures += result.search.checkpoint.prefix_captures;
         search.checkpoint_nodes += result.search.checkpoint.checkpoint_nodes;

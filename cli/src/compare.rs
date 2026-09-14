@@ -74,6 +74,10 @@ struct Run {
     #[serde(default)]
     checkpoint_pc_novelty: Vec<String>,
     #[serde(default)]
+    application_blocks: Coverage,
+    #[serde(default)]
+    application_block_novelty: Vec<String>,
+    #[serde(default)]
     state_sha256: String,
     #[serde(default)]
     timeline: Vec<Boundary>,
@@ -98,6 +102,8 @@ struct Boundary {
     program_counters: Coverage,
     #[serde(default)]
     instruction_locations: Coverage,
+    #[serde(default)]
+    application_blocks: Coverage,
 }
 
 #[derive(Serialize)]
@@ -285,20 +291,23 @@ pub fn compare_campaigns(
                 }
                 if left.program_counters != right.program_counters
                     || left.instruction_locations != right.instruction_locations
+                    || left.application_blocks != right.application_blocks
                 {
                     return Some(CampaignDivergence {
                         run,
                         boundary: Some(boundary),
                         reason: "first operation-boundary coverage differs".to_owned(),
                         left: format!(
-                            "program_counters={}; instruction_locations={}",
+                            "program_counters={}; instruction_locations={}; application_blocks={}",
                             json_summary(&left.program_counters),
-                            json_summary(&left.instruction_locations)
+                            json_summary(&left.instruction_locations),
+                            json_summary(&left.application_blocks)
                         ),
                         right: format!(
-                            "program_counters={}; instruction_locations={}",
+                            "program_counters={}; instruction_locations={}; application_blocks={}",
                             json_summary(&right.program_counters),
-                            json_summary(&right.instruction_locations)
+                            json_summary(&right.instruction_locations),
+                            json_summary(&right.application_blocks)
                         ),
                     });
                 }
@@ -327,6 +336,8 @@ pub fn compare_campaigns(
                 || left.instruction_locations != right.instruction_locations
                 || left.instruction_novelty != right.instruction_novelty
                 || left.checkpoint_pc_novelty != right.checkpoint_pc_novelty
+                || left.application_blocks != right.application_blocks
+                || left.application_block_novelty != right.application_block_novelty
             {
                 return Some(CampaignDivergence {
                     run,
@@ -375,11 +386,13 @@ fn json_summary(value: &impl Serialize) -> String {
 
 fn coverage_summary(run: &Run) -> String {
     format!(
-        "program_counters={}; instruction_locations={}; instruction_novelty={:?}; checkpoint_pc_novelty={:?}",
+        "program_counters={}; instruction_locations={}; instruction_novelty={:?}; checkpoint_pc_novelty={:?}; application_blocks={}; application_block_novelty={:?}",
         json_summary(&run.program_counters),
         json_summary(&run.instruction_locations),
         run.instruction_novelty,
         run.checkpoint_pc_novelty,
+        json_summary(&run.application_blocks),
+        run.application_block_novelty,
     )
 }
 

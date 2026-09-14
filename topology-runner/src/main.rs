@@ -122,6 +122,7 @@ enum CampaignCoverage {
     CheckpointPcs,
     #[default]
     ExecutionLocations,
+    ApplicationBlocks,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -615,6 +616,7 @@ struct CampaignResult {
     serial_guard_rejections: usize,
     unique_topology_states: usize,
     unique_instruction_locations: usize,
+    unique_application_blocks: usize,
     /// A compact, deterministic account of the search work. This is separate
     /// from wall-clock timing: host scheduling must never affect a replay.
     search: CampaignSearchEvidence,
@@ -651,6 +653,10 @@ struct CampaignRun {
     instruction_locations: BTreeMap<String, Vec<InstructionLocation>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     instruction_novelty: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    application_blocks: BTreeMap<String, Vec<ApplicationBlock>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    application_block_novelty: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     checkpoint_pc_novelty: Vec<String>,
     state_sha256: String,
@@ -700,6 +706,10 @@ struct CampaignTimelineBoundary {
     program_counters: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     instruction_locations: BTreeMap<String, Vec<InstructionLocation>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    application_blocks: BTreeMap<String, Vec<ApplicationBlock>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    new_application_blocks: Vec<String>,
     serial_sha256: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     serial_delta: BTreeMap<String, CampaignSerialDelta>,
@@ -926,6 +936,10 @@ struct RecordedCampaignRun {
     #[serde(default)]
     instruction_novelty: Vec<String>,
     #[serde(default)]
+    application_blocks: BTreeMap<String, Vec<ApplicationBlock>>,
+    #[serde(default)]
+    application_block_novelty: Vec<String>,
+    #[serde(default)]
     checkpoint_pc_novelty: Vec<String>,
     #[serde(default)]
     novelty: Vec<String>,
@@ -957,6 +971,18 @@ struct InstructionSourceLocation {
     line: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     column: Option<u32>,
+}
+
+/// A compiler-emitted application basic-block hit. The build digest scopes a
+/// module across rebuilds, while the module-relative address is unaffected by
+/// ASLR. Process and service names prevent otherwise identical modules from
+/// being conflated in a distributed topology.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+struct ApplicationBlock {
+    process: String,
+    module: String,
+    build_sha256: String,
+    offset: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1497,6 +1523,7 @@ struct CampaignCheckpointBoundary {
     actions: Vec<AppliedCampaignAction>,
     round: u64,
     markers: Vec<String>,
+    application_blocks: BTreeMap<String, Vec<ApplicationBlock>>,
     program_counters: BTreeMap<String, Vec<String>>,
     serial_sha256: BTreeMap<String, String>,
     serial_contents: BTreeMap<String, Vec<u8>>,
@@ -2741,6 +2768,7 @@ fn execute_campaign(
     let mut seen_topology_states = std::collections::BTreeSet::new();
     let mut seen_instruction_locations = std::collections::BTreeSet::new();
     let mut seen_checkpoint_pcs = std::collections::BTreeSet::new();
+    let mut seen_application_blocks = std::collections::BTreeSet::new();
     let mut pending = (0..schedules.len()).collect::<Vec<_>>();
     let mut observations = Vec::new();
     let mut replay_mismatches = Vec::new();
@@ -2842,6 +2870,7 @@ fn execute_campaign(
             write_campaign_prefix_actions(&run_dir, prefix.actions)?;
         }
         let markers = campaign_markers(&run_dir)?;
+        let application_blocks = campaign_application_blocks(&run_dir)?;
         let actions = campaign_actions(&run_dir)?;
         let program_counters = campaign_checkpoint_program_counters(&prefix.checkpoint);
         let execution_locations = campaign_checkpoint_execution_locations(&prefix.checkpoint);
@@ -2863,6 +2892,10 @@ fn execute_campaign(
             .into_iter()
             .filter(|location| seen_checkpoint_pcs.insert(location.clone()))
             .collect::<Vec<_>>();
+        let application_block_novelty = campaign_application_block_ids(&application_blocks)
+            .into_iter()
+            .filter(|block| seen_application_blocks.insert(block.clone()))
+            .collect::<Vec<_>>();
         let state_sha256 = campaign_topology_state_sha256(&run_dir, &program_counters)?;
         let state_novel = seen_topology_states.insert(state_sha256.clone());
         let novelty = markers
@@ -2876,6 +2909,7 @@ fn execute_campaign(
             novel_markers: novelty.len(),
             novel_instructions: instruction_novelty.len(),
             novel_checkpoint_pcs: checkpoint_pc_novelty.len(),
+            novel_application_blocks: application_block_novelty.len(),
             novel_state: state_novel,
             failed,
             property_witnesses: property_witnesses.clone(),
@@ -2900,6 +2934,8 @@ fn execute_campaign(
             instruction_locations,
             instruction_novelty,
             checkpoint_pc_novelty,
+            application_blocks,
+            application_block_novelty,
             state_sha256,
             state_novel,
             status: if failed { "failed" } else { "passed" },
@@ -2972,6 +3008,7 @@ fn execute_campaign(
             serial_guard_rejections,
             unique_topology_states: seen_topology_states.len(),
             unique_instruction_locations: seen_instruction_locations.len(),
+            unique_application_blocks: seen_application_blocks.len(),
             search,
             replay_verification: recorded.map(|recorded| CampaignReplayVerification {
                 status: if replay_verified { "passed" } else { "failed" },
@@ -4315,6 +4352,7 @@ struct CampaignGuidanceObservation {
     novel_markers: usize,
     novel_instructions: usize,
     novel_checkpoint_pcs: usize,
+    novel_application_blocks: usize,
     novel_state: bool,
     failed: bool,
     property_witnesses: Vec<String>,
@@ -4721,6 +4759,16 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     {
         mismatches.push("checkpoint-PC coverage".to_owned());
     }
+    if !expected.application_blocks.is_empty()
+        && expected.application_blocks != actual.application_blocks
+    {
+        mismatches.push("application-block coverage".to_owned());
+    }
+    if !expected.application_block_novelty.is_empty()
+        && expected.application_block_novelty != actual.application_block_novelty
+    {
+        mismatches.push("application-block novelty".to_owned());
+    }
     if !expected.state_sha256.is_empty()
         && (expected.state_sha256 != actual.state_sha256
             || expected.state_novel != actual.state_novel)
@@ -4757,6 +4805,10 @@ fn campaign_timeline_matches(
                 }
                 if campaign_uart_barrier_is_absent(&expected.barrier) {
                     normalized.barrier = expected.barrier.clone();
+                }
+                if expected.application_blocks.is_empty() {
+                    normalized.application_blocks.clear();
+                    normalized.new_application_blocks.clear();
                 }
                 *expected == normalized
             }
@@ -4942,6 +4994,9 @@ fn campaign_guidance_signal(
         CampaignCoverage::Markers => observation.novel_markers.saturating_mul(1_000),
         CampaignCoverage::CheckpointPcs => observation.novel_checkpoint_pcs.saturating_mul(500),
         CampaignCoverage::ExecutionLocations => observation.novel_instructions.saturating_mul(500),
+        CampaignCoverage::ApplicationBlocks => {
+            observation.novel_application_blocks.saturating_mul(1_000)
+        }
     };
     primary
         .saturating_add(usize::from(observation.novel_state).saturating_mul(250))
@@ -5136,6 +5191,12 @@ fn campaign_guidance_reason(
         signals.push(format!(
             "{} new instruction location(s)",
             observation.novel_instructions
+        ));
+    }
+    if coverage == CampaignCoverage::ApplicationBlocks && observation.novel_application_blocks > 0 {
+        signals.push(format!(
+            "{} new application block(s)",
+            observation.novel_application_blocks
         ));
     }
     if coverage == CampaignCoverage::CheckpointPcs && observation.novel_checkpoint_pcs > 0 {
@@ -5606,6 +5667,114 @@ fn campaign_markers(run: &Path) -> Result<Vec<String>, String> {
     Ok(markers.into_iter().collect())
 }
 
+const APPLICATION_COVERAGE_PREFIX: &str = "THES:COV:v1:";
+
+fn campaign_application_blocks(
+    run: &Path,
+) -> Result<BTreeMap<String, Vec<ApplicationBlock>>, String> {
+    let mut serial = BTreeMap::<String, Vec<u8>>::new();
+    let services = fs::read_dir(run.join("services")).map_err(|error| error.to_string())?;
+    for service in services {
+        let service = service.map_err(|error| error.to_string())?;
+        let name = service.file_name().to_string_lossy().into_owned();
+        let mut contents = Vec::new();
+        for log in fs::read_dir(service.path()).map_err(|error| error.to_string())? {
+            let log = log.map_err(|error| error.to_string())?;
+            let file_name = log.file_name();
+            let file_name = file_name.to_string_lossy();
+            if file_name == "serial.log"
+                || (file_name.starts_with("serial-") && file_name.ends_with(".log"))
+            {
+                contents.extend(fs::read(log.path()).unwrap_or_default());
+                contents.push(b'\n');
+            }
+        }
+        serial.insert(name, contents);
+    }
+    Ok(campaign_application_blocks_from_serial(&serial))
+}
+
+fn campaign_application_blocks_from_serial(
+    serial: &BTreeMap<String, Vec<u8>>,
+) -> BTreeMap<String, Vec<ApplicationBlock>> {
+    serial
+        .iter()
+        .filter_map(|(service, contents)| {
+            let blocks = String::from_utf8_lossy(contents)
+                .lines()
+                .filter_map(parse_application_coverage_line)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            (!blocks.is_empty()).then(|| (service.clone(), blocks))
+        })
+        .collect()
+}
+
+fn parse_application_coverage_line(line: &str) -> Option<ApplicationBlock> {
+    let mut fields = line
+        .trim()
+        .strip_prefix(APPLICATION_COVERAGE_PREFIX)?
+        .split(':');
+    let process = fields.next()?;
+    let module = fields.next()?;
+    let build_sha256 = fields.next()?;
+    let offset = fields.next()?;
+    if fields.next().is_some()
+        || !valid_coverage_name(process)
+        || !valid_coverage_name(module)
+        || build_sha256.len() != 64
+        || !build_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || !valid_coverage_offset(offset)
+    {
+        return None;
+    }
+    Some(ApplicationBlock {
+        process: process.to_owned(),
+        module: module.to_owned(),
+        build_sha256: build_sha256.to_owned(),
+        offset: offset.to_owned(),
+    })
+}
+
+fn valid_coverage_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn valid_coverage_offset(value: &str) -> bool {
+    value.strip_prefix("0x").is_some_and(|hex| {
+        !hex.is_empty()
+            && hex.len() <= 16
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
+}
+
+fn campaign_application_block_id(service: &str, block: &ApplicationBlock) -> String {
+    format!(
+        "{service}:{}:{}@{}:{}",
+        block.process, block.module, block.build_sha256, block.offset
+    )
+}
+
+fn campaign_application_block_ids(blocks: &BTreeMap<String, Vec<ApplicationBlock>>) -> Vec<String> {
+    blocks
+        .iter()
+        .flat_map(|(service, blocks)| {
+            blocks
+                .iter()
+                .map(move |block| campaign_application_block_id(service, block))
+        })
+        .collect()
+}
+
 fn campaign_checkpoint_program_counters(
     checkpoint: &CampaignCheckpoint,
 ) -> BTreeMap<String, Vec<String>> {
@@ -5670,6 +5839,9 @@ fn campaign_checkpoint_boundary(
         markers: campaign_checkpoint_markers(checkpoint)
             .into_iter()
             .collect(),
+        application_blocks: campaign_application_blocks_from_serial(
+            &campaign_checkpoint_serial_contents(checkpoint),
+        ),
         program_counters: campaign_checkpoint_program_counters(checkpoint),
         serial_sha256: campaign_checkpoint_serial_sha256(checkpoint),
         serial_contents: campaign_checkpoint_serial_contents(checkpoint),
@@ -5754,6 +5926,15 @@ fn campaign_operation_timeline(
         .map(|(index, (((operation, event), barrier), boundary))| {
             let (new_markers, changed_program_counters, changed_serial) =
                 campaign_boundary_delta(&previous, boundary);
+            let previous_application_blocks =
+                campaign_application_block_ids(&previous.application_blocks)
+                    .into_iter()
+                    .collect::<BTreeSet<_>>();
+            let new_application_blocks =
+                campaign_application_block_ids(&boundary.application_blocks)
+                    .into_iter()
+                    .filter(|block| !previous_application_blocks.contains(block))
+                    .collect();
             let serial_delta = campaign_serial_delta(&previous, boundary);
             let network_traffic_delta = campaign_network_traffic_delta(&previous, boundary);
             let (changed_storage, virtual_time_delta_ns) =
@@ -5780,6 +5961,8 @@ fn campaign_operation_timeline(
                 changed_serial,
                 program_counters: boundary.program_counters.clone(),
                 instruction_locations: symbolizer.symbolize(&boundary.program_counters),
+                application_blocks: boundary.application_blocks.clone(),
+                new_application_blocks,
                 serial_sha256: boundary.serial_sha256.clone(),
                 serial_delta,
                 network_traffic_delta,
@@ -11499,6 +11682,7 @@ mod tests {
                 novel_markers: 2,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
+                novel_application_blocks: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -11535,6 +11719,7 @@ mod tests {
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
+                novel_application_blocks: 0,
                 novel_state: true,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -11567,6 +11752,7 @@ mod tests {
                 novel_markers: 0,
                 novel_instructions: 2,
                 novel_checkpoint_pcs: 0,
+                novel_application_blocks: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -11608,6 +11794,7 @@ mod tests {
                 novel_markers: 1,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
+                novel_application_blocks: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -11617,6 +11804,7 @@ mod tests {
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 1,
+                novel_application_blocks: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -11626,6 +11814,7 @@ mod tests {
                 novel_markers: 0,
                 novel_instructions: 1,
                 novel_checkpoint_pcs: 0,
+                novel_application_blocks: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -11674,6 +11863,78 @@ mod tests {
                 "api:0x9000".to_owned(),
                 "auditor:0x8000".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn application_coverage_records_are_strict_deduplicated_and_service_scoped() {
+        let digest = "0123456789abcdef".repeat(4);
+        let record = format!("THES:COV:v1:worker:parser:{digest}:0x42\n");
+        let serial = BTreeMap::from([
+            (
+                "api".to_owned(),
+                format!("noise\n{record}{record}").into_bytes(),
+            ),
+            (
+                "worker".to_owned(),
+                format!("THES:COV:v1:worker:parser:{}:0x42\n", digest.to_uppercase()).into_bytes(),
+            ),
+        ]);
+        let blocks = campaign_application_blocks_from_serial(&serial);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks["api"].len(), 1);
+        assert_eq!(blocks["api"][0].process, "worker");
+        assert_eq!(blocks["api"][0].module, "parser");
+        assert_eq!(blocks["api"][0].build_sha256, digest);
+        assert_eq!(blocks["api"][0].offset, "0x42");
+        assert_eq!(campaign_application_block_ids(&blocks).len(), 1);
+    }
+
+    #[test]
+    fn application_block_guidance_extends_the_instrumented_prefix() {
+        let schedules = vec![
+            CampaignSchedule {
+                operations: vec![choice(0), choice(2)],
+                faults: Vec::new(),
+            },
+            CampaignSchedule {
+                operations: vec![choice(1), choice(2)],
+                faults: Vec::new(),
+            },
+        ];
+        let observations = vec![
+            CampaignGuidanceObservation {
+                operations: vec![choice(0)],
+                novel_markers: 0,
+                novel_instructions: 0,
+                novel_checkpoint_pcs: 0,
+                novel_application_blocks: 0,
+                novel_state: false,
+                failed: false,
+                property_witnesses: Vec::new(),
+            },
+            CampaignGuidanceObservation {
+                operations: vec![choice(1)],
+                novel_markers: 0,
+                novel_instructions: 0,
+                novel_checkpoint_pcs: 0,
+                novel_application_blocks: 2,
+                novel_state: false,
+                failed: false,
+                property_witnesses: Vec::new(),
+            },
+        ];
+        let (selected, reason) = select_campaign_schedule(
+            &schedules,
+            &[0, 1],
+            &observations,
+            CampaignGuidance::Coverage,
+            CampaignCoverage::ApplicationBlocks,
+        );
+        assert_eq!(selected, 1);
+        assert_eq!(
+            reason,
+            "extends 1-operation prefix with 2 new application block(s)"
         );
     }
 
@@ -11805,6 +12066,7 @@ mod tests {
                 novel_markers: 2,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
+                novel_application_blocks: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -11814,6 +12076,7 @@ mod tests {
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
+                novel_application_blocks: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -11823,6 +12086,7 @@ mod tests {
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
+                novel_application_blocks: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -11862,6 +12126,7 @@ mod tests {
                 novel_markers: 1,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
+                novel_application_blocks: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -11871,6 +12136,7 @@ mod tests {
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
+                novel_application_blocks: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -11920,6 +12186,7 @@ mod tests {
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
+                novel_application_blocks: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: vec!["stale_read_is_reachable".to_owned()],
@@ -11929,6 +12196,7 @@ mod tests {
                 novel_markers: 0,
                 novel_instructions: 0,
                 novel_checkpoint_pcs: 0,
+                novel_application_blocks: 0,
                 novel_state: false,
                 failed: false,
                 property_witnesses: Vec::new(),
@@ -12024,6 +12292,7 @@ mod tests {
             actions: Vec::new(),
             round: 0,
             markers: vec!["booted".to_owned(), "ready".to_owned()],
+            application_blocks: BTreeMap::new(),
             program_counters: BTreeMap::from([
                 ("api".to_owned(), vec!["0x1000".to_owned()]),
                 ("worker".to_owned(), vec!["0x2000".to_owned()]),
@@ -12052,6 +12321,7 @@ mod tests {
                 "ready".to_owned(),
                 "written".to_owned(),
             ],
+            application_blocks: BTreeMap::new(),
             program_counters: BTreeMap::from([
                 ("api".to_owned(), vec!["0x1000".to_owned()]),
                 ("worker".to_owned(), vec!["0x2004".to_owned()]),
@@ -12136,6 +12406,7 @@ mod tests {
             actions: Vec::new(),
             round: 0,
             markers: Vec::new(),
+            application_blocks: BTreeMap::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
             serial_contents: BTreeMap::from([
@@ -12151,6 +12422,7 @@ mod tests {
             actions: Vec::new(),
             round: 1,
             markers: Vec::new(),
+            application_blocks: BTreeMap::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
             serial_contents: BTreeMap::from([
@@ -12197,6 +12469,7 @@ mod tests {
             actions: Vec::new(),
             round: 0,
             markers: Vec::new(),
+            application_blocks: BTreeMap::new(),
             program_counters: BTreeMap::new(),
             serial_sha256: BTreeMap::new(),
             serial_contents: BTreeMap::new(),
@@ -12299,6 +12572,8 @@ mod tests {
                 changed_serial: vec!["api".to_owned()],
                 program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
                 instruction_locations: BTreeMap::new(),
+                application_blocks: BTreeMap::new(),
+                new_application_blocks: Vec::new(),
                 serial_sha256: BTreeMap::from([("api".to_owned(), "serial".to_owned())]),
                 serial_delta: BTreeMap::new(),
                 network_traffic_delta: BTreeMap::new(),
@@ -12322,6 +12597,8 @@ mod tests {
             )]),
             instruction_novelty: Vec::new(),
             checkpoint_pc_novelty: Vec::new(),
+            application_blocks: BTreeMap::new(),
+            application_block_novelty: Vec::new(),
             state_sha256: "state".to_owned(),
             state_novel: true,
             status: "passed",
@@ -12341,6 +12618,8 @@ mod tests {
             instruction_locations: actual.instruction_locations.clone(),
             instruction_novelty: actual.instruction_novelty.clone(),
             checkpoint_pc_novelty: actual.checkpoint_pc_novelty.clone(),
+            application_blocks: actual.application_blocks.clone(),
+            application_block_novelty: actual.application_block_novelty.clone(),
             novelty: actual.novelty.clone(),
             state_sha256: actual.state_sha256.clone(),
             state_novel: true,
@@ -12427,6 +12706,7 @@ mod tests {
             novel_markers: 1,
             novel_instructions: 0,
             novel_checkpoint_pcs: 0,
+            novel_application_blocks: 0,
             novel_state: false,
             failed: false,
             property_witnesses: Vec::new(),
