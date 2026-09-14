@@ -194,6 +194,8 @@ struct CampaignOperation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     thread_schedule_exploration: Option<CampaignThreadScheduleExploration>,
     #[serde(default)]
+    choice_bounds: BTreeMap<String, u16>,
+    #[serde(default)]
     input_grammar: Option<CampaignOperationInputGrammar>,
     #[serde(default)]
     inputs: Vec<CampaignOperationInput>,
@@ -243,6 +245,8 @@ struct CampaignOperationInputGrammar {
 #[derive(Clone, Deserialize, Serialize)]
 struct CampaignOperationInput {
     name: String,
+    #[serde(default)]
+    choices: BTreeMap<String, u16>,
     #[serde(default)]
     thread_schedule: Vec<u8>,
     #[serde(default)]
@@ -313,6 +317,8 @@ struct ServiceResult {
 #[derive(Deserialize)]
 struct CampaignResult {
     format: String,
+    #[serde(default)]
+    decision_trace_format: String,
     status: String,
     driver: String,
     #[serde(default)]
@@ -340,6 +346,8 @@ struct CampaignResult {
     #[serde(default)]
     thread_synchronization_events: usize,
     #[serde(default)]
+    structured_choice_decisions: usize,
+    #[serde(default)]
     search: Option<CampaignSearchEvidence>,
     #[serde(default)]
     replay_verification: Option<ReplayVerification>,
@@ -353,6 +361,8 @@ struct CampaignResult {
 struct CampaignRun {
     index: usize,
     operations: Vec<String>,
+    #[serde(default)]
+    decision_trace: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     thread_schedule_prefixes: Vec<Vec<u8>>,
     #[serde(default)]
@@ -387,6 +397,8 @@ struct CampaignRun {
     thread_scheduling: BTreeMap<String, Vec<ThreadSchedulingDecision>>,
     #[serde(default)]
     thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
+    #[serde(default)]
+    structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
     #[serde(default)]
     state_novel: bool,
     status: String,
@@ -495,6 +507,10 @@ struct CampaignTimelineBoundary {
     #[serde(default)]
     new_thread_synchronization_events: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
     #[serde(default)]
+    structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
+    #[serde(default)]
+    new_structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
+    #[serde(default)]
     serial_sha256: BTreeMap<String, String>,
     #[serde(default)]
     serial_delta: BTreeMap<String, CampaignSerialDelta>,
@@ -514,6 +530,14 @@ struct ApplicationBlock {
     module: String,
     build_sha256: String,
     offset: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct StructuredChoiceDecision {
+    ordinal: u64,
+    name: String,
+    upper_exclusive: u16,
+    selected: u16,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -993,6 +1017,14 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
             result.format
         )));
     }
+    if !result.decision_trace_format.is_empty()
+        && result.decision_trace_format != "theseus-campaign-decision-trace-v1"
+    {
+        return Err(ReportError::Invalid(format!(
+            "unsupported campaign decision trace format {:?}",
+            result.decision_trace_format
+        )));
+    }
     let checks = result
         .properties
         .iter()
@@ -1012,6 +1044,7 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         "adaptive" => "adaptive coverage and observed action-yield guidance",
         "posterior" => "posterior coverage and action-yield guidance",
         "property" => "declared-property and coverage guidance",
+        "unified" => "unified decision-prefix guidance",
         _ => "marker, instruction-location, and topology-state coverage",
     };
     let coverage_signal = match result.coverage.as_str() {
@@ -1057,11 +1090,12 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         coverage: Some(Coverage {
             label: "Campaign corpus".to_owned(),
             summary: format!(
-                "{} of {} deterministic candidates selected by {guidance} using {coverage_signal}; {} marker-guard leaves and {} serial-guard leaves skipped; {} thread-scheduling decisions and {} synchronization events retained; {} unique application blocks; {} unique instruction locations; {} unique topology states; {} root captures, {} reusable checkpoint nodes, {} prefix captures, {} prefix reuses ({} avoided recomputations), {} topology restores ({} prefix materializations + {} leaf replays); {} retained immutable bytes, {} logical COW-mapped restore bytes, {} dirty pages at capture barriers, {} snapshot-file bytes{}",
+                "{} of {} deterministic candidates selected by {guidance} using {coverage_signal}; {} marker-guard leaves and {} serial-guard leaves skipped; {} structured choices, {} thread-scheduling decisions, and {} synchronization events retained; {} unique application blocks; {} unique instruction locations; {} unique topology states; {} root captures, {} reusable checkpoint nodes, {} prefix captures, {} prefix reuses ({} avoided recomputations), {} topology restores ({} prefix materializations + {} leaf replays); {} retained immutable bytes, {} logical COW-mapped restore bytes, {} dirty pages at capture barriers, {} snapshot-file bytes{}",
                 result.runs.len(),
                 result.generated_candidates,
                 result.marker_guard_rejections,
                 result.serial_guard_rejections,
+                result.structured_choice_decisions,
                 result.thread_scheduling_decisions,
                 result.thread_synchronization_events,
                 result.unique_application_blocks,
@@ -1207,8 +1241,11 @@ if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const 
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
 if(Object.keys(m.campaign_state).length){{const s=section('Campaign state machine');s.append(el('pre',JSON.stringify(m.campaign_state)));const rows=[];m.campaign_operations.forEach(o=>{{if(Object.keys(o.requires_state).length||Object.keys(o.sets_state).length)rows.push([o.name,JSON.stringify(o.requires_state),JSON.stringify(o.sets_state)]);o.inputs.forEach(i=>{{if(Object.keys(i.requires_state).length||Object.keys(i.sets_state).length)rows.push([o.name+'['+i.name+']',JSON.stringify(i.requires_state),JSON.stringify(i.sets_state)]);}});}});if(rows.length)s.append(table(rows,['Transition','Requires state','Sets state']));}}
 if(m.campaign_operations.length){{const predicate=p=>p?JSON.stringify(p):'none',predicates=ps=>ps.length?JSON.stringify(ps):'none',ref=r=>r.operation+(r.input?'['+r.input+']':''),capture=(n,c)=>n+'@'+(c.service||'driver')+':'+c.pointer+' · '+JSON.stringify(c.json||c.workflow||{{sequence:c.sequence}})+' ('+(c.encoding||'text')+', '+(c.select||'latest')+')',input=i=>{{const rules=i.requires.length||i.excludes.length||i.max_uses!==null?' ('+[i.requires.length?'after '+i.requires.map(ref).join(' + '):'',i.excludes.length?'without '+i.excludes.map(ref).join(' + '):'',i.max_uses===null?'':'at most '+i.max_uses].filter(Boolean).join('; ')+')':'';const captures=i.input_template?' ← '+i.input_template+' · '+Object.entries(i.input_captures).map(([n,c])=>capture(n,c)).join(', '):'',schedule=i.thread_schedule.length?' · schedule '+i.thread_schedule.join(','):'';return i.name+schedule+rules+captures}},grammar=o=>o.input_grammar?(o.input_grammar.name_template+' ← '+o.input_grammar.template+' · '+Object.entries(o.input_grammar.choices).map(([v,c])=>v+'='+Object.keys(c).join('/')).join(', ')+(Object.keys(o.input_grammar.input_captures).length?' · '+Object.entries(o.input_grammar.input_captures).map(([n,c])=>capture(n,c)).join(', '):'')):'literal cases',threadSchedule=o=>o.thread_schedule_exploration?o.thread_schedule_exploration.strategy+': at most '+o.thread_schedule_exploration.max_choices+' choices and '+o.thread_schedule_exploration.max_variants+' variants':o.thread_schedule_search?'search '+o.thread_schedule_search.generated_schedules+' pattern(s): threads '+o.thread_schedule_search.threads.join(',')+', period '+o.thread_schedule_search.period+', at most '+o.thread_schedule_search.max_switches+' switch(es)':o.thread_schedule.join(',')||'none',inputCases=o=>o.thread_schedule_search?o.thread_schedule_search.generated_schedules+' locked schedule cases':o.inputs.map(input).join(' + ')||'default',s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,o.shell_phase||'input',o.shell_process||'none',threadSchedule(o),grammar(o),inputCases(o),o.stage||'any',o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',predicate(o.requires_serial),predicate(o.excludes_serial),predicates(o.requires_serial_all),predicates(o.excludes_serial_any),predicates(o.requires_serial_joins),predicates(o.excludes_serial_joins),predicate(o.requires_serial_evidence),predicate(o.excludes_serial_evidence),o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Command phase','Process','Thread schedule','Input grammar','Input cases','Stage','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Requires serial predicate','Excludes serial predicate','Requires all serial guards','Excludes any serial guard','Requires JSON joins','Excludes JSON joins','Requires serial evidence','Excludes serial evidence','Maximum uses']));}}
+if(m.campaign_operations.some(o=>Object.keys(o.choice_bounds||{{}}).length)){{const rows=m.campaign_operations.filter(o=>Object.keys(o.choice_bounds||{{}}).length).map(o=>[o.name,Object.entries(o.choice_bounds).map(([name,bound])=>name+': 0..'+(bound-1)).join(', '),String(o.inputs.length)]),s=section('Structured choice model');s.append(table(rows,['Operation','Bounds','Locked input cases']));}}
 if(m.campaign_operations.some(o=>o.service)){{const s=section('Operation targets');s.append(el('p','Each operation sends its UART input to this service. Operations without a target in older bundles use the designated campaign driver.'));s.append(table(m.campaign_operations.filter(o=>o.service).map(o=>[o.name,o.service]),['Operation','Service']));}}
 if(m.campaign_runs.length){{const location=l=>{{if(typeof l==='string')return l;const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},locations=r=>Object.entries(r.program_counters).map(([service,pcs])=>service+': '+((r.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',applicationBlocks=r=>r.application_block_novelty.join(' ')||'none',scheduling=r=>Object.values(r.thread_scheduling).reduce((n,v)=>n+v.length,0),prefixes=r=>r.thread_schedule_prefixes.filter(p=>p.length).map(p=>p.join(',')).join(' → ')||'default',ledger=r=>r.guidance_ledger&&r.guidance_ledger.sha256?r.guidance_ledger.observations+' observations · '+r.guidance_ledger.sha256:'unrecorded (legacy)',posterior=r=>{{const p=r.guidance_evidence;return p.scope+' · '+p.successes+' yield(s), '+p.misses+' miss(es) · mean '+p.mean_per_mille+'‰ + '+p.uncertainty_per_mille+'‰'}},hasPosterior=m.campaign_runs.some(r=>r.guidance_evidence),rows=m.campaign_runs.map(r=>{{const row=[String(r.index),r.operations.join(' → ')||'none',prefixes(r),(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',ledger(r)];if(hasPosterior)row.push(posterior(r));row.push(r.state_novel?'new':'seen',locations(r),applicationBlocks(r),String(scheduling(r)),r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none');return row}}),heads=['Run','Operations','Runnable prefix','Candidates','Selection','Guidance ledger'];if(hasPosterior)heads.push('Posterior evidence');heads.push('Topology state','Instruction locations','New application blocks','Scheduling decisions','Applied actions','Status','New markers');const s=section('Generated timelines');s.append(table(rows,heads));}}
+if(m.campaign_runs.some(r=>r.decision_trace.length)){{const rows=m.campaign_runs.filter(r=>r.decision_trace.length).map(r=>[String(r.index),r.decision_trace.join(' → ')]),s=section('Decision traces');s.append(table(rows,['Run','Replay-checked decisions']));}}
+if(m.campaign_runs.some(r=>Object.keys(r.structured_choices||{{}}).length)){{const rows=m.campaign_runs.flatMap(r=>Object.entries(r.structured_choices||{{}}).flatMap(([service,cs])=>cs.map(c=>[String(r.index),service,String(c.ordinal),c.name,String(c.selected),String(c.upper_exclusive)]))),s=section('Structured choices');s.append(table(rows,['Run','Service','Ordinal','Name','Selected','Exclusive bound']));}}
 if(m.campaign_runs.some(r=>r.property_witnesses.length)){{const rows=m.campaign_runs.filter(r=>r.property_witnesses.length).map(r=>[String(r.index),r.operations.join(' → ')||'none',r.property_witnesses.join(', ')]),s=section('Property witnesses');s.append(el('p','These declared properties produced useful evidence in this timeline. A reachable or sometimes match is a witness; an always or unreachable witness is a counterexample.'));s.append(table(rows,['Run','Operations','Property witnesses']));}}
 if(m.campaign_runs.some(r=>r.timeline.length)){{
 const location=l=>{{const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},
@@ -1613,6 +1650,27 @@ fn campaign_thread_scheduling_label(
     }
 }
 
+fn campaign_structured_choice_label(
+    choices: &BTreeMap<String, Vec<StructuredChoiceDecision>>,
+) -> String {
+    let labels = choices
+        .iter()
+        .flat_map(|(service, choices)| {
+            choices.iter().map(move |choice| {
+                format!(
+                    "{service}: #{} {}={}/{}",
+                    choice.ordinal, choice.name, choice.selected, choice.upper_exclusive
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    if labels.is_empty() {
+        "none".to_owned()
+    } else {
+        labels.join(" · ")
+    }
+}
+
 fn campaign_thread_execution_label(boundary: &CampaignTimelineBoundary) -> String {
     let scheduling = campaign_thread_scheduling_label(&boundary.new_thread_scheduling_decisions);
     let synchronization = boundary
@@ -1665,6 +1723,19 @@ fn campaign_property_witness_label(run: &CampaignRun) -> String {
         "none".to_owned()
     } else {
         run.property_witnesses.join(", ")
+    }
+}
+
+fn campaign_operation_choice_bounds(operation: &CampaignOperation) -> String {
+    if operation.choice_bounds.is_empty() {
+        "none".to_owned()
+    } else {
+        operation
+            .choice_bounds
+            .iter()
+            .map(|(name, bound)| format!("{name}: 0..{}", bound.saturating_sub(1)))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -1751,16 +1822,17 @@ fn render_markdown(model: &ReportModel) -> String {
         .any(|operation| operation.shell_phase.is_some())
     {
         output.push_str(
-            "\n## Command lifecycle\n\n| Operation | Phase | Process | Thread schedule |\n| --- | --- | --- | --- |\n",
+            "\n## Command lifecycle\n\n| Operation | Phase | Process | Thread schedule | Structured choices |\n| --- | --- | --- | --- | --- |\n",
         );
         for operation in &model.campaign_operations {
             if let Some(phase) = &operation.shell_phase {
                 output.push_str(&format!(
-                    "| {} | {} | {} | {} |\n",
+                    "| {} | {} | {} | {} | {} |\n",
                     markdown_cell(&operation.name),
                     markdown_cell(phase),
                     markdown_cell(operation.shell_process.as_deref().unwrap_or("none")),
                     markdown_cell(&operation_thread_schedule(operation)),
+                    markdown_cell(&campaign_operation_choice_bounds(operation)),
                 ));
             }
         }
@@ -1783,7 +1855,7 @@ fn render_markdown(model: &ReportModel) -> String {
             output.push_str(" | Property witnesses");
         }
         output.push_str(
-            " | Instruction locations | New application blocks | Scheduling decisions | Synchronization events | Status |\n| --- | --- | --- | ---",
+            " | Decision trace | Structured choices | Instruction locations | New application blocks | Scheduling decisions | Synchronization events | Status |\n| --- | --- | --- | ---",
         );
         if has_posterior {
             output.push_str(" | ---");
@@ -1791,7 +1863,7 @@ fn render_markdown(model: &ReportModel) -> String {
         if has_property_witnesses {
             output.push_str(" | ---");
         }
-        output.push_str(" | --- | --- | --- | --- | --- |\n");
+        output.push_str(" | --- | --- | --- | --- | --- | --- | --- |\n");
         for run in &model.campaign_runs {
             let candidates = if run.faults.is_empty() {
                 run.fault.clone().unwrap_or_else(|| "none".to_owned())
@@ -1818,7 +1890,9 @@ fn render_markdown(model: &ReportModel) -> String {
                 ));
             }
             output.push_str(&format!(
-                " | {} | {} | {} | {} | {} |\n",
+                " | {} | {} | {} | {} | {} | {} | {} |\n",
+                markdown_cell(&run.decision_trace.join(" → ")),
+                markdown_cell(&campaign_structured_choice_label(&run.structured_choices)),
                 markdown_cell(&campaign_instruction_location_labels(run)),
                 markdown_cell(&campaign_application_block_labels(run)),
                 run.thread_scheduling.values().map(Vec::len).sum::<usize>(),
@@ -2224,8 +2298,9 @@ mod tests {
         );
 
         let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
-        assert!(markdown
-            .contains("1 thread-scheduling decisions and 0 synchronization events retained"));
+        assert!(markdown.contains(
+            "0 structured choices, 1 thread-scheduling decisions, and 0 synchronization events retained"
+        ));
         assert!(markdown.contains("Scheduling decisions"));
         assert!(markdown.contains("#4 t1 -> t2 among 0x00000006 @0x42"));
         assert!(markdown.contains("| 0 | deposit | 0,1,2 |"));
@@ -2253,7 +2328,9 @@ mod tests {
         );
 
         let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
-        assert!(markdown.contains("0 thread-scheduling decisions and 1 synchronization events"));
+        assert!(markdown.contains(
+            "0 structured choices, 0 thread-scheduling decisions, and 1 synchronization events"
+        ));
         assert!(markdown.contains("synchronization events: 1"));
         assert!(markdown.contains("sync #4 t2 signal condition-1 -> t1"));
         assert!(markdown.contains("Synchronization events"));
@@ -2261,6 +2338,32 @@ mod tests {
         let html = fs::read_to_string(index).unwrap();
         assert!(html.contains("Thread synchronization"));
         assert!(html.contains("object_kind"));
+    }
+
+    #[test]
+    fn renders_structured_choices_and_the_decision_trace() {
+        let directory = tempfile::tempdir().unwrap();
+        write_json(
+            &directory.path().join("replay-plan.json"),
+            r#"{"format":"theseus-compose-plan-v1","campaign":{"operations":[{"name":"calculate"}]}}"#,
+        );
+        write_json(
+            &directory.path().join("campaign-result.json"),
+            r#"{"format":"theseus-compose-campaign-result-v1","decision_trace_format":"theseus-campaign-decision-trace-v1","status":"failed","driver":"chooser","guidance":"unified","structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"decision_trace":["boundary:0:operation:calculate[mode-1]","boundary:0:choice:chooser:mode:1/2"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]}}]}"#,
+        );
+
+        let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
+        assert!(markdown.contains("1 structured choices"));
+        assert!(markdown.contains("unified decision-prefix guidance"));
+        assert!(markdown.contains("Decision trace"));
+        assert!(markdown.contains("Structured choices"));
+        assert!(markdown.contains("chooser: #0 mode=1/2"));
+        assert!(markdown.contains("boundary:0:choice:chooser:mode:1/2"));
+        let index = report(directory.path(), directory.path().join("report")).unwrap();
+        let html = fs::read_to_string(index).unwrap();
+        assert!(html.contains("Decision traces"));
+        assert!(html.contains("Structured choices"));
+        assert!(html.contains("Exclusive bound"));
     }
 
     #[test]

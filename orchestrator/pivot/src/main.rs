@@ -802,6 +802,7 @@ const SHELL_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 const APPLICATION_COVERAGE_PREFIX: &[u8] = b"THES:COV:v1:";
 const THREAD_SCHEDULE_PREFIX: &[u8] = b"THES:SCHED:v1:";
 const THREAD_SCHEDULE_ERROR_PREFIX: &[u8] = b"THES:SCHED:ERROR:";
+const STRUCTURED_CHOICE_PREFIX: &[u8] = b"THES:CHOICE:";
 
 struct ShellOperationResult {
     output_json: Option<serde_json::Value>,
@@ -918,9 +919,9 @@ fn finish_shell_operation(
 }
 
 /// Instrumented commands write records on stderr, which shares the operation
-/// capture pipe. Forward supported coverage and thread-scheduling records to
-/// the guest console and keep them out of an optional JSON result. Other
-/// command output remains private to the operation contract.
+/// capture pipe. Forward supported coverage, scheduling, and structured-choice
+/// records to the guest console and keep them out of an optional JSON result.
+/// Other command output remains private to the operation contract.
 fn forward_instrumentation_records(output: &[u8]) -> Vec<u8> {
     let mut application = Vec::with_capacity(output.len());
     for line in output.split_inclusive(|byte| *byte == b'\n') {
@@ -932,6 +933,7 @@ fn forward_instrumentation_records(output: &[u8]) -> Vec<u8> {
         if record.starts_with(APPLICATION_COVERAGE_PREFIX)
             || record.starts_with(THREAD_SCHEDULE_PREFIX)
             || record.starts_with(THREAD_SCHEDULE_ERROR_PREFIX)
+            || record.starts_with(STRUCTURED_CHOICE_PREFIX)
         {
             if let Ok(record) = std::str::from_utf8(record) {
                 println!("{record}");
@@ -1439,6 +1441,15 @@ mod tests {
         assert_eq!(
             forward_instrumentation_records(output),
             b"{\"balance\":22}\n"
+        );
+    }
+
+    #[test]
+    fn separates_structured_choice_records_from_command_json() {
+        let output = b"THES:CHOICE:retry:3:2\n{\"status\":\"failed\"}\n";
+        assert_eq!(
+            forward_instrumentation_records(output),
+            b"{\"status\":\"failed\"}\n"
         );
     }
 

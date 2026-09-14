@@ -257,6 +257,7 @@ impl Bus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::format;
 
     struct DummyDevice;
     impl BusDevice for DummyDevice {}

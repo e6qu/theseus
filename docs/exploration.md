@@ -114,6 +114,34 @@ captured timeline, not merely the root. A failed result names the first seed
 paths that violated it. The bundle records each timeline's serial console as
 `serial/<seed>.log`, and the static report shows those logs.
 
+## Structured choices and unified guidance
+
+Declare bounded choices on a Compose shell operation:
+
+```yaml
+guidance: unified
+operations:
+  - name: calculate
+    shell:
+      command: [/usr/local/bin/chooser]
+      choices: {mode: 2, retry: 3}
+```
+
+Planning expands the finite product into locked input cases and sets
+`THESEUS_CHOICES` to comma-separated `name=value` assignments. Consume a value
+at the decision point and emit `THES:CHOICE:<name>:<upper-bound>:<value>`
+immediately before using it. The Linux SDK's `TtyChannel::choice` implements
+the same protocol, but any language can emit the line directly.
+
+The `unified` policy is the default for newly planned Compose campaigns. It
+ranks a common decision-prefix tree using application and VM coverage,
+property witnesses, topology novelty, structured-choice novelty, runnable-set
+decisions, failures, and an exploration bonus. Each run retains a canonical
+decision trace covering operation input, observed choices, thread selections,
+and applied actions. Replay checks that trace and the typed evidence. This is a
+bounded campaign decision plane; it does not yet control arbitrary Linux
+process, futex, syscall, timer, or interrupt scheduling.
+
 ## Reproduce one timeline
 
 Every timeline in a static exploration report includes a copyable command for

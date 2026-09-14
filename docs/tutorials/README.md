@@ -4,7 +4,7 @@ Each directory is complete: make it your working directory and use the
 published Theseus artifact named in its README. No tutorial needs a Theseus
 source checkout.
 
-Tutorials 1–8, 10–11, and 14–35 need Linux with KVM and Docker. Tutorials 9,
+Tutorials 1–8, 10–11, and 14–36 need Linux with KVM and Docker. Tutorials 9,
 12, and 13 read recorded bundles with only the published binary. Tutorials 1
 and 2 currently use the arm64 runtime, because that is where the matching
 deterministic-CRNG kernel module is shipped.
@@ -86,6 +86,9 @@ deterministic-CRNG kernel module is shipped.
 35. [Control pthread synchronization](35-control-pthread-synchronization/) —
     schedule mutex and condition-variable waits, retain their stable events,
     and replay them without the guest SDK.
+36. [Explore structured choices](36-structured-choices/) — give a plain C
+    command bounded choices, find a failing combination with unified guidance,
+    and replay the exact decision trace without the guest SDK.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

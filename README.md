@@ -85,6 +85,8 @@ examples:
     declaring candidate patterns in advance.
 12. Control pthread mutex and condition-variable blocking and retain each
     synchronization transition with stable object identities.
+13. Give a plain C command bounded choices, search their combinations with
+    unified feedback, and replay the exact choice records.
 
 Each tutorial directory is its own working directory and complete input
 context. Runnable tutorials use published Theseus images or binaries, not a

@@ -60,6 +60,8 @@ struct Run {
     #[serde(default)]
     operations: Vec<String>,
     #[serde(default)]
+    decision_trace: Vec<String>,
+    #[serde(default)]
     thread_schedule_prefixes: Vec<Vec<u8>>,
     #[serde(default)]
     faults: Vec<String>,
@@ -83,6 +85,8 @@ struct Run {
     thread_scheduling: Coverage,
     #[serde(default)]
     thread_synchronization: Coverage,
+    #[serde(default)]
+    structured_choices: Coverage,
     #[serde(default)]
     state_sha256: String,
     #[serde(default)]
@@ -114,6 +118,8 @@ struct Boundary {
     thread_scheduling: Coverage,
     #[serde(default)]
     thread_synchronization: Coverage,
+    #[serde(default)]
+    structured_choices: Coverage,
 }
 
 #[derive(Serialize)]
@@ -330,6 +336,15 @@ pub fn compare_campaigns(
                         ),
                     });
                 }
+                if left.structured_choices != right.structured_choices {
+                    return Some(CampaignDivergence {
+                        run,
+                        boundary: Some(boundary),
+                        reason: "first structured choice differs".to_owned(),
+                        left: json_summary(&left.structured_choices),
+                        right: json_summary(&right.structured_choices),
+                    });
+                }
                 if left.thread_scheduling != right.thread_scheduling {
                     return Some(CampaignDivergence {
                         run,
@@ -369,6 +384,15 @@ pub fn compare_campaigns(
                     right: format!("{:?}", right.property_witnesses),
                 });
             }
+            if left.structured_choices != right.structured_choices {
+                return Some(CampaignDivergence {
+                    run,
+                    boundary: None,
+                    reason: "structured choices differ".to_owned(),
+                    left: json_summary(&left.structured_choices),
+                    right: json_summary(&right.structured_choices),
+                });
+            }
             if left.thread_scheduling != right.thread_scheduling {
                 return Some(CampaignDivergence {
                     run,
@@ -400,6 +424,17 @@ pub fn compare_campaigns(
                     reason: "accumulated campaign coverage differs".to_owned(),
                     left: coverage_summary(left),
                     right: coverage_summary(right),
+                });
+            }
+            if (!left.decision_trace.is_empty() || !right.decision_trace.is_empty())
+                && left.decision_trace != right.decision_trace
+            {
+                return Some(CampaignDivergence {
+                    run,
+                    boundary: None,
+                    reason: "decision trace differs".to_owned(),
+                    left: format!("{:?}", left.decision_trace),
+                    right: format!("{:?}", right.decision_trace),
                 });
             }
             None
@@ -568,6 +603,19 @@ mod tests {
             divergence.reason,
             "first thread-scheduling decision differs"
         );
+    }
+
+    #[test]
+    fn reports_the_first_changed_structured_choice() {
+        let runs = r#"[{"index":0,"operations":["calculate"],"state_sha256":"same","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"timeline":[{"operation":"calculate","service":"chooser","state_sha256":"same","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]}}]}]"#;
+        let changed = runs.replace("\"selected\":1", "\"selected\":0");
+        let (left, right) = write_pair(&result(runs, "[]"), &result(&changed, "[]"));
+        let divergence = compare_campaigns(left.path(), right.path())
+            .unwrap()
+            .divergence
+            .unwrap();
+        assert_eq!(divergence.boundary, Some(0));
+        assert_eq!(divergence.reason, "first structured choice differs");
     }
 
     #[test]

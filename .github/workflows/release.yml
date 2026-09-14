@@ -128,7 +128,9 @@ jobs:
           chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/pivot"
           (
             cd "theseus-${TAG}-linux-${{ matrix.arch }}"
-            sha256sum ./* > SHA256SUMS
+            find . -type f ! -name SHA256SUMS -print0 |
+              sort -z |
+              xargs -0 sha256sum > SHA256SUMS
           )
           python3 scripts/reproducible_tar.py \
             --mtime "${{ steps.source-date.outputs.value }}" \
@@ -307,7 +309,9 @@ jobs:
         run: |
           (
             cd release
-            sha256sum ./* > SHA256SUMS
+            find . -type f ! -name SHA256SUMS -print0 |
+              sort -z |
+              xargs -0 sha256sum > SHA256SUMS
           )
 
       - name: Attest every release asset
@@ -548,12 +552,17 @@ jobs:
           edition = "2021"
 
           [dependencies]
-          theseus-sdk = { path = "../sdk" }
+          theseus-sdk = { path = "../sdk", features = ["std"] }
           EOF
           cat > "$consumer/app/src/main.rs" <<'EOF'
           fn main() {
               assert_eq!(theseus_sdk::MAGIC, u32::from_le_bytes(*b"THES"));
               assert_eq!(theseus_sdk::EVENT_TERMINATOR, 0);
+              let _choice: fn(
+                  &mut theseus_sdk::linux::TtyChannel,
+                  &str,
+                  u16,
+              ) -> std::io::Result<u16> = theseus_sdk::linux::TtyChannel::choice;
           }
           EOF
           cargo run --manifest-path "$consumer/app/Cargo.toml" --quiet

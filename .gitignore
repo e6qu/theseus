@@ -18,6 +18,9 @@ e2e/*.cpio.gz
 # macOS metadata
 .DS_Store
 
+# Python test caches
+__pycache__/
+
 # Tutorial artifacts
 docs/tutorials/01-replay-by-seed/vmlinux
 docs/tutorials/01-replay-by-seed/work/
@@ -150,5 +153,11 @@ docs/tutorials/35-control-pthread-synchronization/plan.json
 docs/tutorials/35-control-pthread-synchronization/campaign/
 docs/tutorials/35-control-pthread-synchronization/report/
 docs/tutorials/35-control-pthread-synchronization/rerun/
+docs/tutorials/36-structured-choices/service/work/
+docs/tutorials/36-structured-choices/plan.json
+docs/tutorials/36-structured-choices/campaign/
+docs/tutorials/36-structured-choices/report/
+docs/tutorials/36-structured-choices/minimized/
+docs/tutorials/36-structured-choices/rerun/
 
 orchestrator/pivot/target/
