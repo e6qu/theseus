@@ -23,6 +23,8 @@ theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
 theseus compose replay replay-dir [--output replay-dir]
+theseus compose explore [--output campaign-dir] [compose.yaml]
+theseus compose explore --minimize campaign-dir [--output minimized-dir]
 ```
 
 `validate` checks the manifest and artifacts. `test --dry-run` prints the
@@ -114,6 +116,11 @@ Campaign reports also explain paused-vCPU instruction samples from the locked
 service kernel ELF as `address → function + offset`. The address is still the
 replay identity and is used when symbols are absent, so a stripped kernel never
 changes campaign coverage or prevents replay.
+
+A Compose campaign can select `coverage: application_blocks` when its C
+commands were built with the packaged `theseus-coverage-cc` frontend. Reports
+then list service/process/module/build/block identities separately from sampled
+guest PCs, and replay checks the exact retained block set and novelty.
 
 ### Hand a failure to CI or an issue
 

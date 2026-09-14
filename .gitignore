@@ -123,5 +123,10 @@ docs/tutorials/30-multiservice-lost-update/runtime-pivot.json
 docs/tutorials/30-multiservice-lost-update/campaign/
 docs/tutorials/30-multiservice-lost-update/minimized/
 docs/tutorials/30-multiservice-lost-update/rerun/
+docs/tutorials/31-c-basic-block-coverage/service/work/
+docs/tutorials/31-c-basic-block-coverage/plan.json
+docs/tutorials/31-c-basic-block-coverage/campaign/
+docs/tutorials/31-c-basic-block-coverage/report/
+docs/tutorials/31-c-basic-block-coverage/rerun/
 
 orchestrator/pivot/target/

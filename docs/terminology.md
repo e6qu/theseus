@@ -44,6 +44,10 @@ Terms used across Theseus code and documentation. See
   guests. Compose campaigns normally use PCs sampled at deterministic handled
   exits and pause barriers; markers and final checkpoint PCs are replay-locked
   baseline signals. Neither form is application basic-block coverage.
+- **Application-block identity** — service, process, module name, build-input
+  SHA-256, and module-relative block address emitted by the packaged GCC C
+  instrumentation. It is stable across ASLR and identical rebuilds, and a
+  changed build cannot collide silently with the old module.
 
 ## Execution machinery
 

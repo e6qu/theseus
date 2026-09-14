@@ -187,3 +187,12 @@ markers, or final checkpoint PCs as replay-locked coverage baselines.
 At every campaign checkpoint, Theseus verifies that each paused vCPU PC is in
 its own accumulated sample set. This checks the fast collector's pause-barrier
 contract on real KVM without pretending it is an instruction trace.
+
+For C workloads, the packaged `theseus-coverage-cc` frontend enables GCC
+basic-block callbacks. Instrumented commands emit
+`THES:COV:v1:<process>:<module>:<build-sha256>:<module-offset>` records. Theseus
+deduplicates them per service, uses them when `coverage: application_blocks` is
+selected, records new blocks at operation boundaries, and requires the same
+sets during replay. The build digest prevents two rebuilds from being
+conflated; the module-relative offset is independent of ASLR. This bounded path
+does not provide edge coverage or instrumentation for other languages.

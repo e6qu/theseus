@@ -23,6 +23,13 @@ the host kernel, KVM API, digest-pinned runtime, and complete counterexample
 inventory, and publishes only a dual-architecture evidence set that the
 released CLI can verify offline.
 
+The packaged Linux runtime also contains a bounded GCC C instrumentation path.
+It emits versioned, build-scoped module-relative basic-block records. Campaigns
+can use those records as their primary guidance signal and retain them in
+operation boundaries, replay verification, comparisons, evaluations, and
+reports. This implementation is not yet native-runtime evidence and does not
+cover edges or other languages.
+
 The following limits define the honest baseline:
 
 - Pull-request CI runs mostly environment-independent checks on an amd64
@@ -31,8 +38,9 @@ The following limits define the honest baseline:
 - Linux CSPRNG replay requires the matching published kernel and Theseus seed
   module. Seeded virtio entropy alone does not remove stock-kernel timing mix.
 - Guest counters free-run within an exit-counted virtual-time quantum.
-- Campaign execution signals are raw vCPU PCs sampled at exits and barriers,
-  not application basic-block or edge coverage.
+- Marker and guest-PC coverage modes remain lower-fidelity baselines. Only the
+  packaged GCC C path provides application basic-block coverage; edge and
+  multi-language coverage are not implemented.
 - `compare` finds differences between retained histories. It does not perform
   counterfactual experiments and must not claim causality.
 - Branch capture copies guest RAM into a memfd. Restored children then use
@@ -100,12 +108,29 @@ Deliver this as one coherent PR, with separately reviewable commits.
 
 ## Priority 1: application basic-block coverage
 
-- Define stable process, module, and basic-block identities across ASLR and
-  rebuilds.
-- Instrument one bounded initial toolchain/language path.
-- Preserve coverage identities in campaign bundles and reports.
-- Measure runtime/storage overhead and demonstrate search improvement over
-  marker, dirty-page, and PC-sampling baselines on the same workload budget.
+Implemented in source:
+
+- Stable service/process/module/build/block identities prevent ASLR changes or
+  different rebuilds from silently conflating coverage.
+- The published-runtime build contains one bounded GCC C compiler frontend and
+  callback runtime.
+- Application blocks participate in deterministic guidance and are preserved
+  in bundles, operation boundaries, replay verification, comparison,
+  evaluation, and human-readable reports.
+- Tutorial 31 is a self-contained published-artifact path for an ordinary C
+  command without the guest SDK.
+
+Next work:
+
+- Run Tutorial 31 on native amd64 and arm64 KVM and retain the exact runtime,
+  build manifest, campaign, report, and replay evidence.
+- Measure runtime and storage overhead against the same uninstrumented C
+  workload.
+- Add a fixed-budget workload where application-block guidance reaches a
+  useful state or counterexample that marker, dirty-page, checkpoint-PC, and
+  exit-sampled PC modes miss.
+- Expand toolchain support only after the first comparison is public and
+  reproducible.
 
 Exit when a public workload produces replay-stable application coverage and a
 controlled comparison shows that it finds a counterexample or useful state

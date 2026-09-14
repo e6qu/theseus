@@ -63,6 +63,7 @@ door could leave `vmm` without creating a dependency cycle.
 | Branching | `orchestrator/branch` | In-memory (memfd) timeline forks with kernel copy-on-write. |
 | Exploration | `orchestrator/orchestrator` | Timeline tree, child spawning, parallel rendezvous explorer. |
 | Execution locations | `orchestrator/coverage` | Guest-PC collection by single-step or deterministic exit sampling. |
+| Application blocks | `instrumentation/c` + `topology-runner` | GCC C basic-block records with build-scoped, ASLR-independent identities. |
 
 ## Verification model
 
@@ -75,5 +76,6 @@ retained, verifiable assets are runtime evidence.
 
 Branch capture first copies all guest RAM into a memfd. Restored children map
 that memfd privately, so child writes use kernel copy-on-write. Single-step and
-sampled PCs identify guest instruction addresses; without application symbol
-or block instrumentation they are not application basic-block coverage.
+sampled PCs identify guest instruction addresses and remain baseline signals.
+The separate C instrumentation path records application basic blocks; it does
+not turn the PC collectors into block or edge coverage.

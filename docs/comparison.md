@@ -13,8 +13,8 @@ has no independent head-to-head evaluation with Antithesis.
 | Test interface | Test templates and SDK assertions | Compose campaigns, UART operations, serial properties, optional SDK |
 | Determinism | Custom deterministic hypervisor | KVM plus seeded devices, simulated I/O, and exit-counted virtual time |
 | Replay | Instruction-level deterministic reproduction | Locked-input replay with recorded fingerprints; mid-quantum clock caveat |
-| Search guidance | Coverage-guided autonomous exploration | Markers, topology/property evidence, dirty-page footprint, and sampled guest PCs |
-| Coverage | Application basic-block instrumentation | Raw guest-PC signals; no application basic-block instrumentation yet |
+| Search guidance | Coverage-guided autonomous exploration | C application blocks, markers, topology/property evidence, dirty-page footprint, and sampled guest PCs |
+| Coverage | Application basic-block instrumentation | GCC C basic-block instrumentation; no edge or multi-language instrumentation yet |
 | Faults | Network, process, clock, and storage faults | Simulated network/storage plus Compose lifecycle, clock, and packet actions |
 | Concurrency | Controlled thread/process scheduling | Operation-level overlap only; no general thread scheduler control yet |
 | Debugging | Time-travel and causality analysis | Static reports, replay, minimization, bundle comparison, snapshot export |
@@ -25,11 +25,12 @@ has no independent head-to-head evaluation with Antithesis.
 
 ### Application coverage
 
-Antithesis documents compiler-based basic-block instrumentation for coverage.
-Theseus currently collects guest instruction addresses by single-stepping
-small guests or sampling vCPU PCs at deterministic exits and pause barriers.
-Those addresses can guide search, but they are not application basic-block or
-edge coverage.
+Antithesis documents compiler-based basic-block instrumentation across its
+supported toolchains. Theseus now has one bounded path: the packaged GCC C
+frontend emits build-scoped, module-relative basic-block identities and the
+campaign engine retains and replays them. Other Theseus workloads still use
+markers or sampled guest PCs, and Theseus has neither edge coverage nor broad
+toolchain support. A controlled public search comparison remains pending.
 
 Reference: [Antithesis coverage instrumentation](https://antithesis.com/docs/product/writing_tests/instrumentation/coverage_instrumentation/).
 

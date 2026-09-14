@@ -19,7 +19,8 @@ a demonstration.
 | Virtual time | Implemented with a known leak | Time advances at exit-counted boundaries; counter reads within a quantum can reflect host progression. No instruction-exact claim remains. |
 | Network and storage faults | Implemented | Deterministic mode uses simulated network and memory-backed storage. Fault candidates are optional unless marked required; required actions survive minimization. Host-backed nondeterministic paths are rejected by the supported profile. Runtime proof is per retained certificate/campaign. |
 | Branch snapshots | Implemented | Capture copies all guest RAM into a memfd. Children restore with private copy-on-write mappings. The full path is not zero-copy. |
-| Campaign coverage | Implemented execution signal | Campaigns retain guest-PC samples at deterministic exits and barriers. This is not application basic-block or edge coverage. |
+| Campaign PC coverage | Implemented baseline signal | Campaigns retain guest-PC samples at deterministic exits and barriers. This is not application basic-block or edge coverage. |
+| C application coverage | Implemented, awaiting native evidence | The packaged GCC frontend emits build-scoped module-relative basic-block identities. Campaign guidance, timelines, replay, comparison, evaluation, and reports retain them. Tutorial 31 is the public runtime path; edge and other-language instrumentation remain absent. |
 | Single-step collector | Implemented reference signal | Small guests can yield an instruction-address set. MMIO limitations remain, and the set is not source-level coverage. |
 | Replay | Implemented for locked recorded fields | Replay re-executes supported bundles and compares retained fingerprints, serial output, actions, properties, and device evidence. It does not establish unrecorded state equality. |
 | Campaign comparison | Implemented offline diff | `compare` finds the first recorded difference between two bundles. “Causal divergence” was removed from CLI output, tests, and tutorials. |
@@ -27,7 +28,7 @@ a demonstration.
 | General thread scheduling | Proposed | Current campaigns overlap explicit operations but do not control arbitrary application threads/processes. |
 | Command overlap | Implemented, awaiting published runtime evidence | Named image commands can span whole-topology checkpoints and multiple simulated-network services. Launch and completion-observation order plus stable operation IDs are replay fields; this is not arbitrary thread scheduling. Tutorial 30 defines the native evidence workload; the workflow definition is not proof that it ran. |
 | Public evaluation fixture | Format example only | Tutorial 13 and the current replicated-counter material do not independently prove execution without complete replay artifacts. Hashes prove retained bytes only. |
-| Antithesis parity | Not claimed | The comparison document identifies missing application coverage, general scheduling, hosted scale, and counterfactual investigation. No performance parity claim is supported. |
+| Antithesis parity | Not claimed | The comparison document identifies narrower coverage support, missing general scheduling, hosted scale, and counterfactual investigation. No performance parity claim is supported. |
 
 ## Tutorial disposition
 
@@ -42,7 +43,7 @@ a demonstration.
   before execution.
 - Tutorials 5–13 expose build, execution, expected-failure, inspection,
   replay, and cleanup commands directly in their READMEs.
-- Container and Compose tutorials 14–30 expose host image builds, interactive
+- Container and Compose tutorials 14–31 expose host image builds, interactive
   runtime entry, locked input preparation, execution, evidence inspection,
   replay, and optional cleanup as separate steps.
 - Generated bundles remain available until the user explicitly runs cleanup.
