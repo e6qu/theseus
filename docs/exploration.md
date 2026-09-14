@@ -251,6 +251,17 @@ through Cargo's rustc-wrapper boundary, and links one runtime into the final
 PIE. Host build dependencies and proc macros remain ordinary host tools;
 `dylib` and `cdylib` targets require their own module identity.
 
+`theseus coverage go` builds one Linux Go command with CGO disabled and adds a
+first-hit callback to every block in each imported source package inside the
+main module. It works on an isolated module copy, hashes the selected dependency
+graph and module contents, and emits v1 application-block records. Unlike the C
+v1 frontend, the final field is an absolute program counter; the build is a
+fixed-address ELF, so the locked symbol file resolves it directly. External
+module packages are hashed but not instrumented. Compose accepts the Go
+manifest in the same service coverage catalog, validates the fixed executable,
+callback symbols, build identity, and debug data before boot, and joins source
+locations into the report. See Tutorial 39.
+
 ## Bounded C thread scheduling
 
 The packaged `theseus-schedule-cc` frontend compiles a GCC C pthread program

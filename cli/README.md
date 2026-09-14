@@ -119,9 +119,10 @@ replay identity and is used when symbols are absent, so a stripped kernel never
 changes campaign coverage or prevents replay.
 
 A Compose campaign can select `coverage: application_blocks` when its C
-commands were built with the packaged `theseus-coverage-cc` frontend. Reports
-then list service/process/module/build/block identities separately from sampled
-guest PCs, and replay checks the exact retained block set and novelty.
+commands were built with `theseus-coverage-cc` or its Go commands were built
+with `theseus coverage go`. Reports list service/process/module/build/block
+identities separately from sampled guest PCs, and replay checks the exact
+retained block set and novelty.
 
 Use `coverage: application_edges` for binaries built by the packaged
 `theseus-coverage-clang`, `theseus-coverage-rustc`, or `theseus coverage cargo`
@@ -163,6 +164,23 @@ directory, preserves an unstripped symbol file, and writes
 `work/api.theseus-coverage.json`. Host build scripts and proc macros are build
 inputs but are not instrumented; Rust dynamic-library targets still need
 independent module handling. See Tutorials 37 and 38.
+
+Build one Go command and every imported source package in its main module from
+an isolated source copy:
+
+```sh
+theseus coverage go \
+  --package ./cmd/api --process api --module command \
+  --symbols work/symbols --output work/api --offline
+```
+
+The command targets a fixed-address Linux ELF for amd64 or arm64, disables
+CGO, preserves an unstripped symbol file, and writes
+`work/api.theseus-coverage.json`. Each basic block emits its absolute program
+counter once. External module packages are build inputs but are not
+instrumented. Declare the manifest and symbols in the same coverage catalog;
+the runner validates the Go callback and debug data before boot and reports
+source locations. See Tutorial 39.
 
 Commands built with the packaged `theseus-schedule-cc` frontend accept a
 Compose shell operation's explicit `thread_schedule: [0, 1, 2]`. Planning

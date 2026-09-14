@@ -13,8 +13,8 @@ has no independent head-to-head evaluation with Antithesis.
 | Test interface | Test templates and SDK assertions | Compose campaigns, UART operations, serial properties, optional SDK |
 | Determinism | Custom deterministic hypervisor | KVM plus seeded devices, simulated I/O, and exit-counted virtual time |
 | Replay | Instruction-level deterministic reproduction | Locked-input replay with recorded fingerprints; mid-quantum clock caveat |
-| Search guidance | Coverage-guided autonomous exploration | One bounded decision-prefix policy combines structured choices, C application blocks, runnable selections, faults, properties, topology states, and sampled guest PCs |
-| Coverage | Application basic-block instrumentation across documented language toolchains, symbol ingestion, and report validation | GCC C blocks plus LLVM C/C++/Rust edges, locked symbol catalogs, and automatic source joins for PIE and dynamically loaded native modules; no Go/Java instrumentation yet |
+| Search guidance | Coverage-guided autonomous exploration | One bounded decision-prefix policy combines structured choices, C/Go application blocks, LLVM edges, runnable selections, faults, properties, topology states, and sampled guest PCs |
+| Coverage | Application basic-block instrumentation across documented language toolchains, symbol ingestion, and report validation | GCC C and Go blocks plus LLVM C/C++/Rust edges, locked symbol catalogs, and automatic source joins; Go is limited to imported main-module packages with CGO disabled, and Java is absent |
 | Faults | Network, process, clock, and storage faults | Simulated network/storage plus Compose lifecycle, clock, and packet actions |
 | Concurrency | Controlled thread/process scheduling | Operation overlap plus bounded GCC C pthread basic-block scheduling, runnable-set feedback, default mutexes, and untimed condition variables; no general Linux scheduler control |
 | Structured choices | SDK choices consumed at the point of use | Language-neutral bounded shell-operation choices and a Rust SDK helper, retained and replay-checked at the operation boundary |
@@ -28,17 +28,20 @@ has no independent head-to-head evaluation with Antithesis.
 
 Antithesis documents compiler-based basic-block instrumentation across C/C++,
 Rust, Go, Java, JavaScript, .NET, and other LLVM toolchains. Theseus packages a
-GCC C basic-block frontend and LLVM edge frontends for C, C++, and standalone
-Rust binaries and one Cargo binary's static Rust target dependencies. The LLVM
+GCC C basic-block frontend, a Go main-module block frontend, and LLVM edge
+frontends for C, C++, standalone Rust binaries, and one Cargo binary's static
+Rust target dependencies. The LLVM
 runtime preserves independent build-scoped identities
 for PIE executables and dynamically loaded native libraries; its inspection
 tool validates sanitizer guards and resolves retained module offsets with the
 matching symbols. Compose coverage catalogs lock manifests and symbols into
 replay bundles, revalidate them before boot, and attach functions and source
 lines to campaign reports. Campaign guidance, replay, comparison, evaluation,
-and reports retain the coverage records. Theseus does not yet support Rust
-dynamic dependency graphs or the non-LLVM language set. A controlled public
-search comparison remains pending.
+and reports retain the coverage records. The Go path uses an isolated source
+copy, instruments packages from the selected command's main module, disables
+CGO, and preserves a fixed-address Linux ELF for source joins. Theseus does not
+yet support Rust dynamic dependency graphs, Go external modules or CGO, Java,
+JavaScript, or .NET. A controlled public search comparison remains pending.
 
 Reference: [Antithesis coverage instrumentation](https://antithesis.com/docs/product/writing_tests/instrumentation/coverage_instrumentation/).
 

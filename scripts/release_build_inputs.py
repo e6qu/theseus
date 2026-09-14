@@ -22,13 +22,17 @@ def docker_inputs(dockerfile: Path) -> dict[str, object]:
     bases = re.findall(r"^FROM (\S+) AS \S+$", contents, re.MULTILINE)
     revision = re.search(r"^ARG THESEUS_KERNEL_REVISION=([0-9a-f]{40})$", contents, re.MULTILINE)
     snapshots = sorted(set(re.findall(r"https?://snapshot\.debian\.org/[A-Za-z0-9._/-]+", contents)))
-    if frontend is None or len(bases) != 2 or revision is None or len(snapshots) != 4:
+    if frontend is None or len(bases) != 3 or revision is None or len(snapshots) != 4:
         raise ValueError("Dockerfile does not declare the complete immutable runtime input set")
     if not all("@sha256:" in base for base in bases):
         raise ValueError("runtime base images must use immutable digests")
     return {
         "dockerfile_frontend": frontend.group(1),
-        "base_images": {"build": bases[0], "runtime": bases[1]},
+        "base_images": {
+            "build": bases[0],
+            "go_toolchain": bases[1],
+            "runtime": bases[2],
+        },
         "apt_snapshots": snapshots,
         "kernel_revision": revision.group(1),
     }

@@ -46,12 +46,12 @@ pushes, never on `main`). One job on pinned Ubuntu 24.04:
    `orchestrator/` (`branch::tests`, `orchestrator::tree`)
 4. The deterministic `vmm` unit suites selected by exact module paths so the
    suite stays independent of `/dev/kvm` and `/dev/net/tun`.
-5. The GCC C coverage and scheduling frontends plus LLVM C/C++/Rust edge
-   coverage, including a Cargo workspace dependency graph, stable rebuild and
-   DSO identities, locked catalog and pre-boot symbol validation, automatic
-   source joins, deterministic pthread interleavings, controlled mutex and
-   condition-variable blocking, a lost-update witness, and versioned records,
-   without starting a VM.
+5. The GCC C coverage and scheduling frontends, LLVM C/C++/Rust edge coverage,
+   and Go main-module block coverage, including Cargo and Go dependency graphs,
+   stable rebuild and DSO identities, locked catalog and pre-boot symbol
+   validation, automatic source joins, deterministic pthread interleavings,
+   controlled mutex and condition-variable blocking, a lost-update witness,
+   and versioned records, without starting a VM.
 6. Bounded thread-schedule expansion, locked schedule cases, invalid-search
    rejection, campaign selection, reporting, and tutorial structure.
 

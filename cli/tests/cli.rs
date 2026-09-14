@@ -185,6 +185,176 @@ fn cargo_coverage_instruments_a_workspace_dependency_graph() {
     assert_ne!(changed_manifest["build_sha256"], manifest["build_sha256"]);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn go_coverage_instruments_a_module_dependency_graph() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::create_dir_all(directory.path().join("cmd/classifier")).unwrap();
+    fs::create_dir_all(directory.path().join("logic")).unwrap();
+    fs::create_dir_all(directory.path().join("testonly")).unwrap();
+    fs::create_dir_all(directory.path().join("third_party/labels")).unwrap();
+    fs::write(
+        directory.path().join("go.mod"),
+        "module example.com/classifier\n\ngo 1.19\n\nrequire example.com/labels v0.0.0\n\nreplace example.com/labels => ./third_party/labels\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("cmd/classifier/main.go"),
+        r#"package main
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+
+	"example.com/classifier/logic"
+)
+
+func main() {
+	value, _ := strconv.Atoi(os.Args[1])
+	fmt.Println(logic.Classify(value))
+}
+"#,
+    )
+    .unwrap();
+    let logic = r#"package logic
+
+import "example.com/labels"
+
+func Classify(value int) string {
+	if value == 7 {
+		return labels.Seven()
+	}
+	if value%2 == 0 {
+		return "even"
+	}
+	return "odd"
+}
+"#;
+    fs::write(directory.path().join("logic/logic.go"), logic).unwrap();
+    fs::write(
+        directory.path().join("third_party/labels/go.mod"),
+        "module example.com/labels\n\ngo 1.19\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("third_party/labels/labels.go"),
+        "package labels\n\nfunc Seven() string { return \"seven\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("testonly/helper.go"),
+        "package testonly\n\nfunc Helper() {}\n",
+    )
+    .unwrap();
+
+    let build = || {
+        Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args([
+                "coverage",
+                "go",
+                "--process",
+                "classifier",
+                "--module",
+                "command",
+                "--package",
+                "./cmd/classifier",
+                "--symbols",
+                "out/symbols",
+                "--output",
+                "out/classifier",
+                "--offline",
+            ])
+            .env("GOCACHE", "/proc/theseus-go-cache-must-not-be-used")
+            .current_dir(directory.path())
+            .output()
+            .unwrap()
+    };
+    let first = build();
+    assert!(first.status.success(), "{first:?}");
+    let manifest_path = directory
+        .path()
+        .join("out/classifier.theseus-coverage.json");
+    let first_manifest = fs::read(&manifest_path).unwrap();
+    let manifest: serde_json::Value = serde_json::from_slice(&first_manifest).unwrap();
+    assert_eq!(manifest["format"], "theseus-go-coverage-build-v1");
+    assert_eq!(manifest["coverage"], "blocks");
+    assert_eq!(manifest["language"], "go");
+    assert_eq!(
+        manifest["go"]["package"],
+        "example.com/classifier/cmd/classifier"
+    );
+    assert_eq!(manifest["go"]["packages"], 3);
+    assert_eq!(manifest["go"]["instrumented_packages"], 2);
+    assert_eq!(manifest["go"]["cgo_enabled"], false);
+    assert!(manifest["maximum_blocks"].as_u64().unwrap() >= 5);
+    let external = manifest["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["import_path"] == "example.com/labels")
+        .unwrap();
+    assert_eq!(external["instrumented"], false);
+    assert_eq!(
+        fs::read_to_string(directory.path().join("logic/logic.go")).unwrap(),
+        logic
+    );
+    assert!(!fs::read_dir(directory.path()).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".theseus-go-")
+    }));
+
+    let binary = directory.path().join("out/classifier");
+    let symbols = directory
+        .path()
+        .join("out/symbols")
+        .join(manifest["symbols"].as_str().unwrap());
+    let inspector = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("instrumentation/go/theseus-coverage-inspect");
+    let mut locations = String::new();
+    for value in ["7", "2", "3"] {
+        let run = Command::new(&binary).arg(value).output().unwrap();
+        assert!(run.status.success(), "{run:?}");
+        let records = String::from_utf8(run.stderr).unwrap();
+        assert!(records.contains("THES:COV:v1:classifier:command:"));
+        for counter in records
+            .lines()
+            .filter_map(|line| line.rsplit(':').next())
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            let inspected = Command::new(&inspector)
+                .args([symbols.as_os_str(), manifest_path.as_os_str()])
+                .arg(counter)
+                .output()
+                .unwrap();
+            assert!(inspected.status.success(), "{inspected:?}");
+            locations.push_str(&String::from_utf8(inspected.stdout).unwrap());
+        }
+    }
+    assert!(locations.contains("logic/logic.go"), "{locations}");
+    assert!(locations.contains("cmd/classifier/main.go"), "{locations}");
+
+    let second = build();
+    assert!(second.status.success(), "{second:?}");
+    assert_eq!(fs::read(&manifest_path).unwrap(), first_manifest);
+
+    fs::write(
+        directory.path().join("logic/logic.go"),
+        logic.replace("return \"odd\"", "return \"other\""),
+    )
+    .unwrap();
+    let changed = build();
+    assert!(changed.status.success(), "{changed:?}");
+    let changed_manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(manifest_path).unwrap()).unwrap();
+    assert_ne!(changed_manifest["build_sha256"], manifest["build_sha256"]);
+}
+
 #[test]
 fn test_dry_run_prints_a_replayable_plan_without_kvm() {
     let directory = test_directory();
@@ -474,6 +644,7 @@ fn help_lists_bundle_local_replay_commands() {
     assert!(help.contains("evaluate capture campaign-dir --output evaluation-dir --name name"));
     assert!(help.contains("evidence verify native-evidence.json"));
     assert!(help.contains("coverage cargo --process NAME"));
+    assert!(help.contains("coverage go --process NAME"));
 
     let coverage = Command::new(env!("CARGO_BIN_EXE_theseus"))
         .args(["coverage", "cargo", "--help"])
@@ -483,4 +654,13 @@ fn help_lists_bundle_local_replay_commands() {
     assert!(String::from_utf8(coverage.stdout)
         .unwrap()
         .contains("--target-dir DIR"));
+
+    let coverage = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["coverage", "go", "--help"])
+        .output()
+        .unwrap();
+    assert!(coverage.status.success(), "{coverage:?}");
+    assert!(String::from_utf8(coverage.stdout)
+        .unwrap()
+        .contains("--goarch amd64|arm64"));
 }

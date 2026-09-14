@@ -44,7 +44,7 @@ RUN ./orchestrator/pivot/build.sh --target "$TARGETARCH" \
     && test -x topology-runner/target/release/theseus-topology \
     && test -x image-runner/target/release/theseus-image \
     && test -x explorer-runner/target/release/theseus-explorer \
-    && mkdir -p /out/instrumentation/c /out/instrumentation/llvm \
+    && mkdir -p /out/instrumentation/c /out/instrumentation/llvm /out/instrumentation/go \
     && cp instrumentation/c/theseus-coverage-cc /out/instrumentation/c/ \
     && cp instrumentation/c/theseus_coverage.c /out/instrumentation/c/ \
     && cp instrumentation/c/theseus-schedule-cc /out/instrumentation/c/ \
@@ -53,11 +53,13 @@ RUN ./orchestrator/pivot/build.sh --target "$TARGETARCH" \
     && cp instrumentation/llvm/theseus-coverage-rustc /out/instrumentation/llvm/ \
     && cp instrumentation/llvm/theseus-coverage-inspect /out/instrumentation/llvm/ \
     && cp instrumentation/llvm/theseus_coverage.c /out/instrumentation/llvm/ \
+    && cp instrumentation/go/theseus-coverage-inspect /out/instrumentation/go/ \
     && chmod +x /out/instrumentation/c/theseus-coverage-cc \
         /out/instrumentation/c/theseus-schedule-cc \
         /out/instrumentation/llvm/theseus-coverage-clang \
         /out/instrumentation/llvm/theseus-coverage-rustc \
         /out/instrumentation/llvm/theseus-coverage-inspect \
+        /out/instrumentation/go/theseus-coverage-inspect \
     && cp orchestrator/pivot.bin /out/pivot \
     && image-runner/target/release/theseus-image pivot > /out/embedded-pivot.json \
     && architecture=$(dpkg --print-architecture) \
@@ -76,6 +78,8 @@ RUN cd firecracker/resources \
     && module="$(find "$(uname -m)" -maxdepth 1 -name 'theseus_rng-6.1*.ko' | head -n 1)" \
     && if [ -n "$module" ]; then cp "$module" /out/theseus_rng.ko; fi
 
+FROM golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS go-toolchain
+
 FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS runtime
 
 RUN printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99snapshot \
@@ -87,6 +91,9 @@ RUN printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99
     && apt-get install -y -qq --no-install-recommends \
         binutils busybox-static cargo clang cpio curl gcc libc6-dev libclang-rt-dev libseccomp2 rustc \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=go-toolchain /usr/local/go /usr/local/go
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 COPY --from=build /src/firecracker/target/release/firecracker /usr/local/bin/firecracker
 COPY --from=build /src/cli/target/release/theseus /usr/local/bin/theseus

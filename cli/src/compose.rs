@@ -1017,7 +1017,7 @@ struct ComposeCoverage {
 }
 
 #[derive(Debug, Deserialize)]
-struct LlvmCoverageManifest {
+struct CoverageManifest {
     format: String,
     coverage: String,
     language: String,
@@ -1104,6 +1104,8 @@ pub struct ComposeServicePlan {
 /// Immutable coverage metadata and symbols consumed by campaign reporting.
 #[derive(Debug, Clone, Serialize)]
 pub struct CoverageArtifactPlan {
+    pub format: String,
+    pub coverage: String,
     pub language: String,
     pub process: String,
     pub module: String,
@@ -1821,24 +1823,29 @@ fn coverage_artifact_plans(
             path: manifest_path.clone(),
             source,
         })?;
-        let manifest: LlvmCoverageManifest =
+        let manifest: CoverageManifest =
             serde_json::from_slice(&manifest_bytes).map_err(|error| {
                 ComposeError::Invalid(format!(
                     "service {service:?} coverage manifest {} is invalid JSON: {error}",
                     entry.manifest.display()
                 ))
             })?;
-        if manifest.format != "theseus-llvm-coverage-build-v1" || manifest.coverage != "edges" {
+        let supported = matches!(
+            (
+                manifest.format.as_str(),
+                manifest.coverage.as_str(),
+                manifest.language.as_str()
+            ),
+            (
+                "theseus-llvm-coverage-build-v1",
+                "edges",
+                "c" | "c++" | "rust"
+            ) | ("theseus-go-coverage-build-v1", "blocks", "go")
+        );
+        if !supported {
             return Err(ComposeError::Invalid(format!(
-                "service {service:?} coverage manifest {} must contain LLVM edge coverage v1",
+                "service {service:?} coverage manifest {} has an unsupported format, coverage kind, or language",
                 entry.manifest.display()
-            )));
-        }
-        if !matches!(manifest.language.as_str(), "c" | "c++" | "rust") {
-            return Err(ComposeError::Invalid(format!(
-                "service {service:?} coverage manifest {} has unsupported language {:?}",
-                entry.manifest.display(),
-                manifest.language
             )));
         }
         validate_coverage_identity(service, "process", &manifest.process)?;
@@ -1916,6 +1923,8 @@ fn coverage_artifact_plans(
             )));
         }
         result.push(CoverageArtifactPlan {
+            format: manifest.format,
+            coverage: manifest.coverage,
             language: manifest.language,
             process: manifest.process,
             module: manifest.module,
@@ -6475,6 +6484,8 @@ mod tests {
 
         let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
         let coverage = &plan.services["api"].coverage[0];
+        assert_eq!(coverage.format, "theseus-llvm-coverage-build-v1");
+        assert_eq!(coverage.coverage, "edges");
         assert_eq!(coverage.language, "c++");
         assert_eq!(coverage.module, "command");
         assert_eq!(coverage.build_sha256, digest);
@@ -6491,6 +6502,37 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("does not match build"));
+    }
+
+    #[test]
+    fn locks_go_coverage_manifests_and_symbols() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n      coverage:\n        - manifest: api/go-coverage.json\n          symbols: api/go-symbols\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        let digest = "fedcba9876543210".repeat(4);
+        fs::create_dir(directory.path().join("api/go-symbols")).unwrap();
+        fs::write(
+            directory.path().join("api/go-symbols/api.debug"),
+            [b"\x7fELF".as_slice(), digest.as_bytes()].concat(),
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("api/go-coverage.json"),
+            format!(
+                "{{\"format\":\"theseus-go-coverage-build-v1\",\"coverage\":\"blocks\",\"language\":\"go\",\"process\":\"api\",\"module\":\"command\",\"build_sha256\":\"{digest}\",\"symbols\":\"api.debug\"}}"
+            ),
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let coverage = &plan.services["api"].coverage[0];
+        assert_eq!(coverage.format, "theseus-go-coverage-build-v1");
+        assert_eq!(coverage.coverage, "blocks");
+        assert_eq!(coverage.language, "go");
+        assert_eq!(coverage.build_sha256, digest);
+        assert_eq!(coverage.gnu_build_id, None);
+        assert_eq!(coverage.manifest.sha256.len(), 64);
+        assert_eq!(coverage.symbols.sha256.len(), 64);
     }
 
     #[test]
