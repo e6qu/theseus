@@ -47,7 +47,10 @@ RUN ./orchestrator/pivot/build.sh --target "$TARGETARCH" \
     && mkdir -p /out/instrumentation/c \
     && cp instrumentation/c/theseus-coverage-cc /out/instrumentation/c/ \
     && cp instrumentation/c/theseus_coverage.c /out/instrumentation/c/ \
+    && cp instrumentation/c/theseus-schedule-cc /out/instrumentation/c/ \
+    && cp instrumentation/c/theseus_schedule.c /out/instrumentation/c/ \
     && chmod +x /out/instrumentation/c/theseus-coverage-cc \
+        /out/instrumentation/c/theseus-schedule-cc \
     && cp orchestrator/pivot.bin /out/pivot \
     && image-runner/target/release/theseus-image pivot > /out/embedded-pivot.json \
     && architecture=$(dpkg --print-architecture) \

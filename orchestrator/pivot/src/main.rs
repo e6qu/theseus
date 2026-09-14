@@ -796,8 +796,12 @@ fn run_campaign_grpc_operation(operation: CampaignGrpcOperation) -> Result<(), S
     })
 }
 
-const SHELL_OUTPUT_LIMIT: usize = 64 * 1024;
+// Large enough for either bounded C instrumentation runtime at its hard
+// record limit plus a small JSON result, while still bounding guest memory.
+const SHELL_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 const APPLICATION_COVERAGE_PREFIX: &[u8] = b"THES:COV:v1:";
+const THREAD_SCHEDULE_PREFIX: &[u8] = b"THES:SCHED:v1:";
+const THREAD_SCHEDULE_ERROR_PREFIX: &[u8] = b"THES:SCHED:ERROR:";
 
 struct ShellOperationResult {
     output_json: Option<serde_json::Value>,
@@ -880,6 +884,7 @@ fn finish_shell_operation(
             std::io::Error::last_os_error()
         ));
     }
+    let application_output = forward_instrumentation_records(&output);
     if !libc::WIFEXITED(status) {
         return Err(format!(
             "command was terminated by signal {}",
@@ -891,17 +896,16 @@ fn finish_shell_operation(
         return Err(format!("expected exit {expect_exit}, got {actual_exit}"));
     }
     if let Some(expected) = output_contains {
-        if !output
+        if !application_output
             .windows(expected.len())
             .any(|window| window == expected.as_bytes())
         {
             return Err(format!("command output does not contain {expected:?}"));
         }
     }
-    let application_output = forward_application_coverage(&output);
     let output_json = if output_json {
         if output_truncated {
-            return Err("command output exceeded 65536-byte JSON limit".to_owned());
+            return Err("command output exceeded 4 MiB JSON limit".to_owned());
         }
         Some(
             serde_json::from_slice(&application_output)
@@ -913,11 +917,11 @@ fn finish_shell_operation(
     Ok(ShellOperationResult { output_json })
 }
 
-/// Coverage-instrumented commands write records on stderr, which shares the
-/// operation capture pipe. Forward only the versioned record lines to the
-/// guest console and keep them out of an optional JSON result. Other command
-/// output remains private to the operation contract.
-fn forward_application_coverage(output: &[u8]) -> Vec<u8> {
+/// Instrumented commands write records on stderr, which shares the operation
+/// capture pipe. Forward supported coverage and thread-scheduling records to
+/// the guest console and keep them out of an optional JSON result. Other
+/// command output remains private to the operation contract.
+fn forward_instrumentation_records(output: &[u8]) -> Vec<u8> {
     let mut application = Vec::with_capacity(output.len());
     for line in output.split_inclusive(|byte| *byte == b'\n') {
         let record = line
@@ -925,7 +929,10 @@ fn forward_application_coverage(output: &[u8]) -> Vec<u8> {
             .unwrap_or(line)
             .strip_suffix(b"\r")
             .unwrap_or_else(|| line.strip_suffix(b"\n").unwrap_or(line));
-        if record.starts_with(APPLICATION_COVERAGE_PREFIX) {
+        if record.starts_with(APPLICATION_COVERAGE_PREFIX)
+            || record.starts_with(THREAD_SCHEDULE_PREFIX)
+            || record.starts_with(THREAD_SCHEDULE_ERROR_PREFIX)
+        {
             if let Ok(record) = std::str::from_utf8(record) {
                 println!("{record}");
             }
@@ -1423,13 +1430,22 @@ mod tests {
     #[test]
     fn separates_application_coverage_from_command_json() {
         let output = b"THES:COV:v1:worker:parser:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:0x42\n{\"value\":7}\n";
-        assert_eq!(forward_application_coverage(output), b"{\"value\":7}\n");
+        assert_eq!(forward_instrumentation_records(output), b"{\"value\":7}\n");
+    }
+
+    #[test]
+    fn separates_thread_schedule_records_from_command_json() {
+        let output = b"THES:SCHED:v1:worker:ledger:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:7:1:0x00000006:2:0x42\n{\"balance\":22}\n";
+        assert_eq!(
+            forward_instrumentation_records(output),
+            b"{\"balance\":22}\n"
+        );
     }
 
     #[test]
     fn leaves_noncoverage_command_output_unchanged() {
         let output = b"THES:COV:v2:not-supported\nnormal output\n";
-        assert_eq!(forward_application_coverage(output), output);
+        assert_eq!(forward_instrumentation_records(output), output);
     }
 
     #[test]

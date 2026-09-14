@@ -86,6 +86,8 @@ jobs:
             test -s /opt/theseus/pivot.json
             test -x /opt/theseus/instrumentation/c/theseus-coverage-cc
             test -s /opt/theseus/instrumentation/c/theseus_coverage.c
+            test -x /opt/theseus/instrumentation/c/theseus-schedule-cc
+            test -s /opt/theseus/instrumentation/c/theseus_schedule.c
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
             /usr/local/bin/theseus-image --help >/dev/null
@@ -368,6 +370,8 @@ jobs:
             test -s /opt/theseus/pivot.json
             test -x /opt/theseus/instrumentation/c/theseus-coverage-cc
             test -s /opt/theseus/instrumentation/c/theseus_coverage.c
+            test -x /opt/theseus/instrumentation/c/theseus-schedule-cc
+            test -s /opt/theseus/instrumentation/c/theseus_schedule.c
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
             /usr/local/bin/theseus-image --help >/dev/null
@@ -441,6 +445,8 @@ jobs:
             test -s pivot.json
             test -x instrumentation/c/theseus-coverage-cc
             test -s instrumentation/c/theseus_coverage.c
+            test -x instrumentation/c/theseus-schedule-cc
+            test -s instrumentation/c/theseus_schedule.c
             ./firecracker --version
             ./theseus --help >/dev/null
             ./theseus-image --help >/dev/null

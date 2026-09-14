@@ -27,6 +27,8 @@ def main() -> None:
     assert "cp orchestrator/pivot.bin /out/pivot" in DOCKERFILE
     assert "instrumentation/c/theseus-coverage-cc" in DOCKERFILE
     assert "instrumentation/c/theseus_coverage.c" in DOCKERFILE
+    assert "instrumentation/c/theseus-schedule-cc" in DOCKERFILE
+    assert "instrumentation/c/theseus_schedule.c" in DOCKERFILE
     assert "gcc libc6-dev libseccomp2" in DOCKERFILE
 
     assert "SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}" in RELEASE
@@ -42,6 +44,8 @@ def main() -> None:
     assert RELEASE.count('jq -r .source_commit <<< "$pivot_manifest"') == 2
     assert RELEASE.count("test -x /opt/theseus/instrumentation/c/theseus-coverage-cc") == 2
     assert "test -x instrumentation/c/theseus-coverage-cc" in RELEASE
+    assert RELEASE.count("test -x /opt/theseus/instrumentation/c/theseus-schedule-cc") == 2
+    assert "test -x instrumentation/c/theseus-schedule-cc" in RELEASE
     assert "gh release download" in VERIFY
     assert "gh attestation verify" in VERIFY
     assert "ref: ${{ steps.inputs.outputs.commit }}" in VERIFY

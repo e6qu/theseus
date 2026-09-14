@@ -9,6 +9,11 @@ source="$root/scripts/tests/c_coverage_fixture.c"
 
 "$compiler" --process fixture --module classifier -o "$work/fixture" "$source"
 "$compiler" --process fixture --module classifier -o "$work/rebuilt" "$source"
+if "$compiler" --process 'invalid:name' --module classifier \
+    -o "$work/invalid" "$source" >/dev/null 2>&1; then
+    echo 'coverage frontend accepted a record-delimiter character' >&2
+    exit 1
+fi
 
 first=$("$work/fixture" 0 2>&1 || true)
 second=$("$work/fixture" 7 2>&1 || true)

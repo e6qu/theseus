@@ -47,7 +47,9 @@ jobs:
           cargo test --manifest-path explorer-runner/Cargo.toml --locked
 
       - name: Check C basic-block instrumentation
-        run: sh scripts/tests/test_c_coverage.sh
+        run: |
+          sh scripts/tests/test_c_coverage.sh
+          sh scripts/tests/test_c_schedule.sh
 
       - name: Deterministic unit suites
         working-directory: firecracker
