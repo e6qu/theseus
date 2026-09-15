@@ -165,6 +165,7 @@ runtime "$execution" '
   grep -E "\"execution_decisions\": [1-9][0-9]*" campaign/campaign-result.json
   grep -E "\"sha256\": \"[0-9a-f]{64}\"" campaign/campaign-result.json
   grep -F "\"host:serial_input:" campaign/campaign-result.json
+  grep -F "\"vcpu:0:interrupt:serial:" campaign/campaign-result.json
   theseus report --format markdown --output report/report.md campaign
   grep -F "Execution ledger" report/report.md
   theseus compose replay campaign --output rerun

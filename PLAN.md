@@ -79,9 +79,10 @@ Theseus currently has:
   applied actions at deterministic operation boundaries.
 - Per-vCPU rolling SHA-256 ledgers plus one bounded, exact VM-wide stream of
   handled KVM exits, emulated device effects, UART and control-channel input,
-  and virtual-clock jumps. Checkpoint children inherit it. Locked replay uses
-  it as an admission protocol: the next host or vCPU actor and its exact
-  payload must match before the effect is admitted.
+  virtual-clock jumps, and UART interrupt injection. Checkpoint children
+  inherit the stream and undelivered UART requests. Locked replay uses it as
+  an admission protocol: the next host or vCPU actor and its exact payload
+  must match before the effect is admitted.
 - A Test Composer-shaped lifecycle for ordinary Compose operations, including
   setup alternatives, overlapping named processes, exclusive and singleton
   drivers, anytime observations, and terminal eventual/final checks.
@@ -102,9 +103,10 @@ The baseline has important limits:
   system.
 - The VM-wide execution stream controls vCPU admission at emulated-device
   boundaries and the admission of explicit UART, control-channel, and
-  virtual-clock input. Theseus still does not control guest instruction,
-  Linux thread/process, timer, or interrupt ordering between exits, or when
-  the guest consumes queued input.
+  virtual-clock input. It injects UART interrupt requests on recorded vCPU
+  turns. Theseus still does not control guest instruction or Linux
+  thread/process ordering, when the guest services an interrupt, timer and
+  non-UART interrupt delivery, or when the guest consumes queued input.
 - Guest counters can advance within an exit-counted virtual-time quantum.
 - Stock-kernel `/dev/random` and `/dev/urandom` replay requires the matching
   released kernel and Theseus random-device module.
@@ -175,11 +177,17 @@ Build a single ordered execution-decision stream that can control and replay:
 Completed slices serialize handled exits and emulated device effects into one
 branch-aware machine stream while retaining each vCPU's local stream, then add
 explicit UART input, control-channel input, and virtual-clock jumps to that
-same protocol. Replay gates the next vCPU or host actor and rejects a changed
-payload, wrong checkpoint prefix, missing suffix, or extra effect before it is
-delivered. The next slice must control runnable guest entities, interrupt and
-device delivery, virtual-clock reads, and guest-side input consumption between
-KVM exits.
+same protocol. Deterministic VMs no longer hand UART interrupts to an
+asynchronous irqfd: they retain pending requests across checkpoints and inject
+each request through KVM as an exact recorded vCPU turn. Replay gates the next
+vCPU or host actor and rejects a changed payload, interrupt, checkpoint prefix,
+missing suffix, or extra effect before delivery.
+
+The next slice must extend controlled delivery to virtio devices and timers,
+then control runnable guest entities, virtual-clock reads, and guest-side input
+consumption between KVM exits. UART injection is a useful boundary, not general
+interrupt determinism: the guest can still service an injected interrupt at an
+uncontrolled instruction boundary.
 
 Move control into the lowest practical kernel, hypervisor, or paravirtualized
 boundary. Application instrumentation may expose semantics and coverage, but

@@ -452,11 +452,17 @@ impl MMIOPlatformDevices {
             }
         };
 
-        vm.register_irq(
-            serial.lock().expect("Poisoned lock").serial.interrupt_evt(),
-            device_info.gsi.unwrap(),
-        )
-        .map_err(MmioError::RegisterIrqFd)?;
+        let gsi = device_info.gsi.unwrap();
+        let serial_guard = serial.lock().expect("Poisoned lock");
+        let interrupt = serial_guard.serial.interrupt_evt();
+        if let Some(controller) = vm.deterministic_interrupt_controller() {
+            interrupt.defer_interrupt(controller, "serial", gsi)?;
+            vm.register_irq_route(gsi);
+        } else {
+            vm.register_irq(interrupt, gsi)
+                .map_err(MmioError::RegisterIrqFd)?;
+        }
+        drop(serial_guard);
 
         let device = MMIODevice {
             resources: device_info,

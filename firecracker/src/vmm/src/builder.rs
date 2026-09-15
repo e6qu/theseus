@@ -245,6 +245,7 @@ pub fn build_microvm_for_boot(
     // is anchored at virtual time zero (kvmclock on x86_64, CNTVCT offset on
     // aarch64) and then stepped by the vCPU threads at each quantum boundary.
     if let Some(virtual_time) = &vm_resources.machine_config.virtual_time {
+        vm.enable_deterministic_interrupts();
         #[cfg(target_arch = "x86_64")]
         vm.set_virtual_clock_ns(0).map_err(VmError::Arch)?;
         for vcpu in &mut vcpus {
@@ -555,6 +556,10 @@ pub fn build_microvm_from_snapshot(
                 }
             }
         }
+    }
+
+    if vm_resources.machine_config.virtual_time.is_some() {
+        vm.enable_deterministic_interrupts();
     }
 
     // Restore vcpus kvm state.
