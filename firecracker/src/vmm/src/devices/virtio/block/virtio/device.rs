@@ -774,7 +774,12 @@ impl VirtioBlock {
         let Some(simulated) = self.simulated.as_mut() else {
             return;
         };
-        let active_state = self.device_state.active_state().unwrap();
+        // The topology event loop starts pumping as soon as the VM is built,
+        // before Linux has necessarily activated every virtio device. No
+        // request can be pending before activation, so this round is a no-op.
+        let Some(active_state) = self.device_state.active_state() else {
+            return;
+        };
         let queue = &mut self.queues[0];
         let mut used_any = false;
         while let Some(request) = simulated.next_ready() {
@@ -2136,6 +2141,23 @@ mod tests {
         assert_eq!(first.corrupt_read_xor(), Some(1));
 
         let block = VirtioBlock::new_simulated(config).unwrap();
+        assert_eq!(block.simulated_bytes().unwrap().len(), 1024 * 1024);
+    }
+
+    #[test]
+    fn pumping_unactivated_simulated_storage_is_a_noop() {
+        let mut block = VirtioBlock::new_simulated(SimulatedBlockConfig {
+            drive_id: "data".to_owned(),
+            size_mib: 1,
+            seed: 42,
+            error_ppm: 0,
+            latency_rounds: 1,
+            torn_write_bytes: None,
+            corrupt_read_xor: None,
+        })
+        .unwrap();
+
+        block.pump_simulated();
         assert_eq!(block.simulated_bytes().unwrap().len(), 1024 * 1024);
     }
 }

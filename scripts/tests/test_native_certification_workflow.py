@@ -7,6 +7,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = (ROOT / ".github/workflows/certify-deterministic-runtime.yml").read_text()
 VALIDATION = (ROOT / "scripts/run_native_validation.sh").read_text()
+CERTIFICATION_INIT = (
+    ROOT / "docs/tutorials/11-certify-runtime/service/init"
+).read_text()
+CERTIFICATION_MANIFEST = (
+    ROOT / "docs/tutorials/11-certify-runtime/service/theseus.toml"
+).read_text()
 
 
 def main() -> None:
@@ -31,6 +37,12 @@ def main() -> None:
     )
     assert "fcntl.ioctl(fd, 0xAE00, 0)" in WORKFLOW
     assert 'docker pull "$IMAGE:$TAG-$ARCH"' in WORKFLOW
+    assert "theseus compose plan > /tutorial/plan.json" in WORKFLOW
+    assert "--plan /tutorial/plan.json --output /tutorial/certificate" in WORKFLOW
+    assert "THES:M:42" in CERTIFICATION_INIT
+    assert "reboot -f" in CERTIFICATION_INIT
+    assert "poweroff -f" not in CERTIFICATION_INIT
+    assert "max_rounds = 10000000" in CERTIFICATION_MANIFEST
     assert WORKFLOW.count('docker build --load --platform "linux/$ARCH"') == 2
     assert "docs/tutorials/30-multiservice-lost-update" in WORKFLOW
     assert WORKFLOW.count("--expect-counterexample distributed_lost_update_is_unreachable") == 2

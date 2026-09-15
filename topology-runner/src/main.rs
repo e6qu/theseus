@@ -1369,7 +1369,7 @@ struct VirtualTime {
 }
 
 fn default_max_rounds() -> u64 {
-    10_000
+    10_000_000
 }
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct NetworkConfig {
@@ -3783,13 +3783,15 @@ fn campaign_actions(run: &Path) -> Result<Vec<AppliedCampaignAction>, String> {
         .map_err(|error| format!("cannot parse {}: {error}", result_path.display()))
 }
 
-fn campaign_machine_execution_traces(
-    run: &Path,
-) -> Result<BTreeMap<String, Vec<String>>, String> {
+fn campaign_machine_execution_traces(run: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
     let mut traces = BTreeMap::new();
     for service in fs::read_dir(run.join("services")).map_err(|error| error.to_string())? {
         let service = service.map_err(|error| error.to_string())?;
-        if !service.file_type().map_err(|error| error.to_string())?.is_dir() {
+        if !service
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
             continue;
         }
         let result_path = service.path().join("result.json");
@@ -11675,6 +11677,8 @@ fn evaluate_checks(checks: &[CheckPlan], serial_logs: &[PathBuf]) -> Vec<CheckRe
         .collect()
 }
 
+const TOPOLOGY_BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=-1 quiet loglevel=0";
+
 fn service_resources(
     service: &ServicePlan,
     kernel: &Path,
@@ -11686,7 +11690,10 @@ fn service_resources(
         .build_boot_source(BootSourceConfig {
             kernel_image_path: kernel.display().to_string(),
             initrd_path: Some(initramfs.display().to_string()),
-            boot_args: Some("console=ttyS0 reboot=k panic=-1".to_owned()),
+            // Keep the captured service stream limited to workload output.
+            // Kernel timestamps and host-dependent CPU calibration values are
+            // diagnostics, not deterministic replay evidence.
+            boot_args: Some(TOPOLOGY_BOOT_ARGS.to_owned()),
         })
         .map_err(|error| error.to_string())?;
     resources
@@ -12002,15 +12009,7 @@ fn artifact_at(path: PathBuf) -> Result<Artifact, String> {
 /// plans use relative paths so moving or extracting the complete bundle does
 /// not preserve a dependency on the machine that created it.
 fn resolve_topology_artifacts(topology: &mut TopologyPlan, plan: &Path) -> Result<(), String> {
-    let parent = plan
-        .parent()
-        .ok_or_else(|| format!("topology plan has no parent: {}", plan.display()))?;
-    let parent = fs::canonicalize(parent).map_err(|error| {
-        format!(
-            "cannot resolve topology plan directory {}: {error}",
-            parent.display()
-        )
-    })?;
+    let parent = canonical_parent(plan, "topology plan")?;
     if let Some(runner) = &mut topology.topology_runner {
         resolve_artifact_path(runner, &parent)?;
     }
@@ -12047,15 +12046,7 @@ fn resolve_artifact_path(artifact: &mut Artifact, parent: &Path) -> Result<(), S
 }
 
 fn write_replay_plan(path: &Path, topology: &TopologyPlan) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("replay plan has no parent: {}", path.display()))?;
-    let parent = fs::canonicalize(parent).map_err(|error| {
-        format!(
-            "cannot resolve replay plan directory {}: {error}",
-            parent.display()
-        )
-    })?;
+    let parent = canonical_parent(path, "replay plan")?;
     let mut value = serde_json::to_value(topology)
         .map_err(|error| format!("cannot encode replay plan: {error}"))?;
     make_artifact_paths_relative(&mut value, &parent)?;
@@ -12065,6 +12056,19 @@ fn write_replay_plan(path: &Path, topology: &TopologyPlan) -> Result<(), String>
             .map_err(|error| format!("cannot encode replay plan: {error}"))?,
     )
     .map_err(|error| format!("cannot write {}: {error}", path.display()))
+}
+
+fn canonical_parent(path: &Path, description: &str) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::canonicalize(parent).map_err(|error| {
+        format!(
+            "cannot resolve {description} directory {}: {error}",
+            parent.display()
+        )
+    })
 }
 
 fn make_artifact_paths_relative(
@@ -12449,6 +12453,21 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn bare_plan_names_resolve_against_the_working_directory() {
+        assert_eq!(
+            canonical_parent(Path::new("plan.json"), "topology plan").unwrap(),
+            fs::canonicalize(".").unwrap()
+        );
+    }
+
+    #[test]
+    fn topology_boot_hides_nondeterministic_kernel_diagnostics() {
+        assert!(TOPOLOGY_BOOT_ARGS.contains("console=ttyS0"));
+        assert!(TOPOLOGY_BOOT_ARGS.contains("quiet"));
+        assert!(TOPOLOGY_BOOT_ARGS.contains("loglevel=0"));
+    }
 
     #[test]
     fn locked_replay_artifacts_follow_a_moved_bundle() {

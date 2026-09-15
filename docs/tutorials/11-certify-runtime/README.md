@@ -26,13 +26,18 @@ mkdir -p service/runtime service/guest/root/bin
 cp /usr/local/bin/firecracker service/runtime/firecracker
 cp /opt/theseus/vmlinux service/guest/vmlinux
 cp /bin/busybox service/guest/root/bin/busybox
-for applet in mount sleep poweroff; do
+for applet in mkdir mount sleep reboot; do
   ln -sf busybox "service/guest/root/bin/$applet"
 done
 cp service/init service/guest/root/init
 chmod +x service/guest/root/init
 (cd service/guest/root && find . -print | cpio -o -H newc --quiet | gzip > ../initramfs.cpio.gz)
 ```
+
+The init script prints `THES:M:42` when the service is ready. The topology
+runner starts the fixed schedule only after it sees that marker.
+The manifest gives Linux enough deterministic VM-exit rounds to finish booting;
+the limit is a reproducible work budget, not a wall-clock timeout.
 
 ## 2. Run both executions
 

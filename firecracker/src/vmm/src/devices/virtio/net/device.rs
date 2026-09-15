@@ -1217,7 +1217,12 @@ impl Net {
     }
 
     pub fn process_tap_rx_event(&mut self) {
-        // This is safe since we checked in the event handler that the device is activated.
+        // The regular event-manager path only calls this after activation.
+        // Theseus also pumps simulated NICs from the topology loop, which can
+        // begin before Linux activates virtio-net.
+        if !self.is_activated() {
+            return;
+        }
         self.metrics.rx_tap_event_count.inc();
 
         // While limiter is blocked, don't process any more incoming.
@@ -1508,6 +1513,26 @@ pub mod tests {
         let mut net = default_net();
         set_mac(&mut net, MacAddr::from_str("11:22:33:44:55:66").unwrap());
         assert_eq!(net.device_type(), VirtioDeviceType::Net);
+    }
+
+    #[test]
+    fn pumping_an_unactivated_simulated_nic_is_a_noop() {
+        let mut net = Net::new_with_sim(
+            "simulated".to_owned(),
+            SimNetConfig::default(),
+            None,
+            RateLimiter::default(),
+            RateLimiter::default(),
+            None,
+        )
+        .unwrap();
+
+        net.process_tap_rx_event();
+        net.advance_simulated_round();
+        let stats = net.simulated_stats().unwrap();
+        assert_eq!(stats.tx_frames, 0);
+        assert_eq!(stats.rx_frames, 0);
+        assert_eq!(stats.dropped, 0);
     }
 
     #[test]

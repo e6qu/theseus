@@ -135,15 +135,24 @@ jobs:
               cp /usr/local/bin/firecracker service/runtime/firecracker
               cp /opt/theseus/vmlinux service/guest/vmlinux
               cp /bin/busybox service/guest/root/bin/busybox
-              for applet in mount sleep poweroff; do
+              for applet in mkdir mount sleep reboot; do
                 ln -sf busybox "service/guest/root/bin/$applet"
               done
               cp service/init service/guest/root/init
               chmod +x service/guest/root/init
               (cd service/guest/root && find . -print | cpio -o -H newc --quiet | gzip > ../initramfs.cpio.gz)
-              theseus compose plan > plan.json
-              theseus-topology certify --plan plan.json --output certificate
-              grep -F '"'"'"status"'"'": "'"'"passed"'"'"' certificate/certificate.json
+              theseus compose plan > /tutorial/plan.json
+              theseus-topology certify \
+                --plan /tutorial/plan.json --output /tutorial/certificate || {
+                  status=$?
+                  find /tutorial/certificate -name serial.log -print \
+                    -exec tail -160 {} \;
+                  find /tutorial/certificate -name result.json -print \
+                    -exec cat {} \;
+                  exit "$status"
+                }
+              grep -F '"'"'"status"'"'": "'"'"passed"'"'"' \
+                /tutorial/certificate/certificate.json
             '
           cp docs/tutorials/11-certify-runtime/certificate/certificate.json \
             "theseus-${TAG}-runtime-certificate-${ARCH}.json"
