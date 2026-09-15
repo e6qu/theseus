@@ -1,6 +1,8 @@
 #!/bin/busybox sh
+mkdir -p /proc
 mount -t proc proc /proc
 echo started
+echo THES:M:42
 sleep 1
 echo finished
-poweroff -f
+reboot -f

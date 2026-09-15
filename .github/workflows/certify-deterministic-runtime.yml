@@ -137,8 +137,10 @@ jobs:
               # Temporary compatibility probe for the pre-fix release used while developing this workflow.
               sed -i "/^\[\[storage\]\]/,/^$/d" service/theseus.toml
               sed -i "/echo started/a echo THES:M:42" service/init
+              sed -i "/timeout_secs/a max_rounds = 10000000" service/theseus.toml
+              sed -i "s/poweroff -f/reboot -f/" service/init
               cp /bin/busybox service/guest/root/bin/busybox
-              for applet in mount sleep poweroff; do
+              for applet in mkdir mount sleep reboot; do
                 ln -sf busybox "service/guest/root/bin/$applet"
               done
               cp service/init service/guest/root/init
@@ -156,7 +158,14 @@ jobs:
             -v "$GITHUB_WORKSPACE/docs/tutorials/11-certify-runtime":/tutorial \
             -w /tutorial "$IMAGE:$TAG-$ARCH" sh -ec '
               theseus-topology certify \
-                --plan /tutorial/plan.json --output /tutorial/certificate
+                --plan /tutorial/plan.json --output /tutorial/certificate || {
+                  status=$?
+                  find /tutorial/certificate -name serial.log -print \
+                    -exec tail -160 {} \;
+                  find /tutorial/certificate -name result.json -print \
+                    -exec cat {} \;
+                  exit "$status"
+                }
               grep -F '"'"'"status"'"'": "'"'"passed"'"'"' \
                 /tutorial/certificate/certificate.json
             '
