@@ -601,11 +601,13 @@ impl Vmm {
             .vm
             .as_kvm()
             .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
-        kvm_vm
+        let controller = kvm_vm
             .vcpus_handles()
             .first()
             .ok_or_else(|| VmmError::ExecutionCoverage("VM has no machine execution state".into()))?
-            .apply_machine_host_effect(effect, apply)
+            .machine_execution_controller();
+        controller
+            .apply_host_effect(effect, apply)
             .map_err(VmmError::ExecutionCoverage)?
     }
 

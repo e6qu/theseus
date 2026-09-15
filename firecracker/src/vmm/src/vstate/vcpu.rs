@@ -245,7 +245,7 @@ impl MachineExecutionController {
         })
     }
 
-    fn apply_host_effect<T, E>(
+    pub(crate) fn apply_host_effect<T, E>(
         &self,
         effect: String,
         apply: impl FnOnce() -> Result<T, E>,
@@ -1548,13 +1548,9 @@ impl VcpuHandle {
         self.machine_execution.replay_error()
     }
 
-    /// Admit and record a host-originated input as one atomic machine turn.
-    pub(crate) fn apply_machine_host_effect<T, E>(
-        &self,
-        effect: String,
-        apply: impl FnOnce() -> Result<T, E>,
-    ) -> Result<Result<T, E>, String> {
-        self.machine_execution.apply_host_effect(effect, apply)
+    /// Clone the controller used to serialize host and vCPU effects.
+    pub(crate) fn machine_execution_controller(&self) -> Arc<MachineExecutionController> {
+        Arc::clone(&self.machine_execution)
     }
 }
 
