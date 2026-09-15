@@ -94,8 +94,9 @@ the indexed assets must exist and verify on the named release.
 
 The certificate is evidence for the strict `linux-kvm-simulated-io-v1`
 profile, not a claim about tap networking, host-backed disks, or every clock
-read inside one exit-counted quantum. Version 2 also requires nonempty ordered
-KVM-exit evidence for every service.
+read inside one exit-counted quantum. Version 2 requires nonempty per-vCPU
+KVM-exit evidence, version 3 adds a machine-wide stream, and version 4 requires
+the complete bounded stream used to gate active replay.
 
 ## Publish a failure from CI
 

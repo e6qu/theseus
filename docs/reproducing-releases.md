@@ -83,7 +83,9 @@ Run the portable verifier from the same SHA release. It rejects a missing
 indexed architecture, a renamed or changed asset, a mismatched certificate, an
 unsafe archive, a changed file inventory, a replay that lacks the required
 partition, dropped frame, recovery probe, or lost update, and validation that
-lacks its container, coverage, schedule-search, or pthread evidence:
+lacks its container, coverage, schedule-search, pthread, or ordered-execution
+evidence. It also rejects partial per-run ledgers, malformed machine traces,
+divergent comparisons, and empty evaluations:
 
 ```sh
 theseus evidence verify "$work/theseus-${TAG}-native-evidence.json"
@@ -102,7 +104,7 @@ docker run --rm --privileged --platform "linux/$ARCH" \
   theseus compose replay . --output reproduced
 ```
 
-Extract the validation archive to inspect its four additional product paths:
+Extract the validation archive to inspect its five additional product paths:
 
 ```sh
 tar -xzf "$work/theseus-${TAG}-runtime-validation-${ARCH}.tar.gz" -C "$work"
@@ -112,11 +114,12 @@ find "$work/validation" -name plan.json -o -name campaign-result.json \
 
 `validation/evidence.json` records the native architecture, host kernel, KVM
 API, digest-pinned runtime, scenario list, and every retained file's size and
-SHA-256. The four directories contain the locked container run, coverage
-campaign, minimized schedule-search counterexample, pthread campaign, reports,
-comparison, offline evaluation, and checked replays. Those outputs establish
-that the CLI shipped in the release performed its inspect, compare, evaluate,
-minimize, and replay workflow against the same retained corpus.
+SHA-256. The five directories contain the locked container run, coverage
+campaign, minimized schedule-search counterexample, pthread campaign, ordered
+KVM-exit campaign, reports, comparisons, offline evaluation, and checked
+replays. Those outputs establish that the CLI shipped in the release performed
+its inspect, compare, evaluate, minimize, and replay workflow against the same
+retained corpus.
 Each scenario's `source/` directory keeps the small Dockerfile, manifest,
 Compose file, and C program needed to understand the locked workload.
 
