@@ -26,6 +26,9 @@ def main() -> None:
     assert WORKFLOW.count("gh attestation verify") >= 2
     assert 'test "$(git rev-parse --short=12 HEAD)" = "$TAG"' in WORKFLOW
     assert "sudo chmod 666 /dev/kvm" in WORKFLOW
+    assert WORKFLOW.index("sudo chmod 666 /dev/kvm") < WORKFLOW.index(
+        'kvm_api=$(python3 -c'
+    )
     assert "fcntl.ioctl(fd, 0xAE00, 0)" in WORKFLOW
     assert 'docker pull "$IMAGE:$TAG-$ARCH"' in WORKFLOW
     assert WORKFLOW.count('docker build --load --platform "linux/$ARCH"') == 2
