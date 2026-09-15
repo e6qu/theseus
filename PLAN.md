@@ -77,9 +77,10 @@ Theseus currently has:
 - A replay-checked, human-readable decision trace for each Compose campaign
   run, covering operation inputs, observed choices, thread selections, and
   applied actions at deterministic operation boundaries.
-- A per-vCPU rolling SHA-256 ledger of ordered KVM exits. It is inherited by
-  checkpoint children, retained at campaign boundaries and service exit, and
-  compared exactly during replay.
+- Per-vCPU rolling SHA-256 ledgers plus one VM-wide stream of handled KVM exits
+  and emulated device effects. A VM lock serializes device effects into the
+  machine stream. Checkpoint children inherit both forms, campaign boundaries
+  retain them, and replay compares them exactly.
 - A Test Composer-shaped lifecycle for ordinary Compose operations, including
   setup alternatives, overlapping named processes, exclusive and singleton
   drivers, anytime observations, and terminal eventual/final checks.
@@ -98,9 +99,10 @@ The baseline has important limits:
 - Determinism depends on implemented interception points. Theseus does not yet
   provide instruction-level determinism for an otherwise unmodified Linux
   system.
-- The ordered KVM-exit ledger detects drift at hypervisor and device
-  boundaries, but does not yet control instruction, thread, or interrupt
-  ordering between exits.
+- The VM-wide KVM-exit stream serializes emulated device effects and detects
+  cross-vCPU drift, but host scheduling still selects the next vCPU. Theseus
+  does not yet control instruction, thread, timer, or interrupt ordering
+  between exits.
 - Guest counters can advance within an exit-counted virtual-time quantum.
 - Stock-kernel `/dev/random` and `/dev/urandom` replay requires the matching
   released kernel and Theseus random-device module.
@@ -168,11 +170,13 @@ Build a single ordered execution-decision stream that can control and replay:
 - Random and other external inputs consumed by the guest.
 - Network, storage, and process faults at exact replayable positions.
 
-The first slice is now implemented as an observation and rejection layer: a
-branch-aware ordered ledger records every handled KVM exit, and replay fails
-when that ledger changes. The remaining work is to turn the same stream into a
-control plane for runnable entities, interrupt delivery, clocks, and external
-inputs rather than merely detecting drift after it occurs.
+The first slice now serializes handled exits and emulated device effects into
+one branch-aware machine stream while retaining each vCPU's local stream.
+Replay fails when either changes. This controls concurrent device effects but
+not arbitration: host scheduling still determines which vCPU enters the
+machine stream next. The next slice must make that selection explicit and
+replayable, then bring runnable entities, interrupt delivery, clocks, and
+external inputs under the same decision protocol.
 
 Move control into the lowest practical kernel, hypervisor, or paravirtualized
 boundary. Application instrumentation may expose semantics and coverage, but

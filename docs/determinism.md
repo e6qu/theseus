@@ -73,17 +73,19 @@ not depend on the expansion implementation.
 
 ### Everything else the guest can touch
 
-Every successfully handled guest-visible KVM exit is appended to a per-vCPU
-rolling SHA-256 ledger.
-The record identifies the exit kind and its deterministic payload, including
-MMIO and PIO address, width, and bytes read or written. Checkpoints clone the
-rolling state into each child. Campaign timelines retain a readable tail and
-the digest; locked replay requires an exact match at every boundary and at
-service exit.
+Every successfully handled guest-visible KVM exit is appended to both a
+per-vCPU rolling SHA-256 ledger and a VM-wide ledger. The record identifies the
+vCPU, exit kind, and deterministic payload, including MMIO and PIO address,
+width, and bytes read or written. A VM-wide lock serializes handled exits and
+their emulated device effects into one total order. Checkpoints clone both
+forms of rolling state into each child. Campaign timelines retain readable
+tails and digests; locked replay requires exact matches at every boundary and
+at service exit.
 
-This catches execution drift visible at the KVM and emulated-device boundary.
-It does not make guest instructions deterministic and does not choose Linux
-thread, process, timer, or interrupt order.
+This controls concurrent emulated device effects and catches cross-vCPU drift
+visible at the KVM boundary. The host still decides which vCPU acquires the
+next turn. Theseus does not yet make guest instructions deterministic or
+choose Linux thread, process, timer, or interrupt order.
 
 - Rate limiters use host timerfds — **rejected** when virtual time is
   enabled (`validate_deterministic_config`).
@@ -116,7 +118,9 @@ thread, process, timer, or interrupt order.
   condition waits/signals/broadcasts. Timed waits, cancellation, semaphores,
   direct futex use, blocking syscalls, processes, and uninstrumented library
   concurrency remain outside the supported scheduling profile.
-- **Execution between KVM exits.** The ordered exit ledger detects that two
+- **vCPU arbitration and execution between KVM exits.** The machine stream
+  records host-selected vCPU order and serializes device effects, but does not
+  yet select the next vCPU. The exit ledgers detect that two
   executions reached different observable boundaries. It cannot prevent or
   explain divergence that happens entirely between those boundaries.
 
@@ -130,9 +134,9 @@ Each captured timeline node records:
    coverage).
 3. **Dirty pages** — KVM dirty-bitmap count at capture (memory footprint).
 
-Replay compares these fields plus the ordered KVM-exit ledger at every retained
-node. A match is evidence for those recorded observations, not a proof about
-unrecorded guest state.
+Replay compares these fields plus the per-vCPU and machine-wide KVM-exit
+streams at every retained node. A match is evidence for those recorded
+observations, not a proof about unrecorded guest state.
 
 ## Certify a runtime
 

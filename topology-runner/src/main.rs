@@ -761,6 +761,8 @@ struct CampaignRun {
     structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     execution_ledgers: BTreeMap<String, Vec<ExecutionLedgerEvidence>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    machine_execution_ledgers: BTreeMap<String, ExecutionLedgerEvidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     checkpoint_pc_novelty: Vec<String>,
     state_sha256: String,
@@ -846,6 +848,10 @@ struct CampaignTimelineBoundary {
     /// that reaches the same output through a different low-level path.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     execution_ledgers: BTreeMap<String, Vec<ExecutionLedgerEvidence>>,
+    /// One total order of handled exits and device effects across all vCPUs
+    /// for each service VM.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    machine_execution_ledgers: BTreeMap<String, ExecutionLedgerEvidence>,
     state_sha256: String,
 }
 
@@ -1080,6 +1086,8 @@ struct RecordedCampaignRun {
     structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
     #[serde(default)]
     execution_ledgers: BTreeMap<String, Vec<ExecutionLedgerEvidence>>,
+    #[serde(default)]
+    machine_execution_ledgers: BTreeMap<String, ExecutionLedgerEvidence>,
     #[serde(default)]
     checkpoint_pc_novelty: Vec<String>,
     #[serde(default)]
@@ -1511,6 +1519,7 @@ struct ServiceResult {
     entropy_probe_sha256: String,
     virtual_time_ns: Option<Vec<u64>>,
     execution_ledgers: Vec<ExecutionLedgerEvidence>,
+    machine_execution_ledger: ExecutionLedgerEvidence,
     error: Option<String>,
     checks: Vec<CheckResult>,
     faults: Vec<AppliedFault>,
@@ -1538,6 +1547,8 @@ struct RecordedServiceResult {
     virtual_time_ns: Option<Option<Vec<u64>>>,
     #[serde(default)]
     execution_ledgers: Option<Vec<ExecutionLedgerEvidence>>,
+    #[serde(default)]
+    machine_execution_ledger: Option<ExecutionLedgerEvidence>,
 }
 
 /// A portable, machine-readable statement of the strict runtime contract.
@@ -1592,6 +1603,7 @@ struct CertificateServiceEvidence {
     network_traffic: BTreeMap<String, NetworkTraffic>,
     virtual_time_ns: Vec<u64>,
     execution_ledgers: Vec<ExecutionLedgerEvidence>,
+    machine_execution_ledger: ExecutionLedgerEvidence,
 }
 
 /// Deterministic simulated-NIC counters for one service network.
@@ -1742,6 +1754,8 @@ struct ServiceSchedulerCheckpoint {
     execution_locations: Option<Vec<Vec<u64>>>,
     /// Runtime-only rolling state inherited by every COW child.
     execution_ledgers: Option<Vec<ExecutionLedger>>,
+    /// VM-global rolling execution state inherited by restored children.
+    machine_execution_ledger: Option<ExecutionLedger>,
 }
 
 #[derive(Clone)]
@@ -1782,6 +1796,7 @@ struct CampaignCheckpointBoundary {
     storage_sha256: BTreeMap<String, BTreeMap<String, String>>,
     virtual_time_ns: BTreeMap<String, Vec<u64>>,
     execution_ledgers: BTreeMap<String, Vec<ExecutionLedgerEvidence>>,
+    machine_execution_ledgers: BTreeMap<String, ExecutionLedgerEvidence>,
 }
 
 enum CampaignPrefixResult {
@@ -2331,6 +2346,22 @@ impl ServiceVm {
             .map_err(|error| error.to_string())
     }
 
+    fn machine_execution_ledger(&self) -> Result<ExecutionLedger, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .machine_execution_ledger()
+            .map_err(|error| error.to_string())
+    }
+
+    fn machine_execution_ledger_evidence(&self) -> Result<ExecutionLedgerEvidence, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .machine_execution_ledger_evidence()
+            .map_err(|error| error.to_string())
+    }
+
     fn validate_execution_locations(&self) -> Result<(), String> {
         self.vmm
             .lock()
@@ -2407,6 +2438,7 @@ fn capture_campaign_checkpoint(
             let virtual_time_ns = service.vm.virtual_time_ns()?;
             let execution_locations = service.vm.execution_locations()?;
             let execution_ledgers = service.vm.execution_ledgers()?;
+            let machine_execution_ledger = service.vm.machine_execution_ledger()?;
             snapshots.insert(
                 name.clone(),
                 service.vm.snapshot(topology.services[name].run.run.seed)?,
@@ -2427,6 +2459,7 @@ fn capture_campaign_checkpoint(
                     private_dirty_pages: service.vm.dirty_page_count(),
                     execution_locations: Some(execution_locations),
                     execution_ledgers: Some(execution_ledgers),
+                    machine_execution_ledger: Some(machine_execution_ledger),
                 },
             );
         }
@@ -2654,6 +2687,7 @@ fn checkpoint_campaign_operation(
             &switches,
             scheduler.execution_locations.as_deref(),
             scheduler.execution_ledgers.as_deref(),
+            scheduler.machine_execution_ledger.as_ref(),
             parent
                 .services
                 .get(name)
@@ -2863,9 +2897,12 @@ fn execute_plan(
         expected_entropy,
         expected_virtual_time,
         expected_execution_ledgers,
+        expected_machine_execution_ledgers,
         expected_lifecycle_rounds,
     ) = if recorded_campaign.is_some() {
-        (None, None, None, None, None, None, None, None, None, None)
+        (
+            None, None, None, None, None, None, None, None, None, None, None,
+        )
     } else {
         (
             recorded_serial_fingerprints(plan, &service_names)?,
@@ -2877,6 +2914,7 @@ fn execute_plan(
             recorded_entropy_probes(plan, &service_names)?,
             recorded_virtual_times(plan, &service_names)?,
             recorded_execution_ledgers(plan, &service_names)?,
+            recorded_machine_execution_ledgers(plan, &service_names)?,
             recorded_lifecycle_barrier_rounds(plan)?,
         )
     };
@@ -2897,6 +2935,7 @@ fn execute_plan(
             || expected_entropy.is_some()
             || expected_virtual_time.is_some()
             || expected_execution_ledgers.is_some()
+            || expected_machine_execution_ledgers.is_some()
             || expected_lifecycle_rounds.is_some()
         {
             return Err(
@@ -2926,6 +2965,7 @@ fn execute_plan(
             expected_entropy,
             expected_virtual_time,
             expected_execution_ledgers,
+            expected_machine_execution_ledgers,
             expected_lifecycle_rounds,
         )
     }
@@ -2962,12 +3002,12 @@ fn certify(plan: &str, output: &Path) -> Result<(), String> {
 
     let services = certification_service_evidence(&first)?;
     let certificate = RuntimeCertificate {
-        format: "theseus-runtime-certificate-v2",
+        format: "theseus-runtime-certificate-v3",
         status: "passed",
         profile: RuntimeSupportProfile {
             id: "linux-kvm-simulated-io-v1",
             architecture: runtime_architecture()?,
-            execution: "two real-KVM executions with exact ordered KVM-exit ledgers; the second is a locked replay",
+            execution: "two real-KVM executions with per-vCPU and machine-wide ordered KVM-exit ledgers; the second is a locked replay",
             virtual_time: "exit-counted quanta with exact final vCPU-clock fingerprint equality",
             entropy: "seeded virtio-rng with exact next-64-byte fingerprint equality",
             network: "Theseus simulated virtio-net only",
@@ -3112,6 +3152,21 @@ fn certification_service_evidence(
                     path.display()
                 ));
             }
+            let machine_execution_ledger = recorded.machine_execution_ledger.ok_or_else(|| {
+                format!(
+                    "{} has no machine-wide KVM execution stream; certification fails closed",
+                    path.display()
+                )
+            })?;
+            if machine_execution_ledger.decisions == 0
+                || machine_execution_ledger.sha256.len() != 64
+                || machine_execution_ledger.tail.is_empty()
+            {
+                return Err(format!(
+                    "{} has empty or malformed machine-wide KVM execution evidence; certification fails closed",
+                    path.display()
+                ));
+            }
             Ok((
                 name.clone(),
                 CertificateServiceEvidence {
@@ -3121,6 +3176,7 @@ fn certification_service_evidence(
                     network_traffic: recorded.network_traffic.unwrap_or_default(),
                     virtual_time_ns,
                     execution_ledgers,
+                    machine_execution_ledger,
                 },
             ))
         })
@@ -3291,6 +3347,7 @@ fn execute_campaign(
             None,
             None,
             None,
+            None,
         );
         write_replay_plan(&run_dir.join("replay-plan.json"), &replay)?;
         if run_dir.join("topology-result.json").exists() {
@@ -3306,6 +3363,8 @@ fn execute_campaign(
         let program_counters = campaign_checkpoint_program_counters(&prefix.checkpoint);
         let execution_locations = campaign_checkpoint_execution_locations(&prefix.checkpoint);
         let execution_ledgers = campaign_checkpoint_execution_ledgers(&prefix.checkpoint);
+        let machine_execution_ledgers =
+            campaign_checkpoint_machine_execution_ledgers(&prefix.checkpoint);
         let instruction_locations = instruction_symbolizer.symbolize(&execution_locations);
         let timeline = campaign_operation_timeline(
             &campaign,
@@ -3429,6 +3488,7 @@ fn execute_campaign(
             thread_synchronization,
             structured_choices,
             execution_ledgers,
+            machine_execution_ledgers,
             state_sha256,
             state_novel,
             status: if failed { "failed" } else { "passed" },
@@ -3539,8 +3599,7 @@ fn execute_campaign(
                 .sum(),
             execution_decisions: runs
                 .iter()
-                .flat_map(|run| run.execution_ledgers.values())
-                .flatten()
+                .flat_map(|run| run.machine_execution_ledgers.values())
                 .map(|ledger| ledger.decisions)
                 .sum(),
             structured_choice_decisions: runs
@@ -3814,6 +3873,7 @@ fn execute_campaign_minimized(
         None,
         None,
         None,
+        None,
     );
     write_replay_plan(&output.join("replay-plan.json"), &replay)?;
     if output.join("topology-result.json").exists() {
@@ -3949,6 +4009,7 @@ fn execute_campaign_minimization_attempt(
         plan,
         directory,
         Some(&prefix.checkpoint),
+        None,
         None,
         None,
         None,
@@ -6026,6 +6087,11 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     {
         mismatches.push("ordered KVM execution ledger".to_owned());
     }
+    if !expected.machine_execution_ledgers.is_empty()
+        && expected.machine_execution_ledgers != actual.machine_execution_ledgers
+    {
+        mismatches.push("machine-wide KVM execution stream".to_owned());
+    }
     if !expected.state_sha256.is_empty()
         && (expected.state_sha256 != actual.state_sha256
             || expected.state_novel != actual.state_novel)
@@ -6077,6 +6143,9 @@ fn campaign_timeline_matches(
                 }
                 if expected.execution_ledgers.is_empty() {
                     normalized.execution_ledgers.clear();
+                }
+                if expected.machine_execution_ledgers.is_empty() {
+                    normalized.machine_execution_ledgers.clear();
                 }
                 *expected == normalized
             }
@@ -7656,6 +7725,21 @@ fn campaign_checkpoint_execution_ledgers(
         .collect()
 }
 
+fn campaign_checkpoint_machine_execution_ledgers(
+    checkpoint: &CampaignCheckpoint,
+) -> BTreeMap<String, ExecutionLedgerEvidence> {
+    checkpoint
+        .scheduler
+        .iter()
+        .filter_map(|(service, state)| {
+            state
+                .machine_execution_ledger
+                .as_ref()
+                .map(|ledger| (service.clone(), ledger.evidence()))
+        })
+        .collect()
+}
+
 fn campaign_checkpoint_boundary(
     checkpoint: &CampaignCheckpoint,
     actions: Vec<AppliedCampaignAction>,
@@ -7707,6 +7791,7 @@ fn campaign_checkpoint_boundary(
             })
             .collect(),
         execution_ledgers: campaign_checkpoint_execution_ledgers(checkpoint),
+        machine_execution_ledgers: campaign_checkpoint_machine_execution_ledgers(checkpoint),
     }
 }
 
@@ -7832,6 +7917,7 @@ fn campaign_operation_timeline(
                 changed_storage,
                 virtual_time_delta_ns,
                 execution_ledgers: boundary.execution_ledgers.clone(),
+                machine_execution_ledgers: boundary.machine_execution_ledgers.clone(),
                 state_sha256: campaign_boundary_state_sha256(boundary),
             }
         })
@@ -9501,6 +9587,7 @@ fn execute(
     expected_entropy: Option<BTreeMap<String, String>>,
     expected_virtual_time: Option<BTreeMap<String, Option<Vec<u64>>>>,
     expected_execution_ledgers: Option<BTreeMap<String, Vec<ExecutionLedgerEvidence>>>,
+    expected_machine_execution_ledgers: Option<BTreeMap<String, ExecutionLedgerEvidence>>,
     expected_lifecycle_rounds: Option<u64>,
 ) -> Result<(), String> {
     configure_container_networks(&mut topology)?;
@@ -9558,6 +9645,7 @@ fn execute(
                     &switches,
                     scheduler.execution_locations.as_deref(),
                     scheduler.execution_ledgers.as_deref(),
+                    scheduler.machine_execution_ledger.as_ref(),
                     checkpoint
                         .services
                         .get(name)
@@ -9738,6 +9826,7 @@ fn execute(
         let entropy_probe_sha256 = service.vm.entropy_probe_sha256();
         let virtual_time_ns = service.vm.virtual_time_ns()?;
         let execution_ledgers = service.vm.execution_ledger_evidence()?;
+        let machine_execution_ledger = service.vm.machine_execution_ledger_evidence()?;
         checks.insert(
             0,
             CheckResult {
@@ -9907,6 +9996,26 @@ fn execute(
                 error = Some("ordered KVM execution replay diverged".to_owned());
             }
         }
+        if let Some(expected) = &expected_machine_execution_ledgers {
+            let expected = expected
+                .get(name)
+                .expect("recorded machine execution ledger missing service");
+            let matches = expected == &machine_execution_ledger;
+            checks.push(CheckResult {
+                name: "replay_machine_execution_ledger".to_owned(),
+                status: if matches { "passed" } else { "failed" },
+                detail: if matches {
+                    "machine-wide KVM execution stream matches the original replay bundle"
+                        .to_owned()
+                } else {
+                    "machine-wide KVM execution stream differs from the original replay bundle"
+                        .to_owned()
+                },
+            });
+            if !matches && error.is_none() {
+                error = Some("machine-wide KVM execution replay diverged".to_owned());
+            }
+        }
         let status = if checks.iter().all(|check| check.status == "passed") {
             "passed"
         } else {
@@ -9931,6 +10040,7 @@ fn execute(
             entropy_probe_sha256,
             virtual_time_ns,
             execution_ledgers,
+            machine_execution_ledger,
             error,
             checks,
             faults: service.faults.clone(),
@@ -10141,6 +10251,31 @@ fn recorded_execution_ledgers(
             return Ok(None);
         };
         expected.insert(name.clone(), ledgers);
+    }
+    Ok(Some(expected))
+}
+
+fn recorded_machine_execution_ledgers(
+    plan: &Path,
+    services: &[String],
+) -> Result<Option<BTreeMap<String, ExecutionLedgerEvidence>>, String> {
+    if plan.file_name().and_then(|name| name.to_str()) != Some("replay-plan.json") {
+        return Ok(None);
+    }
+    let bundle = plan
+        .parent()
+        .ok_or_else(|| format!("replay plan has no parent directory: {}", plan.display()))?;
+    let mut expected = BTreeMap::new();
+    for name in services {
+        let result_path = bundle.join("services").join(name).join("result.json");
+        let result = fs::read(&result_path)
+            .map_err(|error| format!("cannot read {}: {error}", result_path.display()))?;
+        let recorded: RecordedServiceResult = serde_json::from_slice(&result)
+            .map_err(|error| format!("cannot parse {}: {error}", result_path.display()))?;
+        let Some(ledger) = recorded.machine_execution_ledger else {
+            return Ok(None);
+        };
+        expected.insert(name.clone(), ledger);
     }
     Ok(Some(expected))
 }
@@ -11531,6 +11666,7 @@ fn restore_service(
     switches: &BTreeMap<String, SharedSimSwitch>,
     execution_locations: Option<&[Vec<u64>]>,
     execution_ledgers: Option<&[ExecutionLedger]>,
+    machine_execution_ledger: Option<&ExecutionLedger>,
     checkpoint: &ServiceVmCheckpoint,
 ) -> Result<ServiceVm, String> {
     let mut resources = service_resources(service, kernel, initramfs, serial)?;
@@ -11591,6 +11727,10 @@ fn restore_service(
         }
         if let Some(execution_ledgers) = execution_ledgers {
             vmm.seed_execution_ledgers(execution_ledgers)
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(machine_execution_ledger) = machine_execution_ledger {
+            vmm.seed_machine_execution_ledger(machine_execution_ledger.clone())
                 .map_err(|error| error.to_string())?;
         }
         for (network, id) in &vm.networks {
@@ -12533,6 +12673,7 @@ mod tests {
                     private_dirty_pages: None,
                     execution_locations: None,
                     execution_ledgers: None,
+                    machine_execution_ledger: None,
                 },
             )]),
             round: 0,
@@ -12625,6 +12766,7 @@ mod tests {
                     private_dirty_pages: None,
                     execution_locations: None,
                     execution_ledgers: None,
+                    machine_execution_ledger: None,
                 },
             )]),
             round: 0,
@@ -12730,6 +12872,7 @@ mod tests {
                         private_dirty_pages: None,
                         execution_locations: None,
                         execution_ledgers: None,
+                        machine_execution_ledger: None,
                     },
                 ),
                 (
@@ -12748,6 +12891,7 @@ mod tests {
                         private_dirty_pages: None,
                         execution_locations: None,
                         execution_ledgers: None,
+                        machine_execution_ledger: None,
                     },
                 ),
             ]),
@@ -13428,6 +13572,7 @@ mod tests {
                     private_dirty_pages: None,
                     execution_locations: None,
                     execution_ledgers: None,
+                    machine_execution_ledger: None,
                 },
             )]),
             round: 0,
@@ -13453,7 +13598,8 @@ mod tests {
                     private_dirty_pages: None,
                     execution_locations: None,
                     execution_ledgers: None,
-                    },
+                    machine_execution_ledger: None,
+                },
                 ),
                 (
                     "auditor".to_owned(),
@@ -13472,9 +13618,10 @@ mod tests {
                         storage_sha256: BTreeMap::new(),
                         virtual_time_ns: None,
                         private_dirty_pages: None,
-                        execution_locations: None,
-                        execution_ledgers: None,
-                    },
+                    execution_locations: None,
+                    execution_ledgers: None,
+                    machine_execution_ledger: None,
+                },
                 ),
             ]),
             switches: BTreeMap::new(),
@@ -13875,9 +14022,10 @@ mod tests {
                 storage_sha256: BTreeMap::new(),
                 virtual_time_ns: None,
                 private_dirty_pages: None,
-                execution_locations: None,
-                execution_ledgers: None,
-            },
+                    execution_locations: None,
+                    execution_ledgers: None,
+                    machine_execution_ledger: None,
+                },
         );
         assert!(campaign_operation_serial_guards_are_ready(
             &structured,
@@ -13991,6 +14139,7 @@ mod tests {
             private_dirty_pages: None,
             execution_locations: None,
             execution_ledgers: None,
+            machine_execution_ledger: None,
         };
         let checkpoint = CampaignCheckpoint {
             services: BTreeMap::new(),
@@ -14793,6 +14942,7 @@ mod tests {
                 private_dirty_pages: None,
                 execution_locations,
                 execution_ledgers: None,
+                machine_execution_ledger: None,
             };
         let checkpoint = CampaignCheckpoint {
             switches: BTreeMap::new(),
@@ -15225,6 +15375,7 @@ mod tests {
             storage_sha256: BTreeMap::new(),
             virtual_time_ns: BTreeMap::new(),
             execution_ledgers: BTreeMap::new(),
+            machine_execution_ledgers: BTreeMap::new(),
         };
         let boundary = CampaignCheckpointBoundary {
             actions: Vec::new(),
@@ -15272,6 +15423,7 @@ mod tests {
             storage_sha256: BTreeMap::new(),
             virtual_time_ns: BTreeMap::new(),
             execution_ledgers: BTreeMap::new(),
+            machine_execution_ledgers: BTreeMap::new(),
         };
 
         assert_eq!(
@@ -15338,6 +15490,7 @@ mod tests {
             storage_sha256: BTreeMap::new(),
             virtual_time_ns: BTreeMap::new(),
             execution_ledgers: BTreeMap::new(),
+            machine_execution_ledgers: BTreeMap::new(),
         };
         let boundary = CampaignCheckpointBoundary {
             actions: Vec::new(),
@@ -15361,6 +15514,7 @@ mod tests {
             storage_sha256: BTreeMap::new(),
             virtual_time_ns: BTreeMap::new(),
             execution_ledgers: BTreeMap::new(),
+            machine_execution_ledgers: BTreeMap::new(),
         };
 
         let delta = campaign_serial_delta(&previous, &boundary);
@@ -15406,6 +15560,7 @@ mod tests {
             storage_sha256: BTreeMap::new(),
             virtual_time_ns: BTreeMap::new(),
             execution_ledgers: BTreeMap::new(),
+            machine_execution_ledgers: BTreeMap::new(),
         };
         let event = EventPlan {
             data_hex: "70696e670a".to_owned(),
@@ -15521,6 +15676,7 @@ mod tests {
                 changed_storage: Vec::new(),
                 virtual_time_delta_ns: BTreeMap::new(),
                 execution_ledgers: BTreeMap::new(),
+                machine_execution_ledgers: BTreeMap::new(),
                 state_sha256: "state".to_owned(),
             }],
             program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
@@ -15552,6 +15708,14 @@ mod tests {
                     tail: vec!["mmio_write:0xd0000000:1:41".to_owned()],
                 }],
             )]),
+            machine_execution_ledgers: BTreeMap::from([(
+                "api".to_owned(),
+                ExecutionLedgerEvidence {
+                    decisions: 3,
+                    sha256: "machine-execution".to_owned(),
+                    tail: vec!["vcpu:0:mmio_write:0xd0000000:1:41".to_owned()],
+                },
+            )]),
             state_sha256: "state".to_owned(),
             state_novel: true,
             status: "passed",
@@ -15580,6 +15744,7 @@ mod tests {
             thread_synchronization: actual.thread_synchronization.clone(),
             structured_choices: actual.structured_choices.clone(),
             execution_ledgers: actual.execution_ledgers.clone(),
+            machine_execution_ledgers: actual.machine_execution_ledgers.clone(),
             novelty: actual.novelty.clone(),
             state_sha256: actual.state_sha256.clone(),
             state_novel: true,
@@ -15603,6 +15768,16 @@ mod tests {
             .decisions += 1;
         assert!(campaign_replay_mismatches(&changed_execution, &actual)
             .contains(&"ordered KVM execution ledger".to_owned()));
+        let mut changed_machine_execution = expected.clone();
+        changed_machine_execution
+            .machine_execution_ledgers
+            .get_mut("api")
+            .expect("api machine execution ledger")
+            .decisions += 1;
+        assert!(
+            campaign_replay_mismatches(&changed_machine_execution, &actual)
+                .contains(&"machine-wide KVM execution stream".to_owned())
+        );
         let mut legacy_timeline = expected.clone();
         legacy_timeline.timeline[0].service.clear();
         legacy_timeline.timeline[0].input = CampaignInputEvidence::default();

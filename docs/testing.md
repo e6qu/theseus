@@ -78,7 +78,7 @@ three-service lost-update campaign. It verifies the required partition and
 recovery, minimizes the failure, and replays it. The same worker also executes
 Tutorials 14, 31, 33, 35, and 41 with the published runtime: an ordinary
 container, C coverage guidance, bounded thread-schedule search, pthread
-synchronization, and exact ordered KVM-exit replay. It retains every plan,
+synchronization, and exact per-vCPU and machine-wide KVM-exit replay. It retains every plan,
 locked bundle, campaign inventory, report, minimization, replay result, serial
 log, host identity, and digest-pinned runtime identity in an inventoried
 validation archive. The released CLI also

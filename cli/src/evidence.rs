@@ -18,8 +18,10 @@ const INDEX_FORMAT: &str = "theseus-native-evidence-index-v2";
 const PROOF_FORMAT: &str = "theseus-counterexample-proof-v2";
 const VALIDATION_FORMAT_V1: &str = "theseus-runtime-validation-v1";
 const VALIDATION_FORMAT_V2: &str = "theseus-runtime-validation-v2";
+const VALIDATION_FORMAT_V3: &str = "theseus-runtime-validation-v3";
 const CERTIFICATE_FORMAT_V1: &str = "theseus-runtime-certificate-v1";
 const CERTIFICATE_FORMAT_V2: &str = "theseus-runtime-certificate-v2";
+const CERTIFICATE_FORMAT_V3: &str = "theseus-runtime-certificate-v3";
 const PROPERTY: &str = "distributed_lost_update_is_unreachable";
 const REQUIRED_FAULTS: [&str; 2] = [
     "backplane:partition@setup",
@@ -81,6 +83,8 @@ struct RuntimeCertificate {
 struct CertificateServiceEvidence {
     #[serde(default)]
     execution_ledgers: Vec<ExecutionLedgerEvidence>,
+    #[serde(default)]
+    machine_execution_ledger: Option<ExecutionLedgerEvidence>,
 }
 
 #[derive(Deserialize)]
@@ -262,7 +266,10 @@ fn verify_asset_streaming(path: &Path, asset: &EvidenceAsset) -> Result<(), Evid
 fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(), EvidenceError> {
     let certificate: RuntimeCertificate = parse_json(path, bytes)?;
     require(
-        certificate.format == CERTIFICATE_FORMAT_V1 || certificate.format == CERTIFICATE_FORMAT_V2,
+        matches!(
+            certificate.format.as_str(),
+            CERTIFICATE_FORMAT_V1 | CERTIFICATE_FORMAT_V2 | CERTIFICATE_FORMAT_V3
+        ),
         "unsupported runtime certificate format",
     )?;
     require(
@@ -306,6 +313,20 @@ fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(
                         && service.execution_ledgers.iter().all(valid_execution_ledger)
                 }),
             "runtime certificate has empty or malformed ordered KVM execution evidence",
+        )?;
+    }
+    if certificate.format == CERTIFICATE_FORMAT_V3 {
+        require(
+            !certificate.services.is_empty()
+                && certificate.services.values().all(|service| {
+                    !service.execution_ledgers.is_empty()
+                        && service.execution_ledgers.iter().all(valid_execution_ledger)
+                        && service
+                            .machine_execution_ledger
+                            .as_ref()
+                            .is_some_and(valid_execution_ledger)
+                }),
+            "runtime certificate has empty or malformed machine-wide KVM execution evidence",
         )?;
     }
     Ok(())
@@ -667,7 +688,10 @@ fn verify_runtime_validation(
     let proof: RuntimeValidationProof =
         parse_json_bytes(&retained["evidence.json"], "runtime validation proof")?;
     require(
-        proof.format == VALIDATION_FORMAT_V1 || proof.format == VALIDATION_FORMAT_V2,
+        matches!(
+            proof.format.as_str(),
+            VALIDATION_FORMAT_V1 | VALIDATION_FORMAT_V2 | VALIDATION_FORMAT_V3
+        ),
         "unsupported runtime validation format",
     )?;
     require(
@@ -683,7 +707,7 @@ fn verify_runtime_validation(
         !proof.host.kernel_release.is_empty() && proof.host.kvm_api_version == 12,
         "runtime validation was not produced by KVM API version 12",
     )?;
-    let expected_scenarios = if proof.format == VALIDATION_FORMAT_V2 {
+    let expected_scenarios = if proof.format != VALIDATION_FORMAT_V1 {
         require(
             strict_required
                 .iter()
@@ -735,7 +759,7 @@ fn verify_runtime_validation(
             &format!("{name} is not a Compose plan"),
         )?;
     }
-    if proof.format == VALIDATION_FORMAT_V2 {
+    if proof.format != VALIDATION_FORMAT_V1 {
         let plan: serde_json::Value = parse_json_bytes(
             &retained["strict-execution/plan.json"],
             "strict execution plan",
@@ -828,7 +852,7 @@ fn verify_runtime_validation(
         "thread_synchronization_events",
         true,
     )?;
-    if proof.format == VALIDATION_FORMAT_V2 {
+    if proof.format != VALIDATION_FORMAT_V1 {
         verify_validation_campaign(
             &retained["strict-execution/campaign/campaign-result.json"],
             "strict execution",
@@ -839,6 +863,12 @@ fn verify_runtime_validation(
             &retained["strict-execution/campaign/campaign-result.json"],
             "strict execution",
         )?;
+        if proof.format == VALIDATION_FORMAT_V3 {
+            verify_campaign_machine_execution_ledgers(
+                &retained["strict-execution/campaign/campaign-result.json"],
+                "strict execution",
+            )?;
+        }
         verify_validation_campaign(
             &retained["strict-execution/rerun/campaign-result.json"],
             "strict execution replay",
@@ -849,6 +879,12 @@ fn verify_runtime_validation(
             &retained["strict-execution/rerun/campaign-result.json"],
             "strict execution replay",
         )?;
+        if proof.format == VALIDATION_FORMAT_V3 {
+            verify_campaign_machine_execution_ledgers(
+                &retained["strict-execution/rerun/campaign-result.json"],
+                "strict execution replay",
+            )?;
+        }
         let comparison: serde_json::Value = parse_json_bytes(
             &retained["strict-execution/comparison.json"],
             "strict execution comparison",
@@ -866,7 +902,7 @@ fn verify_runtime_validation(
     ] {
         require(!retained[name].is_empty(), &format!("{name} is empty"))?;
     }
-    if proof.format == VALIDATION_FORMAT_V2 {
+    if proof.format != VALIDATION_FORMAT_V1 {
         require(
             String::from_utf8_lossy(&retained["strict-execution/report/report.md"])
                 .contains("Execution ledger"),
@@ -906,6 +942,38 @@ fn verify_campaign_execution_ledgers(bytes: &[u8], scenario: &str) -> Result<(),
     require(
         valid,
         &format!("{scenario} has no valid ordered KVM execution ledger"),
+    )
+}
+
+fn verify_campaign_machine_execution_ledgers(
+    bytes: &[u8],
+    scenario: &str,
+) -> Result<(), EvidenceError> {
+    let value: serde_json::Value = parse_json_bytes(bytes, scenario)?;
+    let valid = value["runs"].as_array().is_some_and(|runs| {
+        runs.iter().any(|run| {
+            run["machine_execution_ledgers"]
+                .as_object()
+                .is_some_and(|services| {
+                    !services.is_empty()
+                        && services.values().all(|ledger| {
+                            ledger["decisions"].as_u64().is_some_and(|count| count > 0)
+                                && ledger["sha256"].as_str().is_some_and(|digest| {
+                                    digest.len() == 64
+                                        && digest.bytes().all(|byte| {
+                                            byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()
+                                        })
+                                })
+                                && ledger["tail"]
+                                    .as_array()
+                                    .is_some_and(|tail| !tail.is_empty())
+                        })
+                })
+        })
+    });
+    require(
+        valid,
+        &format!("{scenario} has no valid machine-wide KVM execution stream"),
     )
 }
 
@@ -1093,7 +1161,7 @@ mod tests {
         let certificate_name = format!("theseus-{TAG}-runtime-certificate-{architecture}.json");
         let plan_contents = r#"{"format":"theseus-compose-plan-v1","services":{"service":{}}}"#;
         let certificate = serde_json::to_vec_pretty(&serde_json::json!({
-            "format": if legacy { CERTIFICATE_FORMAT_V1 } else { CERTIFICATE_FORMAT_V2 },
+            "format": if legacy { CERTIFICATE_FORMAT_V1 } else { CERTIFICATE_FORMAT_V3 },
             "status": "passed",
             "profile": {"id": "linux-kvm-simulated-io-v1", "architecture": architecture},
             "source": {
@@ -1101,11 +1169,18 @@ mod tests {
                 "plan_contents": plan_contents
             },
             "repeatability": {"executions": 2},
-            "services": {"service": {"execution_ledgers": [{
-                "decisions": 1,
-                "sha256": DIGEST,
-                "tail": ["mmio_read addr=0x0 len=1"]
-            }]}}
+            "services": {"service": {
+                "execution_ledgers": [{
+                    "decisions": 1,
+                    "sha256": DIGEST,
+                    "tail": ["mmio_read addr=0x0 len=1"]
+                }],
+                "machine_execution_ledger": {
+                    "decisions": 1,
+                    "sha256": DIGEST,
+                    "tail": ["vcpu:0:mmio_read addr=0x0 len=1"]
+                }
+            }}
         }))
         .unwrap();
         fs::write(directory.join(&certificate_name), &certificate).unwrap();
@@ -1218,7 +1293,12 @@ mod tests {
                         "decisions": signal_count,
                         "sha256": DIGEST,
                         "tail": ["mmio_read addr=0x0 len=1"]
-                    }]}
+                    }]},
+                    "machine_execution_ledgers": {"api": {
+                        "decisions": signal_count,
+                        "sha256": DIGEST,
+                        "tail": ["vcpu:0:mmio_read addr=0x0 len=1"]
+                    }}
                 }]);
             }
             serde_json::to_vec(&value).unwrap()
@@ -1375,7 +1455,7 @@ mod tests {
         fs::write(
             root.join("evidence.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "format": if legacy { VALIDATION_FORMAT_V1 } else { VALIDATION_FORMAT_V2 },
+                "format": if legacy { VALIDATION_FORMAT_V1 } else { VALIDATION_FORMAT_V3 },
                 "architecture": architecture,
                 "source_commit": COMMIT,
                 "runtime": {

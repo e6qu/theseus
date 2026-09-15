@@ -527,6 +527,25 @@ impl Vmm {
             .collect())
     }
 
+    /// One ordered ledger for handled KVM exits and emulated device effects
+    /// across every vCPU in this VM.
+    pub fn machine_execution_ledger(&self) -> Result<ExecutionLedger, VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        kvm_vm
+            .vcpus_handles()
+            .first()
+            .map(VcpuHandle::machine_execution_ledger)
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution ledger".into()))
+    }
+
+    /// Portable evidence for the VM-wide ordered execution stream.
+    pub fn machine_execution_ledger_evidence(&self) -> Result<ExecutionLedgerEvidence, VmmError> {
+        Ok(self.machine_execution_ledger()?.evidence())
+    }
+
     /// Verify the fast coverage collector at a pause barrier. Every paused
     /// vCPU PC must be present in that vCPU's accumulated exit-sampled set:
     /// `VcpuEvent::Pause` records it before acknowledging the barrier. This
@@ -580,6 +599,21 @@ impl Vmm {
         for (handle, ledger) in handles.iter().zip(ledgers) {
             handle.seed_execution_ledger(ledger.clone());
         }
+        Ok(())
+    }
+
+    /// Continue a restored VM from the machine-wide ledger captured with its
+    /// parent checkpoint. All vCPU handles share the same rolling state.
+    pub fn seed_machine_execution_ledger(&self, ledger: ExecutionLedger) -> Result<(), VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        kvm_vm
+            .vcpus_handles()
+            .first()
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution ledger".into()))?
+            .seed_machine_execution_ledger(ledger);
         Ok(())
     }
 

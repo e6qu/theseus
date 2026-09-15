@@ -190,6 +190,9 @@ pub struct Vcpu {
     execution_location_exits: u64,
     /// Exact ordered ledger of guest-visible KVM exits handled for this vCPU.
     execution_ledger: Arc<Mutex<ExecutionLedger>>,
+    /// VM-wide ledger shared by every vCPU. Holding this lock while handling
+    /// an exit gives device effects one explicit total order across CPUs.
+    machine_execution_ledger: Arc<Mutex<ExecutionLedger>>,
 }
 
 /// States of the vCPU thread's run loop.
@@ -223,7 +226,12 @@ impl Vcpu {
     /// * `index` - Represents the 0-based CPU index between [0, max vcpus).
     /// * `vm` - The vm to which this vcpu will get attached.
     /// * `exit_evt` - An `EventFd` that will be written into when this vcpu exits.
-    pub fn new(index: u8, vm: &KvmVm, exit_evt: EventFd) -> Result<Self, VcpuError> {
+    pub fn new(
+        index: u8,
+        vm: &KvmVm,
+        exit_evt: EventFd,
+        machine_execution_ledger: Arc<Mutex<ExecutionLedger>>,
+    ) -> Result<Self, VcpuError> {
         let (event_sender, event_receiver) = channel();
         let (response_sender, response_receiver) = channel();
         let kvm_vcpu = KvmVcpu::new(index, vm).unwrap();
@@ -244,6 +252,7 @@ impl Vcpu {
             execution_locations: Arc::new(Mutex::new(BTreeSet::new())),
             execution_location_exits: 0,
             execution_ledger: Arc::new(Mutex::new(ExecutionLedger::default())),
+            machine_execution_ledger,
         })
     }
 
@@ -387,6 +396,7 @@ impl Vcpu {
             .map_err(StartThreadedError::CopyFd)?;
         let execution_locations = self.execution_locations.clone();
         let execution_ledger = self.execution_ledger.clone();
+        let machine_execution_ledger = self.machine_execution_ledger.clone();
         let vcpu_thread = thread::Builder::new()
             .name(format!("fc_vcpu {}", self.kvm_vcpu.index))
             .spawn(move || {
@@ -404,6 +414,7 @@ impl Vcpu {
             vcpu_fd,
             execution_locations,
             execution_ledger,
+            machine_execution_ledger,
             vcpu_thread,
         ))
     }
@@ -693,7 +704,9 @@ impl Vcpu {
             emulation_result => handle_kvm_exit_recorded(
                 &mut self.kvm_vcpu.peripherals,
                 emulation_result,
+                self.kvm_vcpu.index,
                 &self.execution_ledger,
+                &self.machine_execution_ledger,
             ),
         }
     }
@@ -702,8 +715,17 @@ impl Vcpu {
 fn handle_kvm_exit_recorded(
     peripherals: &mut Peripherals,
     emulation_result: Result<VcpuExit<'_>, errno::Error>,
+    vcpu: u8,
     ledger: &Arc<Mutex<ExecutionLedger>>,
+    machine_ledger: &Arc<Mutex<ExecutionLedger>>,
 ) -> Result<VcpuEmulation, VcpuError> {
+    // This is the first control-plane boundary in the execution stream: only
+    // one vCPU may apply guest-visible emulated device effects at a time. The
+    // selected vCPU is still host-scheduled, so replay checks and reports the
+    // resulting order rather than claiming deterministic vCPU arbitration.
+    let mut machine_ledger = machine_ledger
+        .lock()
+        .expect("machine execution ledger lock poisoned");
     let (outcome, decision) = match emulation_result {
         Ok(VcpuExit::MmioRead(address, data)) => {
             let outcome = handle_kvm_exit(peripherals, Ok(VcpuExit::MmioRead(address, &mut *data)));
@@ -742,7 +764,8 @@ fn handle_kvm_exit_recorded(
         ledger
             .lock()
             .expect("execution ledger lock poisoned")
-            .record(decision);
+            .record(decision.clone());
+        machine_ledger.record(format!("vcpu:{vcpu}:{decision}"));
     }
     outcome
 }
@@ -959,6 +982,7 @@ pub struct VcpuHandle {
     pub vcpu_fd: VcpuFd,
     execution_locations: Arc<Mutex<BTreeSet<u64>>>,
     execution_ledger: Arc<Mutex<ExecutionLedger>>,
+    machine_execution_ledger: Arc<Mutex<ExecutionLedger>>,
     // Rust JoinHandles have to be wrapped in Option if you ever plan on 'join()'ing them.
     // We want to be able to join these threads in tests.
     vcpu_thread: Option<thread::JoinHandle<()>>,
@@ -982,6 +1006,7 @@ impl VcpuHandle {
         vcpu_fd: VcpuFd,
         execution_locations: Arc<Mutex<BTreeSet<u64>>>,
         execution_ledger: Arc<Mutex<ExecutionLedger>>,
+        machine_execution_ledger: Arc<Mutex<ExecutionLedger>>,
         vcpu_thread: thread::JoinHandle<()>,
     ) -> Self {
         Self {
@@ -990,6 +1015,7 @@ impl VcpuHandle {
             vcpu_fd,
             execution_locations,
             execution_ledger,
+            machine_execution_ledger,
             vcpu_thread: Some(vcpu_thread),
         }
     }
@@ -1052,6 +1078,22 @@ impl VcpuHandle {
             .execution_ledger
             .lock()
             .expect("execution ledger lock poisoned") = ledger;
+    }
+
+    /// Clone the shared VM-wide execution ledger.
+    pub fn machine_execution_ledger(&self) -> ExecutionLedger {
+        self.machine_execution_ledger
+            .lock()
+            .expect("machine execution ledger lock poisoned")
+            .clone()
+    }
+
+    /// Continue a restored VM from its parent's machine-wide ledger.
+    pub fn seed_machine_execution_ledger(&self, ledger: ExecutionLedger) {
+        *self
+            .machine_execution_ledger
+            .lock()
+            .expect("machine execution ledger lock poisoned") = ledger;
     }
 }
 
@@ -1253,25 +1295,52 @@ pub(crate) mod tests {
     fn recorded_exit_includes_emulated_read_bytes_and_ignores_eagain() {
         let (_, mut vcpu) = setup_vcpu(0x1000);
         let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let machine_ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
         let mut data = [0xff, 0xff];
         let result = handle_kvm_exit_recorded(
             &mut vcpu.kvm_vcpu.peripherals,
             Ok(VcpuExit::MmioRead(0x10, &mut data)),
+            1,
             &ledger,
+            &machine_ledger,
         );
         assert_eq!(result.unwrap(), VcpuEmulation::Handled);
         assert_eq!(data, [0, 0]);
         let evidence = ledger.lock().unwrap().evidence();
         assert_eq!(evidence.decisions, 1);
         assert_eq!(evidence.tail, ["mmio_read:0x10:2:0000"]);
+        assert_eq!(
+            machine_ledger.lock().unwrap().evidence().tail,
+            ["vcpu:1:mmio_read:0x10:2:0000"]
+        );
+
+        let second_vcpu_ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let result = handle_kvm_exit_recorded(
+            &mut vcpu.kvm_vcpu.peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &[0x2a])),
+            0,
+            &second_vcpu_ledger,
+            &machine_ledger,
+        );
+        assert_eq!(result.unwrap(), VcpuEmulation::Handled);
+        assert_eq!(
+            machine_ledger.lock().unwrap().evidence().tail,
+            [
+                "vcpu:1:mmio_read:0x10:2:0000",
+                "vcpu:0:mmio_write:0x10:1:2a"
+            ]
+        );
 
         let result = handle_kvm_exit_recorded(
             &mut vcpu.kvm_vcpu.peripherals,
             Err(errno::Error::new(libc::EAGAIN)),
+            1,
             &ledger,
+            &machine_ledger,
         );
         assert_eq!(result.unwrap(), VcpuEmulation::Handled);
         assert_eq!(ledger.lock().unwrap().evidence().decisions, 1);
+        assert_eq!(machine_ledger.lock().unwrap().evidence().decisions, 2);
     }
 
     impl PartialEq for VcpuResponse {

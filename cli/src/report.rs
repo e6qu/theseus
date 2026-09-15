@@ -320,6 +320,8 @@ struct ServiceResult {
     faults: Vec<Fault>,
     #[serde(default)]
     execution_ledgers: Vec<ExecutionLedgerEvidence>,
+    #[serde(default)]
+    machine_execution_ledger: Option<ExecutionLedgerEvidence>,
 }
 
 #[derive(Deserialize)]
@@ -417,6 +419,8 @@ struct CampaignRun {
     structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
     #[serde(default)]
     execution_ledgers: BTreeMap<String, Vec<ExecutionLedgerEvidence>>,
+    #[serde(default)]
+    machine_execution_ledgers: BTreeMap<String, ExecutionLedgerEvidence>,
     #[serde(default)]
     state_novel: bool,
     status: String,
@@ -544,6 +548,8 @@ struct CampaignTimelineBoundary {
     virtual_time_delta_ns: BTreeMap<String, Vec<u64>>,
     #[serde(default)]
     execution_ledgers: BTreeMap<String, Vec<ExecutionLedgerEvidence>>,
+    #[serde(default)]
+    machine_execution_ledgers: BTreeMap<String, ExecutionLedgerEvidence>,
     #[serde(default)]
     state_sha256: String,
 }
@@ -1026,6 +1032,23 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
                     .join("; "),
             });
         }
+        if let Some(ledger) = &result.machine_execution_ledger {
+            checks.push(Check {
+                name: format!("{service}: machine-wide KVM execution stream"),
+                kind: "execution_replay".to_owned(),
+                status: "passed".to_owned(),
+                detail: format!(
+                    "{} decisions, sha256 {}, last {}",
+                    ledger.decisions,
+                    ledger.sha256,
+                    ledger
+                        .tail
+                        .last()
+                        .map(String::as_str)
+                        .unwrap_or("unavailable")
+                ),
+            });
+        }
         if let Some(error) = result.error {
             errors.push(format!("{service}: {error}"));
         }
@@ -1330,10 +1353,10 @@ barrier=b=>b.barrier.recorded?b.barrier.checkpoint+' at round '+b.barrier.round+
 traffic=b=>Object.entries(b.network_traffic_delta).flatMap(([service,nets])=>Object.entries(nets).map(([network,d])=>service+'.'+network+': tx '+d.tx_frames+' rx '+d.rx_frames+' drop '+d.dropped+' dup '+d.duplicated+' corrupt '+d.corrupted)).join(' · ')||'none',
 storage=b=>b.changed_storage.join(', ')||'none',
 virtualTime=b=>Object.entries(b.virtual_time_delta_ns).map(([service,clocks])=>service+': '+clocks.join(', ')+' ns').join(' · ')||'none',
-execution=b=>Object.entries(b.execution_ledgers||{{}}).flatMap(([service,ledgers])=>ledgers.map((ledger,vcpu)=>service+'/vcpu'+vcpu+': '+ledger.decisions+' decisions · '+ledger.sha256+' · last '+((ledger.tail||[]).at(-1)||'unavailable'))).join(' · ')||'unrecorded (legacy)',
+execution=b=>[...Object.entries(b.execution_ledgers||{{}}).flatMap(([service,ledgers])=>ledgers.map((ledger,vcpu)=>service+'/vcpu'+vcpu+': '+ledger.decisions+' decisions · '+ledger.sha256+' · last '+((ledger.tail||[]).at(-1)||'unavailable'))),...Object.entries(b.machine_execution_ledgers||{{}}).map(([service,ledger])=>service+'/machine: '+ledger.decisions+' decisions · '+ledger.sha256+' · last '+((ledger.tail||[]).at(-1)||'unavailable'))].join(' · ')||'unrecorded (legacy)',
 rows=m.campaign_runs.flatMap(r=>r.timeline.map(b=>[String(r.index),b.id||'legacy',b.operation,b.service||'driver (legacy)',input(b),delivery(b),barrier(b),String(b.round),delta(b),b.markers.join(' ')||'none',locations(b),scheduling(b),b.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',Object.entries(b.serial_sha256).map(([service,hash])=>service+':'+hash).join(' ')||'none',serial(b),traffic(b),storage(b),virtualTime(b),execution(b),b.state_sha256||'none'])),
 s=section('Operation boundaries');
-s.append(el('p','Each row is the paused checkpoint after one operation. Target names the service whose UART received it. UART input is an escaped, bounded copy of the exact delivered bytes; its hash covers the complete input in the locked replay plan. UART delivery records accepted bytes, guest FIFO reads, and queued bytes. UART barrier records that the named marker arrived after that input, with its post-input response hash and excerpt. The execution ledger hashes every ordered guest-visible KVM exit handled through this boundary. The delta compares the checkpoint with the preceding one. New serial output is also escaped and bounded. Network counters, changed storage, and virtual-time deltas show state produced by this operation.'));
+s.append(el('p','Each row is the paused checkpoint after one operation. Target names the service whose UART received it. UART input is an escaped, bounded copy of the exact delivered bytes; its hash covers the complete input in the locked replay plan. UART delivery records accepted bytes, guest FIFO reads, and queued bytes. UART barrier records that the named marker arrived after that input, with its post-input response hash and excerpt. Per-vCPU ledgers preserve local order; the machine ledger preserves the total order of handled exits and emulated device effects across vCPUs. The delta compares the checkpoint with the preceding one. New serial output is also escaped and bounded. Network counters, changed storage, and virtual-time deltas show state produced by this operation.'));
 s.append(table(rows,['Run','Boundary ID','Operation','Target','UART input','UART delivery','UART barrier','Round','Delta','Markers','Instruction locations','Thread scheduling','Applied actions','Serial SHA-256','New serial output','Network traffic','Changed storage','Virtual time delta','Execution ledger','State SHA-256']));
 }}
 if(m.campaign_runs.some(r=>Object.keys(r.thread_synchronization).length)){{const rows=m.campaign_runs.flatMap(r=>Object.entries(r.thread_synchronization).flatMap(([service,events])=>events.map(e=>[String(r.index),service,'#'+e.event,'t'+e.thread,e.operation,e.object_kind+'-'+e.object,e.peer_thread===null?'none':'t'+e.peer_thread]))),s=section('Thread synchronization');s.append(table(rows,['Run','Service','Event','Thread','Operation','Object','Peer thread']));}}
@@ -1763,7 +1786,7 @@ fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 20]> {
 }
 
 fn campaign_execution_ledger_label(boundary: &CampaignTimelineBoundary) -> String {
-    let labels = boundary
+    let mut labels = boundary
         .execution_ledgers
         .iter()
         .flat_map(|(service, ledgers)| {
@@ -1781,6 +1804,23 @@ fn campaign_execution_ledger_label(boundary: &CampaignTimelineBoundary) -> Strin
             })
         })
         .collect::<Vec<_>>();
+    labels.extend(
+        boundary
+            .machine_execution_ledgers
+            .iter()
+            .map(|(service, ledger)| {
+                format!(
+                    "{service}/machine:{} decisions:{}:last {}",
+                    ledger.decisions,
+                    ledger.sha256,
+                    ledger
+                        .tail
+                        .last()
+                        .map(String::as_str)
+                        .unwrap_or("unavailable")
+                )
+            }),
+    );
     if labels.is_empty() {
         "unrecorded (legacy)".to_owned()
     } else {
@@ -2077,7 +2117,7 @@ fn render_markdown(model: &ReportModel) -> String {
         .flat_map(campaign_timeline_labels)
         .collect::<Vec<_>>();
     if !timeline.is_empty() {
-        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. Boundary ID is stable within the replayed schedule. Target is the service whose UART received it. UART input is an escaped, bounded copy of the delivered bytes; its hash covers the complete input in the locked replay plan. UART delivery records accepted bytes, guest FIFO reads, and queued bytes. UART barrier records that the named marker arrived after that input, with its post-input response hash and excerpt. The execution ledger hashes every ordered guest-visible KVM exit handled through this boundary. The delta compares the checkpoint with the preceding one.\n\n| Run | Boundary ID | Operation | Target | UART input | UART delivery | UART barrier | Round | Delta | Markers | Instruction locations | Thread execution | Applied actions | Serial SHA-256 | New serial output | Network traffic | Changed storage | Virtual time delta | Execution ledger | State SHA-256 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+        output.push_str("\n## Operation boundaries\n\nEach row is the paused checkpoint after one operation. Boundary ID is stable within the replayed schedule. Target is the service whose UART received it. UART input is an escaped, bounded copy of the delivered bytes; its hash covers the complete input in the locked replay plan. UART delivery records accepted bytes, guest FIFO reads, and queued bytes. UART barrier records that the named marker arrived after that input, with its post-input response hash and excerpt. Per-vCPU ledgers preserve local order; the machine ledger preserves the total order of handled exits and emulated device effects across vCPUs. The delta compares the checkpoint with the preceding one.\n\n| Run | Boundary ID | Operation | Target | UART input | UART delivery | UART barrier | Round | Delta | Markers | Instruction locations | Thread execution | Applied actions | Serial SHA-256 | New serial output | Network traffic | Changed storage | Virtual time delta | Execution ledger | State SHA-256 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
         for [run, id, operation, target, input, delivery, barrier, round, delta, markers, locations, scheduling, actions, serial, serial_output, traffic, storage, time, execution, state] in
             timeline
         {
@@ -2523,13 +2563,15 @@ mod tests {
         write_json(
             &directory.path().join("campaign-result.json"),
             &format!(
-                r#"{{"format":"theseus-compose-campaign-result-v1","status":"passed","driver":"api","execution_decisions":12,"runs":[{{"index":0,"operations":["health"],"status":"passed","execution_ledgers":{{"api":[{{"decisions":12,"sha256":"{digest}","tail":["mmio_read:0x10:1:2a"]}}]}},"timeline":[{{"operation":"health","service":"api","execution_ledgers":{{"api":[{{"decisions":12,"sha256":"{digest}","tail":["mmio_read:0x10:1:2a"]}}]}}}}]}}]}}"#
+                r#"{{"format":"theseus-compose-campaign-result-v1","status":"passed","driver":"api","execution_decisions":12,"runs":[{{"index":0,"operations":["health"],"status":"passed","execution_ledgers":{{"api":[{{"decisions":12,"sha256":"{digest}","tail":["mmio_read:0x10:1:2a"]}}]}},"machine_execution_ledgers":{{"api":{{"decisions":12,"sha256":"{digest}","tail":["vcpu:0:mmio_read:0x10:1:2a"]}}}},"timeline":[{{"operation":"health","service":"api","execution_ledgers":{{"api":[{{"decisions":12,"sha256":"{digest}","tail":["mmio_read:0x10:1:2a"]}}]}},"machine_execution_ledgers":{{"api":{{"decisions":12,"sha256":"{digest}","tail":["vcpu:0:mmio_read:0x10:1:2a"]}}}}}}]}}]}}"#
             ),
         );
 
         let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
         assert!(markdown.contains("12 ordered KVM execution decisions retained"));
         assert!(markdown.contains("api/vcpu0:12 decisions"));
+        assert!(markdown.contains("api/machine:12 decisions"));
+        assert!(markdown.contains("last vcpu:0:mmio_read:0x10:1:2a"));
         assert!(markdown.contains("last mmio_read:0x10:1:2a"));
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();

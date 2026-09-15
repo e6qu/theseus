@@ -41,7 +41,7 @@ use crate::vstate::memory::{
     GuestRegionMmapExt, MemoryError,
 };
 use crate::vstate::resources::ResourceAllocator;
-use crate::vstate::vcpu::{StartThreadedError, VcpuError, VcpuHandle};
+use crate::vstate::vcpu::{ExecutionLedger, StartThreadedError, VcpuError, VcpuHandle};
 use crate::{DirtyBitmap, Vcpu, mem_size_mib};
 
 /// Error type for [`KvmVm::start_vcpus`].
@@ -81,6 +81,9 @@ pub struct VmCommon {
     pub uffd: Option<Uffd>,
     /// Handles to vCPU threads.
     pub vcpus_handles: Mutex<Vec<VcpuHandle>>,
+    /// One total order for handled exits and their device effects across all
+    /// vCPUs in this VM.
+    pub machine_execution_ledger: Arc<Mutex<ExecutionLedger>>,
     /// Event fd written to by vCPUs on exit.
     pub vcpus_exit_evt: EventFd,
 }
@@ -190,6 +193,7 @@ impl KvmVm {
             kvm,
             uffd: None,
             vcpus_handles: Mutex::new(Vec::new()),
+            machine_execution_ledger: Arc::new(Mutex::new(ExecutionLedger::default())),
             vcpus_exit_evt,
         })
     }
@@ -206,7 +210,13 @@ impl KvmVm {
                 .vcpus_exit_evt()
                 .try_clone()
                 .map_err(VmError::EventFd)?;
-            let vcpu = Vcpu::new(cpu_idx, self, exit_evt).map_err(VmError::CreateVcpu)?;
+            let vcpu = Vcpu::new(
+                cpu_idx,
+                self,
+                exit_evt,
+                self.common.machine_execution_ledger.clone(),
+            )
+            .map_err(VmError::CreateVcpu)?;
             vcpus.push(vcpu);
         }
 
