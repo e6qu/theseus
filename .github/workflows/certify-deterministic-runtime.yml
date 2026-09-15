@@ -136,6 +136,7 @@ jobs:
               cp /opt/theseus/vmlinux service/guest/vmlinux
               # Temporary compatibility probe for the pre-fix release used while developing this workflow.
               sed -i "/^\[\[storage\]\]/,/^$/d" service/theseus.toml
+              sed -i "/echo started/a echo THES:M:42" service/init
               cp /bin/busybox service/guest/root/bin/busybox
               for applet in mount sleep poweroff; do
                 ln -sf busybox "service/guest/root/bin/$applet"
@@ -144,8 +145,16 @@ jobs:
               chmod +x service/guest/root/init
               (cd service/guest/root && find . -print | cpio -o -H newc --quiet | gzip > ../initramfs.cpio.gz)
               theseus compose plan > /tutorial/plan.json
-              sed -i "/\"storage\": \[/,/^        \],/c\        \"storage\": []," /tutorial/plan.json
-              grep -F '"storage": []' /tutorial/plan.json
+              ! grep -F "\"id\": \"state\"" /tutorial/plan.json
+            '
+          jq '.services.service.networks = [] | .networks = {}' \
+            docs/tutorials/11-certify-runtime/plan.json > \
+            docs/tutorials/11-certify-runtime/plan.tmp
+          mv docs/tutorials/11-certify-runtime/plan.tmp \
+            docs/tutorials/11-certify-runtime/plan.json
+          docker run --rm --privileged \
+            -v "$GITHUB_WORKSPACE/docs/tutorials/11-certify-runtime":/tutorial \
+            -w /tutorial "$IMAGE:$TAG-$ARCH" sh -ec '
               theseus-topology certify \
                 --plan /tutorial/plan.json --output /tutorial/certificate
               grep -F '"'"'"status"'"'": "'"'"passed"'"'"' \

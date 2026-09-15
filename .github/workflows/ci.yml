@@ -70,6 +70,7 @@ jobs:
             detrng \
             rate_limiter::tests
           cargo test -p vmm --lib simulated_storage -- --test-threads=1
+          cargo test -p vmm --lib unactivated_simulated -- --test-threads=1
 
       - name: Check self-contained tutorials
         run: |
