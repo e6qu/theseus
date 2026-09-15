@@ -75,17 +75,18 @@ execution events can still escape control.
 
 Antithesis schedules seven command types inside test templates. Theseus now
 accepts the same image layout, filename prefixes, and lifecycle vocabulary.
-It discovers one selected template across service images, creates bounded
-parallel command slots, and generates histories that respect first-command
-setup, singleton exclusivity, serial/parallel boundaries, anytime work, and
-terminal checks. Eventually kills live test commands and both terminal modes
-restore active campaign faults first. Paths and roles survive plan locking,
-replay, minimization, decision traces, and reports.
+It discovers every template across service images, selects exactly one per
+timeline, creates bounded parallel command slots, and generates histories that
+respect first-command setup, singleton exclusivity, serial/parallel boundaries,
+anytime work, and terminal checks. Eventually kills live test commands and
+both terminal modes restore active campaign faults first. Template identity,
+paths, and roles survive plan locking, replay, minimization, decision traces,
+and reports.
 
-Antithesis still has the mature scheduler: it selects among multiple templates,
-adapts concurrency over long hosted runs, and has much broader operational
-validation. Theseus requires a selected template and a finite concurrency
-bound, or explicit Compose operations for custom guards and inputs.
+Antithesis still has the mature scheduler: it adapts concurrency over long
+hosted runs and has much broader operational validation. Theseus uses a finite
+concurrency bound and a bounded local corpus, or explicit Compose operations
+for custom guards and inputs.
 
 Reference: [Antithesis test templates](https://antithesis.com/docs/product/writing_tests/test_templates/).
 

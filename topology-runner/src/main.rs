@@ -64,6 +64,8 @@ struct CampaignPlan {
     driver: String,
     #[serde(default)]
     test_template: Option<String>,
+    #[serde(default)]
+    test_templates: Vec<String>,
     #[serde(default = "default_test_command_parallelism")]
     max_parallel_commands: u8,
     /// The deterministic policy used to order an otherwise fixed campaign
@@ -141,6 +143,8 @@ enum CampaignCoverage {
 #[derive(Debug, Deserialize, Serialize)]
 struct CampaignOperation {
     name: String,
+    #[serde(default)]
+    test_template: Option<String>,
     #[serde(default)]
     service: String,
     #[serde(default)]
@@ -668,6 +672,8 @@ struct CampaignResult {
     driver: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     test_template: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    test_templates: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_parallel_commands: Option<u8>,
     guidance: CampaignGuidance,
@@ -696,6 +702,8 @@ struct CampaignResult {
 #[derive(Debug, Serialize)]
 struct CampaignRun {
     index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    test_template: Option<String>,
     operations: Vec<String>,
     /// Canonical, human-readable execution decisions in boundary order. This
     /// is replay-checked in addition to the richer typed evidence below.
@@ -1009,6 +1017,8 @@ struct RecordedCampaignResult {
 
 #[derive(Debug, Clone, Deserialize)]
 struct RecordedCampaignRun {
+    #[serde(default)]
+    test_template: Option<String>,
     operations: Vec<String>,
     #[serde(default)]
     decision_trace: Vec<String>,
@@ -3268,6 +3278,7 @@ fn execute_campaign(
         });
         let run = CampaignRun {
             index,
+            test_template: campaign_schedule_test_template(&campaign, &schedule).map(str::to_owned),
             operations: schedule
                 .operations
                 .iter()
@@ -3379,11 +3390,15 @@ fn execute_campaign(
                 .expect("campaign remains in replay plan")
                 .test_template
                 .clone(),
+            test_templates: replay
+                .campaign
+                .as_ref()
+                .expect("campaign remains in replay plan")
+                .test_templates
+                .clone(),
             max_parallel_commands: replay.campaign.as_ref().and_then(|campaign| {
-                campaign
-                    .test_template
-                    .as_ref()
-                    .map(|_| campaign.max_parallel_commands)
+                (campaign.test_template.is_some() || !campaign.test_templates.is_empty())
+                    .then_some(campaign.max_parallel_commands)
             }),
             guidance,
             coverage,
@@ -4104,6 +4119,9 @@ fn campaign_decision_trace(
     timeline: &[CampaignTimelineBoundary],
 ) -> Vec<String> {
     let mut trace = Vec::new();
+    if let Some(template) = campaign_schedule_test_template(campaign, schedule) {
+        trace.push(format!("test_template:{template}"));
+    }
     for (position, (choice, boundary)) in schedule.operations.iter().zip(timeline).enumerate() {
         trace.push(format!(
             "boundary:{position}:operation:{}",
@@ -4211,16 +4229,38 @@ fn campaign_operation_inputs(operation: &CampaignOperation) -> Vec<CampaignOpera
     operation.inputs.clone()
 }
 
-fn campaign_operation_choices(campaign: &CampaignPlan) -> Vec<CampaignOperationChoice> {
+fn campaign_operation_choices(
+    campaign: &CampaignPlan,
+    test_template: Option<&str>,
+) -> Vec<CampaignOperationChoice> {
     campaign
         .operations
         .iter()
         .enumerate()
+        .filter(|(_, operation)| {
+            test_template
+                .is_none_or(|template| operation.test_template.as_deref() == Some(template))
+        })
         .flat_map(|(operation, definition)| {
             (0..campaign_operation_inputs(definition).len())
                 .map(move |input| CampaignOperationChoice { operation, input })
         })
         .collect()
+}
+
+fn campaign_schedule_test_template<'a>(
+    campaign: &'a CampaignPlan,
+    schedule: &CampaignSchedule,
+) -> Option<&'a str> {
+    schedule
+        .operations
+        .first()
+        .and_then(|choice| {
+            campaign.operations[choice.operation]
+                .test_template
+                .as_deref()
+        })
+        .or(campaign.test_template.as_deref())
 }
 
 fn campaign_operation_input(
@@ -4381,7 +4421,7 @@ fn campaign_operation_choice_by_name(
     campaign: &CampaignPlan,
     name: &str,
 ) -> Result<CampaignOperationChoice, String> {
-    let matches = campaign_operation_choices(campaign)
+    let matches = campaign_operation_choices(campaign, None)
         .into_iter()
         .filter(|choice| campaign_operation_choice_name(campaign, *choice) == name)
         .collect::<Vec<_>>();
@@ -5201,7 +5241,41 @@ fn campaign_fault_selections(
 /// breadth-first order. A manifest controls the depth explicitly; the global
 /// candidate cap remains the final guard for wide workloads and fault products.
 fn campaign_operation_histories(campaign: &CampaignPlan) -> Vec<Vec<CampaignOperationChoice>> {
-    let choices = campaign_operation_choices(campaign);
+    let scopes = if campaign.test_templates.is_empty() {
+        vec![None]
+    } else {
+        campaign
+            .test_templates
+            .iter()
+            .map(|template| Some(template.as_str()))
+            .collect::<Vec<_>>()
+    };
+    let mut by_scope = scopes
+        .into_iter()
+        .map(|scope| campaign_operation_histories_for_template(campaign, scope))
+        .collect::<Vec<_>>();
+    if by_scope.len() == 1 {
+        return by_scope.pop().unwrap_or_default();
+    }
+    let mut histories = Vec::new();
+    for index in 0..by_scope.iter().map(Vec::len).max().unwrap_or_default() {
+        for scoped in &by_scope {
+            if let Some(history) = scoped.get(index) {
+                histories.push(history.clone());
+                if histories.len() == MAX_CAMPAIGN_CANDIDATES {
+                    return histories;
+                }
+            }
+        }
+    }
+    histories
+}
+
+fn campaign_operation_histories_for_template(
+    campaign: &CampaignPlan,
+    test_template: Option<&str>,
+) -> Vec<Vec<CampaignOperationChoice>> {
+    let choices = campaign_operation_choices(campaign, test_template);
     let histories = ordered_operation_histories(
         choices.len(),
         usize::from(campaign.max_operations_per_run),
@@ -5313,6 +5387,21 @@ fn campaign_uses_test_commands(campaign: &CampaignPlan) -> bool {
 }
 
 fn validate_campaign_test_commands(campaign: &CampaignPlan) -> Result<(), String> {
+    if campaign.test_template.is_some() && !campaign.test_templates.is_empty() {
+        return Err("campaign plan declares both test_template and test_templates".to_owned());
+    }
+    let declared_templates = campaign
+        .test_templates
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if declared_templates.len() != campaign.test_templates.len()
+        || declared_templates
+            .iter()
+            .any(|template| template.is_empty())
+    {
+        return Err("campaign plan has empty or duplicate test_templates".to_owned());
+    }
     let declared = campaign
         .operations
         .iter()
@@ -5327,18 +5416,47 @@ fn validate_campaign_test_commands(campaign: &CampaignPlan) -> Result<(), String
     if !campaign.stages.is_empty() {
         return Err("test-command plan also declares legacy stages".to_owned());
     }
-    if !campaign.operations.iter().any(|operation| {
-        matches!(
-            operation.command,
-            Some(
-                CampaignTestCommand::ParallelDriver
-                    | CampaignTestCommand::SerialDriver
-                    | CampaignTestCommand::SingletonDriver
-                    | CampaignTestCommand::Anytime
-            )
-        )
-    }) {
-        return Err("test-command plan has no driver or anytime command".to_owned());
+    if !campaign.test_templates.is_empty()
+        && campaign.operations.iter().any(|operation| {
+            operation
+                .test_template
+                .as_deref()
+                .is_none_or(|template| !declared_templates.contains(template))
+        })
+    {
+        return Err(
+            "multi-template campaign operation has no declared test-template scope".to_owned(),
+        );
+    }
+    let scopes = if campaign.test_templates.is_empty() {
+        vec![None]
+    } else {
+        campaign
+            .test_templates
+            .iter()
+            .map(|template| Some(template.as_str()))
+            .collect::<Vec<_>>()
+    };
+    for scope in scopes {
+        if !campaign.operations.iter().any(|operation| {
+            scope.is_none_or(|template| operation.test_template.as_deref() == Some(template))
+                && matches!(
+                    operation.command,
+                    Some(
+                        CampaignTestCommand::ParallelDriver
+                            | CampaignTestCommand::SerialDriver
+                            | CampaignTestCommand::SingletonDriver
+                            | CampaignTestCommand::Anytime
+                    )
+                )
+        }) {
+            return Err(match scope {
+                Some(template) => {
+                    format!("test template {template:?} has no driver or anytime command")
+                }
+                None => "test-command plan has no driver or anytime command".to_owned(),
+            });
+        }
     }
     Ok(())
 }
@@ -5354,14 +5472,31 @@ fn campaign_test_command_is_ready(
     let Some(command) = campaign.operations[choice.operation].command else {
         return false;
     };
+    let candidate_template = campaign.operations[choice.operation]
+        .test_template
+        .as_deref()
+        .or(campaign.test_template.as_deref());
+    if history.first().is_some_and(|prior| {
+        campaign.operations[prior.operation]
+            .test_template
+            .as_deref()
+            .or(campaign.test_template.as_deref())
+            != candidate_template
+    }) {
+        return false;
+    }
     let commands = history
         .iter()
         .filter_map(|prior| campaign.operations[prior.operation].command)
         .collect::<Vec<_>>();
-    let first_declared = campaign
-        .operations
-        .iter()
-        .any(|operation| operation.command == Some(CampaignTestCommand::First));
+    let first_declared = campaign.operations.iter().any(|operation| {
+        operation
+            .test_template
+            .as_deref()
+            .or(campaign.test_template.as_deref())
+            == candidate_template
+            && operation.command == Some(CampaignTestCommand::First)
+    });
     let first_finished = commands.first() == Some(&CampaignTestCommand::First);
     let terminal_started = commands.iter().any(|prior| {
         matches!(
@@ -5414,20 +5549,48 @@ fn campaign_test_history_is_complete(
         .iter()
         .filter_map(|choice| campaign.operations[choice.operation].command)
         .collect::<Vec<_>>();
-    let first_declared = campaign
-        .operations
-        .iter()
-        .any(|operation| operation.command == Some(CampaignTestCommand::First));
+    let template = history.first().and_then(|choice| {
+        campaign.operations[choice.operation]
+            .test_template
+            .as_deref()
+            .or(campaign.test_template.as_deref())
+    });
+    let first_declared = campaign.operations.iter().any(|operation| {
+        operation
+            .test_template
+            .as_deref()
+            .or(campaign.test_template.as_deref())
+            == template
+            && operation.command == Some(CampaignTestCommand::First)
+    });
+    let driver_declared = campaign.operations.iter().any(|operation| {
+        operation
+            .test_template
+            .as_deref()
+            .or(campaign.test_template.as_deref())
+            == template
+            && matches!(
+                operation.command,
+                Some(
+                    CampaignTestCommand::ParallelDriver
+                        | CampaignTestCommand::SerialDriver
+                        | CampaignTestCommand::SingletonDriver
+                )
+            )
+    });
     let lifecycle_started =
         !first_declared || commands.first() == Some(&CampaignTestCommand::First);
     let useful = commands.iter().any(|command| {
-        matches!(
-            command,
-            CampaignTestCommand::ParallelDriver
-                | CampaignTestCommand::SerialDriver
-                | CampaignTestCommand::SingletonDriver
-                | CampaignTestCommand::Anytime
-        )
+        if driver_declared {
+            matches!(
+                command,
+                CampaignTestCommand::ParallelDriver
+                    | CampaignTestCommand::SerialDriver
+                    | CampaignTestCommand::SingletonDriver
+            )
+        } else {
+            *command == CampaignTestCommand::Anytime
+        }
     });
     let eventual_terminates_live_commands =
         commands.last() == Some(&CampaignTestCommand::Eventually);
@@ -5548,6 +5711,21 @@ fn recorded_campaign_schedules(
                 .iter()
                 .map(|name| campaign_operation_choice_by_name(campaign, name))
                 .collect::<Result<Vec<_>, _>>()?;
+            let selected_template = operations.first().and_then(|choice| {
+                campaign.operations[choice.operation]
+                    .test_template
+                    .as_deref()
+                    .or(campaign.test_template.as_deref())
+            });
+            if run
+                .test_template
+                .as_deref()
+                .is_some_and(|recorded| selected_template != Some(recorded))
+            {
+                return Err(
+                    "recorded campaign test template differs from its operations".to_owned(),
+                );
+            }
             if campaign_uses_test_commands(campaign)
                 && !campaign_test_history_is_complete(campaign, &operations)
             {
@@ -5620,6 +5798,9 @@ fn verify_recorded_campaign_guidance(
 
 fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignRun) -> Vec<String> {
     let mut mismatches = Vec::new();
+    if expected.test_template.is_some() && expected.test_template != actual.test_template {
+        mismatches.push("test template".to_owned());
+    }
     if expected.operations != actual.operations {
         mismatches.push("operations".to_owned());
     }
@@ -12639,6 +12820,7 @@ mod tests {
         let mut campaign = CampaignPlan {
             driver: "api".to_owned(),
             test_template: None,
+            test_templates: Vec::new(),
             max_parallel_commands: 2,
             guidance: CampaignGuidance::Coverage,
             coverage: CampaignCoverage::ExecutionLocations,
@@ -12646,6 +12828,7 @@ mod tests {
             operations: vec![
                 CampaignOperation {
                     name: "write".to_owned(),
+                    test_template: None,
                     service: "api".to_owned(),
                     command: None,
                     test_command_path: None,
@@ -12716,6 +12899,7 @@ mod tests {
                 },
                 CampaignOperation {
                     name: "read".to_owned(),
+                    test_template: None,
                     service: "api".to_owned(),
                     command: None,
                     test_command_path: None,
@@ -14781,6 +14965,7 @@ mod tests {
     fn campaign_replay_verifies_guidance_evidence() {
         let actual = CampaignRun {
             index: 0,
+            test_template: Some("main".to_owned()),
             operations: vec!["write".to_owned()],
             decision_trace: vec!["boundary:0:operation:write".to_owned()],
             thread_schedule_prefixes: vec![vec![0, 1]],
@@ -14881,6 +15066,7 @@ mod tests {
             novelty: vec!["checkpoint".to_owned()],
         };
         let expected = RecordedCampaignRun {
+            test_template: actual.test_template.clone(),
             operations: actual.operations.clone(),
             decision_trace: actual.decision_trace.clone(),
             thread_schedule_prefixes: actual.thread_schedule_prefixes.clone(),
@@ -14908,6 +15094,10 @@ mod tests {
         };
 
         assert!(campaign_replay_mismatches(&expected, &actual).is_empty());
+        let mut changed_template = expected.clone();
+        changed_template.test_template = Some("other".to_owned());
+        assert!(campaign_replay_mismatches(&changed_template, &actual)
+            .contains(&"test template".to_owned()));
         let mut changed_decision = expected.clone();
         changed_decision.decision_trace[0] = "boundary:0:operation:other".to_owned();
         assert!(campaign_replay_mismatches(&changed_decision, &actual)
@@ -15394,6 +15584,71 @@ mod tests {
                     .position(|name| *name == "final")
                     .is_none_or(|index| index + 1 == names.len())
         }));
+        assert!(histories.iter().all(|history| {
+            history.iter().any(|choice| {
+                campaign.operations[choice.operation].command
+                    == Some(CampaignTestCommand::SingletonDriver)
+            }) || history.iter().any(|choice| {
+                campaign.operations[choice.operation].command
+                    == Some(CampaignTestCommand::SerialDriver)
+            })
+        }));
+    }
+
+    #[test]
+    fn multiple_test_templates_are_selected_once_and_interleaved() {
+        let campaign: CampaignPlan = serde_json::from_value(serde_json::json!({
+            "driver": "api",
+            "test_templates": ["alpha", "beta"],
+            "operations": [
+                {"name": "alpha_write", "test_template": "alpha", "command": "parallel_driver", "inputs": [{"name": "default", "input_hex": "00"}], "max_uses": 1},
+                {"name": "alpha_check", "test_template": "alpha", "command": "finally", "inputs": [{"name": "default", "input_hex": "01"}], "max_uses": 1},
+                {"name": "beta_smoke", "test_template": "beta", "command": "singleton_driver", "inputs": [{"name": "default", "input_hex": "02"}], "max_uses": 1},
+                {"name": "beta_check", "test_template": "beta", "command": "finally", "inputs": [{"name": "default", "input_hex": "03"}], "max_uses": 1}
+            ],
+            "max_runs": 16,
+            "max_faults_per_run": 1,
+            "max_operations_per_run": 2
+        }))
+        .unwrap();
+
+        validate_campaign_test_commands(&campaign).unwrap();
+        let histories = campaign_operation_histories(&campaign);
+        assert!(!histories.is_empty());
+        assert_eq!(
+            campaign.operations[histories[0][0].operation]
+                .test_template
+                .as_deref(),
+            Some("alpha")
+        );
+        assert_eq!(
+            campaign.operations[histories[1][0].operation]
+                .test_template
+                .as_deref(),
+            Some("beta")
+        );
+        assert!(histories.iter().all(|history| {
+            let templates = history
+                .iter()
+                .map(|choice| {
+                    campaign.operations[choice.operation]
+                        .test_template
+                        .as_deref()
+                        .unwrap()
+                })
+                .collect::<BTreeSet<_>>();
+            templates.len() == 1
+        }));
+
+        let schedule = CampaignSchedule {
+            operations: histories[0].clone(),
+            faults: Vec::new(),
+            thread_schedule_prefixes: vec![Vec::new(); histories[0].len()],
+        };
+        assert_eq!(
+            campaign_schedule_test_template(&campaign, &schedule),
+            Some("alpha")
+        );
     }
 
     #[test]
