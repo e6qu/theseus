@@ -62,6 +62,7 @@ theseus compose explore --output campaign compose.yaml
 grep -E '"execution_decisions": [1-9][0-9]*' campaign/campaign-result.json
 grep -n -A8 '"execution_ledgers"' campaign/campaign-result.json
 grep -n -A8 '"machine_execution_ledgers"' campaign/campaign-result.json
+grep -n -A4 '"machine_execution_traces"' campaign/campaign-result.json
 theseus compose replay campaign --output rerun
 grep -A2 '"replay_verification"' rerun/campaign-result.json
 theseus compare campaign rerun > comparison.json
@@ -70,16 +71,16 @@ grep '"status": "same"' comparison.json
 
 Each ledger contains a decision count, a SHA-256 identity for the complete
 stream, and the last 32 readable decisions. Per-vCPU ledgers preserve local
-order. The machine ledger prefixes each decision with its vCPU and preserves
-one total order for handled exits and their emulated device effects. The tail
-can show MMIO, PIO, and shutdown exits. The digest also covers decisions
-omitted from the tail.
+order. The exact machine trace prefixes each decision with its vCPU and
+preserves the complete order needed to drive replay. The machine ledger is its
+compact digest and readable tail.
 
-Replay fails if either low-level stream changes, even when final HTTP and
-serial output still look the same. Theseus serializes emulated device effects,
-but the host still selects which vCPU reaches that boundary next. This detects
-that ordering divergence; it does not yet control vCPU arbitration or
-instruction scheduling.
+Before a restored campaign leaf runs, Theseus validates its inherited
+checkpoint prefix and installs the remaining exact trace. At each emulated
+device effect it admits only the recorded vCPU and verifies the exit kind,
+address, width, and payload. Replay fails on the first wrong turn or value,
+even when final HTTP and serial output might otherwise look the same. This does
+not control instruction scheduling between KVM exits.
 
 ## 6. Clean up (optional)
 

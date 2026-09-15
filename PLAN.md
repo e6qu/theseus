@@ -77,10 +77,10 @@ Theseus currently has:
 - A replay-checked, human-readable decision trace for each Compose campaign
   run, covering operation inputs, observed choices, thread selections, and
   applied actions at deterministic operation boundaries.
-- Per-vCPU rolling SHA-256 ledgers plus one VM-wide stream of handled KVM exits
-  and emulated device effects. A VM lock serializes device effects into the
-  machine stream. Checkpoint children inherit both forms, campaign boundaries
-  retain them, and replay compares them exactly.
+- Per-vCPU rolling SHA-256 ledgers plus one bounded, exact VM-wide stream of
+  handled KVM exits and emulated device effects. Checkpoint children inherit
+  it. Locked replay uses it as an admission protocol: only the recorded vCPU
+  may take the next device-effect turn, and the exact exit payload must match.
 - A Test Composer-shaped lifecycle for ordinary Compose operations, including
   setup alternatives, overlapping named processes, exclusive and singleton
   drivers, anytime observations, and terminal eventual/final checks.
@@ -99,10 +99,10 @@ The baseline has important limits:
 - Determinism depends on implemented interception points. Theseus does not yet
   provide instruction-level determinism for an otherwise unmodified Linux
   system.
-- The VM-wide KVM-exit stream serializes emulated device effects and detects
-  cross-vCPU drift, but host scheduling still selects the next vCPU. Theseus
-  does not yet control instruction, thread, timer, or interrupt ordering
-  between exits.
+- The VM-wide KVM-exit stream now controls and verifies vCPU admission at
+  emulated device-effect boundaries. Theseus still does not control guest
+  instruction, Linux thread/process, timer, or interrupt ordering between
+  those exits.
 - Guest counters can advance within an exit-counted virtual-time quantum.
 - Stock-kernel `/dev/random` and `/dev/urandom` replay requires the matching
   released kernel and Theseus random-device module.
@@ -170,13 +170,12 @@ Build a single ordered execution-decision stream that can control and replay:
 - Random and other external inputs consumed by the guest.
 - Network, storage, and process faults at exact replayable positions.
 
-The first slice now serializes handled exits and emulated device effects into
-one branch-aware machine stream while retaining each vCPU's local stream.
-Replay fails when either changes. This controls concurrent device effects but
-not arbitration: host scheduling still determines which vCPU enters the
-machine stream next. The next slice must make that selection explicit and
-replayable, then bring runnable entities, interrupt delivery, clocks, and
-external inputs under the same decision protocol.
+The first slice serializes handled exits and emulated device effects into one
+branch-aware machine stream while retaining each vCPU's local stream. Replay
+now gates each exit on the recorded vCPU turn and rejects a changed payload,
+wrong checkpoint prefix, missing suffix, or extra exit. The next slice must
+bring runnable guest entities, interrupt delivery, clocks, and external inputs
+under the same protocol between KVM exits.
 
 Move control into the lowest practical kernel, hypervisor, or paravirtualized
 boundary. Application instrumentation may expose semantics and coverage, but

@@ -12,7 +12,7 @@ has no independent head-to-head evaluation with Antithesis.
 | Workload packaging | Container-based test environment | Container images or explicit Firecracker guest inputs |
 | Test interface | Test templates and SDK assertions | Compose lifecycle commands, UART/image operations, serial properties, optional SDK |
 | Determinism | Custom deterministic hypervisor | KVM plus seeded devices, simulated I/O, and exit-counted virtual time |
-| Replay | Instruction-level deterministic reproduction | Locked-input replay with per-vCPU and machine-wide KVM-exit streams; host-selected vCPU order and mid-quantum clock caveats remain |
+| Replay | Instruction-level deterministic reproduction | Locked-input replay with an actively enforced machine-wide KVM-exit stream; execution between exits and mid-quantum clock caveats remain |
 | Search guidance | Coverage-guided autonomous exploration | One bounded decision-prefix policy combines structured choices, C/Go application blocks, LLVM edges, runnable selections, faults, properties, topology states, and sampled guest PCs |
 | Coverage | Application basic-block instrumentation across documented language toolchains, symbol ingestion, and report validation | GCC C and Go blocks plus LLVM C/C++/Rust edges, locked symbol catalogs, and automatic source joins; Go is limited to imported main-module packages with CGO disabled, and Java is absent |
 | Faults | Network, process, clock, and storage faults | Simulated network/storage plus Compose lifecycle, clock, and packet actions |

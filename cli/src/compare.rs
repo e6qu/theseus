@@ -92,6 +92,8 @@ struct Run {
     #[serde(default)]
     machine_execution_ledgers: Value,
     #[serde(default)]
+    machine_execution_traces: Value,
+    #[serde(default)]
     state_sha256: String,
     #[serde(default)]
     timeline: Vec<Boundary>,
@@ -286,6 +288,15 @@ pub fn compare_campaigns(
                     reason: "machine-wide KVM execution stream differs".to_owned(),
                     left: json_summary(&left.machine_execution_ledgers),
                     right: json_summary(&right.machine_execution_ledgers),
+                });
+            }
+            if left.machine_execution_traces != right.machine_execution_traces {
+                return Some(CampaignDivergence {
+                    run,
+                    boundary: None,
+                    reason: "actively enforced machine execution trace differs".to_owned(),
+                    left: json_summary(&left.machine_execution_traces),
+                    right: json_summary(&right.machine_execution_traces),
                 });
             }
             for (boundary, (left, right)) in left.timeline.iter().zip(&right.timeline).enumerate() {
@@ -694,6 +705,22 @@ mod tests {
         assert_eq!(
             divergence.reason,
             "machine-wide KVM execution stream differs"
+        );
+    }
+
+    #[test]
+    fn reports_the_first_changed_active_machine_replay_trace() {
+        let runs = r#"[{"index":0,"operations":["write"],"state_sha256":"same","machine_execution_traces":{"api":["vcpu:0:mmio_write:0x10:1:2a"]}}]"#;
+        let changed = runs.replace("vcpu:0:", "vcpu:1:");
+        let (left, right) = write_pair(&result(runs, "[]"), &result(&changed, "[]"));
+        let divergence = compare_campaigns(left.path(), right.path())
+            .unwrap()
+            .divergence
+            .unwrap();
+        assert_eq!(divergence.boundary, None);
+        assert_eq!(
+            divergence.reason,
+            "actively enforced machine execution trace differs"
         );
     }
 

@@ -322,6 +322,8 @@ struct ServiceResult {
     execution_ledgers: Vec<ExecutionLedgerEvidence>,
     #[serde(default)]
     machine_execution_ledger: Option<ExecutionLedgerEvidence>,
+    #[serde(default)]
+    machine_execution_trace: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -421,6 +423,8 @@ struct CampaignRun {
     execution_ledgers: BTreeMap<String, Vec<ExecutionLedgerEvidence>>,
     #[serde(default)]
     machine_execution_ledgers: BTreeMap<String, ExecutionLedgerEvidence>,
+    #[serde(default)]
+    machine_execution_traces: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     state_novel: bool,
     status: String,
@@ -1046,6 +1050,17 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
                         .last()
                         .map(String::as_str)
                         .unwrap_or("unavailable")
+                ),
+            });
+        }
+        if !result.machine_execution_trace.is_empty() {
+            checks.push(Check {
+                name: format!("{service}: active machine replay protocol"),
+                kind: "execution_replay".to_owned(),
+                status: "passed".to_owned(),
+                detail: format!(
+                    "{} exact decisions retained for replay admission",
+                    result.machine_execution_trace.len()
                 ),
             });
         }
@@ -2061,7 +2076,7 @@ fn render_markdown(model: &ReportModel) -> String {
             output.push_str(" | Property witnesses");
         }
         output.push_str(
-            " | Decision trace | Structured choices | Instruction locations | New application coverage | Scheduling decisions | Synchronization events | Status |\n| --- | --- | --- | --- | ---",
+            " | Decision trace | Structured choices | Instruction locations | New application coverage | Scheduling decisions | Synchronization events | Active replay decisions | Status |\n| --- | --- | --- | --- | ---",
         );
         if has_posterior {
             output.push_str(" | ---");
@@ -2069,7 +2084,7 @@ fn render_markdown(model: &ReportModel) -> String {
         if has_property_witnesses {
             output.push_str(" | ---");
         }
-        output.push_str(" | --- | --- | --- | --- | --- | --- | --- |\n");
+        output.push_str(" | --- | --- | --- | --- | --- | --- | --- | --- |\n");
         for run in &model.campaign_runs {
             let candidates = if run.faults.is_empty() {
                 run.fault.clone().unwrap_or_else(|| "none".to_owned())
@@ -2097,13 +2112,17 @@ fn render_markdown(model: &ReportModel) -> String {
                 ));
             }
             output.push_str(&format!(
-                " | {} | {} | {} | {} | {} | {} | {} |\n",
+                " | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 markdown_cell(&run.decision_trace.join(" → ")),
                 markdown_cell(&campaign_structured_choice_label(&run.structured_choices)),
                 markdown_cell(&campaign_instruction_location_labels(run)),
                 markdown_cell(&campaign_application_block_labels(run)),
                 run.thread_scheduling.values().map(Vec::len).sum::<usize>(),
                 run.thread_synchronization
+                    .values()
+                    .map(Vec::len)
+                    .sum::<usize>(),
+                run.machine_execution_traces
                     .values()
                     .map(Vec::len)
                     .sum::<usize>(),

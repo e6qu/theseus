@@ -76,16 +76,16 @@ not depend on the expansion implementation.
 Every successfully handled guest-visible KVM exit is appended to both a
 per-vCPU rolling SHA-256 ledger and a VM-wide ledger. The record identifies the
 vCPU, exit kind, and deterministic payload, including MMIO and PIO address,
-width, and bytes read or written. A VM-wide lock serializes handled exits and
-their emulated device effects into one total order. Checkpoints clone both
-forms of rolling state into each child. Campaign timelines retain readable
-tails and digests; locked replay requires exact matches at every boundary and
-at service exit.
+width, and bytes read or written. A VM-wide gate serializes handled exits and
+their emulated device effects into one total order. It retains the bounded
+exact trace as well as the rolling digest. Checkpoints clone both forms into
+each child. Locked replay admits only the vCPU named by the next record and
+requires its complete exit payload to match. A wrong prefix, turn, payload,
+missing suffix, or extra exit fails replay.
 
-This controls concurrent emulated device effects and catches cross-vCPU drift
-visible at the KVM boundary. The host still decides which vCPU acquires the
-next turn. Theseus does not yet make guest instructions deterministic or
-choose Linux thread, process, timer, or interrupt order.
+This controls concurrent emulated device effects and their replay order at the
+KVM boundary. Theseus does not yet make guest instructions deterministic or
+choose Linux thread, process, timer, or interrupt order between exits.
 
 - Rate limiters use host timerfds — **rejected** when virtual time is
   enabled (`validate_deterministic_config`).
@@ -118,11 +118,9 @@ choose Linux thread, process, timer, or interrupt order.
   condition waits/signals/broadcasts. Timed waits, cancellation, semaphores,
   direct futex use, blocking syscalls, processes, and uninstrumented library
   concurrency remain outside the supported scheduling profile.
-- **vCPU arbitration and execution between KVM exits.** The machine stream
-  records host-selected vCPU order and serializes device effects, but does not
-  yet select the next vCPU. The exit ledgers detect that two
-  executions reached different observable boundaries. It cannot prevent or
-  explain divergence that happens entirely between those boundaries.
+- **Execution between KVM exits.** The machine replay gate selects and verifies
+  vCPU turns at emulated device-effect boundaries. It cannot control or explain
+  divergence that happens entirely between those boundaries.
 
 ## Replay fingerprints
 
