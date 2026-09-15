@@ -1,7 +1,8 @@
-# Tutorial 40: Run a test template
+# Tutorial 40: Run test templates
 
-Let Theseus discover and compose commands already packaged in an image. The
-directory layout also works with Antithesis.
+Package two independent test templates in one image. Let Theseus discover both
+and select one for each generated timeline. The directory layout also works
+with Antithesis.
 
 ## Before you start
 
@@ -14,10 +15,10 @@ export THESEUS_IMAGE=ghcr.io/e6qu/theseus:$THESEUS_TAG
 
 ## 1. Build the image
 
-Read the test commands:
+Read both templates:
 
 ```sh
-find test-template -maxdepth 1 -type f -print -exec sed -n '1,80p' {} \;
+find test-template smoke-template -maxdepth 1 -type f -print -exec sed -n '1,80p' {} \;
 ```
 
 The filename prefix is the lifecycle contract. `first_` prepares state,
@@ -31,9 +32,9 @@ docker build --load -t "$name" .
 docker save "$name" -o api/work/service.tar
 ```
 
-The Dockerfile installs the commands at
-`/opt/antithesis/test/v1/lost-update/`. Theseus reads that directory from the
-saved image. There is no command list or orchestration script to maintain.
+The Dockerfile installs `lost-update` and `smoke` under
+`/opt/antithesis/test/v1/`. Theseus reads both directories from the saved
+image. There is no command list or orchestration script to maintain.
 
 ## 2. Enter Theseus
 
@@ -52,8 +53,11 @@ cp /usr/local/bin/firecracker api/work/runtime/firecracker
 cp /usr/local/bin/theseus-image api/work/runtime/theseus-image
 cp /opt/theseus/vmlinux api/work/guest/vmlinux
 theseus compose plan > plan.json
-grep -n 'test_template\|test_command_path\|shell_process' plan.json
+grep -n 'test_templates\|test_command_path\|shell_process' plan.json
 ```
+
+The plan lists `lost-update` and `smoke`. Operations are scoped to one of them;
+Theseus never mixes their commands in one timeline.
 
 `max_parallel_commands: 2` gives each parallel command two process slots. The
 explorer decides how many to start and when to join them.
@@ -64,10 +68,12 @@ explorer decides how many to start and when to join them.
 theseus compose explore --expect-counterexample lost_update_is_unreachable \
   --output campaign compose.yaml
 grep -R '"value":1,"commits":2' campaign/runs/*/services/api/serial.log
+grep -n '"test_template"' campaign/campaign-result.json | head
 ```
 
 Two writers read zero before either writes. Both then write one. The serial
-command records two completed writes and the incorrect final value.
+command records two completed writes and the incorrect final value. The result
+also records which template produced every timeline.
 
 ## 5. Inspect, minimize, and replay the failure
 

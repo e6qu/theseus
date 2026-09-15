@@ -104,6 +104,8 @@ timeline obeys these rules:
 - Exactly one declared `first` command starts the timeline. With several
   alternatives, the explorer chooses one.
 - Parallel and serial drivers never share a timeline with a singleton driver.
+- A template that declares drivers does not retain timelines containing only
+  anytime checks. A singleton timeline runs exactly one singleton driver.
 - A serial or singleton driver cannot start while a parallel process launched
   by the template remains live. An anytime command may run in that window.
 - Eventually and finally commands are terminal. A final command starts only
@@ -114,11 +116,14 @@ timeline obeys these rules:
 - Operation-barrier faults cannot target first, eventually, or finally
   commands.
 
-Set `test_template` to discover the same lifecycle directly from executable
-files in `/opt/antithesis/test/v1/<template>/` inside image services. Theseus
-recognizes the seven standard filename prefixes, ignores `helper_` entries,
-rejects recognized files without an executable bit, and merges the selected
-template across services. `max_parallel_commands`
+Omit `operations` and `test_template` to discover every template directly from
+executable files in `/opt/antithesis/test/v1/<template>/` inside image
+services. Each generated timeline selects exactly one template. Set
+`test_template` to select one directory, or `test_templates` to restrict
+discovery to a named set. Theseus recognizes the seven standard filename
+prefixes, ignores `helper_` entries, rejects recognized files without an
+executable bit, and merges each template across services.
+`max_parallel_commands`
 bounds the process slots generated for every parallel and anytime command; the
 explorer chooses which slots run.
 

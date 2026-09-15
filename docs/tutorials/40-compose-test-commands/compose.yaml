@@ -12,7 +12,6 @@ networks:
 x-theseus:
   campaign:
     driver: api
-    test_template: lost-update
     max_parallel_commands: 2
     max_runs: 128
     max_operations_per_run: 8

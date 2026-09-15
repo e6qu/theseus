@@ -216,7 +216,7 @@ retain a human-readable decision trace, and replay rejects divergence.
 ### Compose a test from lifecycle commands
 
 Package executable commands in an image using the standard test-template
-layout, then select the template in Compose:
+layout:
 
 ```text
 /opt/antithesis/test/v1/main/
@@ -230,15 +230,17 @@ layout, then select the template in Compose:
 x-theseus:
   campaign:
     driver: client
-    test_template: main
     max_parallel_commands: 3
     max_operations_per_run: 10
     faults: []
 ```
 
-Theseus scans the locked service images, combines commands from `main` across
-services, requires recognized commands to be executable, and ignores entries
-whose names start with `helper_`. It generates
+With no explicit `operations` or `test_template`, Theseus discovers every
+template across the locked service images and selects exactly one per generated
+timeline. Set `test_template: main` to restrict the campaign to one template,
+or `test_templates: [main, smoke]` to name an allowed set. Theseus requires
+recognized commands to be executable and ignores entries whose names start
+with `helper_`. It generates
 three independently selectable process slots for each parallel or anytime
 command in this example. An eventual command kills live test commands and
 restores active campaign faults before it runs; a final command waits for all

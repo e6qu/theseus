@@ -94,6 +94,11 @@ struct ComposeCampaign {
     /// images instead of spelling out every command as a Compose operation.
     #[serde(default)]
     test_template: Option<String>,
+    /// Restrict image discovery to these templates. When neither this field,
+    /// `test_template`, nor explicit operations are present, every discovered
+    /// template participates and the explorer selects one per timeline.
+    #[serde(default)]
+    test_templates: Vec<String>,
     /// Maximum simultaneous copies generated for each discovered parallel or
     /// anytime command. The explorer chooses which slots actually run.
     #[serde(default = "default_test_command_parallelism")]
@@ -128,6 +133,10 @@ struct ComposeCampaign {
 #[serde(deny_unknown_fields)]
 struct ComposeOperation {
     name: String,
+    /// Populated only by image discovery. This keeps commands from different
+    /// template directories out of the same timeline.
+    #[serde(skip)]
+    test_template: Option<String>,
     /// Populated only by image test-template discovery.
     #[serde(skip)]
     test_command_path: Option<String>,
@@ -1243,6 +1252,8 @@ pub struct CampaignPlan {
     pub driver: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_template: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_templates: Vec<String>,
     #[serde(default = "default_test_command_parallelism")]
     pub max_parallel_commands: u8,
     #[serde(default)]
@@ -1265,6 +1276,8 @@ pub struct CampaignPlan {
 pub struct OperationPlan {
     pub name: String,
     pub service: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_template: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<ComposeTestCommand>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3170,14 +3183,23 @@ fn test_command_role(filename: &str) -> Option<ComposeTestCommand> {
     })
 }
 
-fn discovered_operation_name(service: &str, filename: &str, suffix: &str) -> String {
-    let mut name = format!("{service}_{filename}{suffix}");
+fn discovered_operation_name(
+    template: Option<&str>,
+    service: &str,
+    filename: &str,
+    suffix: &str,
+) -> String {
+    let mut name = match template {
+        Some(template) => format!("{template}_{service}_{filename}{suffix}"),
+        None => format!("{service}_{filename}{suffix}"),
+    };
     name.retain(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'));
     name
 }
 
 fn discovered_operation(
     name: String,
+    template: &str,
     service: &str,
     role: ComposeTestCommand,
     path: &str,
@@ -3186,6 +3208,7 @@ fn discovered_operation(
 ) -> ComposeOperation {
     ComposeOperation {
         name,
+        test_template: Some(template.to_owned()),
         test_command_path: Some(path.to_owned()),
         command: Some(role),
         service: Some(service.to_owned()),
@@ -3208,6 +3231,7 @@ fn discover_test_template(
     template: &str,
     max_parallel_commands: u8,
     services: &BTreeMap<String, ComposeServicePlan>,
+    qualify_names: bool,
 ) -> Result<Vec<ComposeOperation>, ComposeError> {
     validate_name("test template", template)?;
     if !(1..=8).contains(&max_parallel_commands) {
@@ -3243,9 +3267,16 @@ fn discover_test_template(
             ) {
                 for slot in 1..=max_parallel_commands {
                     let suffix = format!("_{slot}");
-                    let process = discovered_operation_name(service, filename, &suffix);
+                    let qualifier = qualify_names.then_some(template);
+                    let process = discovered_operation_name(qualifier, service, filename, &suffix);
                     operations.push(discovered_operation(
-                        discovered_operation_name(service, filename, &format!("_start_{slot}")),
+                        discovered_operation_name(
+                            qualifier,
+                            service,
+                            filename,
+                            &format!("_start_{slot}"),
+                        ),
+                        template,
                         service,
                         role,
                         &command_path,
@@ -3253,7 +3284,13 @@ fn discover_test_template(
                         Some(process.clone()),
                     ));
                     operations.push(discovered_operation(
-                        discovered_operation_name(service, filename, &format!("_finish_{slot}")),
+                        discovered_operation_name(
+                            qualifier,
+                            service,
+                            filename,
+                            &format!("_finish_{slot}"),
+                        ),
+                        template,
                         service,
                         role,
                         &command_path,
@@ -3263,7 +3300,13 @@ fn discover_test_template(
                 }
             } else {
                 operations.push(discovered_operation(
-                    discovered_operation_name(service, filename, ""),
+                    discovered_operation_name(
+                        qualify_names.then_some(template),
+                        service,
+                        filename,
+                        "",
+                    ),
+                    template,
                     service,
                     role,
                     &command_path,
@@ -3286,6 +3329,46 @@ fn discover_test_template(
     Ok(operations)
 }
 
+fn discovered_test_template_names(
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<Vec<String>, ComposeError> {
+    let prefix = format!("{TEST_COMMAND_ROOT}/");
+    let mut templates = BTreeSet::new();
+    for plan in services.values() {
+        let Some(image) = &plan.run.guest.image else {
+            continue;
+        };
+        for path in image_paths(Path::new(&image.path))?.keys() {
+            let Some(relative) = path.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some((template, filename)) = relative.split_once('/') else {
+                continue;
+            };
+            if template.is_empty()
+                || filename.contains('/')
+                || filename.starts_with("helper_")
+                || test_command_role(filename).is_none()
+            {
+                continue;
+            }
+            validate_name("test template", template)?;
+            templates.insert(template.to_owned());
+        }
+    }
+    if templates.is_empty() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign has no explicit operations and no test templates under /{TEST_COMMAND_ROOT}"
+        )));
+    }
+    if templates.len() > 32 {
+        return Err(ComposeError::Invalid(
+            "campaign discovers more than 32 test templates".to_owned(),
+        ));
+    }
+    Ok(templates.into_iter().collect())
+}
+
 fn campaign_plan(
     campaign: Option<ComposeTheseus>,
     services: &mut BTreeMap<String, ComposeServicePlan>,
@@ -3300,20 +3383,59 @@ fn campaign_plan(
         )));
     }
     let test_template = campaign.test_template.clone();
-    let campaign_operations = match test_template.as_deref() {
-        Some(_) if !campaign.operations.is_empty() => {
-            return Err(ComposeError::Invalid(
-                "campaign test_template replaces operations; do not declare both".to_owned(),
-            ));
+    let mut requested_templates = campaign.test_templates.clone();
+    if test_template.is_some() && !requested_templates.is_empty() {
+        return Err(ComposeError::Invalid(
+            "campaign must use only one of test_template or test_templates".to_owned(),
+        ));
+    }
+    if (!requested_templates.is_empty() || test_template.is_some())
+        && !campaign.operations.is_empty()
+    {
+        return Err(ComposeError::Invalid(
+            "campaign test templates replace operations; do not declare both".to_owned(),
+        ));
+    }
+    if requested_templates.is_empty() && test_template.is_none() && campaign.operations.is_empty() {
+        requested_templates = discovered_test_template_names(services)?;
+    }
+    let selected_templates = test_template
+        .iter()
+        .cloned()
+        .chain(requested_templates.iter().cloned())
+        .collect::<Vec<_>>();
+    let mut distinct_templates = BTreeSet::new();
+    for template in &selected_templates {
+        validate_name("test template", template)?;
+        if !distinct_templates.insert(template.as_str()) {
+            return Err(ComposeError::Invalid(format!(
+                "test template {template:?} is selected more than once"
+            )));
         }
-        Some(template) => {
-            discover_test_template(template, campaign.max_parallel_commands, services)?
+    }
+    let campaign_operations = if selected_templates.is_empty() {
+        campaign.operations
+    } else {
+        let qualify_names = selected_templates.len() > 1;
+        let mut operations = Vec::new();
+        for template in &selected_templates {
+            operations.extend(discover_test_template(
+                template,
+                campaign.max_parallel_commands,
+                services,
+                qualify_names,
+            )?);
+            if operations.len() > 256 {
+                return Err(ComposeError::Invalid(
+                    "selected test templates expand to more than 256 operations".to_owned(),
+                ));
+            }
         }
-        None => campaign.operations,
+        operations
     };
     if campaign_operations.is_empty() {
         return Err(ComposeError::Invalid(
-            "campaign needs operations or test_template".to_owned(),
+            "campaign needs operations or a discovered test template".to_owned(),
         ));
     }
     if campaign.max_runs == 0 || campaign.max_runs > 256 {
@@ -3821,6 +3943,7 @@ fn campaign_plan(
         operations.push(OperationPlan {
             name: operation.name,
             service,
+            test_template: operation.test_template,
             command: operation.command,
             test_command_path: operation.test_command_path,
             shell_phase,
@@ -4596,7 +4719,10 @@ fn campaign_plan(
     }
     Ok(Some(CampaignPlan {
         driver: campaign.driver,
-        test_template,
+        test_template: (selected_templates.len() == 1).then(|| selected_templates[0].clone()),
+        test_templates: (selected_templates.len() > 1)
+            .then_some(selected_templates)
+            .unwrap_or_default(),
         max_parallel_commands: campaign.max_parallel_commands,
         guidance: campaign.guidance,
         coverage: campaign.coverage,
@@ -5840,21 +5966,30 @@ fn validate_test_command_model(
             "test-command campaigns use command lifecycle roles instead of stages".to_owned(),
         ));
     }
-    if !operations.iter().any(|operation| {
-        matches!(
-            operation.command,
-            Some(
-                ComposeTestCommand::ParallelDriver
-                    | ComposeTestCommand::SerialDriver
-                    | ComposeTestCommand::SingletonDriver
-                    | ComposeTestCommand::Anytime
-            )
-        )
-    }) {
-        return Err(ComposeError::Invalid(
-            "a test-command campaign needs a parallel_driver, serial_driver, singleton_driver, or anytime command"
-                .to_owned(),
-        ));
+    let templates = operations
+        .iter()
+        .map(|operation| operation.test_template.as_deref())
+        .collect::<BTreeSet<_>>();
+    for template in templates {
+        if !operations.iter().any(|operation| {
+            operation.test_template.as_deref() == template
+                && matches!(
+                    operation.command,
+                    Some(
+                        ComposeTestCommand::ParallelDriver
+                            | ComposeTestCommand::SerialDriver
+                            | ComposeTestCommand::SingletonDriver
+                            | ComposeTestCommand::Anytime
+                    )
+                )
+        }) {
+            let scope = template
+                .map(|template| format!("test template {template:?}"))
+                .unwrap_or_else(|| "test-command campaign".to_owned());
+            return Err(ComposeError::Invalid(format!(
+                "{scope} needs a parallel_driver, serial_driver, singleton_driver, or anytime command"
+            )));
+        }
     }
     for operation in operations {
         let command = operation.command.expect("all command roles were declared");
@@ -6885,6 +7020,28 @@ mod tests {
         directory
     }
 
+    fn image_fixture(compose: &str, files: &[(&str, u32)]) -> tempfile::TempDir {
+        let directory = fixture(compose);
+        fs::write(
+            directory.path().join("api/runtime/theseus-image"),
+            b"adapter",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            directory.path().join("api/runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        write_docker_image(&directory.path().join("api/service.tar"), files);
+        fs::write(
+            directory.path().join("api/theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[container_service.ready]\nurl = 'http://127.0.0.1:8080/health'\n",
+        )
+        .unwrap();
+        directory
+    }
+
     #[test]
     fn locks_service_artifacts_and_links() {
         let directory = fixture(
@@ -6898,22 +7055,8 @@ mod tests {
 
     #[test]
     fn discovers_antithesis_test_template_commands_from_images() {
-        let directory = fixture(
+        let directory = image_fixture(
             "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    test_template: main\n    max_parallel_commands: 2\n    max_operations_per_run: 6\n    faults: []\n",
-        );
-        fs::write(
-            directory.path().join("api/runtime/theseus-image"),
-            b"adapter",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        fs::set_permissions(
-            directory.path().join("api/runtime/theseus-image"),
-            std::os::unix::fs::PermissionsExt::from_mode(0o755),
-        )
-        .unwrap();
-        write_docker_image(
-            &directory.path().join("api/service.tar"),
             &[
                 ("opt/antithesis/test/v1/main/first_prepare.sh", 0o755),
                 (
@@ -6924,15 +7067,11 @@ mod tests {
                 ("opt/antithesis/test/v1/main/helper_library.sh", 0o755),
             ],
         );
-        fs::write(
-            directory.path().join("api/theseus.toml"),
-            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[container_service.ready]\nurl = 'http://127.0.0.1:8080/health'\n",
-        )
-        .unwrap();
 
         let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
         let campaign = plan.campaign.unwrap();
         assert_eq!(campaign.test_template.as_deref(), Some("main"));
+        assert!(campaign.test_templates.is_empty());
         assert_eq!(campaign.operations.len(), 6);
         assert_eq!(
             campaign
@@ -6950,6 +7089,71 @@ mod tests {
             .operations
             .iter()
             .any(|operation| operation.name.contains("helper")));
+    }
+
+    #[test]
+    fn discovers_and_scopes_every_image_test_template() {
+        let directory = image_fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_parallel_commands: 1\n    max_operations_per_run: 4\n    faults: []\n",
+            &[
+                (
+                    "opt/antithesis/test/v1/lost-update/parallel_driver_write",
+                    0o755,
+                ),
+                (
+                    "opt/antithesis/test/v1/lost-update/finally_check",
+                    0o755,
+                ),
+                (
+                    "opt/antithesis/test/v1/smoke/singleton_driver_health",
+                    0o755,
+                ),
+                ("opt/antithesis/test/v1/smoke/finally_check", 0o755),
+            ],
+        );
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let campaign = plan.campaign.unwrap();
+        assert_eq!(campaign.test_template, None);
+        assert_eq!(campaign.test_templates, ["lost-update", "smoke"]);
+        assert_eq!(campaign.operations.len(), 5);
+        assert!(campaign.operations.iter().all(|operation| operation
+            .test_template
+            .as_ref()
+            .is_some_and(|template| campaign.test_templates.contains(template))));
+        assert!(campaign
+            .operations
+            .iter()
+            .any(|operation| operation.name.starts_with("lost-update_api_")));
+        assert!(campaign
+            .operations
+            .iter()
+            .any(|operation| operation.name.starts_with("smoke_api_")));
+    }
+
+    #[test]
+    fn limits_image_discovery_to_explicit_test_templates() {
+        let directory = image_fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    test_templates: [smoke]\n    faults: []\n",
+            &[
+                (
+                    "opt/antithesis/test/v1/ignored/parallel_driver_write",
+                    0o755,
+                ),
+                ("opt/antithesis/test/v1/smoke/anytime_health", 0o755),
+            ],
+        );
+
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        assert_eq!(campaign.test_template.as_deref(), Some("smoke"));
+        assert!(campaign.test_templates.is_empty());
+        assert!(campaign.operations.iter().all(|operation| operation
+            .test_command_path
+            .as_deref()
+            .is_some_and(|path| path.contains("/smoke/"))));
     }
 
     #[test]

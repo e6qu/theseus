@@ -25,7 +25,8 @@ passing unit suite alone is not treated as runtime proof.
   the generated corpus.
 - Automatic discovery of Antithesis-compatible test templates under
   `/opt/antithesis/test/v1`, including explorer-selected command concurrency,
-  eventual-command termination, and a quiet terminal fault window.
+  one-template-per-timeline selection, eventual-command termination, and a
+  quiet terminal fault window.
 - Named image commands that remain in flight across operation checkpoints,
   with replayed launches and completion-observation order.
 - Expected-counterexample commands that fail closed unless the named campaign
@@ -105,8 +106,9 @@ examples:
     coverage, resolve a reached source location, and replay the edge set.
 15. Instrument a Go command and its imported main-module packages, then report
     and replay source-associated basic blocks.
-16. Package ordinary commands in an Antithesis-compatible test-template
-    directory and let Theseus discover, overlap, stop, and replay them.
+16. Package ordinary commands in Antithesis-compatible test-template
+    directories and let Theseus discover, select, overlap, stop, and replay
+    them.
 
 Each tutorial directory is its own working directory and complete input
 context. Runnable tutorials use published Theseus images or binaries, not a

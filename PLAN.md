@@ -37,7 +37,7 @@ Use these labels consistently:
 | Assertions and guidance | Partial | Always, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
 | Coverage guidance | Partial | GCC C and Go basic blocks plus LLVM C/C++/Rust edges cover native executables, shared libraries, a selected Cargo graph, and a selected Go command's imported main-module packages. Compose locks manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go external modules and CGO, Java, and production-scale validation remain open. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
-| Test composition | Partial | Explicit operations and one selected Antithesis-compatible image template use all seven lifecycle roles. The explorer varies bounded command concurrency, eventual checks kill live commands, and final checks join them. Automatic selection among multiple templates and production-scale command scheduling remain open. |
+| Test composition | Partial | Explicit operations and discovered Antithesis-compatible image templates use all seven lifecycle roles. Each timeline selects one template, the explorer varies bounded command concurrency, eventual checks kill live commands, and final checks join them. Production-scale adaptive command scheduling remains open. |
 | Failure investigation | Early | Replay, minimization, checkpoints, reports, and history comparison exist; interactive time travel, interventions, alternative futures, temporal queries, and causal evidence do not. |
 | Product operation | Early | Theseus is primarily a local/self-hosted CLI; it lacks a comparable API, CI workflow, live campaign view, scalable parallel service, notification surface, and web debugger. |
 
@@ -80,10 +80,11 @@ Theseus currently has:
 - A Test Composer-shaped lifecycle for ordinary Compose operations, including
   setup alternatives, overlapping named processes, exclusive and singleton
   drivers, anytime observations, and terminal eventual/final checks.
-- Discovery of executable commands in a selected
-  `/opt/antithesis/test/v1/<template>` across image services. Filename roles,
-  bounded parallel slots, source paths, terminal fault recovery, and eventual
-  process termination remain locked and replayable.
+- Discovery of all or a named subset of executable commands under
+  `/opt/antithesis/test/v1/<template>` across image services. Every timeline
+  selects one template. Filename roles, bounded parallel slots, source paths,
+  terminal fault recovery, and eventual process termination remain locked and
+  replayable.
 
 The baseline has important limits:
 
@@ -113,29 +114,31 @@ The baseline has important limits:
   certifications complete and their retained evidence is independently
   verified.
 
-## Active delivery: image-native test templates
+## Active delivery: autonomous fault profiles
 
-Close the manual gap between a containerized integration-test suite and an
-autonomously composed campaign:
+Move common failures from hand-authored operation barriers into bounded,
+replayable profiles that can accompany any discovered test template:
 
-1. Discover one selected test template from executable, conventionally
-   prefixed files under `/opt/antithesis/test/v1` in every locked service image.
-2. Merge commands with the same template name across services and retain each
-   source path in the plan, timeline, decision trace, and report inputs.
-3. Generate a bounded set of independent parallel and anytime process slots so
-   the explorer varies concurrency without duplicated Compose operations.
-4. Let eventual checks kill live commands across participating image services,
-   restore active operation-barrier faults, and then run in a quiet terminal
-   window. Keep final checks joined and quiet.
-5. Preserve the explicit-operation model for users who need inputs, guards,
-   state transitions, or custom contracts.
-6. Replace the manual lifecycle tutorial with a self-contained image-template
-   workflow that finds, minimizes, and replays a concurrent failure.
+1. Add an opt-in default profile that derives valid network and service fault
+   candidates from the locked topology instead of requiring one YAML entry per
+   target.
+2. Add operation-boundary service stop, kill, and restart/recovery actions with
+   exact service identity and lifecycle evidence.
+3. Add asymmetric latency, loss, duplication, corruption, bandwidth, queue,
+   and MTU candidates for eligible directed links, using the simulated switch
+   rather than host traffic control.
+4. Keep startup, first commands, eventually/finally commands, and result
+   collection quiet. Terminal commands must recover every active generated
+   fault before running.
+5. Retain the expanded candidate catalog, selected actions, recovery actions,
+   and effects in plans, decision traces, replay, minimization, and reports.
+6. Extend a self-contained distributed tutorial to discover multiple templates,
+   explore the default profile, minimize one failure, and replay it from a
+   published runtime.
 
-This slice is implemented only after its PR passes. It becomes demonstrated
-after the merged SHA publishes and Tutorial 40 runs on native amd64 and arm64
-KVM. Next, select among multiple templates per campaign and add the broader
-fault profiles below.
+Exit when a user can point Theseus at an ordinary multi-service image set,
+declare a bounded profile, and obtain understandable, replayable faulted
+timelines without enumerating each link and service action by hand.
 
 ## Priority 0: make the current product real for users
 
@@ -241,8 +244,6 @@ survives replay, minimization, and artifact export.
 Make it possible to express the same testing workflow users expect from
 Antithesis without constructing low-level campaign schedules by hand.
 
-- Select among multiple discovered templates without mixing their commands in
-  one timeline.
 - Let the explorer vary command ordering, parallelism, structured inputs,
   faults, and schedules while keeping lifecycle contracts intact.
 - Add asymmetric latency and loss, slow/jammed links, network clogs, process
