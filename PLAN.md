@@ -118,32 +118,34 @@ The baseline has important limits:
   certifications complete and their retained evidence is independently
   verified.
 
-## Active delivery: make the current product real for users
+## Active delivery: prove the released product
 
-Close the difference between merged source, published artifacts, and retained
-runtime evidence before adding another isolated runtime feature.
+The SHA release already publishes the CLI, Linux runtime bundles, native
+architecture images, multi-architecture manifest, kernel, modules,
+instrumentation tools, SBOMs, build inputs, and attestations. Close the
+remaining evidence gap before adding another isolated runtime feature.
 
-Deliver one coherent release-and-evidence change:
+1. Automatically execute the released amd64 runtime on native KVM after its
+   release passes all consumer checks.
+2. Certify fixed-plan replay and retain the distributed partition, recovery,
+   minimization, and lost-update counterexample.
+3. Execute the ordinary-container, C coverage, schedule-search, and pthread
+   synchronization tutorials with that same digest-pinned release.
+4. Retain exact plans, locked workloads, complete result inventories, serial
+   logs, reports, minimizations, replay results, host facts, runtime identities,
+   and a cryptographic inventory for every validation file.
+5. Make the released CLI reject incomplete, renamed, unsafe, mismatched, or
+   semantically empty evidence while reporting the exact certified
+   architecture set. Exercise its offline report, comparison, evaluation,
+   minimization, and replay paths against the retained release evidence.
+6. Run the same portfolio on native arm64 KVM when a labelled runner is
+   available; never substitute emulation or imply that packaging proves native
+   execution.
 
-1. Fix runtime-bundle packaging so directories are handled correctly and both
-   Linux architectures produce verifiable archives and SBOMs.
-2. Publish the current CLI, runtime bundles, architecture images, multi-arch
-   manifest, kernel, modules, instrumentation tools, build inputs, and
-   attestations under the same short commit SHA.
-3. Run the container, fault, coverage, schedule-search, and pthread
-   synchronization tutorials on native KVM using only those published
-   artifacts.
-4. Retain the plans, locked workloads, complete result inventories, logs,
-   reports, minimized counterexamples, replay results, host facts, and runtime
-   identities.
-5. Verify that a fresh released CLI can inspect, evaluate, compare, minimize,
-   and replay the retained evidence without a source checkout.
-6. Correct documentation and comments that describe older image or pthread
-   limitations, and make claims match the released evidence.
-
-Exit when a new user can start from the README, retrieve one released SHA, run
-a representative concurrent service campaign, inspect a failure, and replay
-the minimized counterexample without undocumented inputs.
+Exit when an amd64 user can retrieve one release and its indexed evidence,
+inspect all five representative product paths offline, and replay the minimized
+counterexample without undocumented inputs. Arm64 becomes demonstrated only
+when its independently indexed native assets exist.
 
 ## Priority 1: deterministic execution and scheduling plane
 

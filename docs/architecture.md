@@ -69,10 +69,12 @@ door could leave `vmm` without creating a dependency cycle.
 ## Verification model
 
 Pull-request CI compiles the workspace and runs environment-independent tests
-on an amd64 GitHub runner. KVM behavior needs separate native execution. The
-manual certification workflow targets self-hosted amd64 and arm64 KVM hosts.
-It stages both results, verifies their signed-release provenance and complete
-archive inventories, and publishes one indexed architecture pair; only those
+on an amd64 GitHub runner. KVM behavior needs separate native execution. Each
+successful release starts its amd64 certification on a native hosted runner;
+arm64 certification targets a labelled self-hosted KVM runner. The workflow
+verifies signed-release provenance, exact archive inventories, and the
+container, fault, coverage, schedule-search, and pthread scenarios before it
+publishes an index naming the architectures actually certified. Only those
 retained, verifiable assets are runtime evidence.
 
 Branch capture first copies all guest RAM into a memfd. Restored children map

@@ -81,7 +81,7 @@ worker stored its update.
 ## 5. Inspect, minimize, and replay it
 
 ```sh
-theseus report campaign --output report
+theseus report --format markdown --output report/report.md campaign
 grep -n 'Runnable prefix\|Scheduling decisions' report/report.md
 theseus compose explore --minimize campaign \
   --expect-counterexample lost_update_is_unreachable --output minimized

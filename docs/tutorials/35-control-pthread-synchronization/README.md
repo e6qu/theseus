@@ -75,7 +75,7 @@ theseus compose explore --output campaign compose.yaml
 ```sh
 grep -n 'thread_synchronization_events\|thread_synchronization' \
   campaign/campaign-result.json
-theseus report campaign --output report
+theseus report --format markdown --output report/report.md campaign
 grep -n 'synchronization events\|sync #' report/report.md
 ```
 

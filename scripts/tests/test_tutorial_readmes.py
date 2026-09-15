@@ -20,6 +20,9 @@ for directory in directories:
     )
     assert "../../../" not in text, f"{readme}: tutorial escapes its directory"
     assert "run-in-runtime.sh" not in text, f"{readme}: hides runtime steps"
+    assert not re.search(r"theseus report \S+ --output", text), (
+        f"{readme}: report flags must precede the input directory"
+    )
     assert re.search(r"^## 1\. ", text, re.MULTILINE), f"{readme}: steps are not numbered"
     assert "```sh\n" in text, f"{readme}: no copyable shell commands"
     assert text.count("```") % 2 == 0, f"{readme}: unbalanced code fences"

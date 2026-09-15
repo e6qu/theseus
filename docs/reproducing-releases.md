@@ -57,20 +57,22 @@ compare its digest with the packaged file.
 
 ## Retrieve native KVM evidence
 
-After the native certification workflow has completed, the SHA release has one
-fixed-plan certificate and one complete distributed-counterexample archive for
-each supported architecture, plus an index that commits to the complete pair.
-Download all five files:
+After native certification has completed, the SHA release has one fixed-plan
+certificate, one complete distributed-counterexample archive, and one complete
+runtime-validation archive for each architecture named by its index. Download
+the index and its architecture assets:
 
 ```sh
 gh release download "$TAG" --repo "$REPOSITORY" \
   --pattern "theseus-${TAG}-native-evidence.json" \
   --pattern "theseus-${TAG}-runtime-certificate-*.json" \
   --pattern "theseus-${TAG}-multiservice-counterexample-*.tar.gz" \
+  --pattern "theseus-${TAG}-runtime-validation-*.tar.gz" \
   --dir "$work"
 for artifact in "$work"/theseus-${TAG}-native-evidence.json \
   "$work"/theseus-${TAG}-runtime-certificate-*.json \
-  "$work"/theseus-${TAG}-multiservice-counterexample-*.tar.gz
+  "$work"/theseus-${TAG}-multiservice-counterexample-*.tar.gz \
+  "$work"/theseus-${TAG}-runtime-validation-*.tar.gz
 do
   gh attestation verify "$artifact" --repo "$REPOSITORY" \
     --signer-workflow "$REPOSITORY/.github/workflows/certify-deterministic-runtime.yml"
@@ -78,9 +80,10 @@ done
 ```
 
 Run the portable verifier from the same SHA release. It rejects a missing
-architecture, a renamed or changed asset, a mismatched certificate, an unsafe
-archive, a changed file inventory, or a replay that lacks the required
-partition, dropped frame, recovery probe, and lost update:
+indexed architecture, a renamed or changed asset, a mismatched certificate, an
+unsafe archive, a changed file inventory, a replay that lacks the required
+partition, dropped frame, recovery probe, or lost update, and validation that
+lacks its container, coverage, schedule-search, or pthread evidence:
 
 ```sh
 theseus evidence verify "$work/theseus-${TAG}-native-evidence.json"
@@ -99,6 +102,24 @@ docker run --rm --privileged --platform "linux/$ARCH" \
   theseus compose replay . --output reproduced
 ```
 
+Extract the validation archive to inspect its four additional product paths:
+
+```sh
+tar -xzf "$work/theseus-${TAG}-runtime-validation-${ARCH}.tar.gz" -C "$work"
+find "$work/validation" -name plan.json -o -name campaign-result.json \
+  -o -name result.json -o -name report.md -o -name minimization.json
+```
+
+`validation/evidence.json` records the native architecture, host kernel, KVM
+API, digest-pinned runtime, scenario list, and every retained file's size and
+SHA-256. The four directories contain the locked container run, coverage
+campaign, minimized schedule-search counterexample, pthread campaign, reports,
+comparison, offline evaluation, and checked replays. Those outputs establish
+that the CLI shipped in the release performed its inspect, compare, evaluate,
+minimize, and replay workflow against the same retained corpus.
+Each scenario's `source/` directory keeps the small Dockerfile, manifest,
+Compose file, and C program needed to understand the locked workload.
+
 `evidence/runtime-certificate.json` is byte-for-byte identical to the separate
 certificate asset. The certificate embeds the exact fixed plan covered by its
 plan digest. `evidence/replay/` contains the certification run used to verify
@@ -106,9 +127,10 @@ that replay.
 `source/` contains the human-readable tutorial input, while `checkpoint/`
 contains the locked runtime and workload artifacts. An absent
 architecture-specific asset or the pair index means that the SHA does not have
-a complete native certification set. The workflow stages both architectures,
-verifies the set with the released CLI, attests all five files, and only then
-uploads them to the release.
+a native certification for that architecture. Each certification run verifies
+its selected architecture set with the released CLI, attests every asset, and
+only then uploads it to the release. A successful SHA release starts amd64
+certification automatically; arm64 requires a native arm64 KVM runner.
 
 For Tutorial 30 evidence, `minimization.json` must retain both
 `backplane:partition@setup` and `backplane:heal@probe_partition`.

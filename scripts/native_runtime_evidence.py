@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seal one native counterexample or index a complete architecture pair."""
+"""Seal one native counterexample or index released native evidence."""
 
 from __future__ import annotations
 
@@ -109,12 +109,14 @@ def index(args: argparse.Namespace) -> None:
     if args.tag != args.source_commit[:12]:
         fail("release tag must match the source commit")
     architectures: dict[str, object] = {}
-    for architecture in ARCHITECTURES:
+    for architecture in args.architectures:
         certificate = f"theseus-{args.tag}-runtime-certificate-{architecture}.json"
         counterexample = f"theseus-{args.tag}-multiservice-counterexample-{architecture}.tar.gz"
+        validation = f"theseus-{args.tag}-runtime-validation-{architecture}.tar.gz"
         architectures[architecture] = {
             "certificate": asset(directory, certificate),
             "counterexample": asset(directory, counterexample),
+            "validation": asset(directory, validation),
         }
     output = args.output.resolve()
     if output.parent != directory:
@@ -122,7 +124,7 @@ def index(args: argparse.Namespace) -> None:
     write_json(
         output,
         {
-            "format": "theseus-native-evidence-index-v1",
+            "format": "theseus-native-evidence-index-v2",
             "source_commit": args.source_commit,
             "runtime_tag": args.tag,
             "architectures": architectures,
@@ -142,10 +144,16 @@ def main() -> None:
     seal_parser.add_argument("--host-kernel", required=True)
     seal_parser.add_argument("--kvm-api-version", required=True, type=int)
     seal_parser.set_defaults(action=seal)
-    index_parser = commands.add_parser("index", help="index exactly one amd64 and one arm64 evidence pair")
+    index_parser = commands.add_parser("index", help="index one or more architecture evidence sets")
     index_parser.add_argument("--directory", required=True, type=Path)
     index_parser.add_argument("--tag", required=True)
     index_parser.add_argument("--source-commit", required=True)
+    index_parser.add_argument(
+        "--architectures",
+        nargs="+",
+        choices=ARCHITECTURES,
+        default=list(ARCHITECTURES),
+    )
     index_parser.add_argument("--output", required=True, type=Path)
     index_parser.set_defaults(action=index)
     args = parser.parse_args()

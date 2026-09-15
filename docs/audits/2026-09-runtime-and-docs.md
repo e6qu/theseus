@@ -14,7 +14,7 @@ a demonstration.
 |---|---|---|
 | Published platforms | Implemented packaging | Linux amd64/arm64 runtimes and CLI binaries plus macOS arm64 CLI are the intended release matrix. KVM execution remains Linux-only. |
 | Image pivot provenance | Implemented packaging | Each Linux build compiles the static pivot for its explicit architecture before the image adapter. The runtime carries the pivot bytes and a source-commit/digest manifest; `theseus-image pivot` reports the embedded copy. |
-| Native runtime support | Conditional | The certification workflow resolves the full commit from signed SHA-release inputs and requests self-hosted amd64/arm64 KVM jobs. It publishes only a complete indexed pair after the released CLI verifies both certificates, archive inventories, runtime digests, recovery path, and counterexample. A definition or partial run is not runtime evidence. |
+| Native runtime support | Conditional | The certification workflow resolves the full commit from signed SHA-release inputs. It automatically runs amd64 on hosted native KVM and can dispatch arm64 to a labelled native KVM runner. The released CLI verifies each indexed certificate, counterexample, validation inventory, runtime digest, recovery path, and representative product scenario before publication. The index names its exact architecture scope; a definition or unindexed run is not runtime evidence. |
 | Linux random devices | Implemented with guest cooperation | Seeded virtio entropy is insufficient for a stock Linux CSPRNG. Tutorials 1–2 use the matching published kernel/module pair and only `/dev/random` and `/dev/urandom`. |
 | Virtual time | Implemented with a known leak | Time advances at exit-counted boundaries; counter reads within a quantum can reflect host progression. No instruction-exact claim remains. |
 | Network and storage faults | Implemented | Deterministic mode uses simulated network and memory-backed storage. Fault candidates are optional unless marked required; required actions survive minimization. Host-backed nondeterministic paths are rejected by the supported profile. Runtime proof is per retained certificate/campaign. |
@@ -58,7 +58,7 @@ a demonstration.
   recorded-divergence language.
 - Qualified entropy, clock, checkpoint, certification, evaluation, and
   platform claims in root and reference documentation.
-- Made native evidence publication pair-atomic and independently checkable by
+- Made native evidence publication architecture-scoped and independently checkable by
   the published CLI instead of relying on filenames and shell searches.
 - Replaced the obsolete milestone ledger with an evidence-driven roadmap.
 - Added CI checks for tutorial structure and high-risk documentation wording.

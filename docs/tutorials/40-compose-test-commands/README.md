@@ -94,7 +94,7 @@ operation barriers.
 Render the report:
 
 ```sh
-theseus report campaign --output report
+theseus report --format markdown --output report/report.md campaign
 sed -n '1,180p' report/report.md
 ```
 
