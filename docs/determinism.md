@@ -76,16 +76,22 @@ not depend on the expansion implementation.
 Every successfully handled guest-visible KVM exit is appended to both a
 per-vCPU rolling SHA-256 ledger and a VM-wide ledger. The record identifies the
 vCPU, exit kind, and deterministic payload, including MMIO and PIO address,
-width, and bytes read or written. A VM-wide gate serializes handled exits and
-their emulated device effects into one total order. It retains the bounded
-exact trace as well as the rolling digest. Checkpoints clone both forms into
-each child. Locked replay admits only the vCPU named by the next record and
-requires its complete exit payload to match. A wrong prefix, turn, payload,
-missing suffix, or extra exit fails replay.
+width, and bytes read or written. Explicit host effects share that VM-wide
+order: UART bytes, control-channel bytes, and virtual-clock jumps are recorded
+in the same serialized turn in which they affect the guest. Replay checks the
+expected input before delivery. A `vcpu:` or `host:` prefix identifies the
+actor.
 
-This controls concurrent emulated device effects and their replay order at the
-KVM boundary. Theseus does not yet make guest instructions deterministic or
-choose Linux thread, process, timer, or interrupt order between exits.
+The VM-wide gate retains the bounded exact trace as well as the rolling digest.
+Checkpoints clone both forms into each child. Locked replay admits only the
+actor named by the next record and requires its complete exit or input payload
+to match. A wrong prefix, actor, input, payload, missing suffix, or extra event
+fails replay.
+
+This controls concurrent emulated device effects and explicit host inputs at
+the KVM boundary. Theseus does not yet make guest instructions deterministic,
+choose Linux thread or process execution, or schedule timer and device
+interrupt delivery between exits.
 
 - Rate limiters use host timerfds — **rejected** when virtual time is
   enabled (`validate_deterministic_config`).
@@ -119,8 +125,9 @@ choose Linux thread, process, timer, or interrupt order between exits.
   direct futex use, blocking syscalls, processes, and uninstrumented library
   concurrency remain outside the supported scheduling profile.
 - **Execution between KVM exits.** The machine replay gate selects and verifies
-  vCPU turns at emulated device-effect boundaries. It cannot control or explain
-  divergence that happens entirely between those boundaries.
+  vCPU turns and explicit host inputs at controlled boundaries. It cannot
+  control or explain divergence that happens entirely between those
+  boundaries, including interrupt delivery and guest-side input consumption.
 
 ## Replay fingerprints
 
@@ -132,8 +139,8 @@ Each captured timeline node records:
    coverage).
 3. **Dirty pages** — KVM dirty-bitmap count at capture (memory footprint).
 
-Replay compares these fields plus the per-vCPU and machine-wide KVM-exit
-streams at every retained node. A match is evidence for those recorded
+Replay compares these fields plus the per-vCPU exit streams and machine-wide
+execution stream at every retained node. A match is evidence for those recorded
 observations, not a proof about unrecorded guest state.
 
 ## Certify a runtime

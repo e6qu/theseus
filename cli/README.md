@@ -51,8 +51,9 @@ container, coverage, schedule-search, pthread-synchronization, and ordered
 KVM-exit replay runs. An index may certify amd64, arm64, or both; the command
 reports the exact scope. Version 2 adds per-vCPU execution ledgers, version 3
 adds a machine-wide ledger, and version 4 requires the exact active-replay
-trace for every retained run and service. The verifier keeps reading the
-earlier formats without treating their absent fields as evidence.
+trace for every retained run and service. That trace may contain `vcpu:` exits
+and `host:` UART, control-channel, or clock-jump effects. The verifier keeps
+reading the earlier formats without treating their absent fields as evidence.
 
 ## Explore an SDK guest
 

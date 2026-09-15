@@ -103,8 +103,8 @@ deterministic-CRNG kernel module is shipped.
     package two command sets, derive service and asymmetric link faults from a
     two-service topology, then minimize and replay a lost update.
 41. [Reject low-level execution divergence](41-reject-execution-divergence/) —
-    run an uninstrumented container, inspect its per-vCPU and machine-wide KVM-exit streams, and
-    require the exact ledger on replay.
+    run an uninstrumented container, inspect its per-vCPU exit streams and
+    machine-wide execution stream, and require the exact trace on replay.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),
