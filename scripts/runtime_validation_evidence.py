@@ -115,7 +115,7 @@ def seal(args: argparse.Namespace) -> None:
     proof.write_text(
         json.dumps(
             {
-                "format": "theseus-runtime-validation-v2",
+                "format": "theseus-runtime-validation-v3",
                 "architecture": args.architecture,
                 "source_commit": args.source_commit,
                 "runtime": {"image": args.runtime_image, "tag": args.runtime_tag},

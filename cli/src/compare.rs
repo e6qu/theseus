@@ -90,6 +90,8 @@ struct Run {
     #[serde(default)]
     execution_ledgers: Coverage,
     #[serde(default)]
+    machine_execution_ledgers: Coverage,
+    #[serde(default)]
     state_sha256: String,
     #[serde(default)]
     timeline: Vec<Boundary>,
@@ -124,6 +126,8 @@ struct Boundary {
     structured_choices: Coverage,
     #[serde(default)]
     execution_ledgers: Coverage,
+    #[serde(default)]
+    machine_execution_ledgers: Coverage,
 }
 
 #[derive(Serialize)]
@@ -275,6 +279,15 @@ pub fn compare_campaigns(
                     right: json_summary(&right.execution_ledgers),
                 });
             }
+            if left.machine_execution_ledgers != right.machine_execution_ledgers {
+                return Some(CampaignDivergence {
+                    run,
+                    boundary: None,
+                    reason: "machine-wide KVM execution stream differs".to_owned(),
+                    left: json_summary(&left.machine_execution_ledgers),
+                    right: json_summary(&right.machine_execution_ledgers),
+                });
+            }
             for (boundary, (left, right)) in left.timeline.iter().zip(&right.timeline).enumerate() {
                 if !left.id.is_empty() && !right.id.is_empty() && left.id != right.id {
                     return Some(CampaignDivergence {
@@ -301,6 +314,15 @@ pub fn compare_campaigns(
                         reason: "ordered KVM execution ledger differs".to_owned(),
                         left: json_summary(&left.execution_ledgers),
                         right: json_summary(&right.execution_ledgers),
+                    });
+                }
+                if left.machine_execution_ledgers != right.machine_execution_ledgers {
+                    return Some(CampaignDivergence {
+                        run,
+                        boundary: Some(boundary),
+                        reason: "machine-wide KVM execution stream differs".to_owned(),
+                        left: json_summary(&left.machine_execution_ledgers),
+                        right: json_summary(&right.machine_execution_ledgers),
                     });
                 }
                 if left.operation != right.operation
