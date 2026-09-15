@@ -118,6 +118,10 @@ struct ComposeCampaign {
 #[serde(deny_unknown_fields)]
 struct ComposeOperation {
     name: String,
+    /// Optional Test Composer lifecycle role. When one operation declares a
+    /// role, every operation in the campaign must declare one.
+    #[serde(default)]
+    command: Option<ComposeTestCommand>,
     #[serde(default)]
     service: Option<String>,
     #[serde(default)]
@@ -277,6 +281,20 @@ pub enum ComposeShellPhase {
     Completion,
     Assertion,
     Recovery,
+}
+
+/// Scheduling contract for a command in a reusable campaign template. The
+/// names intentionally match the established Test Composer vocabulary.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposeTestCommand {
+    First,
+    ParallelDriver,
+    SerialDriver,
+    SingletonDriver,
+    Anytime,
+    Eventually,
+    Finally,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1230,6 +1248,8 @@ pub struct CampaignPlan {
 pub struct OperationPlan {
     pub name: String,
     pub service: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<ComposeTestCommand>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell_phase: Option<ComposeShellPhase>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3488,6 +3508,7 @@ fn campaign_plan(
         operations.push(OperationPlan {
             name: operation.name,
             service,
+            command: operation.command,
             shell_phase,
             shell_process,
             thread_schedule,
@@ -3515,6 +3536,7 @@ fn campaign_plan(
         });
     }
     validate_campaign_operation_rules(&operations, &campaign.stages, &initial_state)?;
+    validate_test_command_model(&operations, &campaign.stages)?;
     let mut faults = Vec::with_capacity(campaign.faults.len());
     for candidate in campaign.faults {
         let has_network_conditions = candidate.drop_ppm.is_some()
@@ -5481,6 +5503,64 @@ fn validate_campaign_operation_rules(
     )))
 }
 
+fn validate_test_command_model(
+    operations: &[OperationPlan],
+    stages: &[String],
+) -> Result<(), ComposeError> {
+    let declared = operations
+        .iter()
+        .filter(|operation| operation.command.is_some())
+        .count();
+    if declared == 0 {
+        return Ok(());
+    }
+    if declared != operations.len() {
+        return Err(ComposeError::Invalid(
+            "test-command campaigns must assign command to every operation".to_owned(),
+        ));
+    }
+    if !stages.is_empty() {
+        return Err(ComposeError::Invalid(
+            "test-command campaigns use command lifecycle roles instead of stages".to_owned(),
+        ));
+    }
+    if !operations.iter().any(|operation| {
+        matches!(
+            operation.command,
+            Some(
+                ComposeTestCommand::ParallelDriver
+                    | ComposeTestCommand::SerialDriver
+                    | ComposeTestCommand::SingletonDriver
+                    | ComposeTestCommand::Anytime
+            )
+        )
+    }) {
+        return Err(ComposeError::Invalid(
+            "a test-command campaign needs a parallel_driver, serial_driver, singleton_driver, or anytime command"
+                .to_owned(),
+        ));
+    }
+    for operation in operations {
+        let command = operation.command.expect("all command roles were declared");
+        let asynchronous = matches!(
+            operation.shell_phase,
+            Some(ComposeShellPhase::Launch | ComposeShellPhase::Completion)
+        );
+        if asynchronous
+            && !matches!(
+                command,
+                ComposeTestCommand::ParallelDriver | ComposeTestCommand::Anytime
+            )
+        {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {:?} uses an asynchronous shell phase outside parallel_driver or anytime",
+                operation.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn operation_input_reference_name(reference: &OperationInputReferencePlan) -> String {
     reference
         .input
@@ -5545,6 +5625,19 @@ fn normalize_campaign_fault_after(
             "campaign action after references unknown operation {after:?}",
         )));
     };
+    if matches!(
+        operation.command,
+        Some(
+            ComposeTestCommand::First
+                | ComposeTestCommand::Eventually
+                | ComposeTestCommand::Finally
+        )
+    ) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign action after cannot target lifecycle-protected test command {:?}",
+            operation.name
+        )));
+    }
     if let Some(input) = &reference.input {
         if !operation
             .inputs
@@ -7320,6 +7413,60 @@ mod tests {
         assert!(completion.contains("\"phase\":\"completion\""));
         assert!(completion.contains("\"command\":[]"));
         assert!(completion.contains("\"output_contains\":\"committed\""));
+    }
+
+    #[test]
+    fn locks_a_complete_test_command_lifecycle() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [test]\nnetworks:\n  test: {}\nx-theseus:\n  campaign:\n    driver: api\n    max_operations_per_run: 7\n    operations:\n      - {name: prepare, command: first, input: 'prepare\\n'}\n      - {name: write, command: parallel_driver, input: 'write\\n'}\n      - {name: compact, command: serial_driver, input: 'compact\\n'}\n      - {name: legacy, command: singleton_driver, input: 'legacy\\n'}\n      - {name: inspect, command: anytime, input: 'inspect\\n'}\n      - {name: recover, command: eventually, input: 'recover\\n'}\n      - {name: verify, command: finally, input: 'verify\\n'}\n    faults: []\n",
+        );
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let commands = plan
+            .campaign
+            .unwrap()
+            .operations
+            .into_iter()
+            .map(|operation| operation.command.unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            commands,
+            [
+                ComposeTestCommand::First,
+                ComposeTestCommand::ParallelDriver,
+                ComposeTestCommand::SerialDriver,
+                ComposeTestCommand::SingletonDriver,
+                ComposeTestCommand::Anytime,
+                ComposeTestCommand::Eventually,
+                ComposeTestCommand::Finally,
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_partial_or_stage_mixed_test_command_models() {
+        for extra in [
+            "operations:\n      - {name: prepare, command: first, input: 'prepare\\n'}\n      - {name: write, input: 'write\\n'}",
+            "stages: [work]\n    operations:\n      - {name: write, command: serial_driver, stage: work, input: 'write\\n'}",
+        ] {
+            let directory = fixture(&format!(
+                "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [test]\nnetworks:\n  test: {{}}\nx-theseus:\n  campaign:\n    driver: api\n    {extra}\n    faults: []\n"
+            ));
+            let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+            assert!(error.to_string().contains("test-command"));
+        }
+    }
+
+    #[test]
+    fn rejects_campaign_actions_after_quiet_lifecycle_commands() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [test]\nnetworks:\n  test: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - {name: prepare, command: first, input: 'prepare\\n'}\n      - {name: write, command: serial_driver, input: 'write\\n'}\n    faults:\n      - {kind: partition, network: test, after: prepare}\n",
+        );
+
+        let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("lifecycle-protected test command"));
     }
 
     #[test]

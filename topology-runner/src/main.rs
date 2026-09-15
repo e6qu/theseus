@@ -136,6 +136,8 @@ struct CampaignOperation {
     #[serde(default)]
     service: String,
     #[serde(default)]
+    command: Option<CampaignTestCommand>,
+    #[serde(default)]
     shell_phase: Option<CampaignShellPhase>,
     #[serde(default)]
     shell_process: Option<String>,
@@ -191,6 +193,18 @@ struct CampaignOperation {
     requires_state: BTreeMap<String, String>,
     #[serde(default)]
     sets_state: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CampaignTestCommand {
+    First,
+    ParallelDriver,
+    SerialDriver,
+    SingletonDriver,
+    Anytime,
+    Eventually,
+    Finally,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -725,6 +739,8 @@ struct CampaignTimelineBoundary {
     #[serde(default)]
     id: String,
     operation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    command: Option<CampaignTestCommand>,
     /// The UART service that received this operation. Empty only in a result
     /// recorded before service-targeted operations existed.
     #[serde(default)]
@@ -2916,6 +2932,7 @@ fn execute_campaign(
         .campaign
         .take()
         .expect("campaign execution requires a campaign");
+    validate_campaign_test_commands(&campaign)?;
     for operation in &campaign.operations {
         if let Some(exploration) = &operation.thread_schedule_exploration {
             if exploration.strategy != "runnable_prefixes"
@@ -3416,6 +3433,7 @@ fn execute_campaign_minimized(
         .campaign
         .take()
         .expect("campaign minimization requires a campaign");
+    validate_campaign_test_commands(&campaign)?;
     let source = source_plan
         .parent()
         .ok_or_else(|| format!("campaign plan has no parent: {}", source_plan.display()))?;
@@ -3982,6 +4000,12 @@ fn campaign_decision_trace(
             "boundary:{position}:operation:{}",
             campaign_operation_choice_name(campaign, *choice)
         ));
+        if let Some(command) = campaign.operations[choice.operation].command {
+            trace.push(format!(
+                "boundary:{position}:command:{}",
+                campaign_test_command_name(command)
+            ));
+        }
         trace.push(format!(
             "boundary:{position}:input:{}:{}",
             boundary.service, boundary.input.sha256
@@ -4010,6 +4034,18 @@ fn campaign_decision_trace(
         }));
     }
     trace
+}
+
+fn campaign_test_command_name(command: CampaignTestCommand) -> &'static str {
+    match command {
+        CampaignTestCommand::First => "first",
+        CampaignTestCommand::ParallelDriver => "parallel_driver",
+        CampaignTestCommand::SerialDriver => "serial_driver",
+        CampaignTestCommand::SingletonDriver => "singleton_driver",
+        CampaignTestCommand::Anytime => "anytime",
+        CampaignTestCommand::Eventually => "eventually",
+        CampaignTestCommand::Finally => "finally",
+    }
 }
 
 fn common_decision_prefix(left: &[String], right: &[String]) -> usize {
@@ -5048,7 +5084,7 @@ fn campaign_fault_selections(
 /// candidate cap remains the final guard for wide workloads and fault products.
 fn campaign_operation_histories(campaign: &CampaignPlan) -> Vec<Vec<CampaignOperationChoice>> {
     let choices = campaign_operation_choices(campaign);
-    ordered_operation_histories(
+    let histories = ordered_operation_histories(
         choices.len(),
         usize::from(campaign.max_operations_per_run),
         |history, choice| {
@@ -5060,8 +5096,19 @@ fn campaign_operation_histories(campaign: &CampaignPlan) -> Vec<Vec<CampaignOper
         },
     )
     .into_iter()
-    .map(|history| history.into_iter().map(|choice| choices[choice]).collect())
-    .collect()
+    .map(|history| {
+        history
+            .into_iter()
+            .map(|choice| choices[choice])
+            .collect::<Vec<_>>()
+    });
+    if campaign_uses_test_commands(campaign) {
+        histories
+            .filter(|history| campaign_test_history_is_complete(campaign, history))
+            .collect()
+    } else {
+        histories.collect()
+    }
 }
 
 fn campaign_operation_is_ready(
@@ -5102,6 +5149,7 @@ fn campaign_operation_is_ready(
         _ => true,
     };
     shell_process_ready
+        && campaign_test_command_is_ready(campaign, history, choice)
         && stages_are_ordered
         && campaign_state_matches(&state, &candidate.requires_state)
         && campaign_state_matches(&state, &input.requires_state)
@@ -5137,6 +5185,161 @@ fn campaign_operation_is_ready(
                 .count()
                 < usize::from(maximum)
         })
+}
+
+fn campaign_uses_test_commands(campaign: &CampaignPlan) -> bool {
+    campaign
+        .operations
+        .iter()
+        .any(|operation| operation.command.is_some())
+}
+
+fn validate_campaign_test_commands(campaign: &CampaignPlan) -> Result<(), String> {
+    let declared = campaign
+        .operations
+        .iter()
+        .filter(|operation| operation.command.is_some())
+        .count();
+    if declared == 0 {
+        return Ok(());
+    }
+    if declared != campaign.operations.len() {
+        return Err("test-command plan does not assign a role to every operation".to_owned());
+    }
+    if !campaign.stages.is_empty() {
+        return Err("test-command plan also declares legacy stages".to_owned());
+    }
+    if !campaign.operations.iter().any(|operation| {
+        matches!(
+            operation.command,
+            Some(
+                CampaignTestCommand::ParallelDriver
+                    | CampaignTestCommand::SerialDriver
+                    | CampaignTestCommand::SingletonDriver
+                    | CampaignTestCommand::Anytime
+            )
+        )
+    }) {
+        return Err("test-command plan has no driver or anytime command".to_owned());
+    }
+    Ok(())
+}
+
+fn campaign_test_command_is_ready(
+    campaign: &CampaignPlan,
+    history: &[CampaignOperationChoice],
+    choice: CampaignOperationChoice,
+) -> bool {
+    if !campaign_uses_test_commands(campaign) {
+        return true;
+    }
+    let Some(command) = campaign.operations[choice.operation].command else {
+        return false;
+    };
+    let commands = history
+        .iter()
+        .filter_map(|prior| campaign.operations[prior.operation].command)
+        .collect::<Vec<_>>();
+    let first_declared = campaign
+        .operations
+        .iter()
+        .any(|operation| operation.command == Some(CampaignTestCommand::First));
+    let first_finished = commands.first() == Some(&CampaignTestCommand::First);
+    let terminal_started = commands.iter().any(|prior| {
+        matches!(
+            prior,
+            CampaignTestCommand::Eventually | CampaignTestCommand::Finally
+        )
+    });
+    let singleton_started = commands.contains(&CampaignTestCommand::SingletonDriver);
+    let ordinary_driver_started = commands.iter().any(|prior| {
+        matches!(
+            prior,
+            CampaignTestCommand::ParallelDriver | CampaignTestCommand::SerialDriver
+        )
+    });
+    let driver_started = singleton_started || ordinary_driver_started;
+    let lifecycle_started = !first_declared || first_finished;
+    match command {
+        CampaignTestCommand::First => history.is_empty(),
+        CampaignTestCommand::ParallelDriver => {
+            lifecycle_started && !terminal_started && !singleton_started
+        }
+        CampaignTestCommand::SerialDriver => {
+            lifecycle_started
+                && !terminal_started
+                && !singleton_started
+                && !campaign_has_active_parallel_process(campaign, history)
+        }
+        CampaignTestCommand::SingletonDriver => {
+            lifecycle_started
+                && !terminal_started
+                && !driver_started
+                && !campaign_has_active_parallel_process(campaign, history)
+        }
+        CampaignTestCommand::Anytime => lifecycle_started && !terminal_started,
+        CampaignTestCommand::Eventually => {
+            lifecycle_started
+                && driver_started
+                && !terminal_started
+                && !campaign_has_active_process(campaign, history)
+        }
+        CampaignTestCommand::Finally => {
+            lifecycle_started
+                && driver_started
+                && !terminal_started
+                && !campaign_has_active_process(campaign, history)
+        }
+    }
+}
+
+fn campaign_test_history_is_complete(
+    campaign: &CampaignPlan,
+    history: &[CampaignOperationChoice],
+) -> bool {
+    let commands = history
+        .iter()
+        .filter_map(|choice| campaign.operations[choice.operation].command)
+        .collect::<Vec<_>>();
+    let first_declared = campaign
+        .operations
+        .iter()
+        .any(|operation| operation.command == Some(CampaignTestCommand::First));
+    let lifecycle_started =
+        !first_declared || commands.first() == Some(&CampaignTestCommand::First);
+    let useful = commands.iter().any(|command| {
+        matches!(
+            command,
+            CampaignTestCommand::ParallelDriver
+                | CampaignTestCommand::SerialDriver
+                | CampaignTestCommand::SingletonDriver
+                | CampaignTestCommand::Anytime
+        )
+    });
+    lifecycle_started && useful && !campaign_has_active_process(campaign, history)
+}
+
+fn campaign_has_active_process(
+    campaign: &CampaignPlan,
+    history: &[CampaignOperationChoice],
+) -> bool {
+    campaign.operations.iter().any(|operation| {
+        operation.shell_process.as_deref().is_some_and(|process| {
+            campaign_shell_process_balance(campaign, history, &operation.service, process) != 0
+        })
+    })
+}
+
+fn campaign_has_active_parallel_process(
+    campaign: &CampaignPlan,
+    history: &[CampaignOperationChoice],
+) -> bool {
+    campaign.operations.iter().any(|operation| {
+        operation.command == Some(CampaignTestCommand::ParallelDriver)
+            && operation.shell_process.as_deref().is_some_and(|process| {
+                campaign_shell_process_balance(campaign, history, &operation.service, process) != 0
+            })
+    })
 }
 
 /// Number of unmatched launches for one service-local process identity.
@@ -5209,6 +5412,11 @@ fn recorded_campaign_schedules(
                 .iter()
                 .map(|name| campaign_operation_choice_by_name(campaign, name))
                 .collect::<Result<Vec<_>, _>>()?;
+            if campaign_uses_test_commands(campaign)
+                && !campaign_test_history_is_complete(campaign, &operations)
+            {
+                return Err("recorded test-command timeline violates its lifecycle".to_owned());
+            }
             let names = if run.faults.is_empty() {
                 run.fault.iter().cloned().collect::<Vec<_>>()
             } else {
@@ -6996,6 +7204,7 @@ fn campaign_operation_timeline(
                     campaign_operation_choice_name(campaign, *operation)
                 ),
                 operation: campaign_operation_choice_name(campaign, *operation),
+                command: campaign.operations[operation.operation].command,
                 service: campaign_operation_service(campaign, *operation).to_owned(),
                 input,
                 delivery,
@@ -12224,6 +12433,7 @@ mod tests {
                 CampaignOperation {
                     name: "write".to_owned(),
                     service: "api".to_owned(),
+                    command: None,
                     shell_phase: None,
                     shell_process: None,
                     thread_schedule: Vec::new(),
@@ -12292,6 +12502,7 @@ mod tests {
                 CampaignOperation {
                     name: "read".to_owned(),
                     service: "api".to_owned(),
+                    command: None,
                     shell_phase: None,
                     shell_process: None,
                     thread_schedule: Vec::new(),
@@ -14375,6 +14586,7 @@ mod tests {
             timeline: vec![CampaignTimelineBoundary {
                 id: "op-000-write".to_owned(),
                 operation: "write".to_owned(),
+                command: None,
                 service: "api".to_owned(),
                 input: CampaignInputEvidence {
                     bytes: 6,
@@ -14784,6 +14996,80 @@ mod tests {
                 vec![1, 1, 1],
             ]
         );
+    }
+
+    #[test]
+    fn test_command_histories_require_first_and_join_parallel_processes() {
+        let campaign: CampaignPlan = serde_json::from_value(serde_json::json!({
+            "driver": "api",
+            "operations": [
+                {
+                    "name": "prepare",
+                    "service": "api",
+                    "command": "first",
+                    "inputs": [{"name": "default", "input_hex": "00"}],
+                    "max_uses": 1
+                },
+                {
+                    "name": "start",
+                    "service": "api",
+                    "command": "parallel_driver",
+                    "shell_phase": "launch",
+                    "shell_process": "writer",
+                    "inputs": [{"name": "default", "input_hex": "01"}],
+                    "max_uses": 1
+                },
+                {
+                    "name": "join",
+                    "service": "api",
+                    "command": "parallel_driver",
+                    "shell_phase": "completion",
+                    "shell_process": "writer",
+                    "inputs": [{"name": "default", "input_hex": "02"}],
+                    "max_uses": 1
+                }
+            ],
+            "max_runs": 8,
+            "max_faults_per_run": 0,
+            "max_operations_per_run": 3
+        }))
+        .unwrap();
+
+        let histories = campaign_operation_histories(&campaign);
+        assert_eq!(histories, vec![vec![choice(0), choice(1), choice(2)]]);
+    }
+
+    #[test]
+    fn test_command_histories_keep_singleton_and_driver_timelines_separate() {
+        let campaign: CampaignPlan = serde_json::from_value(serde_json::json!({
+            "driver": "api",
+            "operations": [
+                {"name": "first", "command": "first", "inputs": [{"name": "default", "input_hex": "00"}], "max_uses": 1},
+                {"name": "driver", "command": "serial_driver", "inputs": [{"name": "default", "input_hex": "01"}], "max_uses": 1},
+                {"name": "singleton", "command": "singleton_driver", "inputs": [{"name": "default", "input_hex": "02"}], "max_uses": 1},
+                {"name": "check", "command": "anytime", "inputs": [{"name": "default", "input_hex": "03"}], "max_uses": 1},
+                {"name": "final", "command": "finally", "inputs": [{"name": "default", "input_hex": "04"}], "max_uses": 1}
+            ],
+            "max_runs": 32,
+            "max_faults_per_run": 0,
+            "max_operations_per_run": 4
+        }))
+        .unwrap();
+
+        let histories = campaign_operation_histories(&campaign);
+        assert!(!histories.is_empty());
+        assert!(histories.iter().all(|history| history[0] == choice(0)));
+        assert!(histories.iter().all(|history| {
+            let names = history
+                .iter()
+                .map(|choice| campaign.operations[choice.operation].name.as_str())
+                .collect::<Vec<_>>();
+            !(names.contains(&"driver") && names.contains(&"singleton"))
+                && names
+                    .iter()
+                    .position(|name| *name == "final")
+                    .is_none_or(|index| index + 1 == names.len())
+        }));
     }
 
     #[test]

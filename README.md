@@ -20,6 +20,9 @@ passing unit suite alone is not treated as runtime proof.
 - UART operations for unmodified Linux services and an optional guest SDK.
 - Compose campaigns with bounded operations, faults, serial properties,
   minimization, replay, and offline reports.
+- Test-command lifecycle roles for first, parallel, serial, singleton,
+  anytime, eventually, and final work, with invalid combinations removed from
+  the generated corpus.
 - Named image commands that remain in flight across operation checkpoints,
   with replayed launches and completion-observation order.
 - Expected-counterexample commands that fail closed unless the named campaign
@@ -99,6 +102,8 @@ examples:
     coverage, resolve a reached source location, and replay the edge set.
 15. Instrument a Go command and its imported main-module packages, then report
     and replay source-associated basic blocks.
+16. Turn ordinary image commands into a reusable lifecycle template and let
+    Theseus compose valid overlapping, serial, anytime, and terminal actions.
 
 Each tutorial directory is its own working directory and complete input
 context. Runnable tutorials use published Theseus images or binaries, not a

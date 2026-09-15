@@ -176,5 +176,11 @@ docs/tutorials/39-go-module-coverage/plan.json
 docs/tutorials/39-go-module-coverage/campaign/
 docs/tutorials/39-go-module-coverage/report/
 docs/tutorials/39-go-module-coverage/rerun/
+docs/tutorials/40-compose-test-commands/api/work/
+docs/tutorials/40-compose-test-commands/plan.json
+docs/tutorials/40-compose-test-commands/campaign/
+docs/tutorials/40-compose-test-commands/minimized/
+docs/tutorials/40-compose-test-commands/rerun/
+docs/tutorials/40-compose-test-commands/report/
 
 orchestrator/pivot/target/

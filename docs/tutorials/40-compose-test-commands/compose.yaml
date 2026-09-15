@@ -1,0 +1,113 @@
+name: test-command-lifecycle
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [test]
+
+networks:
+  test: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    max_runs: 64
+    max_operations_per_run: 9
+    faults: []
+    state: {phase: new, a: idle, b: idle}
+    operations:
+      - name: prepare
+        command: first
+        max_uses: 1
+        requires_state: {phase: new}
+        sets_state: {phase: ready}
+        shell:
+          command: [/bin/sh, -c, "rm -f /state/*; echo 0 > /state/counter"]
+
+      - name: start_a
+        command: parallel_driver
+        max_uses: 1
+        requires_state: {phase: ready, a: idle}
+        sets_state: {a: running}
+        shell:
+          phase: launch
+          process: writer-a
+          command: [/work/writer, a]
+
+      - name: start_b
+        command: parallel_driver
+        max_uses: 1
+        requires_state: {a: running, b: idle}
+        sets_state: {b: running}
+        shell:
+          phase: launch
+          process: writer-b
+          command: [/work/writer, b]
+
+      - name: sample_during_write
+        command: anytime
+        max_uses: 1
+        requires_state: {a: running, b: running}
+        shell:
+          command: [/bin/sh, -c, "printf '{\"sample\":%s}\n' \"$(cat /state/counter)\""]
+          output_json: true
+
+      - name: release_writers
+        command: parallel_driver
+        max_uses: 1
+        requires_state: {a: running, b: running}
+        sets_state: {a: released, b: released}
+        shell:
+          command: [/bin/sh, -c, "while [ ! -e /state/a.ready ] || [ ! -e /state/b.ready ]; do sleep 0.01; done; touch /state/release"]
+
+      - name: join_a
+        command: parallel_driver
+        max_uses: 1
+        requires_state: {a: released}
+        sets_state: {a: done}
+        shell:
+          phase: completion
+          process: writer-a
+          output_contains: committed-a
+
+      - name: join_b
+        command: parallel_driver
+        max_uses: 1
+        requires_state: {a: done, b: released}
+        sets_state: {b: done}
+        shell:
+          phase: completion
+          process: writer-b
+          output_contains: committed-b
+
+      - name: inspect
+        command: serial_driver
+        max_uses: 1
+        requires_state: {a: done, b: done}
+        sets_state: {phase: inspected}
+        shell:
+          command: [/bin/sh, -c, "printf '{\"value\":%s}\n' \"$(cat /state/counter)\""]
+          output_json: true
+
+      - name: verify_final_state
+        command: finally
+        max_uses: 1
+        requires_state: {phase: inspected}
+        shell:
+          command: [/bin/sh, -c, "test \"$(cat /state/counter)\" -ge 1"]
+
+      - name: verify_recovery
+        command: eventually
+        max_uses: 1
+        requires_state: {phase: inspected}
+        shell:
+          command: [/bin/sh, -c, "test -s /state/counter"]
+
+    properties:
+      - name: lost_update_is_unreachable
+        kind: unreachable
+        service: api
+        predicate:
+          json:
+            fields: {/event: shell_operation, /name: inspect, /output/value: 1}

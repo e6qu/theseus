@@ -10,7 +10,7 @@ has no independent head-to-head evaluation with Antithesis.
 | Capability | Antithesis | Theseus today |
 |---|---|---|
 | Workload packaging | Container-based test environment | Container images or explicit Firecracker guest inputs |
-| Test interface | Test templates and SDK assertions | Compose campaigns, UART operations, serial properties, optional SDK |
+| Test interface | Test templates and SDK assertions | Compose lifecycle commands, UART/image operations, serial properties, optional SDK |
 | Determinism | Custom deterministic hypervisor | KVM plus seeded devices, simulated I/O, and exit-counted virtual time |
 | Replay | Instruction-level deterministic reproduction | Locked-input replay with recorded fingerprints; mid-quantum clock caveat |
 | Search guidance | Coverage-guided autonomous exploration | One bounded decision-prefix policy combines structured choices, C/Go application blocks, LLVM edges, runnable selections, faults, properties, topology states, and sampled guest PCs |
@@ -73,10 +73,20 @@ execution events can still escape control.
 
 ### Test templates
 
-Antithesis provides setup, workload, and teardown templates for unmodified
-containers. Theseus has analogous campaign concepts, but its current interface
-is lower-level: Compose configuration, a designated driver, explicit UART or
-image operations, and serial evidence.
+Antithesis schedules seven command types inside test templates. Theseus now
+accepts the same lifecycle vocabulary on Compose campaign operations and
+generates only histories that respect first-command setup, singleton
+exclusivity, serial/parallel process boundaries, anytime work, and terminal
+eventual/final checks. Roles survive plan locking, replay, minimization,
+decision traces, and reports.
+
+The remaining gap is operational rather than terminological. Theseus requires
+explicit Compose operations instead of discovering executable commands in an
+image directory. Parallel work uses explicit named-process launch/completion;
+the explorer does not yet choose a concurrency count. Eventually checks do not
+yet kill live drivers, so retained timelines join named processes before they
+end. Antithesis supplies those behaviors as part of its mature hosted
+scheduler.
 
 Reference: [Antithesis test templates](https://antithesis.com/docs/product/writing_tests/test_templates/).
 
