@@ -186,6 +186,8 @@ struct CampaignOperation {
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
+    test_command_path: Option<String>,
+    #[serde(default)]
     shell_phase: Option<String>,
     #[serde(default)]
     shell_process: Option<String>,
@@ -476,6 +478,10 @@ struct CampaignTimelineBoundary {
     #[serde(default)]
     id: String,
     operation: String,
+    #[serde(default)]
+    test_command_path: Option<String>,
+    #[serde(default)]
+    terminated_command_services: Vec<String>,
     #[serde(default)]
     service: String,
     #[serde(default)]
@@ -1259,7 +1265,7 @@ const replay=section(m.command_label);replay.append(el('pre',m.command));
 if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));if(n.serial_log){{d.append(el('p','serial log: '+n.serial_log));}}d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
 if(Object.keys(m.campaign_state).length){{const s=section('Campaign state machine');s.append(el('pre',JSON.stringify(m.campaign_state)));const rows=[];m.campaign_operations.forEach(o=>{{if(Object.keys(o.requires_state).length||Object.keys(o.sets_state).length)rows.push([o.name,JSON.stringify(o.requires_state),JSON.stringify(o.sets_state)]);o.inputs.forEach(i=>{{if(Object.keys(i.requires_state).length||Object.keys(i.sets_state).length)rows.push([o.name+'['+i.name+']',JSON.stringify(i.requires_state),JSON.stringify(i.sets_state)]);}});}});if(rows.length)s.append(table(rows,['Transition','Requires state','Sets state']));}}
-if(m.campaign_operations.length){{const predicate=p=>p?JSON.stringify(p):'none',predicates=ps=>ps.length?JSON.stringify(ps):'none',ref=r=>r.operation+(r.input?'['+r.input+']':''),capture=(n,c)=>n+'@'+(c.service||'driver')+':'+c.pointer+' · '+JSON.stringify(c.json||c.workflow||{{sequence:c.sequence}})+' ('+(c.encoding||'text')+', '+(c.select||'latest')+')',input=i=>{{const rules=i.requires.length||i.excludes.length||i.max_uses!==null?' ('+[i.requires.length?'after '+i.requires.map(ref).join(' + '):'',i.excludes.length?'without '+i.excludes.map(ref).join(' + '):'',i.max_uses===null?'':'at most '+i.max_uses].filter(Boolean).join('; ')+')':'';const captures=i.input_template?' ← '+i.input_template+' · '+Object.entries(i.input_captures).map(([n,c])=>capture(n,c)).join(', '):'',schedule=i.thread_schedule.length?' · schedule '+i.thread_schedule.join(','):'';return i.name+schedule+rules+captures}},grammar=o=>o.input_grammar?(o.input_grammar.name_template+' ← '+o.input_grammar.template+' · '+Object.entries(o.input_grammar.choices).map(([v,c])=>v+'='+Object.keys(c).join('/')).join(', ')+(Object.keys(o.input_grammar.input_captures).length?' · '+Object.entries(o.input_grammar.input_captures).map(([n,c])=>capture(n,c)).join(', '):'')):'literal cases',threadSchedule=o=>o.thread_schedule_exploration?o.thread_schedule_exploration.strategy+': at most '+o.thread_schedule_exploration.max_choices+' choices and '+o.thread_schedule_exploration.max_variants+' variants':o.thread_schedule_search?'search '+o.thread_schedule_search.generated_schedules+' pattern(s): threads '+o.thread_schedule_search.threads.join(',')+', period '+o.thread_schedule_search.period+', at most '+o.thread_schedule_search.max_switches+' switch(es)':o.thread_schedule.join(',')||'none',inputCases=o=>o.thread_schedule_search?o.thread_schedule_search.generated_schedules+' locked schedule cases':o.inputs.map(input).join(' + ')||'default',s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,o.command||'operation',o.shell_phase||'input',o.shell_process||'none',threadSchedule(o),grammar(o),inputCases(o),o.stage||'any',o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',predicate(o.requires_serial),predicate(o.excludes_serial),predicates(o.requires_serial_all),predicates(o.excludes_serial_any),predicates(o.requires_serial_joins),predicates(o.excludes_serial_joins),predicate(o.requires_serial_evidence),predicate(o.excludes_serial_evidence),o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Test command','Command phase','Process','Thread schedule','Input grammar','Input cases','Stage','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Requires serial predicate','Excludes serial predicate','Requires all serial guards','Excludes any serial guard','Requires JSON joins','Excludes JSON joins','Requires serial evidence','Excludes serial evidence','Maximum uses']));}}
+if(m.campaign_operations.length){{const predicate=p=>p?JSON.stringify(p):'none',predicates=ps=>ps.length?JSON.stringify(ps):'none',ref=r=>r.operation+(r.input?'['+r.input+']':''),capture=(n,c)=>n+'@'+(c.service||'driver')+':'+c.pointer+' · '+JSON.stringify(c.json||c.workflow||{{sequence:c.sequence}})+' ('+(c.encoding||'text')+', '+(c.select||'latest')+')',input=i=>{{const rules=i.requires.length||i.excludes.length||i.max_uses!==null?' ('+[i.requires.length?'after '+i.requires.map(ref).join(' + '):'',i.excludes.length?'without '+i.excludes.map(ref).join(' + '):'',i.max_uses===null?'':'at most '+i.max_uses].filter(Boolean).join('; ')+')':'';const captures=i.input_template?' ← '+i.input_template+' · '+Object.entries(i.input_captures).map(([n,c])=>capture(n,c)).join(', '):'',schedule=i.thread_schedule.length?' · schedule '+i.thread_schedule.join(','):'';return i.name+schedule+rules+captures}},grammar=o=>o.input_grammar?(o.input_grammar.name_template+' ← '+o.input_grammar.template+' · '+Object.entries(o.input_grammar.choices).map(([v,c])=>v+'='+Object.keys(c).join('/')).join(', ')+(Object.keys(o.input_grammar.input_captures).length?' · '+Object.entries(o.input_grammar.input_captures).map(([n,c])=>capture(n,c)).join(', '):'')):'literal cases',threadSchedule=o=>o.thread_schedule_exploration?o.thread_schedule_exploration.strategy+': at most '+o.thread_schedule_exploration.max_choices+' choices and '+o.thread_schedule_exploration.max_variants+' variants':o.thread_schedule_search?'search '+o.thread_schedule_search.generated_schedules+' pattern(s): threads '+o.thread_schedule_search.threads.join(',')+', period '+o.thread_schedule_search.period+', at most '+o.thread_schedule_search.max_switches+' switch(es)':o.thread_schedule.join(',')||'none',inputCases=o=>o.thread_schedule_search?o.thread_schedule_search.generated_schedules+' locked schedule cases':o.inputs.map(input).join(' + ')||'default',s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,o.command||'operation',o.test_command_path||'explicit',o.shell_phase||'input',o.shell_process||'none',threadSchedule(o),grammar(o),inputCases(o),o.stage||'any',o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',predicate(o.requires_serial),predicate(o.excludes_serial),predicates(o.requires_serial_all),predicates(o.excludes_serial_any),predicates(o.requires_serial_joins),predicates(o.excludes_serial_joins),predicate(o.requires_serial_evidence),predicate(o.excludes_serial_evidence),o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Test command','Source','Command phase','Process','Thread schedule','Input grammar','Input cases','Stage','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Requires serial predicate','Excludes serial predicate','Requires all serial guards','Excludes any serial guard','Requires JSON joins','Excludes JSON joins','Requires serial evidence','Excludes serial evidence','Maximum uses']));}}
 if(m.campaign_operations.some(o=>Object.keys(o.choice_bounds||{{}}).length)){{const rows=m.campaign_operations.filter(o=>Object.keys(o.choice_bounds||{{}}).length).map(o=>[o.name,Object.entries(o.choice_bounds).map(([name,bound])=>name+': 0..'+(bound-1)).join(', '),String(o.inputs.length)]),s=section('Structured choice model');s.append(table(rows,['Operation','Bounds','Locked input cases']));}}
 if(m.campaign_operations.some(o=>o.service)){{const s=section('Operation targets');s.append(el('p','Each operation sends its UART input to this service. Operations without a target in older bundles use the designated campaign driver.'));s.append(table(m.campaign_operations.filter(o=>o.service).map(o=>[o.name,o.service]),['Operation','Service']));}}
 if(m.campaign_runs.length){{const location=l=>{{if(typeof l==='string')return l;const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},locations=r=>Object.entries(r.program_counters).map(([service,pcs])=>service+': '+((r.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',applicationBlocks=r=>(r.application_coverage_labels.length?r.application_coverage_labels:r.application_block_novelty).join(' ')||'none',scheduling=r=>Object.values(r.thread_scheduling).reduce((n,v)=>n+v.length,0),prefixes=r=>r.thread_schedule_prefixes.filter(p=>p.length).map(p=>p.join(',')).join(' → ')||'default',ledger=r=>r.guidance_ledger&&r.guidance_ledger.sha256?r.guidance_ledger.observations+' observations · '+r.guidance_ledger.sha256:'unrecorded (legacy)',posterior=r=>{{const p=r.guidance_evidence;return p.scope+' · '+p.successes+' yield(s), '+p.misses+' miss(es) · mean '+p.mean_per_mille+'‰ + '+p.uncertainty_per_mille+'‰'}},hasPosterior=m.campaign_runs.some(r=>r.guidance_evidence),rows=m.campaign_runs.map(r=>{{const row=[String(r.index),r.operations.join(' → ')||'none',prefixes(r),(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',ledger(r)];if(hasPosterior)row.push(posterior(r));row.push(r.state_novel?'new':'seen',locations(r),applicationBlocks(r),String(scheduling(r)),r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none');return row}}),heads=['Run','Operations','Runnable prefix','Candidates','Selection','Guidance ledger'];if(hasPosterior)heads.push('Posterior evidence');heads.push('Topology state','Instruction locations','New application coverage','Scheduling decisions','Applied actions','Status','New markers');const s=section('Generated timelines');s.append(table(rows,heads));}}
@@ -1269,7 +1275,7 @@ if(m.campaign_runs.some(r=>r.property_witnesses.length)){{const rows=m.campaign_
 if(m.campaign_runs.some(r=>r.timeline.length)){{
 const location=l=>{{const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},
 locations=b=>Object.entries(b.program_counters).map(([service,pcs])=>service+': '+((b.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',
-delta=b=>[['new markers',b.new_markers.join(' ')],['new application coverage',b.new_application_blocks.join(' ')],['scheduling decisions',Object.values(b.new_thread_scheduling_decisions).reduce((n,v)=>n+v.length,0)],['changed PCs',b.changed_program_counters.join(', ')],['changed serial',b.changed_serial.join(', ')]].filter(([,value])=>value).map(([label,value])=>label+': '+value).join('; ')||'none',
+delta=b=>[['new markers',b.new_markers.join(' ')],['new application coverage',b.new_application_blocks.join(' ')],['scheduling decisions',Object.values(b.new_thread_scheduling_decisions).reduce((n,v)=>n+v.length,0)],['stopped commands',b.terminated_command_services.join(', ')],['changed PCs',b.changed_program_counters.join(', ')],['changed serial',b.changed_serial.join(', ')]].filter(([,value])=>value).map(([label,value])=>label+': '+value).join('; ')||'none',
 scheduling=b=>Object.entries(b.new_thread_scheduling_decisions).flatMap(([service,ds])=>ds.map(d=>service+': #'+d.decision+' t'+d.from_thread+' → t'+d.selected_thread+' among '+d.runnable_mask+' @'+d.point_offset)).join(' · ')||'none',
 serial=b=>Object.entries(b.serial_delta).map(([service,d])=>service+': '+d.excerpt+' ['+d.bytes+' bytes; sha256 '+d.sha256+(d.omitted_bytes?'; +'+d.omitted_bytes+' bytes':'')+']').join(' · ')||'none',
 input=b=>b.input.sha256?b.input.excerpt+' ['+b.input.bytes+' bytes; sha256 '+b.input.sha256+(b.input.omitted_bytes?'; +'+b.input.omitted_bytes+' bytes':'')+']':'unrecorded (legacy)',
@@ -1647,6 +1653,12 @@ fn campaign_timeline_labels(run: &CampaignRun) -> Vec<[String; 19]> {
             if synchronization_count > 0 {
                 delta.push(format!("synchronization events: {synchronization_count}"));
             }
+            if !boundary.terminated_command_services.is_empty() {
+                delta.push(format!(
+                    "stopped commands: {}",
+                    boundary.terminated_command_services.join(", ")
+                ));
+            }
             let delta = if delta.is_empty() {
                 "none".to_owned()
             } else {
@@ -1899,14 +1911,15 @@ fn render_markdown(model: &ReportModel) -> String {
         .any(|operation| operation.shell_phase.is_some() || operation.command.is_some())
     {
         output.push_str(
-            "\n## Command lifecycle\n\n| Operation | Test command | Phase | Process | Thread schedule | Structured choices |\n| --- | --- | --- | --- | --- | --- |\n",
+            "\n## Command lifecycle\n\n| Operation | Test command | Source | Phase | Process | Thread schedule | Structured choices |\n| --- | --- | --- | --- | --- | --- | --- |\n",
         );
         for operation in &model.campaign_operations {
             if operation.shell_phase.is_some() || operation.command.is_some() {
                 output.push_str(&format!(
-                    "| {} | {} | {} | {} | {} | {} |\n",
+                    "| {} | {} | {} | {} | {} | {} | {} |\n",
                     markdown_cell(&operation.name),
                     markdown_cell(operation.command.as_deref().unwrap_or("operation")),
+                    markdown_cell(operation.test_command_path.as_deref().unwrap_or("explicit")),
                     markdown_cell(operation.shell_phase.as_deref().unwrap_or("input")),
                     markdown_cell(operation.shell_process.as_deref().unwrap_or("none")),
                     markdown_cell(&operation_thread_schedule(operation)),
@@ -2255,7 +2268,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         write_json(
             &directory.path().join("replay-plan.json"),
-            r#"{"format":"theseus-compose-plan-v1","campaign":{"operations":[{"name":"write","command":"parallel_driver","max_uses":1},{"name":"close","command":"finally","requires":["write"],"requires_markers":["written"],"requires_serial":{"json":{"fields":{"/passed":false}}},"requires_serial_all":[{"service":"auditor","json":{"fields":{"/event":"ready"}}}],"requires_serial_joins":[{"endpoints":[{"pointer":"/request_id","json":{"fields":{"/event":"write"}}},{"service":"auditor","pointer":"/request_id","json":{"fields":{"/event":"audit"}}}]}],"requires_serial_evidence":{"all":[{"guard":{"contains":"THES:M:written"}},{"join":{"endpoints":[{"pointer":"/request_id","json":{"fields":{"/event":"write"}}},{"service":"auditor","pointer":"/request_id","json":{"fields":{"/event":"audit"}}}]}}]},"excludes_serial_evidence":{"guard":{"contains":"THES:ASSERT:panic"}},"max_uses":1},{"name":"read","command":"serial_driver","requires":["write"],"excludes":["close"],"excludes_markers":["closed"]}]}}"#,
+            r#"{"format":"theseus-compose-plan-v1","campaign":{"operations":[{"name":"write","command":"parallel_driver","test_command_path":"/opt/antithesis/test/v1/main/parallel_driver_write","max_uses":1},{"name":"close","command":"finally","requires":["write"],"requires_markers":["written"],"requires_serial":{"json":{"fields":{"/passed":false}}},"requires_serial_all":[{"service":"auditor","json":{"fields":{"/event":"ready"}}}],"requires_serial_joins":[{"endpoints":[{"pointer":"/request_id","json":{"fields":{"/event":"write"}}},{"service":"auditor","pointer":"/request_id","json":{"fields":{"/event":"audit"}}}]}],"requires_serial_evidence":{"all":[{"guard":{"contains":"THES:M:written"}},{"join":{"endpoints":[{"pointer":"/request_id","json":{"fields":{"/event":"write"}}},{"service":"auditor","pointer":"/request_id","json":{"fields":{"/event":"audit"}}}]}}]},"excludes_serial_evidence":{"guard":{"contains":"THES:ASSERT:panic"}},"max_uses":1},{"name":"read","command":"serial_driver","requires":["write"],"excludes":["close"],"excludes_markers":["closed"]}]}}"#,
         );
         write_json(
             &directory.path().join("campaign-result.json"),
@@ -2331,6 +2344,7 @@ mod tests {
         assert!(markdown.contains(
             "write | driver (legacy) | unrecorded (legacy) | unrecorded (legacy) | unrecorded (legacy) | 7 | new markers: 42; changed PCs: api; changed serial: api"
         ));
+        assert!(markdown.contains("/opt/antithesis/test/v1/main/parallel_driver_write"));
         assert!(markdown.contains("new markers: 42; changed PCs: api; changed serial: api"));
         assert!(markdown.contains("api: write\\ncomplete\\n [16 bytes; sha256 write-hash]"));
         assert!(markdown.contains("api:data"));
@@ -2341,6 +2355,7 @@ mod tests {
         assert!(html.contains("Operation model"));
         assert!(html.contains("Test command"));
         assert!(html.contains("parallel_driver"));
+        assert!(html.contains("/opt/antithesis/test/v1/main/parallel_driver_write"));
         assert!(html.contains("(c.select||'latest')"));
         assert!(html.contains("JSON.stringify(c.json||c.workflow||{sequence:c.sequence})"));
         assert!(html.contains("Requires earlier"));

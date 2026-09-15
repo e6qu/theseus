@@ -215,8 +215,37 @@ retain a human-readable decision trace, and replay rejects divergence.
 
 ### Compose a test from lifecycle commands
 
-Assign `command` to every campaign operation to make the campaign scheduler
-enforce a test-template lifecycle:
+Package executable commands in an image using the standard test-template
+layout, then select the template in Compose:
+
+```text
+/opt/antithesis/test/v1/main/
+  first_prepare
+  parallel_driver_write
+  serial_driver_inspect
+  eventually_recovered
+```
+
+```yaml
+x-theseus:
+  campaign:
+    driver: client
+    test_template: main
+    max_parallel_commands: 3
+    max_operations_per_run: 10
+    faults: []
+```
+
+Theseus scans the locked service images, combines commands from `main` across
+services, requires recognized commands to be executable, and ignores entries
+whose names start with `helper_`. It generates
+three independently selectable process slots for each parallel or anytime
+command in this example. An eventual command kills live test commands and
+restores active campaign faults before it runs; a final command waits for all
+commands to finish.
+
+Explicit operations remain available when a command needs Compose state,
+guards, inputs, or a custom output contract:
 
 ```yaml
 operations:
@@ -241,7 +270,8 @@ the process must span operation boundaries. Theseus excludes histories with
 setup out of place, mixed singleton and regular drivers, a serial driver next
 to a live parallel process, work after a terminal command, or an unjoined
 process. The locked plan, decision trace, replay, minimizer, and report retain
-the roles. See Tutorial 40.
+the roles, source command path, chosen concurrency, and eventual termination
+services. See Tutorial 40.
 
 ### Hand a failure to CI or an issue
 

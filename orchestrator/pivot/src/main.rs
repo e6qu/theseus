@@ -232,6 +232,11 @@ struct CampaignShellOperation {
     environment: BTreeMap<String, String>,
 }
 
+#[derive(serde::Deserialize)]
+struct TerminateShellOperations {
+    name: String,
+}
+
 #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum GrpcServingStatus {
@@ -807,6 +812,7 @@ const STRUCTURED_CHOICE_PREFIX: &[u8] = b"THES:CHOICE:";
 
 struct ShellOperationResult {
     output_json: Option<serde_json::Value>,
+    output_text: Option<String>,
 }
 
 struct RunningShellOperation {
@@ -843,6 +849,13 @@ fn start_shell_operation(
             libc::dup2(pipe_fds[1], libc::STDOUT_FILENO);
             libc::dup2(pipe_fds[1], libc::STDERR_FILENO);
             libc::close(pipe_fds[1]);
+            if libc::setpgid(0, 0) != 0 {
+                eprintln!(
+                    "pivot: cannot create command process group: {}",
+                    std::io::Error::last_os_error()
+                );
+                std::process::exit(127);
+            }
         }
         if let Err(error) = exec_argv(spec, command, environment) {
             eprintln!("pivot: {error}");
@@ -850,6 +863,11 @@ fn start_shell_operation(
         std::process::exit(127);
     }
 
+    // Close the fork/exec race: the child makes itself a group leader, and
+    // the parent repeats the idempotent operation before exposing the handle.
+    unsafe {
+        libc::setpgid(pid, pid);
+    }
     unsafe { libc::close(pipe_fds[1]) };
     Ok(RunningShellOperation {
         pid,
@@ -905,24 +923,42 @@ fn finish_shell_operation(
             return Err(format!("command output does not contain {expected:?}"));
         }
     }
-    let output_json = if output_json {
+    shell_operation_output(&application_output, output_json, output_truncated)
+}
+
+fn shell_operation_output(
+    application_output: &[u8],
+    require_json: bool,
+    output_truncated: bool,
+) -> Result<ShellOperationResult, String> {
+    let parsed_output = serde_json::from_slice(application_output).ok();
+    let output_json = if require_json {
         if output_truncated {
             return Err("command output exceeded 4 MiB JSON limit".to_owned());
         }
         Some(
-            serde_json::from_slice(&application_output)
-                .map_err(|error| format!("command output is not JSON: {error}"))?,
+            parsed_output
+                .clone()
+                .ok_or_else(|| "command output is not JSON".to_owned())?,
         )
     } else {
-        None
+        parsed_output
     };
-    Ok(ShellOperationResult { output_json })
+    let output_text = output_json.is_none().then(|| {
+        String::from_utf8_lossy(application_output)
+            .trim_end_matches(['\r', '\n'])
+            .to_owned()
+    });
+    Ok(ShellOperationResult {
+        output_json,
+        output_text: output_text.filter(|output| !output.is_empty()),
+    })
 }
 
 /// Instrumented commands write records on stderr, which shares the operation
 /// capture pipe. Forward supported coverage, scheduling, and structured-choice
-/// records to the guest console and keep them out of an optional JSON result.
-/// Other command output remains private to the operation contract.
+/// records to the guest console and keep them out of the command result.
+/// Ordinary output is retained as structured JSON or bounded text evidence.
 fn forward_instrumentation_records(output: &[u8]) -> Vec<u8> {
     let mut application = Vec::with_capacity(output.len());
     for line in output.split_inclusive(|byte| *byte == b'\n') {
@@ -990,6 +1026,7 @@ struct CampaignShellResult {
     process: Option<String>,
     completion: Option<u64>,
     output_json: Option<serde_json::Value>,
+    output_text: Option<String>,
 }
 
 fn run_campaign_shell_operation(
@@ -1012,6 +1049,7 @@ fn run_campaign_shell_operation(
                 process: Some(process),
                 completion: None,
                 output_json: None,
+                output_text: None,
             })
         }
         ShellPhase::Completion => {
@@ -1032,6 +1070,7 @@ fn run_campaign_shell_operation(
                 process: Some(process),
                 completion: Some(completion),
                 output_json: result.output_json,
+                output_text: result.output_text,
             })
         }
         ShellPhase::Run | ShellPhase::Setup | ShellPhase::Assertion | ShellPhase::Recovery => {
@@ -1051,9 +1090,28 @@ fn run_campaign_shell_operation(
                 process: None,
                 completion: None,
                 output_json: result.output_json,
+                output_text: result.output_text,
             })
         }
     }
+}
+
+fn terminate_campaign_shell_operations(
+    running: &mut BTreeMap<String, RunningShellOperation>,
+) -> Vec<String> {
+    let processes = std::mem::take(running);
+    let mut terminated = Vec::with_capacity(processes.len());
+    for (name, process) in processes {
+        unsafe {
+            libc::kill(-process.pid, libc::SIGKILL);
+            while libc::waitpid(process.pid, std::ptr::null_mut(), 0) == -1
+                && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+            {
+            }
+        }
+        terminated.push(name);
+    }
+    terminated
 }
 
 fn report_campaign_shell_operation(name: &str, result: CampaignShellResult) {
@@ -1066,19 +1124,21 @@ fn report_campaign_shell_operation(name: &str, result: CampaignShellResult) {
             "process": result.process,
             "completion": result.completion,
             "output": result.output_json,
+            "output_text": result.output_text,
         })
     );
     println!("THES:SHELL:operation:{name}:PASS");
 }
 
 fn report_shell_operation(name: &str, result: ShellOperationResult) {
-    if let Some(output) = result.output_json {
+    if result.output_json.is_some() || result.output_text.is_some() {
         println!(
             "{}",
             serde_json::json!({
                 "event": "shell_operation",
                 "name": name,
-                "output": output,
+                "output": result.output_json,
+                "output_text": result.output_text,
             })
         );
     }
@@ -1329,6 +1389,7 @@ fn main() {
                 "THES:HTTP:operation:",
                 "THES:GRPC:operation:",
                 "THES:SHELL:operation:",
+                "THES:SHELL:terminate:",
             ]) {
                 Ok(command) => command,
                 Err(error) => {
@@ -1369,7 +1430,7 @@ fn main() {
                 channel
                     .checkpoint(&name)
                     .expect("campaign operation checkpoint");
-            } else {
+            } else if protocol == 2 {
                 let operation: CampaignShellOperation = match serde_json::from_str(&command) {
                     Ok(operation) => operation,
                     Err(error) => {
@@ -1390,6 +1451,27 @@ fn main() {
                 channel
                     .checkpoint(&name)
                     .expect("campaign operation checkpoint");
+            } else {
+                let termination: TerminateShellOperations = match serde_json::from_str(&command) {
+                    Ok(termination) => termination,
+                    Err(error) => {
+                        eprintln!("THES:SHELL:terminate:FAIL invalid command: {error}");
+                        continue;
+                    }
+                };
+                let terminated = terminate_campaign_shell_operations(&mut running_shell_operations);
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "shell_termination",
+                        "name": &termination.name,
+                        "processes": terminated,
+                    })
+                );
+                println!("THES:SHELL:terminate:{}:PASS", termination.name);
+                channel
+                    .checkpoint(&termination.name)
+                    .expect("campaign termination checkpoint");
             }
         }
     }
@@ -1465,6 +1547,18 @@ mod tests {
     fn leaves_noncoverage_command_output_unchanged() {
         let output = b"THES:COV:v3:not-supported\nnormal output\n";
         assert_eq!(forward_instrumentation_records(output), output);
+    }
+
+    #[test]
+    fn retains_undeclared_json_and_text_command_output() {
+        let json = shell_operation_output(br#"{"value":1}"#, false, false).unwrap();
+        assert_eq!(json.output_json, Some(serde_json::json!({"value": 1})));
+        assert_eq!(json.output_text, None);
+
+        let text = shell_operation_output(b"hello\n", false, false).unwrap();
+        assert_eq!(text.output_json, None);
+        assert_eq!(text.output_text.as_deref(), Some("hello"));
+        assert!(shell_operation_output(b"not-json", true, false).is_err());
     }
 
     #[test]

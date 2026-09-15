@@ -23,6 +23,9 @@ passing unit suite alone is not treated as runtime proof.
 - Test-command lifecycle roles for first, parallel, serial, singleton,
   anytime, eventually, and final work, with invalid combinations removed from
   the generated corpus.
+- Automatic discovery of Antithesis-compatible test templates under
+  `/opt/antithesis/test/v1`, including explorer-selected command concurrency,
+  eventual-command termination, and a quiet terminal fault window.
 - Named image commands that remain in flight across operation checkpoints,
   with replayed launches and completion-observation order.
 - Expected-counterexample commands that fail closed unless the named campaign
@@ -102,8 +105,8 @@ examples:
     coverage, resolve a reached source location, and replay the edge set.
 15. Instrument a Go command and its imported main-module packages, then report
     and replay source-associated basic blocks.
-16. Turn ordinary image commands into a reusable lifecycle template and let
-    Theseus compose valid overlapping, serial, anytime, and terminal actions.
+16. Package ordinary commands in an Antithesis-compatible test-template
+    directory and let Theseus discover, overlap, stop, and replay them.
 
 Each tutorial directory is its own working directory and complete input
 context. Runnable tutorials use published Theseus images or binaries, not a

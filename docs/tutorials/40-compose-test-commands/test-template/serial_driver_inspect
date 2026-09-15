@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+printf '{"value":%s,"commits":%s}\n' \
+    "$(cat /state/counter)" \
+    "$(find /state -name 'committed-*' | wc -l)"

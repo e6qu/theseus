@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+value=$(cat /state/counter)
+touch "/state/ready-$$"
+attempt=0
+while [ "$(find /state -name 'ready-*' | wc -l)" -lt 2 ]; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -ge 100 ] && break
+    sleep 0.01
+done
+printf '%s\n' "$((value + 1))" > /state/counter
+touch "/state/committed-$$"

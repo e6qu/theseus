@@ -37,7 +37,7 @@ Use these labels consistently:
 | Assertions and guidance | Partial | Always, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
 | Coverage guidance | Partial | GCC C and Go basic blocks plus LLVM C/C++/Rust edges cover native executables, shared libraries, a selected Cargo graph, and a selected Go command's imported main-module packages. Compose locks manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go external modules and CGO, Java, and production-scale validation remain open. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
-| Test composition | Partial | A campaign can assign first, parallel, serial, singleton, anytime, eventually, and finally roles to ordinary operations. The scheduler enforces ordering, exclusivity, terminal checks, and joined-process leaves; it does not yet discover command directories, kill drivers for eventual checks, or vary parallelism automatically. |
+| Test composition | Partial | Explicit operations and one selected Antithesis-compatible image template use all seven lifecycle roles. The explorer varies bounded command concurrency, eventual checks kill live commands, and final checks join them. Automatic selection among multiple templates and production-scale command scheduling remain open. |
 | Failure investigation | Early | Replay, minimization, checkpoints, reports, and history comparison exist; interactive time travel, interventions, alternative futures, temporal queries, and causal evidence do not. |
 | Product operation | Early | Theseus is primarily a local/self-hosted CLI; it lacks a comparable API, CI workflow, live campaign view, scalable parallel service, notification surface, and web debugger. |
 
@@ -80,6 +80,10 @@ Theseus currently has:
 - A Test Composer-shaped lifecycle for ordinary Compose operations, including
   setup alternatives, overlapping named processes, exclusive and singleton
   drivers, anytime observations, and terminal eventual/final checks.
+- Discovery of executable commands in a selected
+  `/opt/antithesis/test/v1/<template>` across image services. Filename roles,
+  bounded parallel slots, source paths, terminal fault recovery, and eventual
+  process termination remain locked and replayable.
 
 The baseline has important limits:
 
@@ -109,32 +113,29 @@ The baseline has important limits:
   certifications complete and their retained evidence is independently
   verified.
 
-## Active delivery: test-command lifecycle
+## Active delivery: image-native test templates
 
-Land the first complete Test Composer-shaped workflow as one vertical change:
+Close the manual gap between a containerized integration-test suite and an
+autonomously composed campaign:
 
-1. Let every operation in a campaign opt into one of the seven established
-   lifecycle roles: first, parallel driver, serial driver, singleton driver,
-   anytime, eventually, or finally.
-2. Generate only valid histories: select setup first, keep singleton and
-   regular-driver timelines separate, exclude serial work while parallel
-   processes are live, place terminal checks last, and never retain an
-   unjoined named process.
-3. Keep operation inputs, guards, state, choices, faults, guidance,
-   minimization, and replay working through the same lifecycle model.
-4. Retain roles in locked plans, operation-boundary evidence, decision traces,
-   and human-readable reports.
-5. Reject mixed or contradictory configurations before KVM starts and cover
-   the lifecycle generator with normalization and runner tests.
-6. Add a self-contained published-artifact tutorial that overlaps two ordinary
-   image commands, finds a lost update, minimizes it, replays it, and renders
-   the lifecycle report without an orchestration wrapper.
+1. Discover one selected test template from executable, conventionally
+   prefixed files under `/opt/antithesis/test/v1` in every locked service image.
+2. Merge commands with the same template name across services and retain each
+   source path in the plan, timeline, decision trace, and report inputs.
+3. Generate a bounded set of independent parallel and anytime process slots so
+   the explorer varies concurrency without duplicated Compose operations.
+4. Let eventual checks kill live commands across participating image services,
+   restore active operation-barrier faults, and then run in a quiet terminal
+   window. Keep final checks joined and quiet.
+5. Preserve the explicit-operation model for users who need inputs, guards,
+   state transitions, or custom contracts.
+6. Replace the manual lifecycle tutorial with a self-contained image-template
+   workflow that finds, minimizes, and replays a concurrent failure.
 
 This slice is implemented only after its PR passes. It becomes demonstrated
 after the merged SHA publishes and Tutorial 40 runs on native amd64 and arm64
-KVM. The remaining Priority 4 work is automatic command discovery, native
-driver termination for eventual checks, explorer-controlled parallelism, and
-the broader fault profiles below.
+KVM. Next, select among multiple templates per campaign and add the broader
+fault profiles below.
 
 ## Priority 0: make the current product real for users
 
@@ -240,11 +241,8 @@ survives replay, minimization, and artifact export.
 Make it possible to express the same testing workflow users expect from
 Antithesis without constructing low-level campaign schedules by hand.
 
-- Allow a directory or image to contribute a collection of test commands with
-  explicit concurrency and lifecycle semantics.
-- Let the explorer choose parallel-driver counts and terminate live drivers
-  before an eventual check; preserve the current joined-process requirement
-  for final checks.
+- Select among multiple discovered templates without mixing their commands in
+  one timeline.
 - Let the explorer vary command ordering, parallelism, structured inputs,
   faults, and schedules while keeping lifecycle contracts intact.
 - Add asymmetric latency and loss, slow/jammed links, network clogs, process

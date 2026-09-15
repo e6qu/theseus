@@ -107,18 +107,26 @@ timeline obeys these rules:
 - A serial or singleton driver cannot start while a parallel process launched
   by the template remains live. An anytime command may run in that window.
 - Eventually and finally commands are terminal. A final command starts only
-  after every named process has been joined.
+  after every named process has been joined. An eventual command kills live
+  test commands across their image services and restores active campaign
+  faults before it starts.
 - A retained timeline never ends with an unjoined named process.
 - Operation-barrier faults cannot target first, eventually, or finally
   commands.
 
+Set `test_template` to discover the same lifecycle directly from executable
+files in `/opt/antithesis/test/v1/<template>/` inside image services. Theseus
+recognizes the seven standard filename prefixes, ignores `helper_` entries,
+rejects recognized files without an executable bit, and merges the selected
+template across services. `max_parallel_commands`
+bounds the process slots generated for every parallel and anytime command; the
+explorer chooses which slots run.
+
 The ordinary operation rules still apply: inputs, guards, state transitions,
 structured choices, faults, properties, guidance, minimization, and replay all
-compose with the lifecycle. A `parallel_driver` overlaps work only when it uses
-the explicit named-process launch/completion protocol. Theseus does not yet
-kill live commands when selecting `eventually`, and it does not infer commands
-from filenames or image directories. Tutorial 40 demonstrates the complete
-current model without a host orchestration script.
+compose with the lifecycle. Explicit operations can still use the named-process
+launch/completion protocol. Tutorial 40 uses image discovery without a host
+orchestration script or a duplicated command list.
 
 ## Require a fault and recovery path
 

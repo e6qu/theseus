@@ -62,6 +62,10 @@ struct TopologyPlan {
 #[derive(Debug, Deserialize, Serialize)]
 struct CampaignPlan {
     driver: String,
+    #[serde(default)]
+    test_template: Option<String>,
+    #[serde(default = "default_test_command_parallelism")]
+    max_parallel_commands: u8,
     /// The deterministic policy used to order an otherwise fixed campaign
     /// corpus. The locked replay plan retains this choice for inspection;
     /// replay itself executes the recorded schedule order.
@@ -87,6 +91,10 @@ struct CampaignPlan {
 }
 
 fn default_campaign_faults_per_run() -> u8 {
+    2
+}
+
+fn default_test_command_parallelism() -> u8 {
     2
 }
 
@@ -137,6 +145,8 @@ struct CampaignOperation {
     service: String,
     #[serde(default)]
     command: Option<CampaignTestCommand>,
+    #[serde(default)]
+    test_command_path: Option<String>,
     #[serde(default)]
     shell_phase: Option<CampaignShellPhase>,
     #[serde(default)]
@@ -656,6 +666,10 @@ struct CampaignResult {
     decision_trace_format: &'static str,
     status: &'static str,
     driver: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    test_template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_parallel_commands: Option<u8>,
     guidance: CampaignGuidance,
     coverage: CampaignCoverage,
     checkpoint_nodes: usize,
@@ -741,6 +755,10 @@ struct CampaignTimelineBoundary {
     operation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     command: Option<CampaignTestCommand>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    test_command_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    terminated_command_services: Vec<String>,
     /// The UART service that received this operation. Empty only in a result
     /// recorded before service-targeted operations existed.
     #[serde(default)]
@@ -1356,6 +1374,12 @@ struct EventPlan {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CampaignEvent {
     service: String,
+    /// An eventually command kills every service-local test command still
+    /// live at this exact decision prefix before its check begins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    terminate_shell_processes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recover_faults: Vec<CampaignAction>,
     event: EventPlan,
 }
 
@@ -2563,12 +2587,13 @@ fn checkpoint_campaign_operation(
     for name in &names {
         services[name].vm.resume()?;
     }
+    let mut round = parent.round;
+    terminate_campaign_shell_processes(event, topology, &mut services, &switches, &mut round)?;
+    let mut applied = recover_campaign_faults(event, topology, &mut services)?;
     let mut target = services
         .remove(&event.service)
         .ok_or_else(|| format!("campaign operation service disappeared: {}", event.service))?;
     let serial = target.serial_logs[0].clone();
-    let mut applied = Vec::new();
-    let mut round = parent.round;
     let injection = inject_campaign_operation(
         &event.service,
         &mut target,
@@ -2585,6 +2610,78 @@ fn checkpoint_campaign_operation(
     let checkpoint =
         capture_campaign_checkpoint(directory, topology, &mut services, &switches, round)?;
     Ok((checkpoint, applied, barrier))
+}
+
+fn recover_campaign_faults(
+    event: &CampaignEvent,
+    topology: &TopologyPlan,
+    services: &mut BTreeMap<String, ServiceRuntime>,
+) -> Result<Vec<AppliedCampaignAction>, String> {
+    if event.recover_faults.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut driver = services
+        .remove(&event.service)
+        .ok_or_else(|| format!("campaign operation service disappeared: {}", event.service))?;
+    let mut applied = Vec::with_capacity(event.recover_faults.len());
+    let result = event.recover_faults.iter().try_for_each(|action| {
+        applied.push(apply_campaign_action(
+            action,
+            &event.service,
+            &mut driver,
+            topology,
+            services,
+        )?);
+        Ok::<(), String>(())
+    });
+    services.insert(event.service.clone(), driver);
+    result.map(|()| applied)
+}
+
+fn terminate_campaign_shell_processes(
+    event: &CampaignEvent,
+    topology: &TopologyPlan,
+    services: &mut BTreeMap<String, ServiceRuntime>,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    round: &mut u64,
+) -> Result<(), String> {
+    let mut service_names = event.terminate_shell_processes.clone();
+    if !event.recover_faults.is_empty() && !service_names.contains(&event.service) {
+        service_names.push(event.service.clone());
+        service_names.sort();
+    }
+    for service_name in &service_names {
+        let termination = campaign_shell_termination_event(service_name);
+        let mut service = services
+            .remove(service_name)
+            .ok_or_else(|| format!("eventually termination service disappeared: {service_name}"))?;
+        let serial = service.serial_logs[0].clone();
+        let result = inject_campaign_operation(
+            service_name,
+            &mut service,
+            &serial,
+            topology,
+            services,
+            switches,
+            &termination,
+            round,
+            &mut Vec::new(),
+        );
+        services.insert(service_name.clone(), service);
+        result?;
+    }
+    Ok(())
+}
+
+fn campaign_shell_termination_event(service: &str) -> EventPlan {
+    let name = format!("terminate_{service}");
+    let command = serde_json::to_string(&serde_json::json!({"name": &name}))
+        .expect("termination command serializes");
+    EventPlan {
+        data_hex: hex(format!("THES:SHELL:terminate:{command}\n").as_bytes()),
+        checkpoint: Some(format!("THES:CHECKPOINT:{name}")),
+        actions: Vec::new(),
+    }
 }
 
 fn write_campaign_prefix_actions(
@@ -3276,6 +3373,18 @@ fn execute_campaign(
                 .expect("campaign remains in replay plan")
                 .driver
                 .clone(),
+            test_template: replay
+                .campaign
+                .as_ref()
+                .expect("campaign remains in replay plan")
+                .test_template
+                .clone(),
+            max_parallel_commands: replay.campaign.as_ref().and_then(|campaign| {
+                campaign
+                    .test_template
+                    .as_ref()
+                    .map(|_| campaign.max_parallel_commands)
+            }),
             guidance,
             coverage,
             checkpoint_nodes: checkpoints.nodes(),
@@ -4006,6 +4115,15 @@ fn campaign_decision_trace(
                 campaign_test_command_name(command)
             ));
         }
+        if let Some(path) = &campaign.operations[choice.operation].test_command_path {
+            trace.push(format!("boundary:{position}:test_command:{path}"));
+        }
+        trace.extend(
+            boundary
+                .terminated_command_services
+                .iter()
+                .map(|service| format!("boundary:{position}:terminate_commands:{service}")),
+        );
         trace.push(format!(
             "boundary:{position}:input:{}:{}",
             boundary.service, boundary.input.sha256
@@ -5278,12 +5396,7 @@ fn campaign_test_command_is_ready(
                 && !campaign_has_active_parallel_process(campaign, history)
         }
         CampaignTestCommand::Anytime => lifecycle_started && !terminal_started,
-        CampaignTestCommand::Eventually => {
-            lifecycle_started
-                && driver_started
-                && !terminal_started
-                && !campaign_has_active_process(campaign, history)
-        }
+        CampaignTestCommand::Eventually => lifecycle_started && driver_started && !terminal_started,
         CampaignTestCommand::Finally => {
             lifecycle_started
                 && driver_started
@@ -5316,7 +5429,11 @@ fn campaign_test_history_is_complete(
                 | CampaignTestCommand::Anytime
         )
     });
-    lifecycle_started && useful && !campaign_has_active_process(campaign, history)
+    let eventual_terminates_live_commands =
+        commands.last() == Some(&CampaignTestCommand::Eventually);
+    lifecycle_started
+        && useful
+        && (eventual_terminates_live_commands || !campaign_has_active_process(campaign, history))
 }
 
 fn campaign_has_active_process(
@@ -5328,6 +5445,25 @@ fn campaign_has_active_process(
             campaign_shell_process_balance(campaign, history, &operation.service, process) != 0
         })
     })
+}
+
+fn campaign_active_shell_process_services(
+    campaign: &CampaignPlan,
+    history: &[CampaignOperationChoice],
+) -> Vec<String> {
+    campaign
+        .operations
+        .iter()
+        .filter_map(|operation| {
+            operation.shell_process.as_deref().and_then(|process| {
+                (campaign_shell_process_balance(campaign, history, &operation.service, process)
+                    != 0)
+                    .then(|| operation.service.clone())
+            })
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn campaign_has_active_parallel_process(
@@ -6218,6 +6354,33 @@ fn apply_campaign_schedule(
         service.run.events.clear();
     }
     for campaign_event in events {
+        if !campaign_event.recover_faults.is_empty() {
+            let service = topology
+                .services
+                .get_mut(&campaign_event.service)
+                .ok_or_else(|| {
+                    format!(
+                        "campaign operation service disappeared: {}",
+                        campaign_event.service
+                    )
+                })?;
+            let mut quiet = campaign_shell_termination_event(&campaign_event.service);
+            quiet.actions = campaign_event.recover_faults.clone();
+            service.run.events.push(quiet);
+        }
+        for service_name in &campaign_event.terminate_shell_processes {
+            if !campaign_event.recover_faults.is_empty() && service_name == &campaign_event.service
+            {
+                continue;
+            }
+            let service = topology.services.get_mut(service_name).ok_or_else(|| {
+                format!("eventually termination service disappeared: {service_name}")
+            })?;
+            service
+                .run
+                .events
+                .push(campaign_shell_termination_event(service_name));
+        }
         let service = topology
             .services
             .get_mut(&campaign_event.service)
@@ -6305,8 +6468,28 @@ fn campaign_schedule_event(
         }
         data_hex = campaign_input_with_runnable_prefix(&data_hex, prefix)?;
     }
+    let terminal_eventually = definition.command == Some(CampaignTestCommand::Eventually);
+    let quiet_terminal = matches!(
+        definition.command,
+        Some(CampaignTestCommand::Eventually | CampaignTestCommand::Finally)
+    );
+    let recover_faults = if quiet_terminal {
+        selected
+            .iter()
+            .filter(|fault| campaign_fault_applies(fault, &schedule.operations[..index], campaign))
+            .filter_map(|fault| campaign_recovery_action(fault, &definition.name).transpose())
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
     Ok(CampaignEvent {
         service: campaign_operation_service(campaign, operation).to_owned(),
+        terminate_shell_processes: if terminal_eventually {
+            campaign_active_shell_process_services(campaign, &schedule.operations[..index])
+        } else {
+            Vec::new()
+        },
+        recover_faults,
         event: EventPlan {
             data_hex,
             checkpoint: Some(format!("THES:CHECKPOINT:{}", definition.name)),
@@ -6510,6 +6693,31 @@ fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
         tx_queue_frames: fault.tx_queue_frames,
         rx_queue_frames: fault.rx_queue_frames,
     })
+}
+
+fn campaign_recovery_action(
+    fault: &CampaignFault,
+    operation: &str,
+) -> Result<Option<CampaignAction>, String> {
+    let kind = match fault.kind {
+        CampaignFaultKind::Partition => CampaignFaultKind::Heal,
+        CampaignFaultKind::LinkPartition => CampaignFaultKind::LinkHeal,
+        CampaignFaultKind::StorageFault => CampaignFaultKind::StorageRecover,
+        CampaignFaultKind::NetworkFault => CampaignFaultKind::NetworkRecover,
+        CampaignFaultKind::PacketFault => CampaignFaultKind::PacketRecover,
+        CampaignFaultKind::Pause
+        | CampaignFaultKind::Restart
+        | CampaignFaultKind::ClockJump
+        | CampaignFaultKind::Heal
+        | CampaignFaultKind::LinkHeal
+        | CampaignFaultKind::StorageRecover
+        | CampaignFaultKind::NetworkRecover
+        | CampaignFaultKind::PacketRecover => return Ok(None),
+    };
+    let mut action = campaign_action(fault)?;
+    action.operation = operation.to_owned();
+    action.kind = kind;
+    Ok(Some(action))
 }
 
 fn campaign_fault_name(fault: &CampaignFault) -> String {
@@ -7205,6 +7413,10 @@ fn campaign_operation_timeline(
                 ),
                 operation: campaign_operation_choice_name(campaign, *operation),
                 command: campaign.operations[operation.operation].command,
+                test_command_path: campaign.operations[operation.operation]
+                    .test_command_path
+                    .clone(),
+                terminated_command_services: event.terminate_shell_processes.clone(),
                 service: campaign_operation_service(campaign, *operation).to_owned(),
                 input,
                 delivery,
@@ -12426,6 +12638,8 @@ mod tests {
     fn campaign_marker_guards_use_the_restored_parent_transcript() {
         let mut campaign = CampaignPlan {
             driver: "api".to_owned(),
+            test_template: None,
+            max_parallel_commands: 2,
             guidance: CampaignGuidance::Coverage,
             coverage: CampaignCoverage::ExecutionLocations,
             state: BTreeMap::from([("phase".to_owned(), "idle".to_owned())]),
@@ -12434,6 +12648,7 @@ mod tests {
                     name: "write".to_owned(),
                     service: "api".to_owned(),
                     command: None,
+                    test_command_path: None,
                     shell_phase: None,
                     shell_process: None,
                     thread_schedule: Vec::new(),
@@ -12503,6 +12718,7 @@ mod tests {
                     name: "read".to_owned(),
                     service: "api".to_owned(),
                     command: None,
+                    test_command_path: None,
                     shell_phase: None,
                     shell_process: None,
                     thread_schedule: Vec::new(),
@@ -13152,6 +13368,8 @@ mod tests {
     fn campaign_prefix_key_includes_barrier_actions() {
         let ordinary = vec![CampaignEvent {
             service: "api".to_owned(),
+            terminate_shell_processes: Vec::new(),
+            recover_faults: Vec::new(),
             event: EventPlan {
                 data_hex: "70696e670a".to_owned(),
                 checkpoint: Some("THES:CHECKPOINT:ping".to_owned()),
@@ -13160,6 +13378,8 @@ mod tests {
         }];
         let faulted = vec![CampaignEvent {
             service: "worker".to_owned(),
+            terminate_shell_processes: Vec::new(),
+            recover_faults: Vec::new(),
             event: EventPlan {
                 data_hex: "70696e670a".to_owned(),
                 checkpoint: Some("THES:CHECKPOINT:ping".to_owned()),
@@ -14587,6 +14807,8 @@ mod tests {
                 id: "op-000-write".to_owned(),
                 operation: "write".to_owned(),
                 command: None,
+                test_command_path: None,
+                terminated_command_services: Vec::new(),
                 service: "api".to_owned(),
                 input: CampaignInputEvidence {
                     bytes: 6,
@@ -15037,6 +15259,108 @@ mod tests {
 
         let histories = campaign_operation_histories(&campaign);
         assert_eq!(histories, vec![vec![choice(0), choice(1), choice(2)]]);
+    }
+
+    #[test]
+    fn eventually_accepts_live_drivers_and_records_every_service_to_kill() {
+        let campaign: CampaignPlan = serde_json::from_value(serde_json::json!({
+            "driver": "api",
+            "operations": [
+                {
+                    "name": "start_api",
+                    "service": "api",
+                    "command": "parallel_driver",
+                    "shell_phase": "launch",
+                    "shell_process": "writer",
+                    "inputs": [{"name": "default", "input_hex": "01"}],
+                    "max_uses": 1
+                },
+                {
+                    "name": "start_worker",
+                    "service": "worker",
+                    "command": "parallel_driver",
+                    "shell_phase": "launch",
+                    "shell_process": "reader",
+                    "inputs": [{"name": "default", "input_hex": "02"}],
+                    "max_uses": 1
+                },
+                {
+                    "name": "recovered",
+                    "service": "api",
+                    "command": "eventually",
+                    "inputs": [{"name": "default", "input_hex": "03"}],
+                    "max_uses": 1
+                }
+            ],
+            "faults": [{
+                "kind": "partition",
+                "network": "backplane",
+                "after": "start_api"
+            }],
+            "max_runs": 8,
+            "max_faults_per_run": 1,
+            "max_operations_per_run": 3
+        }))
+        .unwrap();
+
+        let histories = campaign_operation_histories(&campaign);
+        let live_then_eventually = vec![choice(0), choice(1), choice(2)];
+        assert!(histories.contains(&live_then_eventually));
+        assert_eq!(
+            campaign_active_shell_process_services(&campaign, &live_then_eventually[..2]),
+            ["api", "worker"]
+        );
+        let event = campaign_schedule_event(
+            &campaign,
+            &CampaignSchedule {
+                operations: live_then_eventually,
+                faults: vec![0],
+                thread_schedule_prefixes: vec![Vec::new(); 3],
+            },
+            2,
+            &CampaignCheckpoint {
+                switches: BTreeMap::new(),
+                services: BTreeMap::new(),
+                scheduler: BTreeMap::new(),
+                round: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(event.terminate_shell_processes, ["api", "worker"]);
+        assert_eq!(event.recover_faults.len(), 1);
+        assert!(matches!(
+            event.recover_faults[0].kind,
+            CampaignFaultKind::Heal
+        ));
+    }
+
+    #[test]
+    fn eventually_maps_active_faults_to_quiet_recovery_actions() {
+        for (fault, recovery) in [
+            (CampaignFaultKind::Partition, CampaignFaultKind::Heal),
+            (
+                CampaignFaultKind::LinkPartition,
+                CampaignFaultKind::LinkHeal,
+            ),
+            (
+                CampaignFaultKind::StorageFault,
+                CampaignFaultKind::StorageRecover,
+            ),
+            (
+                CampaignFaultKind::NetworkFault,
+                CampaignFaultKind::NetworkRecover,
+            ),
+            (
+                CampaignFaultKind::PacketFault,
+                CampaignFaultKind::PacketRecover,
+            ),
+        ] {
+            let action = campaign_recovery_action(&campaign_fault(fault), "eventual")
+                .unwrap()
+                .unwrap();
+            assert!(std::mem::discriminant(&action.kind) == std::mem::discriminant(&recovery));
+            assert_eq!(action.operation, "eventual");
+        }
     }
 
     #[test]
