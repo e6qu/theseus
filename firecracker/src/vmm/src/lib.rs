@@ -173,7 +173,8 @@ use crate::vstate::memory::{GuestMemoryMmap, GuestMemoryRegion};
 #[cfg(target_arch = "aarch64")]
 use crate::vstate::vcpu::VcpuState;
 pub use crate::vstate::vcpu::{
-    ExecutionLedger, ExecutionLedgerEvidence, Vcpu, VcpuConfig, VcpuEvent, VcpuHandle, VcpuResponse,
+    ExecutionLedger, ExecutionLedgerEvidence, MachineExecutionState, Vcpu, VcpuConfig, VcpuEvent,
+    VcpuHandle, VcpuResponse,
 };
 pub use crate::vstate::vm::{StartVcpusError, Vm};
 
@@ -546,6 +547,51 @@ impl Vmm {
         Ok(self.machine_execution_ledger()?.evidence())
     }
 
+    /// Complete bounded VM-wide execution state used by checkpoint branches.
+    pub fn machine_execution_state(&self) -> Result<MachineExecutionState, VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        kvm_vm
+            .vcpus_handles()
+            .first()
+            .map(VcpuHandle::machine_execution_state)
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))
+    }
+
+    /// Exact VM-wide decisions retained for active replay.
+    pub fn machine_execution_trace(&self) -> Result<Vec<String>, VmmError> {
+        Ok(self.machine_execution_state()?.trace().to_vec())
+    }
+
+    /// Install the expected execution stream before the VM starts or resumes.
+    pub fn enforce_machine_execution_trace(&self, trace: Vec<String>) -> Result<(), VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        kvm_vm
+            .vcpus_handles()
+            .first()
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))?
+            .enforce_machine_execution_trace(trace)
+            .map_err(VmmError::ExecutionCoverage)
+    }
+
+    /// Return a mismatch or an expected suffix that was not consumed.
+    pub fn machine_execution_replay_error(&self) -> Result<Option<String>, VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        Ok(kvm_vm
+            .vcpus_handles()
+            .first()
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))?
+            .machine_execution_replay_error())
+    }
+
     /// Verify the fast coverage collector at a pause barrier. Every paused
     /// vCPU PC must be present in that vCPU's accumulated exit-sampled set:
     /// `VcpuEvent::Pause` records it before acknowledging the barrier. This
@@ -602,9 +648,12 @@ impl Vmm {
         Ok(())
     }
 
-    /// Continue a restored VM from the machine-wide ledger captured with its
-    /// parent checkpoint. All vCPU handles share the same rolling state.
-    pub fn seed_machine_execution_ledger(&self, ledger: ExecutionLedger) -> Result<(), VmmError> {
+    /// Continue a restored VM from the machine-wide state captured with its
+    /// parent checkpoint. All vCPU handles share this state.
+    pub fn seed_machine_execution_state(
+        &self,
+        state: MachineExecutionState,
+    ) -> Result<(), VmmError> {
         let kvm_vm = self
             .vm
             .as_kvm()
@@ -613,7 +662,7 @@ impl Vmm {
             .vcpus_handles()
             .first()
             .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution ledger".into()))?
-            .seed_machine_execution_ledger(ledger);
+            .seed_machine_execution_state(state);
         Ok(())
     }
 

@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{Ordering, fence};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier, Condvar, Mutex};
 use std::time::Duration;
 use std::{fmt, io, thread};
 
@@ -48,6 +48,13 @@ const EXECUTION_LOCATION_SAMPLE_EXITS: u64 = 64;
 /// The digest covers every decision; this tail only makes a divergence useful
 /// to a human without allowing a long-running guest to consume unbounded RAM.
 const EXECUTION_DECISION_TAIL: usize = 32;
+
+/// Bound retained replay input so a guest cannot grow a result without limit.
+const MACHINE_EXECUTION_TRACE_LIMIT: usize = 1_048_576;
+
+/// A wrong vCPU waits briefly for the recorded vCPU to reach its pending exit.
+/// Expiry fails replay closed instead of deadlocking VM pause or teardown.
+const MACHINE_EXECUTION_TURN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Portable evidence for the exact ordered KVM exits handled by one vCPU.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -102,6 +109,150 @@ impl ExecutionLedger {
             tail: self.tail.iter().cloned().collect(),
         }
     }
+}
+
+/// Branch-owned machine execution state. Unlike portable evidence, this keeps
+/// every bounded decision needed to actively enforce a later replay.
+#[derive(Clone, Debug)]
+pub struct MachineExecutionState {
+    ledger: ExecutionLedger,
+    trace: Vec<String>,
+}
+
+impl Default for MachineExecutionState {
+    fn default() -> Self {
+        Self {
+            ledger: ExecutionLedger::default(),
+            trace: Vec::new(),
+        }
+    }
+}
+
+impl MachineExecutionState {
+    /// Portable digest and tail for reports and certificates.
+    pub fn ledger_evidence(&self) -> ExecutionLedgerEvidence {
+        self.ledger.evidence()
+    }
+
+    /// Exact retained decisions used to drive replay.
+    pub fn trace(&self) -> &[String] {
+        &self.trace
+    }
+}
+
+#[derive(Debug)]
+struct MachineExecutionControl {
+    execution: MachineExecutionState,
+    expected: Option<Vec<String>>,
+    position: usize,
+    divergence: Option<String>,
+}
+
+/// Shared gate that serializes device effects and, during replay, admits only
+/// the vCPU named by the next retained decision.
+#[derive(Debug)]
+pub struct MachineExecutionController {
+    state: Mutex<MachineExecutionControl>,
+    turn_changed: Condvar,
+}
+
+impl Default for MachineExecutionController {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(MachineExecutionControl {
+                execution: MachineExecutionState::default(),
+                expected: None,
+                position: 0,
+                divergence: None,
+            }),
+            turn_changed: Condvar::new(),
+        }
+    }
+}
+
+impl MachineExecutionController {
+    fn execution_state(&self) -> MachineExecutionState {
+        self.state
+            .lock()
+            .expect("machine execution controller lock poisoned")
+            .execution
+            .clone()
+    }
+
+    fn restore_execution_state(&self, execution: MachineExecutionState) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("machine execution controller lock poisoned");
+        state.position = execution.trace.len();
+        state.execution = execution;
+        state.expected = None;
+        state.divergence = None;
+        self.turn_changed.notify_all();
+    }
+
+    fn enforce(&self, expected: Vec<String>) -> Result<(), String> {
+        if expected.len() > MACHINE_EXECUTION_TRACE_LIMIT {
+            return Err(format!(
+                "machine execution trace has {} decisions; limit is {MACHINE_EXECUTION_TRACE_LIMIT}",
+                expected.len()
+            ));
+        }
+        if expected
+            .iter()
+            .any(|record| machine_record_vcpu(record).is_none())
+        {
+            return Err("machine execution trace contains a malformed vCPU decision".to_owned());
+        }
+        let mut state = self
+            .state
+            .lock()
+            .expect("machine execution controller lock poisoned");
+        if !expected.starts_with(&state.execution.trace) {
+            return Err(format!(
+                "machine execution trace diverged before replay began at decision {}",
+                state
+                    .execution
+                    .trace
+                    .iter()
+                    .zip(&expected)
+                    .take_while(|(actual, expected)| actual == expected)
+                    .count()
+            ));
+        }
+        state.position = state.execution.trace.len();
+        state.expected = Some(expected);
+        state.divergence = None;
+        self.turn_changed.notify_all();
+        Ok(())
+    }
+
+    fn replay_error(&self) -> Option<String> {
+        let state = self
+            .state
+            .lock()
+            .expect("machine execution controller lock poisoned");
+        state.divergence.clone().or_else(|| {
+            state.expected.as_ref().and_then(|expected| {
+                (state.position != expected.len()).then(|| {
+                    format!(
+                        "machine execution replay stopped at decision {} of {}",
+                        state.position,
+                        expected.len()
+                    )
+                })
+            })
+        })
+    }
+}
+
+fn machine_record_vcpu(record: &str) -> Option<u8> {
+    record
+        .strip_prefix("vcpu:")?
+        .split_once(':')?
+        .0
+        .parse()
+        .ok()
 }
 
 /// Errors associated with the wrappers over KVM ioctls.
@@ -192,7 +343,7 @@ pub struct Vcpu {
     execution_ledger: Arc<Mutex<ExecutionLedger>>,
     /// VM-wide ledger shared by every vCPU. Holding this lock while handling
     /// an exit gives device effects one explicit total order across CPUs.
-    machine_execution_ledger: Arc<Mutex<ExecutionLedger>>,
+    machine_execution: Arc<MachineExecutionController>,
 }
 
 /// States of the vCPU thread's run loop.
@@ -230,7 +381,7 @@ impl Vcpu {
         index: u8,
         vm: &KvmVm,
         exit_evt: EventFd,
-        machine_execution_ledger: Arc<Mutex<ExecutionLedger>>,
+        machine_execution: Arc<MachineExecutionController>,
     ) -> Result<Self, VcpuError> {
         let (event_sender, event_receiver) = channel();
         let (response_sender, response_receiver) = channel();
@@ -252,7 +403,7 @@ impl Vcpu {
             execution_locations: Arc::new(Mutex::new(BTreeSet::new())),
             execution_location_exits: 0,
             execution_ledger: Arc::new(Mutex::new(ExecutionLedger::default())),
-            machine_execution_ledger,
+            machine_execution,
         })
     }
 
@@ -396,7 +547,7 @@ impl Vcpu {
             .map_err(StartThreadedError::CopyFd)?;
         let execution_locations = self.execution_locations.clone();
         let execution_ledger = self.execution_ledger.clone();
-        let machine_execution_ledger = self.machine_execution_ledger.clone();
+        let machine_execution = self.machine_execution.clone();
         let vcpu_thread = thread::Builder::new()
             .name(format!("fc_vcpu {}", self.kvm_vcpu.index))
             .spawn(move || {
@@ -414,7 +565,7 @@ impl Vcpu {
             vcpu_fd,
             execution_locations,
             execution_ledger,
-            machine_execution_ledger,
+            machine_execution,
             vcpu_thread,
         ))
     }
@@ -706,7 +857,7 @@ impl Vcpu {
                 emulation_result,
                 self.kvm_vcpu.index,
                 &self.execution_ledger,
-                &self.machine_execution_ledger,
+                &self.machine_execution,
             ),
         }
     }
@@ -717,15 +868,54 @@ fn handle_kvm_exit_recorded(
     emulation_result: Result<VcpuExit<'_>, errno::Error>,
     vcpu: u8,
     ledger: &Arc<Mutex<ExecutionLedger>>,
-    machine_ledger: &Arc<Mutex<ExecutionLedger>>,
+    machine_execution: &Arc<MachineExecutionController>,
 ) -> Result<VcpuEmulation, VcpuError> {
+    if matches!(&emulation_result, Err(err) if err.errno() == libc::EAGAIN) {
+        return handle_kvm_exit(peripherals, emulation_result);
+    }
     // This is the first control-plane boundary in the execution stream: only
-    // one vCPU may apply guest-visible emulated device effects at a time. The
-    // selected vCPU is still host-scheduled, so replay checks and reports the
-    // resulting order rather than claiming deterministic vCPU arbitration.
-    let mut machine_ledger = machine_ledger
+    // one vCPU may apply guest-visible emulated device effects at a time.
+    // During replay, the recorded trace selects which vCPU owns the next turn.
+    let mut machine = machine_execution
+        .state
         .lock()
-        .expect("machine execution ledger lock poisoned");
+        .expect("machine execution controller lock poisoned");
+    loop {
+        if let Some(detail) = machine.divergence.clone() {
+            return Err(VcpuError::FaultyKvmExit(detail));
+        }
+        let Some(expected) = machine.expected.as_ref() else {
+            break;
+        };
+        let Some(expected_record) = expected.get(machine.position) else {
+            break;
+        };
+        if machine_record_vcpu(expected_record) == Some(vcpu) {
+            break;
+        }
+        let (next, timeout) = machine_execution
+            .turn_changed
+            .wait_timeout(machine, MACHINE_EXECUTION_TURN_TIMEOUT)
+            .expect("machine execution controller lock poisoned while waiting for replay turn");
+        machine = next;
+        if timeout.timed_out() {
+            let expected_vcpu = machine
+                .expected
+                .as_ref()
+                .and_then(|expected| expected.get(machine.position))
+                .and_then(|record| machine_record_vcpu(record));
+            let detail = format!(
+                "machine execution replay expected vCPU {} at decision {}, but vCPU {vcpu} reached an exit",
+                expected_vcpu
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".to_owned()),
+                machine.position
+            );
+            machine.divergence = Some(detail.clone());
+            machine_execution.turn_changed.notify_all();
+            return Err(VcpuError::FaultyKvmExit(detail));
+        }
+    }
     let (outcome, decision) = match emulation_result {
         Ok(VcpuExit::MmioRead(address, data)) => {
             let outcome = handle_kvm_exit(peripherals, Ok(VcpuExit::MmioRead(address, &mut *data)));
@@ -765,7 +955,31 @@ fn handle_kvm_exit_recorded(
             .lock()
             .expect("execution ledger lock poisoned")
             .record(decision.clone());
-        machine_ledger.record(format!("vcpu:{vcpu}:{decision}"));
+        let record = format!("vcpu:{vcpu}:{decision}");
+        if machine.execution.trace.len() == MACHINE_EXECUTION_TRACE_LIMIT {
+            let detail = format!(
+                "machine execution trace exceeded {MACHINE_EXECUTION_TRACE_LIMIT} decisions"
+            );
+            machine.divergence = Some(detail.clone());
+            machine_execution.turn_changed.notify_all();
+            return Err(VcpuError::FaultyKvmExit(detail));
+        }
+        if let Some(expected) = machine.expected.as_ref() {
+            if expected.get(machine.position) != Some(&record) {
+                let detail = format!(
+                    "machine execution replay diverged at decision {}: expected {:?}, observed {record:?}",
+                    machine.position,
+                    expected.get(machine.position)
+                );
+                machine.divergence = Some(detail.clone());
+                machine_execution.turn_changed.notify_all();
+                return Err(VcpuError::FaultyKvmExit(detail));
+            }
+        }
+        machine.execution.ledger.record(record.clone());
+        machine.execution.trace.push(record);
+        machine.position = machine.position.saturating_add(1);
+        machine_execution.turn_changed.notify_all();
     }
     outcome
 }
@@ -782,7 +996,10 @@ fn hex_bytes(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod execution_ledger_tests {
-    use super::{EXECUTION_DECISION_TAIL, ExecutionLedger};
+    use super::{
+        EXECUTION_DECISION_TAIL, ExecutionLedger, MachineExecutionController,
+        MachineExecutionState,
+    };
 
     #[test]
     fn hashes_ordered_length_framed_decisions() {
@@ -815,6 +1032,42 @@ mod execution_ledger_tests {
         assert_eq!(evidence.tail.len(), EXECUTION_DECISION_TAIL);
         assert_eq!(evidence.tail.last().map(String::as_str), Some("child"));
         assert_ne!(evidence.sha256, parent.evidence().sha256);
+    }
+
+    #[test]
+    fn active_replay_accepts_an_inherited_prefix_and_requires_the_suffix() {
+        let mut ledger = ExecutionLedger::default();
+        ledger.record("vcpu:0:mmio_write:0x10:1:2a".to_owned());
+        let controller = MachineExecutionController::default();
+        controller.restore_execution_state(MachineExecutionState {
+            ledger,
+            trace: vec!["vcpu:0:mmio_write:0x10:1:2a".to_owned()],
+        });
+        controller
+            .enforce(vec![
+                "vcpu:0:mmio_write:0x10:1:2a".to_owned(),
+                "vcpu:1:mmio_read:0x20:1:00".to_owned(),
+            ])
+            .unwrap();
+        assert_eq!(
+            controller.replay_error().as_deref(),
+            Some("machine execution replay stopped at decision 1 of 2")
+        );
+    }
+
+    #[test]
+    fn active_replay_rejects_a_different_checkpoint_prefix() {
+        let controller = MachineExecutionController::default();
+        controller.restore_execution_state(MachineExecutionState {
+            ledger: ExecutionLedger::default(),
+            trace: vec!["vcpu:0:mmio_write:0x10:1:2a".to_owned()],
+        });
+        assert!(
+            controller
+                .enforce(vec!["vcpu:1:mmio_write:0x10:1:2a".to_owned()])
+                .unwrap_err()
+                .contains("before replay began")
+        );
     }
 }
 
@@ -982,7 +1235,7 @@ pub struct VcpuHandle {
     pub vcpu_fd: VcpuFd,
     execution_locations: Arc<Mutex<BTreeSet<u64>>>,
     execution_ledger: Arc<Mutex<ExecutionLedger>>,
-    machine_execution_ledger: Arc<Mutex<ExecutionLedger>>,
+    machine_execution: Arc<MachineExecutionController>,
     // Rust JoinHandles have to be wrapped in Option if you ever plan on 'join()'ing them.
     // We want to be able to join these threads in tests.
     vcpu_thread: Option<thread::JoinHandle<()>>,
@@ -1006,7 +1259,7 @@ impl VcpuHandle {
         vcpu_fd: VcpuFd,
         execution_locations: Arc<Mutex<BTreeSet<u64>>>,
         execution_ledger: Arc<Mutex<ExecutionLedger>>,
-        machine_execution_ledger: Arc<Mutex<ExecutionLedger>>,
+        machine_execution: Arc<MachineExecutionController>,
         vcpu_thread: thread::JoinHandle<()>,
     ) -> Self {
         Self {
@@ -1015,7 +1268,7 @@ impl VcpuHandle {
             vcpu_fd,
             execution_locations,
             execution_ledger,
-            machine_execution_ledger,
+            machine_execution,
             vcpu_thread: Some(vcpu_thread),
         }
     }
@@ -1082,18 +1335,32 @@ impl VcpuHandle {
 
     /// Clone the shared VM-wide execution ledger.
     pub fn machine_execution_ledger(&self) -> ExecutionLedger {
-        self.machine_execution_ledger
-            .lock()
-            .expect("machine execution ledger lock poisoned")
-            .clone()
+        self.machine_execution.execution_state().ledger
     }
 
-    /// Continue a restored VM from its parent's machine-wide ledger.
-    pub fn seed_machine_execution_ledger(&self, ledger: ExecutionLedger) {
-        *self
-            .machine_execution_ledger
-            .lock()
-            .expect("machine execution ledger lock poisoned") = ledger;
+    /// Clone the complete bounded machine state for a campaign branch.
+    pub fn machine_execution_state(&self) -> MachineExecutionState {
+        self.machine_execution.execution_state()
+    }
+
+    /// Return every retained machine decision needed for active replay.
+    pub fn machine_execution_trace(&self) -> Vec<String> {
+        self.machine_execution.execution_state().trace
+    }
+
+    /// Continue a restored VM from its parent's machine-wide state.
+    pub fn seed_machine_execution_state(&self, state: MachineExecutionState) {
+        self.machine_execution.restore_execution_state(state);
+    }
+
+    /// Gate subsequent exits against an exact retained machine trace.
+    pub fn enforce_machine_execution_trace(&self, trace: Vec<String>) -> Result<(), String> {
+        self.machine_execution.enforce(trace)
+    }
+
+    /// Return a recorded mismatch or incomplete expected suffix.
+    pub fn machine_execution_replay_error(&self) -> Option<String> {
+        self.machine_execution.replay_error()
     }
 }
 
@@ -1295,14 +1562,14 @@ pub(crate) mod tests {
     fn recorded_exit_includes_emulated_read_bytes_and_ignores_eagain() {
         let (_, mut vcpu) = setup_vcpu(0x1000);
         let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
-        let machine_ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let machine_execution = Arc::new(MachineExecutionController::default());
         let mut data = [0xff, 0xff];
         let result = handle_kvm_exit_recorded(
             &mut vcpu.kvm_vcpu.peripherals,
             Ok(VcpuExit::MmioRead(0x10, &mut data)),
             1,
             &ledger,
-            &machine_ledger,
+            &machine_execution,
         );
         assert_eq!(result.unwrap(), VcpuEmulation::Handled);
         assert_eq!(data, [0, 0]);
@@ -1310,7 +1577,7 @@ pub(crate) mod tests {
         assert_eq!(evidence.decisions, 1);
         assert_eq!(evidence.tail, ["mmio_read:0x10:2:0000"]);
         assert_eq!(
-            machine_ledger.lock().unwrap().evidence().tail,
+            machine_execution.execution_state().ledger_evidence().tail,
             ["vcpu:1:mmio_read:0x10:2:0000"]
         );
 
@@ -1320,11 +1587,11 @@ pub(crate) mod tests {
             Ok(VcpuExit::MmioWrite(0x10, &[0x2a])),
             0,
             &second_vcpu_ledger,
-            &machine_ledger,
+            &machine_execution,
         );
         assert_eq!(result.unwrap(), VcpuEmulation::Handled);
         assert_eq!(
-            machine_ledger.lock().unwrap().evidence().tail,
+            machine_execution.execution_state().ledger_evidence().tail,
             [
                 "vcpu:1:mmio_read:0x10:2:0000",
                 "vcpu:0:mmio_write:0x10:1:2a"
@@ -1336,11 +1603,17 @@ pub(crate) mod tests {
             Err(errno::Error::new(libc::EAGAIN)),
             1,
             &ledger,
-            &machine_ledger,
+            &machine_execution,
         );
         assert_eq!(result.unwrap(), VcpuEmulation::Handled);
         assert_eq!(ledger.lock().unwrap().evidence().decisions, 1);
-        assert_eq!(machine_ledger.lock().unwrap().evidence().decisions, 2);
+        assert_eq!(
+            machine_execution
+                .execution_state()
+                .ledger_evidence()
+                .decisions,
+            2
+        );
     }
 
     impl PartialEq for VcpuResponse {

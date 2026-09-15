@@ -19,9 +19,11 @@ const PROOF_FORMAT: &str = "theseus-counterexample-proof-v2";
 const VALIDATION_FORMAT_V1: &str = "theseus-runtime-validation-v1";
 const VALIDATION_FORMAT_V2: &str = "theseus-runtime-validation-v2";
 const VALIDATION_FORMAT_V3: &str = "theseus-runtime-validation-v3";
+const VALIDATION_FORMAT_V4: &str = "theseus-runtime-validation-v4";
 const CERTIFICATE_FORMAT_V1: &str = "theseus-runtime-certificate-v1";
 const CERTIFICATE_FORMAT_V2: &str = "theseus-runtime-certificate-v2";
 const CERTIFICATE_FORMAT_V3: &str = "theseus-runtime-certificate-v3";
+const CERTIFICATE_FORMAT_V4: &str = "theseus-runtime-certificate-v4";
 const PROPERTY: &str = "distributed_lost_update_is_unreachable";
 const REQUIRED_FAULTS: [&str; 2] = [
     "backplane:partition@setup",
@@ -85,6 +87,8 @@ struct CertificateServiceEvidence {
     execution_ledgers: Vec<ExecutionLedgerEvidence>,
     #[serde(default)]
     machine_execution_ledger: Option<ExecutionLedgerEvidence>,
+    #[serde(default)]
+    machine_execution_trace_decisions: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -268,7 +272,10 @@ fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(
     require(
         matches!(
             certificate.format.as_str(),
-            CERTIFICATE_FORMAT_V1 | CERTIFICATE_FORMAT_V2 | CERTIFICATE_FORMAT_V3
+            CERTIFICATE_FORMAT_V1
+                | CERTIFICATE_FORMAT_V2
+                | CERTIFICATE_FORMAT_V3
+                | CERTIFICATE_FORMAT_V4
         ),
         "unsupported runtime certificate format",
     )?;
@@ -315,7 +322,10 @@ fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(
             "runtime certificate has empty or malformed ordered KVM execution evidence",
         )?;
     }
-    if certificate.format == CERTIFICATE_FORMAT_V3 {
+    if matches!(
+        certificate.format.as_str(),
+        CERTIFICATE_FORMAT_V3 | CERTIFICATE_FORMAT_V4
+    ) {
         require(
             !certificate.services.is_empty()
                 && certificate.services.values().all(|service| {
@@ -327,6 +337,20 @@ fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(
                             .is_some_and(valid_execution_ledger)
                 }),
             "runtime certificate has empty or malformed machine-wide KVM execution evidence",
+        )?;
+    }
+    if certificate.format == CERTIFICATE_FORMAT_V4 {
+        require(
+            certificate.services.values().all(|service| {
+                service.machine_execution_trace_decisions.is_some_and(|count| {
+                    count > 0
+                        && service
+                            .machine_execution_ledger
+                            .as_ref()
+                            .is_some_and(|ledger| usize::try_from(ledger.decisions) == Ok(count))
+                })
+            }),
+            "runtime certificate has missing or inconsistent active execution replay evidence",
         )?;
     }
     Ok(())
@@ -690,7 +714,10 @@ fn verify_runtime_validation(
     require(
         matches!(
             proof.format.as_str(),
-            VALIDATION_FORMAT_V1 | VALIDATION_FORMAT_V2 | VALIDATION_FORMAT_V3
+            VALIDATION_FORMAT_V1
+                | VALIDATION_FORMAT_V2
+                | VALIDATION_FORMAT_V3
+                | VALIDATION_FORMAT_V4
         ),
         "unsupported runtime validation format",
     )?;
@@ -863,8 +890,17 @@ fn verify_runtime_validation(
             &retained["strict-execution/campaign/campaign-result.json"],
             "strict execution",
         )?;
-        if proof.format == VALIDATION_FORMAT_V3 {
+        if matches!(
+            proof.format.as_str(),
+            VALIDATION_FORMAT_V3 | VALIDATION_FORMAT_V4
+        ) {
             verify_campaign_machine_execution_ledgers(
+                &retained["strict-execution/campaign/campaign-result.json"],
+                "strict execution",
+            )?;
+        }
+        if proof.format == VALIDATION_FORMAT_V4 {
+            verify_campaign_machine_execution_traces(
                 &retained["strict-execution/campaign/campaign-result.json"],
                 "strict execution",
             )?;
@@ -879,8 +915,17 @@ fn verify_runtime_validation(
             &retained["strict-execution/rerun/campaign-result.json"],
             "strict execution replay",
         )?;
-        if proof.format == VALIDATION_FORMAT_V3 {
+        if matches!(
+            proof.format.as_str(),
+            VALIDATION_FORMAT_V3 | VALIDATION_FORMAT_V4
+        ) {
             verify_campaign_machine_execution_ledgers(
+                &retained["strict-execution/rerun/campaign-result.json"],
+                "strict execution replay",
+            )?;
+        }
+        if proof.format == VALIDATION_FORMAT_V4 {
+            verify_campaign_machine_execution_traces(
                 &retained["strict-execution/rerun/campaign-result.json"],
                 "strict execution replay",
             )?;
@@ -974,6 +1019,43 @@ fn verify_campaign_machine_execution_ledgers(
     require(
         valid,
         &format!("{scenario} has no valid machine-wide KVM execution stream"),
+    )
+}
+
+fn verify_campaign_machine_execution_traces(
+    bytes: &[u8],
+    scenario: &str,
+) -> Result<(), EvidenceError> {
+    let value: serde_json::Value = parse_json_bytes(bytes, scenario)?;
+    let valid = value["runs"].as_array().is_some_and(|runs| {
+        !runs.is_empty()
+            && runs.iter().all(|run| {
+                let Some(traces) = run["machine_execution_traces"].as_object() else {
+                    return false;
+                };
+                let Some(ledgers) = run["machine_execution_ledgers"].as_object() else {
+                    return false;
+                };
+                !traces.is_empty()
+                    && traces.iter().all(|(service, trace)| {
+                        trace.as_array().is_some_and(|records| {
+                            !records.is_empty()
+                                && records.iter().all(|record| {
+                                    record
+                                        .as_str()
+                                        .is_some_and(|record| record.starts_with("vcpu:"))
+                                })
+                                && ledgers
+                                    .get(service)
+                                    .and_then(|ledger| ledger["decisions"].as_u64())
+                                    == u64::try_from(records.len()).ok()
+                        })
+                    })
+            })
+    });
+    require(
+        valid,
+        &format!("{scenario} has no valid active machine execution replay trace"),
     )
 }
 

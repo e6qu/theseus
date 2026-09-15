@@ -67,9 +67,9 @@ passing unit suite alone is not treated as runtime proof.
   locking, and untimed condition waits/signals/broadcasts. Timed waits,
   cancellation, direct futex use, blocking I/O, and processes remain outside
   this profile.
-- The KVM-exit streams serialize device effects and detect divergence at
+- The KVM-exit stream gates replayed vCPU turns and rejects divergence at
   hypervisor and device boundaries;
-  it observes but does not yet choose instruction, thread, or interrupt order.
+  it does not yet choose instruction, thread, or interrupt order between exits.
 - `compare` finds the first difference in two recorded histories. It does not
   perform counterfactual re-exploration or prove causality.
 - Capturing a branch copies guest RAM into a memfd. Restored children then use
