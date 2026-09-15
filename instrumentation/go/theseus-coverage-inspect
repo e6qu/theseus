@@ -1,0 +1,59 @@
+#!/bin/sh
+# Copyright 2026 Adrian Mârza and contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+usage() {
+    echo 'usage: theseus-go-coverage-inspect BINARY MANIFEST [PROGRAM_COUNTER]' >&2
+    exit 2
+}
+
+[ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage
+binary=$1
+manifest=$2
+counter=${3:-}
+[ -f "$binary" ] && [ -f "$manifest" ] || usage
+
+grep -F '"format": "theseus-go-coverage-build-v1"' "$manifest" >/dev/null || {
+    echo 'not a Theseus Go coverage manifest' >&2
+    exit 1
+}
+grep -F '"coverage": "blocks"' "$manifest" >/dev/null || {
+    echo 'manifest does not describe Go block coverage' >&2
+    exit 1
+}
+grep -F '"language": "go"' "$manifest" >/dev/null || {
+    echo 'manifest does not describe Go source' >&2
+    exit 1
+}
+build_sha256=$(sed -n 's/.*"build_sha256": "\([0-9a-f]*\)".*/\1/p' "$manifest")
+case "$build_sha256" in ''|*[!0-9a-f]*) echo 'manifest has no build SHA-256' >&2; exit 1 ;; esac
+[ "${#build_sha256}" -eq 64 ] || { echo 'manifest has an invalid build SHA-256' >&2; exit 1; }
+LC_ALL=C grep -aF "$build_sha256" "$binary" >/dev/null || {
+    echo 'binary does not match the manifest build identity' >&2
+    exit 1
+}
+readelf -h "$binary" | grep -F 'Type:' | grep -F 'EXEC (Executable file)' >/dev/null || {
+    echo 'Go coverage binary must be a fixed-address ELF executable' >&2
+    exit 1
+}
+readelf -S "$binary" | grep -F '.debug_info' >/dev/null || {
+    echo 'Go coverage binary has no debug information' >&2
+    exit 1
+}
+nm "$binary" | grep -F '_theseusCoverageHit' >/dev/null || {
+    echo 'binary has no Theseus Go coverage callbacks' >&2
+    exit 1
+}
+
+callbacks=$(nm "$binary" | grep -cF '_theseusCoverageHit')
+echo "instrumented: $callbacks Go source files"
+if [ -n "$counter" ]; then
+    case "$counter" in 0x|0x*[!0-9a-f]*) usage ;; 0x*) ;; *) usage ;; esac
+    [ "${#counter}" -le 18 ] || usage
+    if command -v llvm-addr2line >/dev/null 2>&1; then
+        llvm-addr2line -C -f -e "$binary" "$counter"
+    else
+        addr2line -C -f -e "$binary" "$counter"
+    fi
+fi

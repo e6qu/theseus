@@ -16,7 +16,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use addr2line::Loader;
-use object::{BinaryFormat, Object, ObjectSection, ObjectSymbol, SymbolKind};
+use object::{BinaryFormat, Object, ObjectKind, ObjectSection, ObjectSymbol, SymbolKind};
 use regex::bytes::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json_path::JsonPath;
@@ -1047,8 +1047,9 @@ struct InstructionSourceLocation {
 }
 
 /// A compiler-emitted application coverage point. GCC v1 records identify a
-/// block by its module-relative address; LLVM v2 records add a build-local
-/// edge number. The build digest scopes both forms across rebuilds and ASLR.
+/// block by its module-relative address, Go v1 records use a fixed-executable
+/// program counter, and LLVM v2 records add a build-local edge number. The
+/// build digest scopes every form across rebuilds.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 struct ApplicationBlock {
     process: String,
@@ -1158,6 +1159,10 @@ struct ServicePlan {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct CoverageArtifact {
+    #[serde(default = "llvm_coverage_format")]
+    format: String,
+    #[serde(default = "edge_coverage_kind")]
+    coverage: String,
     language: String,
     process: String,
     module: String,
@@ -1169,7 +1174,7 @@ struct CoverageArtifact {
 }
 
 #[derive(Debug, Deserialize)]
-struct LlvmCoverageManifest {
+struct CoverageManifest {
     format: String,
     coverage: String,
     language: String,
@@ -1179,6 +1184,14 @@ struct LlvmCoverageManifest {
     #[serde(default)]
     gnu_build_id: Option<String>,
     symbols: String,
+}
+
+fn llvm_coverage_format() -> String {
+    "theseus-llvm-coverage-build-v1".to_owned()
+}
+
+fn edge_coverage_kind() -> String {
+    "edges".to_owned()
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -10922,7 +10935,7 @@ fn lock_service_inputs(service_dir: &Path, service: &mut ServicePlan) -> Result<
 
 fn validate_coverage_artifact(coverage: &CoverageArtifact) -> Result<(), String> {
     let manifest_path = Path::new(&coverage.manifest.path);
-    let manifest: LlvmCoverageManifest = serde_json::from_slice(
+    let manifest: CoverageManifest = serde_json::from_slice(
         &fs::read(manifest_path)
             .map_err(|error| format!("cannot read {}: {error}", manifest_path.display()))?,
     )
@@ -10932,8 +10945,21 @@ fn validate_coverage_artifact(coverage: &CoverageArtifact) -> Result<(), String>
             manifest_path.display()
         )
     })?;
-    if manifest.format != "theseus-llvm-coverage-build-v1"
-        || manifest.coverage != "edges"
+    let supported = matches!(
+        (
+            manifest.format.as_str(),
+            manifest.coverage.as_str(),
+            manifest.language.as_str()
+        ),
+        (
+            "theseus-llvm-coverage-build-v1",
+            "edges",
+            "c" | "c++" | "rust"
+        ) | ("theseus-go-coverage-build-v1", "blocks", "go")
+    );
+    if !supported
+        || manifest.format != coverage.format
+        || manifest.coverage != coverage.coverage
         || manifest.language != coverage.language
         || manifest.process != coverage.process
         || manifest.module != coverage.module
@@ -10976,37 +11002,62 @@ fn validate_coverage_artifact(coverage: &CoverageArtifact) -> Result<(), String>
             symbol_path.display()
         ));
     }
-    if file.section_by_name("__sancov_guards").is_none() {
-        return Err(format!(
-            "coverage symbols have no LLVM sanitizer guards: {}",
-            symbol_path.display()
-        ));
-    }
     let actual_build_id = file
         .build_id()
         .map_err(|error| format!("cannot read coverage build ID: {error}"))?
         .map(hex);
-    if actual_build_id.is_none()
-        || coverage
-            .gnu_build_id
-            .as_ref()
-            .is_some_and(|expected| actual_build_id.as_deref() != Some(expected.as_str()))
+    if coverage
+        .gnu_build_id
+        .as_ref()
+        .is_some_and(|expected| actual_build_id.as_deref() != Some(expected.as_str()))
     {
         return Err(format!(
             "coverage symbols do not match the recorded GNU build ID: {}",
             symbol_path.display()
         ));
     }
-    let callback = file.symbols().any(|symbol| {
-        symbol
-            .name()
-            .is_ok_and(|name| name == "__sanitizer_cov_trace_pc_guard")
-    });
-    if !callback {
-        return Err(format!(
-            "coverage symbols have no Theseus edge callback: {}",
-            symbol_path.display()
-        ));
+    if coverage.format == "theseus-llvm-coverage-build-v1" {
+        if file.section_by_name("__sancov_guards").is_none() {
+            return Err(format!(
+                "coverage symbols have no LLVM sanitizer guards: {}",
+                symbol_path.display()
+            ));
+        }
+        if actual_build_id.is_none() {
+            return Err(format!(
+                "coverage symbols have no GNU build ID: {}",
+                symbol_path.display()
+            ));
+        }
+        let callback = file.symbols().any(|symbol| {
+            symbol
+                .name()
+                .is_ok_and(|name| name == "__sanitizer_cov_trace_pc_guard")
+        });
+        if !callback {
+            return Err(format!(
+                "coverage symbols have no Theseus edge callback: {}",
+                symbol_path.display()
+            ));
+        }
+    } else {
+        if file.kind() != ObjectKind::Executable {
+            return Err(format!(
+                "Go coverage symbols are not a fixed-address executable: {}",
+                symbol_path.display()
+            ));
+        }
+        let callback = file.symbols().any(|symbol| {
+            symbol
+                .name()
+                .is_ok_and(|name| name.contains("_theseusCoverageHit"))
+        });
+        if !callback {
+            return Err(format!(
+                "coverage symbols have no Theseus Go block callback: {}",
+                symbol_path.display()
+            ));
+        }
     }
     if [".debug_info", ".debug_line"].into_iter().any(|name| {
         file.section_by_name(name)
@@ -13240,10 +13291,12 @@ mod tests {
             .unwrap();
         assert!(compilation.status.success());
         let manifest_path = binary.with_extension("theseus-coverage.json");
-        let manifest: LlvmCoverageManifest =
+        let manifest: CoverageManifest =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         let symbol_path = symbols.join(&manifest.symbols);
         let mut coverage = CoverageArtifact {
+            format: manifest.format,
+            coverage: manifest.coverage,
             language: manifest.language,
             process: manifest.process,
             module: manifest.module,
@@ -13301,6 +13354,115 @@ mod tests {
         assert!(validate_coverage_artifact(&coverage)
             .unwrap_err()
             .contains("identity changed"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn validates_and_joins_locked_go_coverage_symbols() {
+        let directory = std::env::temp_dir().join(format!(
+            "theseus-go-symbols-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let digest = "0123456789abcdef".repeat(4);
+        fs::write(
+            directory.join("go.mod"),
+            "module example.com/coverage_fixture\n\ngo 1.19\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.join("fixture.go"),
+            format!(
+                "package main\n\nvar buildIdentity = \"{digest}\"\n\n//go:noinline\nfunc _theseusCoverageHit(block int) int {{ return block + len(buildIdentity) }}\n\nfunc main() {{ _ = _theseusCoverageHit(0) }}\n"
+            ),
+        )
+        .unwrap();
+        let binary = directory.join("fixture");
+        let compilation = Command::new("go")
+            .args(["build", "-buildmode=exe"])
+            .arg(format!("-ldflags=-buildid={digest}"))
+            .args(["-o", "fixture", "."])
+            .env("CGO_ENABLED", "0")
+            .env("GOWORK", "off")
+            .current_dir(&directory)
+            .output()
+            .unwrap();
+        assert!(compilation.status.success(), "{compilation:?}");
+        let symbols = directory.join("fixture.debug");
+        fs::copy(&binary, &symbols).unwrap();
+        let manifest_path = directory.join("fixture.theseus-coverage.json");
+        fs::write(
+            &manifest_path,
+            format!(
+                "{{\"format\":\"theseus-go-coverage-build-v1\",\"coverage\":\"blocks\",\"language\":\"go\",\"process\":\"fixture\",\"module\":\"command\",\"build_sha256\":\"{digest}\",\"symbols\":\"fixture.debug\"}}"
+            ),
+        )
+        .unwrap();
+        let mut coverage = CoverageArtifact {
+            format: "theseus-go-coverage-build-v1".to_owned(),
+            coverage: "blocks".to_owned(),
+            language: "go".to_owned(),
+            process: "fixture".to_owned(),
+            module: "command".to_owned(),
+            build_sha256: digest.clone(),
+            gnu_build_id: None,
+            manifest: artifact_at(manifest_path).unwrap(),
+            symbols: artifact_at(symbols).unwrap(),
+        };
+        let locked = directory.join("locked");
+        fs::create_dir_all(locked.join("artifacts")).unwrap();
+        coverage.manifest =
+            artifact_at(lock_artifact(&locked, "coverage-000.json", &coverage.manifest).unwrap())
+                .unwrap();
+        coverage.symbols =
+            artifact_at(lock_artifact(&locked, "coverage-000.debug", &coverage.symbols).unwrap())
+                .unwrap();
+        validate_coverage_artifact(&coverage).unwrap();
+
+        let bytes = fs::read(&coverage.symbols.path).unwrap();
+        let file = object::File::parse(&*bytes).unwrap();
+        let address = file
+            .symbols()
+            .find(|symbol| symbol.name().is_ok_and(|name| name == "main.main"))
+            .unwrap()
+            .address();
+        let record = ApplicationBlock {
+            process: coverage.process.clone(),
+            module: coverage.module.clone(),
+            build_sha256: digest,
+            edge: None,
+            offset: format!("0x{address:x}"),
+            symbol: None,
+            symbol_offset: None,
+            source: None,
+        };
+        let symbolizer = CampaignApplicationSymbolizer {
+            entries: BTreeMap::from([(
+                (
+                    "api".to_owned(),
+                    record.process.clone(),
+                    record.module.clone(),
+                    record.build_sha256.clone(),
+                ),
+                (
+                    kernel_symbols(Path::new(&coverage.symbols.path)),
+                    Loader::new(&coverage.symbols.path).unwrap(),
+                ),
+            )]),
+        };
+        let mut points = BTreeMap::from([("api".to_owned(), vec![record])]);
+        symbolizer.symbolize(&mut points);
+        let point = &points["api"][0];
+        assert_eq!(point.symbol.as_deref(), Some("main.main"));
+        assert!(point
+            .source
+            .as_ref()
+            .is_some_and(|source| source.file.ends_with("fixture.go")));
         fs::remove_dir_all(directory).unwrap();
     }
 

@@ -15,7 +15,7 @@ VERIFY = (ROOT / ".github/workflows/verify-runtime-reproducibility.yml").read_te
 
 def main() -> None:
     assert re.search(r"^# syntax=docker/dockerfile:1@sha256:[0-9a-f]{64}$", DOCKERFILE, re.MULTILINE)
-    assert len(re.findall(r"^FROM .+@sha256:[0-9a-f]{64} AS ", DOCKERFILE, re.MULTILINE)) == 2
+    assert len(re.findall(r"^FROM .+@sha256:[0-9a-f]{64} AS ", DOCKERFILE, re.MULTILINE)) == 3
     assert "snapshot.debian.org/archive/debian/20260713T000000Z" in DOCKERFILE
     assert "snapshot.debian.org/archive/debian/20260824T000000Z" in DOCKERFILE
     assert "snapshot.debian.org/archive/debian-security/" in DOCKERFILE
@@ -33,9 +33,13 @@ def main() -> None:
     assert "instrumentation/llvm/theseus-coverage-rustc" in DOCKERFILE
     assert "instrumentation/llvm/theseus-coverage-inspect" in DOCKERFILE
     assert "instrumentation/llvm/theseus_coverage.c" in DOCKERFILE
+    assert "instrumentation/go/theseus-coverage-inspect" in DOCKERFILE
     assert "libclang-rt-dev" in DOCKERFILE
     assert "cargo clang" in DOCKERFILE
-    assert "libseccomp2 rustc" in DOCKERFILE
+    assert "golang:1.27.1-bookworm@sha256:" in DOCKERFILE
+    assert "COPY --from=go-toolchain /usr/local/go /usr/local/go" in DOCKERFILE
+    assert 'ENV PATH="/usr/local/go/bin:${PATH}"' in DOCKERFILE
+    assert "libseccomp2 llvm rustc" in DOCKERFILE
 
     assert "SOURCE_DATE_EPOCH: ${{ steps.source-date.outputs.value }}" in RELEASE
     assert "THESEUS_SOURCE_COMMIT=${{ github.sha }}" in RELEASE
@@ -59,6 +63,10 @@ def main() -> None:
     assert RELEASE.count("--process smoke --module rust") == 2
     assert RELEASE.count("theseus coverage cargo") == 2
     assert RELEASE.count("--process smoke --module cargo") == 2
+    assert RELEASE.count("test -x /opt/theseus/instrumentation/go/theseus-coverage-inspect") == 2
+    assert RELEASE.count("theseus coverage go") == 2
+    assert RELEASE.count("--process smoke --module go") == 2
+    assert RELEASE.count("THES:COV:v1:smoke:go:") == 2
     assert "gh release download" in VERIFY
     assert "gh attestation verify" in VERIFY
     assert "ref: ${{ steps.inputs.outputs.commit }}" in VERIFY

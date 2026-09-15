@@ -20,7 +20,7 @@ a demonstration.
 | Network and storage faults | Implemented | Deterministic mode uses simulated network and memory-backed storage. Fault candidates are optional unless marked required; required actions survive minimization. Host-backed nondeterministic paths are rejected by the supported profile. Runtime proof is per retained certificate/campaign. |
 | Branch snapshots | Implemented | Capture copies all guest RAM into a memfd. Children restore with private copy-on-write mappings. The full path is not zero-copy. |
 | Campaign PC coverage | Implemented baseline signal | Campaigns retain guest-PC samples at deterministic exits and barriers. This is not application basic-block or edge coverage. |
-| Application coverage | Implemented, awaiting native evidence | The packaged GCC frontend emits build-scoped C basic blocks. LLVM frontends add C/C++/Rust edges, Cargo static Rust target-dependency coverage, and independent dynamically loaded native module identities. Compose locks declared manifests and symbols, revalidates them before boot, and joins functions and source lines into campaign reports, including for stripped deployed binaries. Tutorials 31, 37, and 38 are the public runtime paths; Rust dynamic dependencies and Go/Java instrumentation remain absent. |
+| Application coverage | Implemented, awaiting native evidence | The packaged GCC frontend emits build-scoped C blocks. LLVM frontends add C/C++/Rust edges, Cargo static Rust target-dependency coverage, and independent dynamically loaded native module identities. The Go frontend adds blocks across a selected command's imported main-module packages with CGO disabled. Compose locks manifests and symbols, revalidates them before boot, and joins functions and source lines into reports, including for stripped deployed binaries. Tutorials 31, 37, 38, and 39 are the public runtime paths; Rust dynamic dependencies, Go external modules and CGO, and Java remain absent. |
 | Single-step collector | Implemented reference signal | Small guests can yield an instruction-address set. MMIO limitations remain, and the set is not source-level coverage. |
 | Replay | Implemented for locked recorded fields | Replay re-executes supported bundles and compares retained fingerprints, serial output, actions, properties, and device evidence. It does not establish unrecorded state equality. |
 | Campaign comparison | Implemented offline diff | `compare` finds the first recorded difference between two bundles. “Causal divergence” was removed from CLI output, tests, and tutorials. |
@@ -43,7 +43,7 @@ a demonstration.
   before execution.
 - Tutorials 5–13 expose build, execution, expected-failure, inspection,
   replay, and cleanup commands directly in their READMEs.
-- Container and Compose tutorials 14–36 expose host image builds, interactive
+- Container and Compose tutorials 14–39 expose host image builds, interactive
   runtime entry, locked input preparation, execution, evidence inspection,
   replay, and optional cleanup as separate steps.
 - Generated bundles remain available until the user explicitly runs cleanup.

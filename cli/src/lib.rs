@@ -12,6 +12,7 @@ mod compose;
 mod evaluation;
 mod evidence;
 mod explore;
+mod go_coverage;
 mod manifest;
 mod report;
 mod runner;
@@ -36,6 +37,7 @@ pub use explore::{
     explore, minimize_exploration_path, replay_exploration, replay_exploration_path,
     snapshot_exploration_path, ExploreError,
 };
+pub use go_coverage::{go_coverage, GoCoverageOutput, GO_COVERAGE_USAGE};
 pub use manifest::{
     load_plan, ArtifactPlan, CheckKind, CheckPlan, ExplorePlan, LoadError, Novelty,
     ReplayFingerprint, ReplayTreeNode, RunPlan,

@@ -45,10 +45,10 @@ Terms used across Theseus code and documentation. See
   exits and pause barriers; markers and final checkpoint PCs are replay-locked
   baseline signals. Neither form is application basic-block coverage.
 - **Application-coverage identity** — service, process, module name,
-  build-input SHA-256, and module-relative address emitted by a compiler
-  frontend. GCC v1 records identify blocks; LLVM v2 records also carry a
-  build-local edge number. The identity is stable across ASLR and identical
-  rebuilds, and a changed build cannot collide silently with the old module.
+  build-input SHA-256, and an address emitted by a compiler frontend. GCC v1
+  uses module-relative block addresses; Go v1 uses program counters in a
+  fixed-address ELF; LLVM v2 adds a build-local edge number to a module-relative
+  address. The build identity prevents an unrelated rebuild from colliding.
 - **Coverage catalog** — the manifest and symbol file pairs declared for one
   Compose service. Planning locks their digests and build identities into the
   replay bundle; the runner uses only those copies for source association.
@@ -56,6 +56,11 @@ Terms used across Theseus code and documentation. See
   target dependencies, package-input digests, LLVM edge runtime, manifest, and
   preserved symbol file. Host build tools and Rust dynamic libraries are not
   folded into the binary's runtime module.
+- **Go coverage build** — one selected Go command and the imported source
+  packages inside its main module, copied into an isolated workspace and
+  instrumented with first-hit block callbacks. The artifact is a fixed-address
+  Linux executable with CGO disabled; external module packages are hashed but
+  not instrumented.
 - **Thread-scheduling decision** — an ordered compiler-instrumented C record
   containing the build-scoped scheduling point, current thread, runnable
   thread mask, and selected thread. Theseus assigns thread identities in

@@ -92,6 +92,7 @@ jobs:
             test -x /opt/theseus/instrumentation/llvm/theseus-coverage-rustc
             test -x /opt/theseus/instrumentation/llvm/theseus-coverage-inspect
             test -s /opt/theseus/instrumentation/llvm/theseus_coverage.c
+            test -x /opt/theseus/instrumentation/go/theseus-coverage-inspect
             printf "%s\n" "int main(void) { return 0; }" > /tmp/coverage.c
             /opt/theseus/instrumentation/llvm/theseus-coverage-clang \
               --process smoke --module c -o /tmp/coverage-c /tmp/coverage.c >/dev/null
@@ -114,6 +115,19 @@ jobs:
             /opt/theseus/instrumentation/llvm/theseus-coverage-inspect \
               /tmp/cargo-coverage/cargo-smoke \
               /tmp/cargo-coverage/cargo-smoke.theseus-coverage.json >/dev/null
+            mkdir -p /tmp/go-coverage/symbols
+            printf "%s\n" "module example.com/go_smoke" "go 1.19" \
+              > /tmp/go-coverage/go.mod
+            printf "%s\n" "package main" "func main() { println(\"go coverage\") }" \
+              > /tmp/go-coverage/main.go
+            (cd /tmp/go-coverage && /usr/local/bin/theseus coverage go \
+              --process smoke --module go --package . \
+              --symbols symbols --output go-smoke --offline >/dev/null)
+            /opt/theseus/instrumentation/go/theseus-coverage-inspect \
+              /tmp/go-coverage/go-smoke \
+              /tmp/go-coverage/go-smoke.theseus-coverage.json >/dev/null
+            /tmp/go-coverage/go-smoke 2>/tmp/go-coverage/records
+            grep -F "THES:COV:v1:smoke:go:" /tmp/go-coverage/records >/dev/null
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
             /usr/local/bin/theseus-image --help >/dev/null
@@ -406,6 +420,7 @@ jobs:
             test -x /opt/theseus/instrumentation/llvm/theseus-coverage-rustc
             test -x /opt/theseus/instrumentation/llvm/theseus-coverage-inspect
             test -s /opt/theseus/instrumentation/llvm/theseus_coverage.c
+            test -x /opt/theseus/instrumentation/go/theseus-coverage-inspect
             printf "%s\n" "int main(void) { return 0; }" > /tmp/coverage.c
             /opt/theseus/instrumentation/llvm/theseus-coverage-clang \
               --process smoke --module c -o /tmp/coverage-c /tmp/coverage.c >/dev/null
@@ -428,6 +443,19 @@ jobs:
             /opt/theseus/instrumentation/llvm/theseus-coverage-inspect \
               /tmp/cargo-coverage/cargo-smoke \
               /tmp/cargo-coverage/cargo-smoke.theseus-coverage.json >/dev/null
+            mkdir -p /tmp/go-coverage/symbols
+            printf "%s\n" "module example.com/go_smoke" "go 1.19" \
+              > /tmp/go-coverage/go.mod
+            printf "%s\n" "package main" "func main() { println(\"go coverage\") }" \
+              > /tmp/go-coverage/main.go
+            (cd /tmp/go-coverage && /usr/local/bin/theseus coverage go \
+              --process smoke --module go --package . \
+              --symbols symbols --output go-smoke --offline >/dev/null)
+            /opt/theseus/instrumentation/go/theseus-coverage-inspect \
+              /tmp/go-coverage/go-smoke \
+              /tmp/go-coverage/go-smoke.theseus-coverage.json >/dev/null
+            /tmp/go-coverage/go-smoke 2>/tmp/go-coverage/records
+            grep -F "THES:COV:v1:smoke:go:" /tmp/go-coverage/records >/dev/null
             /usr/local/bin/firecracker --version
             /usr/local/bin/theseus --help >/dev/null
             /usr/local/bin/theseus-image --help >/dev/null

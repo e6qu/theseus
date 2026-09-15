@@ -170,5 +170,11 @@ docs/tutorials/38-cargo-workspace-coverage/plan.json
 docs/tutorials/38-cargo-workspace-coverage/campaign/
 docs/tutorials/38-cargo-workspace-coverage/report/
 docs/tutorials/38-cargo-workspace-coverage/rerun/
+docs/tutorials/39-go-module-coverage/service/work/
+docs/tutorials/39-go-module-coverage/service/target/
+docs/tutorials/39-go-module-coverage/plan.json
+docs/tutorials/39-go-module-coverage/campaign/
+docs/tutorials/39-go-module-coverage/report/
+docs/tutorials/39-go-module-coverage/rerun/
 
 orchestrator/pivot/target/
