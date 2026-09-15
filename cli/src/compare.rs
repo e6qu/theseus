@@ -679,6 +679,25 @@ mod tests {
     }
 
     #[test]
+    fn reports_the_first_changed_machine_wide_execution_stream() {
+        let digest = "0123456789abcdef".repeat(4);
+        let runs = format!(
+            r#"[{{"index":0,"operations":["write"],"state_sha256":"same","timeline":[{{"operation":"write","service":"api","state_sha256":"same","machine_execution_ledgers":{{"api":{{"decisions":12,"sha256":"{digest}","tail":["vcpu:0:mmio_read:0x10:1"]}}}}}}]}}]"#
+        );
+        let changed = runs.replace("\"vcpu:0:", "\"vcpu:1:");
+        let (left, right) = write_pair(&result(&runs, "[]"), &result(&changed, "[]"));
+        let divergence = compare_campaigns(left.path(), right.path())
+            .unwrap()
+            .divergence
+            .unwrap();
+        assert_eq!(divergence.boundary, Some(0));
+        assert_eq!(
+            divergence.reason,
+            "machine-wide KVM execution stream differs"
+        );
+    }
+
+    #[test]
     fn reports_the_first_changed_thread_synchronization_event() {
         let digest = "0123456789abcdef".repeat(4);
         let runs = format!(

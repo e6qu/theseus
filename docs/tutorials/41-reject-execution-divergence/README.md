@@ -1,7 +1,8 @@
 # Tutorial 41: Reject low-level execution divergence
 
-Run an ordinary BusyBox HTTP service, inspect the ordered KVM-exit ledger, and
-replay it exactly. The service uses no Theseus SDK or instrumentation.
+Run an ordinary BusyBox HTTP service, inspect its per-vCPU and machine-wide
+KVM-exit streams, and replay them exactly. The service uses no Theseus SDK or
+instrumentation.
 
 ## Before you start
 
@@ -60,21 +61,25 @@ theseus compose explore --output campaign compose.yaml
 ```sh
 grep -E '"execution_decisions": [1-9][0-9]*' campaign/campaign-result.json
 grep -n -A8 '"execution_ledgers"' campaign/campaign-result.json
+grep -n -A8 '"machine_execution_ledgers"' campaign/campaign-result.json
 theseus compose replay campaign --output rerun
 grep -A2 '"replay_verification"' rerun/campaign-result.json
 theseus compare campaign rerun > comparison.json
 grep '"status": "same"' comparison.json
 ```
 
-Each vCPU ledger contains a decision count, a SHA-256 identity for the complete
-ordered stream, and the last 32 readable decisions. The readable tail can show
-MMIO, PIO, and shutdown exits, depending on the host architecture and final
-guest activity. The digest covers the complete stream, including decisions
+Each ledger contains a decision count, a SHA-256 identity for the complete
+stream, and the last 32 readable decisions. Per-vCPU ledgers preserve local
+order. The machine ledger prefixes each decision with its vCPU and preserves
+one total order for handled exits and their emulated device effects. The tail
+can show MMIO, PIO, and shutdown exits. The digest also covers decisions
 omitted from the tail.
 
-Replay fails if the ordered low-level ledger changes, even when final HTTP and
-serial output still look the same. This detects an execution-path divergence;
-it does not claim instruction-level scheduling control.
+Replay fails if either low-level stream changes, even when final HTTP and
+serial output still look the same. Theseus serializes emulated device effects,
+but the host still selects which vCPU reaches that boundary next. This detects
+that ordering divergence; it does not yet control vCPU arbitration or
+instruction scheduling.
 
 ## 6. Clean up (optional)
 

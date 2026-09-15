@@ -2563,13 +2563,15 @@ mod tests {
         write_json(
             &directory.path().join("campaign-result.json"),
             &format!(
-                r#"{{"format":"theseus-compose-campaign-result-v1","status":"passed","driver":"api","execution_decisions":12,"runs":[{{"index":0,"operations":["health"],"status":"passed","execution_ledgers":{{"api":[{{"decisions":12,"sha256":"{digest}","tail":["mmio_read:0x10:1:2a"]}}]}},"timeline":[{{"operation":"health","service":"api","execution_ledgers":{{"api":[{{"decisions":12,"sha256":"{digest}","tail":["mmio_read:0x10:1:2a"]}}]}}}}]}}]}}"#
+                r#"{{"format":"theseus-compose-campaign-result-v1","status":"passed","driver":"api","execution_decisions":12,"runs":[{{"index":0,"operations":["health"],"status":"passed","execution_ledgers":{{"api":[{{"decisions":12,"sha256":"{digest}","tail":["mmio_read:0x10:1:2a"]}}]}},"machine_execution_ledgers":{{"api":{{"decisions":12,"sha256":"{digest}","tail":["vcpu:0:mmio_read:0x10:1:2a"]}}}},"timeline":[{{"operation":"health","service":"api","execution_ledgers":{{"api":[{{"decisions":12,"sha256":"{digest}","tail":["mmio_read:0x10:1:2a"]}}]}},"machine_execution_ledgers":{{"api":{{"decisions":12,"sha256":"{digest}","tail":["vcpu:0:mmio_read:0x10:1:2a"]}}}}}}]}}]}}"#
             ),
         );
 
         let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
         assert!(markdown.contains("12 ordered KVM execution decisions retained"));
         assert!(markdown.contains("api/vcpu0:12 decisions"));
+        assert!(markdown.contains("api/machine:12 decisions"));
+        assert!(markdown.contains("last vcpu:0:mmio_read:0x10:1:2a"));
         assert!(markdown.contains("last mmio_read:0x10:1:2a"));
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();

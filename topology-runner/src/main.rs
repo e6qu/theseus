@@ -12674,15 +12674,6 @@ mod tests {
                     execution_locations: None,
                     execution_ledgers: None,
                     machine_execution_ledger: None,
-                    machine_execution_ledger: None,
-                    machine_execution_ledger: None,
-                    machine_execution_ledger: None,
-                    machine_execution_ledger: None,
-                    machine_execution_ledger: None,
-                    machine_execution_ledger: None,
-                    machine_execution_ledger: None,
-                    machine_execution_ledger: None,
-                    machine_execution_ledger: None,
                 },
             )]),
             round: 0,
@@ -15777,6 +15768,16 @@ mod tests {
             .decisions += 1;
         assert!(campaign_replay_mismatches(&changed_execution, &actual)
             .contains(&"ordered KVM execution ledger".to_owned()));
+        let mut changed_machine_execution = expected.clone();
+        changed_machine_execution
+            .machine_execution_ledgers
+            .get_mut("api")
+            .expect("api machine execution ledger")
+            .decisions += 1;
+        assert!(
+            campaign_replay_mismatches(&changed_machine_execution, &actual)
+                .contains(&"machine-wide KVM execution stream".to_owned())
+        );
         let mut legacy_timeline = expected.clone();
         legacy_timeline.timeline[0].service.clear();
         legacy_timeline.timeline[0].input = CampaignInputEvidence::default();

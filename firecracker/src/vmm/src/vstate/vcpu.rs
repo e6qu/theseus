@@ -1314,6 +1314,23 @@ pub(crate) mod tests {
             ["vcpu:1:mmio_read:0x10:2:0000"]
         );
 
+        let second_vcpu_ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let result = handle_kvm_exit_recorded(
+            &mut vcpu.kvm_vcpu.peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &[0x2a])),
+            0,
+            &second_vcpu_ledger,
+            &machine_ledger,
+        );
+        assert_eq!(result.unwrap(), VcpuEmulation::Handled);
+        assert_eq!(
+            machine_ledger.lock().unwrap().evidence().tail,
+            [
+                "vcpu:1:mmio_read:0x10:2:0000",
+                "vcpu:0:mmio_write:0x10:1:2a"
+            ]
+        );
+
         let result = handle_kvm_exit_recorded(
             &mut vcpu.kvm_vcpu.peripherals,
             Err(errno::Error::new(libc::EAGAIN)),
@@ -1323,7 +1340,7 @@ pub(crate) mod tests {
         );
         assert_eq!(result.unwrap(), VcpuEmulation::Handled);
         assert_eq!(ledger.lock().unwrap().evidence().decisions, 1);
-        assert_eq!(machine_ledger.lock().unwrap().evidence().decisions, 1);
+        assert_eq!(machine_ledger.lock().unwrap().evidence().decisions, 2);
     }
 
     impl PartialEq for VcpuResponse {
