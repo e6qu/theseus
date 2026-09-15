@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+rm -f /state/*
+printf '0\n' > /state/counter

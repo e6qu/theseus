@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
+use std::io::Read;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -89,12 +90,21 @@ struct ComposeTheseus {
 #[serde(deny_unknown_fields)]
 struct ComposeCampaign {
     driver: String,
+    /// Discover an Antithesis-compatible test template from the service
+    /// images instead of spelling out every command as a Compose operation.
+    #[serde(default)]
+    test_template: Option<String>,
+    /// Maximum simultaneous copies generated for each discovered parallel or
+    /// anytime command. The explorer chooses which slots actually run.
+    #[serde(default = "default_test_command_parallelism")]
+    max_parallel_commands: u8,
     #[serde(default)]
     guidance: CampaignGuidance,
     #[serde(default)]
     coverage: CampaignCoverage,
     #[serde(default)]
     state: BTreeMap<String, String>,
+    #[serde(default)]
     operations: Vec<ComposeOperation>,
     #[serde(default)]
     stages: Vec<String>,
@@ -114,10 +124,13 @@ struct ComposeCampaign {
     max_operations_per_run: u8,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeOperation {
     name: String,
+    /// Populated only by image test-template discovery.
+    #[serde(skip)]
+    test_command_path: Option<String>,
     /// Optional Test Composer lifecycle role. When one operation declares a
     /// role, every operation in the campaign must declare one.
     #[serde(default)]
@@ -204,7 +217,7 @@ struct ComposeGrpcHealthOperation {
     expect_status: GrpcServingStatus,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ComposeShellOperation {
     #[serde(default)]
@@ -1228,6 +1241,10 @@ fn is_default_campaign_coverage(value: &CampaignCoverage) -> bool {
 #[derive(Debug, Clone, Serialize)]
 pub struct CampaignPlan {
     pub driver: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_template: Option<String>,
+    #[serde(default = "default_test_command_parallelism")]
+    pub max_parallel_commands: u8,
     #[serde(default)]
     pub guidance: CampaignGuidance,
     #[serde(default, skip_serializing_if = "is_default_campaign_coverage")]
@@ -1250,6 +1267,8 @@ pub struct OperationPlan {
     pub service: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<ComposeTestCommand>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_command_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell_phase: Option<ComposeShellPhase>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2809,6 +2828,10 @@ fn default_campaign_runs() -> u16 {
     32
 }
 
+fn default_test_command_parallelism() -> u8 {
+    2
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -2985,6 +3008,284 @@ fn thread_schedule_search_patterns(
     Ok(patterns)
 }
 
+const TEST_COMMAND_ROOT: &str = "opt/antithesis/test/v1";
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct DockerSaveManifest {
+    layers: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+struct ImagePathKind {
+    runnable: bool,
+}
+
+fn archive_path(path: &Path) -> Result<String, ComposeError> {
+    let mut normalized = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(component) => normalized.push(
+                component
+                    .to_str()
+                    .ok_or_else(|| {
+                        ComposeError::Invalid("image contains a non-UTF-8 path".to_owned())
+                    })?
+                    .to_owned(),
+            ),
+            std::path::Component::CurDir | std::path::Component::RootDir => {}
+            std::path::Component::ParentDir | std::path::Component::Prefix(_) => {
+                return Err(ComposeError::Invalid(format!(
+                    "image contains unsafe path {:?}",
+                    path
+                )))
+            }
+        }
+    }
+    Ok(normalized.join("/"))
+}
+
+fn apply_test_command_layer(
+    layer: &[u8],
+    paths: &mut BTreeMap<String, ImagePathKind>,
+) -> Result<(), ComposeError> {
+    let reader: Box<dyn Read> = if layer.starts_with(&[0x1f, 0x8b]) {
+        Box::new(flate2::read::GzDecoder::new(layer))
+    } else {
+        Box::new(layer)
+    };
+    let mut archive = tar::Archive::new(reader);
+    let entries = archive.entries().map_err(|error| {
+        ComposeError::Invalid(format!(
+            "cannot read image layer for test commands: {error}"
+        ))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            ComposeError::Invalid(format!("cannot read image layer entry: {error}"))
+        })?;
+        let path = archive_path(&entry.path().map_err(|error| {
+            ComposeError::Invalid(format!("cannot read image layer path: {error}"))
+        })?)?;
+        let (parent, name) = path
+            .rsplit_once('/')
+            .map_or(("", path.as_str()), |(parent, name)| (parent, name));
+        if name == ".wh..wh..opq" {
+            let prefix = format!("{parent}/");
+            paths.retain(|candidate, _| !candidate.starts_with(&prefix));
+            continue;
+        }
+        if let Some(removed) = name.strip_prefix(".wh.") {
+            let removed = if parent.is_empty() {
+                removed.to_owned()
+            } else {
+                format!("{parent}/{removed}")
+            };
+            let prefix = format!("{removed}/");
+            paths.retain(|candidate, _| candidate != &removed && !candidate.starts_with(&prefix));
+            continue;
+        }
+        let kind = entry.header().entry_type();
+        if kind.is_file() || kind.is_hard_link() || kind.is_symlink() {
+            let mode = entry.header().mode().map_err(|error| {
+                ComposeError::Invalid(format!("cannot read image mode for {path:?}: {error}"))
+            })?;
+            paths.insert(
+                path,
+                ImagePathKind {
+                    runnable: kind.is_symlink() || mode & 0o111 != 0,
+                },
+            );
+        } else if kind.is_dir() {
+            paths.remove(&path);
+        }
+    }
+    Ok(())
+}
+
+fn image_paths(image: &Path) -> Result<BTreeMap<String, ImagePathKind>, ComposeError> {
+    let bytes = fs::read(image).map_err(|source| ComposeError::Read {
+        path: image.to_path_buf(),
+        source,
+    })?;
+    let mut archive = tar::Archive::new(bytes.as_slice());
+    let mut manifest = None;
+    let mut layers = BTreeMap::new();
+    for entry in archive.entries().map_err(|error| {
+        ComposeError::Invalid(format!(
+            "cannot read image archive {}: {error}",
+            image.display()
+        ))
+    })? {
+        let mut entry = entry.map_err(|error| {
+            ComposeError::Invalid(format!("cannot read image archive entry: {error}"))
+        })?;
+        let path = archive_path(&entry.path().map_err(|error| {
+            ComposeError::Invalid(format!("cannot read image archive path: {error}"))
+        })?)?;
+        if path == "manifest.json" || path.ends_with("/manifest.json") {
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data).map_err(|error| {
+                ComposeError::Invalid(format!("cannot read image manifest: {error}"))
+            })?;
+            manifest = Some(
+                serde_json::from_slice::<Vec<DockerSaveManifest>>(&data).map_err(|error| {
+                    ComposeError::Invalid(format!("cannot parse image manifest: {error}"))
+                })?,
+            );
+        } else if entry.header().entry_type().is_file() && !path.ends_with(".json") {
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data).map_err(|error| {
+                ComposeError::Invalid(format!("cannot read image layer {path:?}: {error}"))
+            })?;
+            layers.insert(path, data);
+        }
+    }
+    let manifest = manifest
+        .and_then(|entries| entries.into_iter().next())
+        .ok_or_else(|| ComposeError::Invalid("image has no Docker save manifest".to_owned()))?;
+    let mut paths = BTreeMap::new();
+    for name in manifest.layers {
+        let layer = layers.get(&name).ok_or_else(|| {
+            ComposeError::Invalid(format!("image manifest references missing layer {name:?}"))
+        })?;
+        apply_test_command_layer(layer, &mut paths)?;
+    }
+    Ok(paths)
+}
+
+fn test_command_role(filename: &str) -> Option<ComposeTestCommand> {
+    [
+        ("parallel_driver_", ComposeTestCommand::ParallelDriver),
+        ("singleton_driver_", ComposeTestCommand::SingletonDriver),
+        ("serial_driver_", ComposeTestCommand::SerialDriver),
+        ("eventually_", ComposeTestCommand::Eventually),
+        ("finally_", ComposeTestCommand::Finally),
+        ("anytime_", ComposeTestCommand::Anytime),
+        ("first_", ComposeTestCommand::First),
+    ]
+    .into_iter()
+    .find_map(|(prefix, role)| {
+        (filename.starts_with(prefix) && filename.len() > prefix.len()).then_some(role)
+    })
+}
+
+fn discovered_operation_name(service: &str, filename: &str, suffix: &str) -> String {
+    let mut name = format!("{service}_{filename}{suffix}");
+    name.retain(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'));
+    name
+}
+
+fn discovered_operation(
+    name: String,
+    service: &str,
+    role: ComposeTestCommand,
+    path: &str,
+    phase: ComposeShellPhase,
+    process: Option<String>,
+) -> ComposeOperation {
+    ComposeOperation {
+        name,
+        test_command_path: Some(path.to_owned()),
+        command: Some(role),
+        service: Some(service.to_owned()),
+        shell: Some(ComposeShellOperation {
+            phase,
+            process,
+            command: if matches!(phase, ComposeShellPhase::Completion) {
+                Vec::new()
+            } else {
+                vec![path.to_owned()]
+            },
+            ..ComposeShellOperation::default()
+        }),
+        max_uses: Some(1),
+        ..ComposeOperation::default()
+    }
+}
+
+fn discover_test_template(
+    template: &str,
+    max_parallel_commands: u8,
+    services: &BTreeMap<String, ComposeServicePlan>,
+) -> Result<Vec<ComposeOperation>, ComposeError> {
+    validate_name("test template", template)?;
+    if !(1..=8).contains(&max_parallel_commands) {
+        return Err(ComposeError::Invalid(
+            "campaign max_parallel_commands must be between 1 and 8".to_owned(),
+        ));
+    }
+    let directory = format!("{TEST_COMMAND_ROOT}/{template}/");
+    let mut operations = Vec::new();
+    for (service, plan) in services {
+        let Some(image) = &plan.run.guest.image else {
+            continue;
+        };
+        for (path, kind) in image_paths(Path::new(&image.path))? {
+            let Some(filename) = path.strip_prefix(&directory) else {
+                continue;
+            };
+            if filename.contains('/') || filename.starts_with("helper_") {
+                continue;
+            }
+            let Some(role) = test_command_role(filename) else {
+                continue;
+            };
+            if !kind.runnable {
+                return Err(ComposeError::Invalid(format!(
+                    "test command /{path} in service {service:?} is not executable"
+                )));
+            }
+            let command_path = format!("/{path}");
+            if matches!(
+                role,
+                ComposeTestCommand::ParallelDriver | ComposeTestCommand::Anytime
+            ) {
+                for slot in 1..=max_parallel_commands {
+                    let suffix = format!("_{slot}");
+                    let process = discovered_operation_name(service, filename, &suffix);
+                    operations.push(discovered_operation(
+                        discovered_operation_name(service, filename, &format!("_start_{slot}")),
+                        service,
+                        role,
+                        &command_path,
+                        ComposeShellPhase::Launch,
+                        Some(process.clone()),
+                    ));
+                    operations.push(discovered_operation(
+                        discovered_operation_name(service, filename, &format!("_finish_{slot}")),
+                        service,
+                        role,
+                        &command_path,
+                        ComposeShellPhase::Completion,
+                        Some(process),
+                    ));
+                }
+            } else {
+                operations.push(discovered_operation(
+                    discovered_operation_name(service, filename, ""),
+                    service,
+                    role,
+                    &command_path,
+                    ComposeShellPhase::Run,
+                    None,
+                ));
+            }
+            if operations.len() > 256 {
+                return Err(ComposeError::Invalid(
+                    "selected test template expands to more than 256 operations".to_owned(),
+                ));
+            }
+        }
+    }
+    if operations.is_empty() {
+        return Err(ComposeError::Invalid(format!(
+            "test template {template:?} has no recognized executable commands under /{TEST_COMMAND_ROOT}"
+        )));
+    }
+    Ok(operations)
+}
+
 fn campaign_plan(
     campaign: Option<ComposeTheseus>,
     services: &mut BTreeMap<String, ComposeServicePlan>,
@@ -2998,9 +3299,21 @@ fn campaign_plan(
             campaign.driver
         )));
     }
-    if campaign.operations.is_empty() {
+    let test_template = campaign.test_template.clone();
+    let campaign_operations = match test_template.as_deref() {
+        Some(_) if !campaign.operations.is_empty() => {
+            return Err(ComposeError::Invalid(
+                "campaign test_template replaces operations; do not declare both".to_owned(),
+            ));
+        }
+        Some(template) => {
+            discover_test_template(template, campaign.max_parallel_commands, services)?
+        }
+        None => campaign.operations,
+    };
+    if campaign_operations.is_empty() {
         return Err(ComposeError::Invalid(
-            "campaign operations must not be empty".to_owned(),
+            "campaign needs operations or test_template".to_owned(),
         ));
     }
     if campaign.max_runs == 0 || campaign.max_runs > 256 {
@@ -3023,8 +3336,8 @@ fn campaign_plan(
     let mut resolved_evidence =
         normalize_serial_evidence_definitions(&evidence_definitions, services)?;
     let mut names = BTreeSet::new();
-    let mut operations = Vec::with_capacity(campaign.operations.len());
-    for operation in campaign.operations {
+    let mut operations = Vec::with_capacity(campaign_operations.len());
+    for operation in campaign_operations {
         validate_name("campaign operation", &operation.name)?;
         if !names.insert(operation.name.clone()) {
             return Err(ComposeError::Invalid(format!(
@@ -3509,6 +3822,7 @@ fn campaign_plan(
             name: operation.name,
             service,
             command: operation.command,
+            test_command_path: operation.test_command_path,
             shell_phase,
             shell_process,
             thread_schedule,
@@ -4282,6 +4596,8 @@ fn campaign_plan(
     }
     Ok(Some(CampaignPlan {
         driver: campaign.driver,
+        test_template,
+        max_parallel_commands: campaign.max_parallel_commands,
         guidance: campaign.guidance,
         coverage: campaign.coverage,
         state: initial_state,
@@ -6519,6 +6835,31 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn tar_file(builder: &mut tar::Builder<Vec<u8>>, path: &str, data: &[u8], mode: u32) {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(path).unwrap();
+        header.set_size(data.len() as u64);
+        header.set_mode(mode);
+        header.set_cksum();
+        builder.append(&header, data).unwrap();
+    }
+
+    fn write_docker_image(path: &Path, files: &[(&str, u32)]) {
+        let mut layer = tar::Builder::new(Vec::new());
+        for (name, mode) in files {
+            tar_file(&mut layer, name, b"#!/bin/sh\nexit 0\n", *mode);
+        }
+        let layer = layer.into_inner().unwrap();
+        let manifest =
+            br#"[{"Config":"config.json","RepoTags":["test:latest"],"Layers":["layer.tar"]}]"#;
+        let config = br#"{"config":{"Entrypoint":["/bin/sh"],"Cmd":["-c","sleep 3600"]}}"#;
+        let mut image = tar::Builder::new(Vec::new());
+        tar_file(&mut image, "manifest.json", manifest, 0o644);
+        tar_file(&mut image, "config.json", config, 0o644);
+        tar_file(&mut image, "layer.tar", &layer, 0o644);
+        fs::write(path, image.into_inner().unwrap()).unwrap();
+    }
+
     fn fixture(compose: &str) -> tempfile::TempDir {
         let directory = tempfile::tempdir().unwrap();
         for service in ["api", "worker", "auditor"] {
@@ -6553,6 +6894,62 @@ mod tests {
         assert_eq!(plan.format, "theseus-compose-plan-v1");
         assert_eq!(plan.networks["backplane"], ["api", "worker"]);
         assert_eq!(plan.services["api"].run.guest.kernel.sha256.len(), 64);
+    }
+
+    #[test]
+    fn discovers_antithesis_test_template_commands_from_images() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    test_template: main\n    max_parallel_commands: 2\n    max_operations_per_run: 6\n    faults: []\n",
+        );
+        fs::write(
+            directory.path().join("api/runtime/theseus-image"),
+            b"adapter",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            directory.path().join("api/runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        write_docker_image(
+            &directory.path().join("api/service.tar"),
+            &[
+                ("opt/antithesis/test/v1/main/first_prepare.sh", 0o755),
+                (
+                    "opt/antithesis/test/v1/main/parallel_driver_write.sh",
+                    0o755,
+                ),
+                ("opt/antithesis/test/v1/main/eventually_check.sh", 0o755),
+                ("opt/antithesis/test/v1/main/helper_library.sh", 0o755),
+            ],
+        );
+        fs::write(
+            directory.path().join("api/theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[container_service.ready]\nurl = 'http://127.0.0.1:8080/health'\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let campaign = plan.campaign.unwrap();
+        assert_eq!(campaign.test_template.as_deref(), Some("main"));
+        assert_eq!(campaign.operations.len(), 6);
+        assert_eq!(
+            campaign
+                .operations
+                .iter()
+                .filter(|operation| operation.shell_phase == Some(ComposeShellPhase::Launch))
+                .count(),
+            2
+        );
+        assert!(campaign.operations.iter().all(|operation| operation
+            .test_command_path
+            .as_deref()
+            .is_some_and(|path| path.starts_with("/opt/antithesis/test/v1/main/"))));
+        assert!(!campaign
+            .operations
+            .iter()
+            .any(|operation| operation.name.contains("helper")));
     }
 
     #[test]
