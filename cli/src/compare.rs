@@ -90,7 +90,7 @@ struct Run {
     #[serde(default)]
     execution_ledgers: Coverage,
     #[serde(default)]
-    machine_execution_ledgers: Coverage,
+    machine_execution_ledgers: Value,
     #[serde(default)]
     state_sha256: String,
     #[serde(default)]
@@ -127,7 +127,7 @@ struct Boundary {
     #[serde(default)]
     execution_ledgers: Coverage,
     #[serde(default)]
-    machine_execution_ledgers: Coverage,
+    machine_execution_ledgers: Value,
 }
 
 #[derive(Serialize)]
