@@ -148,8 +148,8 @@ struct MachineExecutionControl {
     divergence: Option<String>,
 }
 
-/// Shared gate that serializes device effects and, during replay, admits only
-/// the vCPU named by the next retained decision.
+/// Shared gate that serializes device effects and explicit host inputs and,
+/// during replay, admits only the actor named by the next retained decision.
 #[derive(Debug)]
 pub struct MachineExecutionController {
     state: Mutex<MachineExecutionControl>,
@@ -200,9 +200,9 @@ impl MachineExecutionController {
         }
         if expected
             .iter()
-            .any(|record| machine_record_vcpu(record).is_none())
+            .any(|record| machine_record_actor(record).is_none())
         {
-            return Err("machine execution trace contains a malformed vCPU decision".to_owned());
+            return Err("machine execution trace contains a malformed decision".to_owned());
         }
         let mut state = self
             .state
@@ -244,15 +244,127 @@ impl MachineExecutionController {
             })
         })
     }
+
+    fn apply_host_effect<T, E>(
+        &self,
+        effect: String,
+        apply: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Result<T, E>, String> {
+        if !valid_machine_host_effect(&effect) {
+            return Err("machine execution host effect is malformed or unsupported".to_owned());
+        }
+        let record = format!("host:{effect}");
+        let mut state = self
+            .state
+            .lock()
+            .expect("machine execution controller lock poisoned");
+        loop {
+            if let Some(detail) = state.divergence.clone() {
+                return Err(detail);
+            }
+            let Some(expected) = state.expected.as_ref() else {
+                break;
+            };
+            let Some(expected_record) = expected.get(state.position) else {
+                break;
+            };
+            if machine_record_actor(expected_record) == Some(MachineExecutionActor::Host) {
+                break;
+            }
+            let (next, timeout) = self
+                .turn_changed
+                .wait_timeout(state, MACHINE_EXECUTION_TURN_TIMEOUT)
+                .expect("machine execution controller lock poisoned while waiting for host turn");
+            state = next;
+            if timeout.timed_out() {
+                let detail = format!(
+                    "machine execution replay expected a vCPU effect at decision {}, but host effect {effect:?} arrived",
+                    state.position
+                );
+                state.divergence = Some(detail.clone());
+                self.turn_changed.notify_all();
+                return Err(detail);
+            }
+        }
+        if state.execution.trace.len() == MACHINE_EXECUTION_TRACE_LIMIT {
+            let detail = format!(
+                "machine execution trace exceeded {MACHINE_EXECUTION_TRACE_LIMIT} decisions"
+            );
+            state.divergence = Some(detail.clone());
+            self.turn_changed.notify_all();
+            return Err(detail);
+        }
+        if let Some(expected) = state.expected.as_ref() {
+            if expected.get(state.position) != Some(&record) {
+                let detail = format!(
+                    "machine execution replay diverged at decision {}: expected {:?}, observed {record:?}",
+                    state.position,
+                    expected.get(state.position)
+                );
+                state.divergence = Some(detail.clone());
+                self.turn_changed.notify_all();
+                return Err(detail);
+            }
+        }
+        let result = apply();
+        if result.is_err() {
+            return Ok(result);
+        }
+        state.execution.ledger.record(record.clone());
+        state.execution.trace.push(record);
+        state.position = state.position.saturating_add(1);
+        self.turn_changed.notify_all();
+        Ok(result)
+    }
 }
 
-fn machine_record_vcpu(record: &str) -> Option<u8> {
-    record
-        .strip_prefix("vcpu:")?
-        .split_once(':')?
-        .0
-        .parse()
-        .ok()
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MachineExecutionActor {
+    Vcpu(u8),
+    Host,
+}
+
+fn machine_record_actor(record: &str) -> Option<MachineExecutionActor> {
+    if let Some(effect) = record.strip_prefix("host:") {
+        return valid_machine_host_effect(effect).then_some(MachineExecutionActor::Host);
+    }
+    let (vcpu, effect) = record.strip_prefix("vcpu:")?.split_once(':')?;
+    if effect.is_empty() {
+        return None;
+    }
+    let id = vcpu.parse::<u8>().ok()?;
+    (vcpu == id.to_string()).then_some(MachineExecutionActor::Vcpu(id))
+}
+
+fn valid_machine_host_effect(effect: &str) -> bool {
+    if let Some(byte) = effect.strip_prefix("control_event:") {
+        return valid_lowercase_hex(byte) && byte.len() == 2;
+    }
+    if let Some(serial) = effect.strip_prefix("serial_input:") {
+        let Some((length_text, bytes)) = serial.split_once(':') else {
+            return false;
+        };
+        let Ok(length) = length_text.parse::<usize>() else {
+            return false;
+        };
+        return length > 0
+            && length_text == length.to_string()
+            && bytes.len() == length.saturating_mul(2)
+            && valid_lowercase_hex(bytes);
+    }
+    let Some(delta_text) = effect.strip_prefix("virtual_time_jump:") else {
+        return false;
+    };
+    delta_text
+        .parse::<u64>()
+        .is_ok_and(|delta| delta > 0 && delta_text == delta.to_string())
+}
+
+fn valid_lowercase_hex(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|digit| digit.is_ascii_hexdigit() && !digit.is_ascii_uppercase())
 }
 
 /// Errors associated with the wrappers over KVM ioctls.
@@ -342,7 +454,7 @@ pub struct Vcpu {
     /// Exact ordered ledger of guest-visible KVM exits handled for this vCPU.
     execution_ledger: Arc<Mutex<ExecutionLedger>>,
     /// VM-wide ledger shared by every vCPU. Holding this lock while handling
-    /// an exit gives device effects one explicit total order across CPUs.
+    /// an exit gives device effects and host inputs one explicit total order.
     machine_execution: Arc<MachineExecutionController>,
 }
 
@@ -890,7 +1002,7 @@ fn handle_kvm_exit_recorded(
         let Some(expected_record) = expected.get(machine.position) else {
             break;
         };
-        if machine_record_vcpu(expected_record) == Some(vcpu) {
+        if machine_record_actor(expected_record) == Some(MachineExecutionActor::Vcpu(vcpu)) {
             break;
         }
         let (next, timeout) = machine_execution
@@ -899,16 +1011,18 @@ fn handle_kvm_exit_recorded(
             .expect("machine execution controller lock poisoned while waiting for replay turn");
         machine = next;
         if timeout.timed_out() {
-            let expected_vcpu = machine
+            let expected_actor = machine
                 .expected
                 .as_ref()
                 .and_then(|expected| expected.get(machine.position))
-                .and_then(|record| machine_record_vcpu(record));
+                .and_then(|record| machine_record_actor(record));
             let detail = format!(
-                "machine execution replay expected vCPU {} at decision {}, but vCPU {vcpu} reached an exit",
-                expected_vcpu
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "unknown".to_owned()),
+                "machine execution replay expected {} at decision {}, but vCPU {vcpu} reached an exit",
+                match expected_actor {
+                    Some(MachineExecutionActor::Vcpu(value)) => format!("vCPU {value}"),
+                    Some(MachineExecutionActor::Host) => "a host effect".to_owned(),
+                    None => "an unknown actor".to_owned(),
+                },
                 machine.position
             );
             machine.divergence = Some(detail.clone());
@@ -984,7 +1098,7 @@ fn handle_kvm_exit_recorded(
     outcome
 }
 
-fn hex_bytes(bytes: &[u8]) -> String {
+pub(crate) fn hex_bytes(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -1068,6 +1182,77 @@ mod execution_ledger_tests {
                 .unwrap_err()
                 .contains("before replay began")
         );
+    }
+
+    #[test]
+    fn active_replay_admits_exact_host_effects() {
+        let controller = MachineExecutionController::default();
+        controller
+            .enforce(vec!["host:serial_input:2:2a0a".to_owned()])
+            .unwrap();
+        controller
+            .apply_host_effect("serial_input:2:2a0a".to_owned(), || Ok::<(), ()>(()))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            controller.execution_state().trace(),
+            ["host:serial_input:2:2a0a"]
+        );
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
+    fn active_replay_rejects_a_changed_host_effect_before_delivery() {
+        let controller = MachineExecutionController::default();
+        controller
+            .enforce(vec!["host:virtual_time_jump:1000".to_owned()])
+            .unwrap();
+
+        let mut delivered = false;
+        let error = controller
+            .apply_host_effect("virtual_time_jump:2000".to_owned(), || {
+                delivered = true;
+                Ok::<(), ()>(())
+            })
+            .unwrap_err();
+        assert!(error.contains("expected"));
+        assert!(error.contains("virtual_time_jump:1000"));
+        assert!(!delivered);
+        assert!(controller.replay_error().is_some());
+    }
+
+    #[test]
+    fn failed_host_delivery_does_not_advance_the_stream() {
+        let controller = MachineExecutionController::default();
+        let delivery = controller
+            .apply_host_effect("control_event:90".to_owned(), || Err::<(), _>("full"))
+            .unwrap();
+
+        assert_eq!(delivery, Err("full"));
+        assert!(controller.execution_state().trace().is_empty());
+    }
+
+    #[test]
+    fn active_replay_rejects_malformed_host_effects() {
+        let controller = MachineExecutionController::default();
+        assert!(controller.enforce(vec!["host:".to_owned()]).is_err());
+        assert!(controller
+            .enforce(vec!["host:serial_input:2:2a".to_owned()])
+            .is_err());
+        assert!(controller
+            .enforce(vec!["host:unknown:payload".to_owned()])
+            .is_err());
+        assert!(controller
+            .enforce(vec!["host:serial_input:0:".to_owned()])
+            .is_err());
+        assert!(controller
+            .enforce(vec!["host:control_event:AF".to_owned()])
+            .is_err());
+        assert!(controller.enforce(vec!["vcpu:0:".to_owned()]).is_err());
+        assert!(controller
+            .enforce(vec!["vcpu:00:mmio_read:0x0:1:00".to_owned()])
+            .is_err());
     }
 }
 
@@ -1361,6 +1546,15 @@ impl VcpuHandle {
     /// Return a recorded mismatch or incomplete expected suffix.
     pub fn machine_execution_replay_error(&self) -> Option<String> {
         self.machine_execution.replay_error()
+    }
+
+    /// Admit and record a host-originated input as one atomic machine turn.
+    pub(crate) fn apply_machine_host_effect<T, E>(
+        &self,
+        effect: String,
+        apply: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Result<T, E>, String> {
+        self.machine_execution.apply_host_effect(effect, apply)
     }
 }
 

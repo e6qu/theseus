@@ -1038,7 +1038,7 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
         }
         if let Some(ledger) = &result.machine_execution_ledger {
             checks.push(Check {
-                name: format!("{service}: machine-wide KVM execution stream"),
+                name: format!("{service}: machine-wide execution stream"),
                 kind: "execution_replay".to_owned(),
                 status: "passed".to_owned(),
                 detail: format!(

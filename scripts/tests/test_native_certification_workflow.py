@@ -56,6 +56,7 @@ def main() -> None:
     assert 'cp /opt/theseus/pivot.json runtime-pivot.json' in WORKFLOW
     assert "scripts/native_runtime_evidence.py seal" in WORKFLOW
     assert "scripts/run_native_validation.sh" in WORKFLOW
+    assert '\"host:serial_input:' in VALIDATION
     assert "runtime-validation-${ARCH}.tar.gz" in WORKFLOW
     assert '--runtime-tag "$TAG-$ARCH"' in WORKFLOW
     assert '--kvm-api-version "$kvm_api"' in WORKFLOW
