@@ -65,6 +65,61 @@ The retained timeline assigns every boundary a stable `op-NNN-<name>` ID.
 This controls operation-level overlap; it is not general Linux thread
 scheduling.
 
+## Test-command lifecycle
+
+A Compose campaign can act as a reusable test template by assigning `command`
+to every operation:
+
+```yaml
+operations:
+  - name: prepare
+    command: first
+    shell:
+      command: [/work/prepare]
+  - name: start_writer
+    command: parallel_driver
+    shell:
+      phase: launch
+      process: writer
+      command: [/work/write]
+  - name: join_writer
+    command: parallel_driver
+    shell:
+      phase: completion
+      process: writer
+  - name: inspect
+    command: serial_driver
+    shell:
+      command: [/work/inspect]
+  - name: verify
+    command: finally
+    shell:
+      command: [/work/verify]
+```
+
+The accepted roles are `first`, `parallel_driver`, `serial_driver`,
+`singleton_driver`, `anytime`, `eventually`, and `finally`. Every generated
+timeline obeys these rules:
+
+- Exactly one declared `first` command starts the timeline. With several
+  alternatives, the explorer chooses one.
+- Parallel and serial drivers never share a timeline with a singleton driver.
+- A serial or singleton driver cannot start while a parallel process launched
+  by the template remains live. An anytime command may run in that window.
+- Eventually and finally commands are terminal. A final command starts only
+  after every named process has been joined.
+- A retained timeline never ends with an unjoined named process.
+- Operation-barrier faults cannot target first, eventually, or finally
+  commands.
+
+The ordinary operation rules still apply: inputs, guards, state transitions,
+structured choices, faults, properties, guidance, minimization, and replay all
+compose with the lifecycle. A `parallel_driver` overlaps work only when it uses
+the explicit named-process launch/completion protocol. Theseus does not yet
+kill live commands when selecting `eventually`, and it does not infer commands
+from filenames or image directories. Tutorial 40 demonstrates the complete
+current model without a host orchestration script.
+
 ## Require a fault and recovery path
 
 Operation-barrier faults are optional search choices unless they set

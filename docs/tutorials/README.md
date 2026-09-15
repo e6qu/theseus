@@ -4,7 +4,7 @@ Each directory is complete: make it your working directory and use the
 published Theseus artifact named in its README. No tutorial needs a Theseus
 source checkout.
 
-Tutorials 1–8, 10–11, and 14–39 need Linux with KVM and Docker. Tutorials 9,
+Tutorials 1–8, 10–11, and 14–40 need Linux with KVM and Docker. Tutorials 9,
 12, and 13 read recorded bundles with only the published binary. Tutorials 1
 and 2 currently use the arm64 runtime, because that is where the matching
 deterministic-CRNG kernel module is shipped.
@@ -99,6 +99,9 @@ deterministic-CRNG kernel module is shipped.
 39. [Cover a Go module](39-go-module-coverage/) — instrument a Go command and
     its imported main-module packages in one published-tool build, then retain
     source-associated blocks through reporting and replay.
+40. [Compose lifecycle commands](40-compose-test-commands/) — assign first,
+    parallel, serial, anytime, eventually, and finally roles to ordinary image
+    commands, then replay a generated overlapping failure.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

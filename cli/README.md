@@ -213,6 +213,36 @@ can use the same line protocol. Unified guidance combines choice and schedule
 decisions with coverage, property, fault, and topology-state feedback. Results
 retain a human-readable decision trace, and replay rejects divergence.
 
+### Compose a test from lifecycle commands
+
+Assign `command` to every campaign operation to make the campaign scheduler
+enforce a test-template lifecycle:
+
+```yaml
+operations:
+  - name: prepare
+    command: first
+    shell: {command: [/work/prepare]}
+  - name: write
+    command: parallel_driver
+    shell: {command: [/work/write]}
+  - name: inspect
+    command: serial_driver
+    shell: {command: [/work/inspect]}
+  - name: verify
+    command: finally
+    shell: {command: [/work/verify]}
+```
+
+The complete vocabulary is `first`, `parallel_driver`, `serial_driver`,
+`singleton_driver`, `anytime`, `eventually`, and `finally`. Use shell
+`phase: launch` and `phase: completion` on parallel or anytime commands when
+the process must span operation boundaries. Theseus excludes histories with
+setup out of place, mixed singleton and regular drivers, a serial driver next
+to a live parallel process, work after a terminal command, or an unjoined
+process. The locked plan, decision trace, replay, minimizer, and report retain
+the roles. See Tutorial 40.
+
 ### Hand a failure to CI or an issue
 
 The same locked result can be rendered without a browser. `markdown` writes a

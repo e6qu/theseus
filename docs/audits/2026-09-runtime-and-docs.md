@@ -27,6 +27,7 @@ a demonstration.
 | Causality analysis | Proposed | Counterfactual re-exploration from checkpoints is Priority 5 in `PLAN.md`. |
 | Bounded C thread scheduling | Implemented, awaiting native evidence | The packaged GCC C frontend controls pthreads at instrumented application basic blocks and retains ordered runnable-set choices through replay, comparison, and reports. Compose can enumerate up to 256 periodic patterns or grow a bounded prefix tree from observed runnable masks. Joins, default mutexes, and untimed condition variables update the runnable set and emit stable replay-checked events. It remains limited to 32 threads and 8,192 decisions; it is not general Linux thread/process scheduling. |
 | Command overlap | Implemented, awaiting published runtime evidence | Named image commands can span whole-topology checkpoints and multiple simulated-network services. Launch and completion-observation order plus stable operation IDs are replay fields; this is not arbitrary thread scheduling. Tutorial 30 defines the native evidence workload; the workflow definition is not proof that it ran. |
+| Test-command lifecycle | Implemented, awaiting published runtime evidence | Compose operations accept first, parallel, serial, singleton, anytime, eventually, and finally roles. Generated histories enforce setup, exclusivity, terminal ordering, and joined named processes; roles remain in plans, decision traces, replay, minimization, and reports. Tutorial 40 is the public runtime path. Automatic directory discovery, explorer-selected parallelism, and killing drivers for eventual checks remain absent. |
 | Public evaluation fixture | Format example only | Tutorial 13 and the current replicated-counter material do not independently prove execution without complete replay artifacts. Hashes prove retained bytes only. |
 | Antithesis parity | Not claimed | The comparison document identifies narrower coverage support, missing general scheduling, hosted scale, and counterfactual investigation. No performance parity claim is supported. |
 
@@ -43,7 +44,7 @@ a demonstration.
   before execution.
 - Tutorials 5–13 expose build, execution, expected-failure, inspection,
   replay, and cleanup commands directly in their READMEs.
-- Container and Compose tutorials 14–39 expose host image builds, interactive
+- Container and Compose tutorials 14–40 expose host image builds, interactive
   runtime entry, locked input preparation, execution, evidence inspection,
   replay, and optional cleanup as separate steps.
 - Generated bundles remain available until the user explicitly runs cleanup.
