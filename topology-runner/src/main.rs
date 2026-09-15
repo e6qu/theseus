@@ -1369,7 +1369,7 @@ struct VirtualTime {
 }
 
 fn default_max_rounds() -> u64 {
-    10_000
+    10_000_000
 }
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct NetworkConfig {
@@ -11677,6 +11677,8 @@ fn evaluate_checks(checks: &[CheckPlan], serial_logs: &[PathBuf]) -> Vec<CheckRe
         .collect()
 }
 
+const TOPOLOGY_BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=-1 quiet loglevel=0";
+
 fn service_resources(
     service: &ServicePlan,
     kernel: &Path,
@@ -11688,7 +11690,10 @@ fn service_resources(
         .build_boot_source(BootSourceConfig {
             kernel_image_path: kernel.display().to_string(),
             initrd_path: Some(initramfs.display().to_string()),
-            boot_args: Some("console=ttyS0 reboot=k panic=-1".to_owned()),
+            // Keep the captured service stream limited to workload output.
+            // Kernel timestamps and host-dependent CPU calibration values are
+            // diagnostics, not deterministic replay evidence.
+            boot_args: Some(TOPOLOGY_BOOT_ARGS.to_owned()),
         })
         .map_err(|error| error.to_string())?;
     resources
@@ -12455,6 +12460,13 @@ mod tests {
             canonical_parent(Path::new("plan.json"), "topology plan").unwrap(),
             fs::canonicalize(".").unwrap()
         );
+    }
+
+    #[test]
+    fn topology_boot_hides_nondeterministic_kernel_diagnostics() {
+        assert!(TOPOLOGY_BOOT_ARGS.contains("console=ttyS0"));
+        assert!(TOPOLOGY_BOOT_ARGS.contains("quiet"));
+        assert!(TOPOLOGY_BOOT_ARGS.contains("loglevel=0"));
     }
 
     #[test]

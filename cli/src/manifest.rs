@@ -1227,7 +1227,7 @@ fn default_shell_exit() -> i32 {
 }
 
 fn default_max_rounds() -> u64 {
-    10_000
+    10_000_000
 }
 
 fn is_default_max_rounds(value: &u64) -> bool {
