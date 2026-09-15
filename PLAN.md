@@ -78,9 +78,10 @@ Theseus currently has:
   run, covering operation inputs, observed choices, thread selections, and
   applied actions at deterministic operation boundaries.
 - Per-vCPU rolling SHA-256 ledgers plus one bounded, exact VM-wide stream of
-  handled KVM exits and emulated device effects. Checkpoint children inherit
-  it. Locked replay uses it as an admission protocol: only the recorded vCPU
-  may take the next device-effect turn, and the exact exit payload must match.
+  handled KVM exits, emulated device effects, UART and control-channel input,
+  and virtual-clock jumps. Checkpoint children inherit it. Locked replay uses
+  it as an admission protocol: the next host or vCPU actor and its exact
+  payload must match before the effect is admitted.
 - A Test Composer-shaped lifecycle for ordinary Compose operations, including
   setup alternatives, overlapping named processes, exclusive and singleton
   drivers, anytime observations, and terminal eventual/final checks.
@@ -99,10 +100,11 @@ The baseline has important limits:
 - Determinism depends on implemented interception points. Theseus does not yet
   provide instruction-level determinism for an otherwise unmodified Linux
   system.
-- The VM-wide KVM-exit stream now controls and verifies vCPU admission at
-  emulated device-effect boundaries. Theseus still does not control guest
-  instruction, Linux thread/process, timer, or interrupt ordering between
-  those exits.
+- The VM-wide execution stream controls vCPU admission at emulated-device
+  boundaries and the admission of explicit UART, control-channel, and
+  virtual-clock input. Theseus still does not control guest instruction,
+  Linux thread/process, timer, or interrupt ordering between exits, or when
+  the guest consumes queued input.
 - Guest counters can advance within an exit-counted virtual-time quantum.
 - Stock-kernel `/dev/random` and `/dev/urandom` replay requires the matching
   released kernel and Theseus random-device module.
@@ -170,12 +172,14 @@ Build a single ordered execution-decision stream that can control and replay:
 - Random and other external inputs consumed by the guest.
 - Network, storage, and process faults at exact replayable positions.
 
-The first slice serializes handled exits and emulated device effects into one
-branch-aware machine stream while retaining each vCPU's local stream. Replay
-now gates each exit on the recorded vCPU turn and rejects a changed payload,
-wrong checkpoint prefix, missing suffix, or extra exit. The next slice must
-bring runnable guest entities, interrupt delivery, clocks, and external inputs
-under the same protocol between KVM exits.
+Completed slices serialize handled exits and emulated device effects into one
+branch-aware machine stream while retaining each vCPU's local stream, then add
+explicit UART input, control-channel input, and virtual-clock jumps to that
+same protocol. Replay gates the next vCPU or host actor and rejects a changed
+payload, wrong checkpoint prefix, missing suffix, or extra effect before it is
+delivered. The next slice must control runnable guest entities, interrupt and
+device delivery, virtual-clock reads, and guest-side input consumption between
+KVM exits.
 
 Move control into the lowest practical kernel, hypervisor, or paravirtualized
 boundary. Application instrumentation may expose semantics and coverage, but
@@ -196,8 +200,9 @@ Extend the bounded unified decision-prefix engine into a general decision-tree
 search system modeled on the workflow Antithesis exposes.
 
 - Move structured choices, runnable selections, fault choices, test actions,
-  and environmental inputs from operation-boundary records into one
-  lower-level versioned decision stream.
+  and remaining environmental inputs from operation-boundary records into the
+  lower-level versioned decision stream. Explicit UART, control-channel, and
+  virtual-clock inputs already use the machine stream.
 - Reuse checkpoints at common prefixes and explore alternative suffixes.
 - Combine coverage novelty, property progress, rare states, fault outcomes,
   schedule outcomes, and execution cost in the search policy.

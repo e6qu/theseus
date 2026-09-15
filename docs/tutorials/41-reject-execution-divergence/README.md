@@ -1,8 +1,8 @@
 # Tutorial 41: Reject low-level execution divergence
 
-Run an ordinary BusyBox HTTP service, inspect its per-vCPU and machine-wide
-KVM-exit streams, and replay them exactly. The service uses no Theseus SDK or
-instrumentation.
+Run an ordinary BusyBox HTTP service, inspect its per-vCPU exit streams and
+machine-wide execution stream, and replay them exactly. The service uses no
+Theseus SDK or instrumentation.
 
 ## Before you start
 
@@ -63,6 +63,7 @@ grep -E '"execution_decisions": [1-9][0-9]*' campaign/campaign-result.json
 grep -n -A8 '"execution_ledgers"' campaign/campaign-result.json
 grep -n -A8 '"machine_execution_ledgers"' campaign/campaign-result.json
 grep -n -A4 '"machine_execution_traces"' campaign/campaign-result.json
+grep -m1 '"host:serial_input:' campaign/campaign-result.json
 theseus compose replay campaign --output rerun
 grep -A2 '"replay_verification"' rerun/campaign-result.json
 theseus compare campaign rerun > comparison.json
@@ -71,16 +72,18 @@ grep '"status": "same"' comparison.json
 
 Each ledger contains a decision count, a SHA-256 identity for the complete
 stream, and the last 32 readable decisions. Per-vCPU ledgers preserve local
-order. The exact machine trace prefixes each decision with its vCPU and
-preserves the complete order needed to drive replay. The machine ledger is its
-compact digest and readable tail.
+order. The exact machine trace prefixes guest exits with `vcpu:` and the HTTP
+operation's UART command with `host:`. It preserves the complete order needed
+to drive replay. The machine ledger is its compact digest and readable tail.
 
 Before a restored campaign leaf runs, Theseus validates its inherited
 checkpoint prefix and installs the remaining exact trace. At each emulated
 device effect it admits only the recorded vCPU and verifies the exit kind,
-address, width, and payload. Replay fails on the first wrong turn or value,
+address, width, and payload. Before UART input, it requires the recorded host
+event and exact bytes. Replay fails on the first wrong turn, input, or value,
 even when final HTTP and serial output might otherwise look the same. This does
-not control instruction scheduling between KVM exits.
+not control instruction or interrupt scheduling between KVM exits, or when the
+guest consumes queued input.
 
 ## 6. Clean up (optional)
 

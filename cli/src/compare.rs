@@ -285,7 +285,7 @@ pub fn compare_campaigns(
                 return Some(CampaignDivergence {
                     run,
                     boundary: None,
-                    reason: "machine-wide KVM execution stream differs".to_owned(),
+                    reason: "machine-wide execution stream differs".to_owned(),
                     left: json_summary(&left.machine_execution_ledgers),
                     right: json_summary(&right.machine_execution_ledgers),
                 });
@@ -331,7 +331,7 @@ pub fn compare_campaigns(
                     return Some(CampaignDivergence {
                         run,
                         boundary: Some(boundary),
-                        reason: "machine-wide KVM execution stream differs".to_owned(),
+                        reason: "machine-wide execution stream differs".to_owned(),
                         left: json_summary(&left.machine_execution_ledgers),
                         right: json_summary(&right.machine_execution_ledgers),
                     });
@@ -702,10 +702,7 @@ mod tests {
             .divergence
             .unwrap();
         assert_eq!(divergence.boundary, Some(0));
-        assert_eq!(
-            divergence.reason,
-            "machine-wide KVM execution stream differs"
-        );
+        assert_eq!(divergence.reason, "machine-wide execution stream differs");
     }
 
     #[test]

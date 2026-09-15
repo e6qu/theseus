@@ -528,8 +528,8 @@ impl Vmm {
             .collect())
     }
 
-    /// One ordered ledger for handled KVM exits and emulated device effects
-    /// across every vCPU in this VM.
+    /// One ordered ledger for handled KVM exits, emulated device effects, and
+    /// explicit host inputs across every vCPU in this VM.
     pub fn machine_execution_ledger(&self) -> Result<ExecutionLedger, VmmError> {
         let kvm_vm = self
             .vm
@@ -590,6 +590,25 @@ impl Vmm {
             .first()
             .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))?
             .machine_execution_replay_error())
+    }
+
+    fn apply_machine_host_effect<T>(
+        &self,
+        effect: String,
+        apply: impl FnOnce() -> Result<T, VmmError>,
+    ) -> Result<T, VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        let controller = kvm_vm
+            .vcpus_handles()
+            .first()
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no machine execution state".into()))?
+            .machine_execution_controller();
+        controller
+            .apply_host_effect(effect, apply)
+            .map_err(VmmError::ExecutionCoverage)?
     }
 
     /// Verify the fast coverage collector at a pause barrier. Every paused
@@ -674,8 +693,10 @@ impl Vmm {
             .theseus
             .as_ref()
             .ok_or_else(|| VmmError::ControlChannel("device not registered".to_string()))?;
-        dev.inner.lock().expect("Poisoned lock").push_event(byte);
-        Ok(())
+        self.apply_machine_host_effect(format!("control_event:{byte:02x}"), || {
+            dev.inner.lock().expect("Poisoned lock").push_event(byte);
+            Ok(())
+        })
     }
 
     /// Theseus: inject bytes into the emulated UART without using the host
@@ -702,12 +723,21 @@ impl Vmm {
             .inner
             .clone();
 
-        serial
-            .lock()
-            .expect("Poisoned lock")
-            .serial
-            .raw_input(bytes)
-            .map_err(|error| VmmError::ControlChannel(error.to_string()))
+        self.apply_machine_host_effect(
+            format!(
+                "serial_input:{}:{}",
+                bytes.len(),
+                crate::vstate::vcpu::hex_bytes(bytes)
+            ),
+            || {
+                serial
+                    .lock()
+                    .expect("Poisoned lock")
+                    .serial
+                    .raw_input(bytes)
+                    .map_err(|error| VmmError::ControlChannel(error.to_string()))
+            },
+        )
     }
 
     /// Theseus: report bytes still waiting in the emulated UART receive FIFO.
@@ -921,7 +951,10 @@ impl Vmm {
             .vm
             .as_kvm()
             .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
-        let result = kvm_vm.jump_virtual_time(delta_ns);
+        let result = self.apply_machine_host_effect(
+            format!("virtual_time_jump:{delta_ns}"),
+            || kvm_vm.jump_virtual_time(delta_ns),
+        );
         if was_running {
             self.resume_vm()?;
         }

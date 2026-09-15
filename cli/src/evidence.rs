@@ -336,7 +336,7 @@ fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(
                             .as_ref()
                             .is_some_and(valid_execution_ledger)
                 }),
-            "runtime certificate has empty or malformed machine-wide KVM execution evidence",
+            "runtime certificate has empty or malformed machine-wide execution evidence",
         )?;
     }
     if certificate.format == CERTIFICATE_FORMAT_V4 {
@@ -1006,7 +1006,7 @@ fn verify_campaign_machine_execution_ledgers(
     });
     require(
         valid,
-        &format!("{scenario} has no valid machine-wide KVM execution stream"),
+        &format!("{scenario} has no valid machine-wide execution stream"),
     )
 }
 
@@ -1060,10 +1060,43 @@ fn valid_json_execution_ledger(ledger: &serde_json::Value) -> bool {
 }
 
 fn valid_machine_execution_record(record: &str) -> bool {
+    if let Some(effect) = record.strip_prefix("host:") {
+        if let Some(byte) = effect.strip_prefix("control_event:") {
+            return valid_lowercase_hex(byte) && byte.len() == 2;
+        }
+        if let Some(serial) = effect.strip_prefix("serial_input:") {
+            let Some((length_text, bytes)) = serial.split_once(':') else {
+                return false;
+            };
+            let Ok(length) = length_text.parse::<usize>() else {
+                return false;
+            };
+            return length > 0
+                && length_text == length.to_string()
+                && bytes.len() == length.saturating_mul(2)
+                && valid_lowercase_hex(bytes);
+        }
+        let Some(delta_text) = effect.strip_prefix("virtual_time_jump:") else {
+            return false;
+        };
+        return delta_text
+            .parse::<u64>()
+            .is_ok_and(|delta| delta > 0 && delta_text == delta.to_string());
+    }
     record
         .strip_prefix("vcpu:")
         .and_then(|record| record.split_once(':'))
-        .is_some_and(|(vcpu, effect)| vcpu.parse::<u8>().is_ok() && !effect.is_empty())
+        .is_some_and(|(vcpu, effect)| {
+            vcpu.parse::<u8>()
+                .is_ok_and(|id| vcpu == id.to_string() && !effect.is_empty())
+        })
+}
+
+fn valid_lowercase_hex(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|digit| digit.is_ascii_hexdigit() && !digit.is_ascii_uppercase())
 }
 
 fn verify_validation_campaign(
@@ -1278,12 +1311,33 @@ mod tests {
                 "api": ["vcpu:not-a-number:mmio_read:0x0:1:00"],
                 "worker": ["vcpu:0:mmio_read:0x0:1:00"]
             }),
+            serde_json::json!({
+                "api": ["host:serial_input:2:2a"],
+                "worker": ["host:virtual_time_jump:1000"]
+            }),
+            serde_json::json!({
+                "api": ["host:control_event:AF"],
+                "worker": ["host:virtual_time_jump:1000"]
+            }),
+            serde_json::json!({
+                "api": ["host:unknown:payload"],
+                "worker": ["host:virtual_time_jump:1000"]
+            }),
         ] {
             assert!(
                 verify_campaign_machine_execution_traces(&result(traces), "strict execution")
                     .is_err()
             );
         }
+
+        verify_campaign_machine_execution_traces(
+            &result(serde_json::json!({
+                "api": ["host:serial_input:2:2a0a"],
+                "worker": ["host:virtual_time_jump:1000"]
+            })),
+            "strict execution",
+        )
+        .unwrap();
     }
 
     fn write_architecture(directory: &Path, architecture: &str, replay_status: &str) {

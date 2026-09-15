@@ -854,8 +854,8 @@ struct CampaignTimelineBoundary {
     /// that reaches the same output through a different low-level path.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     execution_ledgers: BTreeMap<String, Vec<ExecutionLedgerEvidence>>,
-    /// One total order of handled exits and device effects across all vCPUs
-    /// for each service VM.
+    /// One total order of handled exits, device effects, and explicit host
+    /// inputs across all vCPUs for each service VM.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     machine_execution_ledgers: BTreeMap<String, ExecutionLedgerEvidence>,
     state_sha256: String,
@@ -3047,7 +3047,7 @@ fn certify(plan: &str, output: &Path) -> Result<(), String> {
         profile: RuntimeSupportProfile {
             id: "linux-kvm-simulated-io-v1",
             architecture: runtime_architecture()?,
-            execution: "two real-KVM executions with per-vCPU ledgers; the second is actively gated by the first run's exact machine-wide KVM-exit trace",
+            execution: "two real-KVM executions with per-vCPU ledgers; the second is actively gated by the first run's exact machine-wide trace of KVM exits and host inputs",
             virtual_time: "exit-counted quanta with exact final vCPU-clock fingerprint equality",
             entropy: "seeded virtio-rng with exact next-64-byte fingerprint equality",
             network: "Theseus simulated virtio-net only",
@@ -3070,7 +3070,7 @@ fn certify(plan: &str, output: &Path) -> Result<(), String> {
         },
         repeatability: CertificateRepeatability {
             executions: 2,
-            comparison: "the replay compares ordered KVM exits, serial, entropy, storage, network traffic, virtual clocks, lifecycle rounds, and scheduled actions exactly",
+            comparison: "the replay compares ordered KVM exits, explicit host inputs, serial, entropy, storage, network traffic, virtual clocks, lifecycle rounds, and scheduled actions exactly",
             evidence_sha256: certification_evidence_sha256(&first, &services)?,
         },
         services,
@@ -3194,7 +3194,7 @@ fn certification_service_evidence(
             }
             let machine_execution_ledger = recorded.machine_execution_ledger.ok_or_else(|| {
                 format!(
-                    "{} has no machine-wide KVM execution stream; certification fails closed",
+                    "{} has no machine-wide execution stream; certification fails closed",
                     path.display()
                 )
             })?;
@@ -3203,7 +3203,7 @@ fn certification_service_evidence(
                 || machine_execution_ledger.tail.is_empty()
             {
                 return Err(format!(
-                    "{} has empty or malformed machine-wide KVM execution evidence; certification fails closed",
+                    "{} has empty or malformed machine-wide execution evidence; certification fails closed",
                     path.display()
                 ));
             }
@@ -6179,7 +6179,7 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     if !expected.machine_execution_ledgers.is_empty()
         && expected.machine_execution_ledgers != actual.machine_execution_ledgers
     {
-        mismatches.push("machine-wide KVM execution stream".to_owned());
+        mismatches.push("machine-wide execution stream".to_owned());
     }
     if !expected.machine_execution_traces.is_empty()
         && expected.machine_execution_traces != actual.machine_execution_traces
@@ -10112,15 +10112,15 @@ fn execute(
                 name: "replay_machine_execution_ledger".to_owned(),
                 status: if matches { "passed" } else { "failed" },
                 detail: if matches {
-                    "machine-wide KVM execution stream matches the original replay bundle"
+                    "machine-wide execution stream matches the original replay bundle"
                         .to_owned()
                 } else {
-                    "machine-wide KVM execution stream differs from the original replay bundle"
+                    "machine-wide execution stream differs from the original replay bundle"
                         .to_owned()
                 },
             });
             if !matches && error.is_none() {
-                error = Some("machine-wide KVM execution replay diverged".to_owned());
+                error = Some("machine-wide execution replay diverged".to_owned());
             }
         }
         if let Some(expected) = &expected_machine_execution_traces {
@@ -15952,7 +15952,7 @@ mod tests {
             .decisions += 1;
         assert!(
             campaign_replay_mismatches(&changed_machine_execution, &actual)
-                .contains(&"machine-wide KVM execution stream".to_owned())
+                .contains(&"machine-wide execution stream".to_owned())
         );
         let mut legacy_timeline = expected.clone();
         legacy_timeline.timeline[0].service.clear();
