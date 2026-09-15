@@ -65,6 +65,7 @@ door could leave `vmm` without creating a dependency cycle.
 | Execution locations | `orchestrator/coverage` | Guest-PC collection by single-step or deterministic exit sampling. |
 | Application coverage | `instrumentation/c`, `instrumentation/llvm`, `instrumentation/go` + `cli` + `topology-runner` | GCC C and Go blocks plus LLVM C/C++/Rust edges with build-scoped identities. The CLI instruments selected Cargo static Rust graphs and selected Go commands' imported main-module packages. Compose locks manifests and symbols; the runner validates and joins them into reports. |
 | Thread scheduling | `instrumentation/c` + `cli` + `topology-runner` | Bounded GCC C pthread interleavings with explicit, static, or feedback-driven choices plus replay-checked mutex and condition-variable transitions. |
+| Execution ledger | `firecracker/vmm` + `topology-runner` + `cli` | Per-vCPU rolling identities and readable tails for handled KVM exits, inherited across branches and checked during replay. |
 
 ## Verification model
 
@@ -73,9 +74,9 @@ on an amd64 GitHub runner. KVM behavior needs separate native execution. Each
 successful release starts its amd64 certification on a native hosted runner;
 arm64 certification targets a labelled self-hosted KVM runner. The workflow
 verifies signed-release provenance, exact archive inventories, and the
-container, fault, coverage, schedule-search, and pthread scenarios before it
-publishes an index naming the architectures actually certified. Only those
-retained, verifiable assets are runtime evidence.
+container, fault, coverage, schedule-search, pthread, and ordered KVM-exit
+scenarios before it publishes an index naming the architectures actually
+certified. Only those retained, verifiable assets are runtime evidence.
 
 Branch capture first copies all guest RAM into a memfd. Restored children map
 that memfd privately, so child writes use kernel copy-on-write. Single-step and

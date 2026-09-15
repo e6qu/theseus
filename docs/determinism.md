@@ -73,6 +73,18 @@ not depend on the expansion implementation.
 
 ### Everything else the guest can touch
 
+Every successfully handled guest-visible KVM exit is appended to a per-vCPU
+rolling SHA-256 ledger.
+The record identifies the exit kind and its deterministic payload, including
+MMIO and PIO address, width, and bytes read or written. Checkpoints clone the
+rolling state into each child. Campaign timelines retain a readable tail and
+the digest; locked replay requires an exact match at every boundary and at
+service exit.
+
+This catches execution drift visible at the KVM and emulated-device boundary.
+It does not make guest instructions deterministic and does not choose Linux
+thread, process, timer, or interrupt order.
+
 - Rate limiters use host timerfds — **rejected** when virtual time is
   enabled (`validate_deterministic_config`).
 - Tap NICs, Unix-socket vsock, file-backed or vhost-user block devices, and
@@ -104,6 +116,9 @@ not depend on the expansion implementation.
   condition waits/signals/broadcasts. Timed waits, cancellation, semaphores,
   direct futex use, blocking syscalls, processes, and uninstrumented library
   concurrency remain outside the supported scheduling profile.
+- **Execution between KVM exits.** The ordered exit ledger detects that two
+  executions reached different observable boundaries. It cannot prevent or
+  explain divergence that happens entirely between those boundaries.
 
 ## Replay fingerprints
 
@@ -115,8 +130,9 @@ Each captured timeline node records:
    coverage).
 3. **Dirty pages** — KVM dirty-bitmap count at capture (memory footprint).
 
-Replay compares these fields at every retained node. A match is evidence for
-those recorded observations, not a proof about unrecorded guest state.
+Replay compares these fields plus the ordered KVM-exit ledger at every retained
+node. A match is evidence for those recorded observations, not a proof about
+unrecorded guest state.
 
 ## Certify a runtime
 
@@ -129,8 +145,8 @@ theseus-topology certify --plan plan.json --output certificate
 ```
 
 The second execution is a normal locked replay of the first. Its certificate
-records the plan digest, platform profile, and exact serial, entropy,
-storage, network, virtual-clock, lifecycle, and scheduled-action comparisons.
+records the plan digest, platform profile, and exact serial, entropy, storage,
+network, virtual-clock, lifecycle, scheduled-action, and KVM-exit comparisons.
 Certification fails closed without virtual time, KVM access, or the supported
 simulated-I/O profile. It does not claim instruction-by-instruction equality
 for counter reads inside a virtual-time quantum.

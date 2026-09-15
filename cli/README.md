@@ -47,8 +47,10 @@ It requires the index plus the certificate, portable counterexample, and
 runtime-validation archive for every architecture named by that index. It
 verifies their hashes and complete file inventories without KVM. It then checks
 the fixed-plan certificate, the partition/recovery/lost-update replay, and the
-container, coverage, schedule-search, and pthread-synchronization runs. An index
-may certify amd64, arm64, or both; the command reports the exact scope.
+container, coverage, schedule-search, pthread-synchronization, and ordered
+KVM-exit replay runs. An index may certify amd64, arm64, or both; the command
+reports the exact scope. The verifier accepts the earlier version 1 certificate
+and validation formats while requiring the execution ledger in version 2.
 
 ## Explore an SDK guest
 

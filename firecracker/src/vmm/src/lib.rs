@@ -172,7 +172,9 @@ pub use crate::vstate::kvm::Kvm;
 use crate::vstate::memory::{GuestMemoryMmap, GuestMemoryRegion};
 #[cfg(target_arch = "aarch64")]
 use crate::vstate::vcpu::VcpuState;
-pub use crate::vstate::vcpu::{Vcpu, VcpuConfig, VcpuEvent, VcpuHandle, VcpuResponse};
+pub use crate::vstate::vcpu::{
+    ExecutionLedger, ExecutionLedgerEvidence, Vcpu, VcpuConfig, VcpuEvent, VcpuHandle, VcpuResponse,
+};
 pub use crate::vstate::vm::{StartVcpusError, Vm};
 
 /// Shorthand type for the EventManager flavour used by Firecracker.
@@ -502,6 +504,29 @@ impl Vmm {
             .collect())
     }
 
+    /// Exact ordered KVM-exit ledgers for every vCPU. Callers use pause or
+    /// exit barriers when they need an immutable point-in-time value.
+    pub fn execution_ledgers(&self) -> Result<Vec<ExecutionLedger>, VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        Ok(kvm_vm
+            .vcpus_handles()
+            .iter()
+            .map(|handle| handle.execution_ledger())
+            .collect())
+    }
+
+    /// Portable projections of the exact ordered KVM-exit ledgers.
+    pub fn execution_ledger_evidence(&self) -> Result<Vec<ExecutionLedgerEvidence>, VmmError> {
+        Ok(self
+            .execution_ledgers()?
+            .iter()
+            .map(ExecutionLedger::evidence)
+            .collect())
+    }
+
     /// Verify the fast coverage collector at a pause barrier. Every paused
     /// vCPU PC must be present in that vCPU's accumulated exit-sampled set:
     /// `VcpuEvent::Pause` records it before acknowledging the barrier. This
@@ -533,6 +558,27 @@ impl Vmm {
         }
         for (handle, locations) in handles.iter().zip(samples) {
             handle.extend_execution_locations(locations.iter().copied());
+        }
+        Ok(())
+    }
+
+    /// Continue each restored vCPU from the execution ledger captured with its
+    /// parent campaign checkpoint.
+    pub fn seed_execution_ledgers(&self, ledgers: &[ExecutionLedger]) -> Result<(), VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        let handles = kvm_vm.vcpus_handles();
+        if handles.len() != ledgers.len() {
+            return Err(VmmError::ExecutionCoverage(format!(
+                "expected {} vCPU execution ledgers, got {}",
+                handles.len(),
+                ledgers.len()
+            )));
+        }
+        for (handle, ledger) in handles.iter().zip(ledgers) {
+            handle.seed_execution_ledger(ledger.clone());
         }
         Ok(())
     }

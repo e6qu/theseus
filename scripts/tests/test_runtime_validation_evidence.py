@@ -51,6 +51,16 @@ REQUIRED = (
     "pthread-sync/source/compose.yaml",
     "pthread-sync/source/service/main.c",
     "pthread-sync/source/service/theseus.toml",
+    "strict-execution/plan.json",
+    "strict-execution/campaign/campaign-result.json",
+    "strict-execution/campaign/replay-plan.json",
+    "strict-execution/report/report.md",
+    "strict-execution/rerun/campaign-result.json",
+    "strict-execution/comparison.json",
+    "strict-execution/source/.dockerignore",
+    "strict-execution/source/Dockerfile",
+    "strict-execution/source/compose.yaml",
+    "strict-execution/source/api/theseus.toml",
 )
 
 
@@ -93,7 +103,7 @@ def main() -> None:
             path.write_text(name + "\n")
         run(validation)
         evidence = json.loads((validation / "evidence.json").read_text())
-        assert evidence["format"] == "theseus-runtime-validation-v1"
+        assert evidence["format"] == "theseus-runtime-validation-v2"
         assert evidence["architecture"] == "amd64"
         assert evidence["source_commit"] == COMMIT
         assert evidence["scenarios"] == [
@@ -101,6 +111,7 @@ def main() -> None:
             "coverage",
             "schedule-search",
             "pthread-sync",
+            "strict-execution",
         ]
         assert set(evidence["files"]) == set(REQUIRED)
         assert all(len(item["sha256"]) == 64 for item in evidence["files"].values())

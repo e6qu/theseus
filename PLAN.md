@@ -77,6 +77,9 @@ Theseus currently has:
 - A replay-checked, human-readable decision trace for each Compose campaign
   run, covering operation inputs, observed choices, thread selections, and
   applied actions at deterministic operation boundaries.
+- A per-vCPU rolling SHA-256 ledger of ordered KVM exits. It is inherited by
+  checkpoint children, retained at campaign boundaries and service exit, and
+  compared exactly during replay.
 - A Test Composer-shaped lifecycle for ordinary Compose operations, including
   setup alternatives, overlapping named processes, exclusive and singleton
   drivers, anytime observations, and terminal eventual/final checks.
@@ -95,6 +98,9 @@ The baseline has important limits:
 - Determinism depends on implemented interception points. Theseus does not yet
   provide instruction-level determinism for an otherwise unmodified Linux
   system.
+- The ordered KVM-exit ledger detects drift at hypervisor and device
+  boundaries, but does not yet control instruction, thread, or interrupt
+  ordering between exits.
 - Guest counters can advance within an exit-counted virtual-time quantum.
 - Stock-kernel `/dev/random` and `/dev/urandom` replay requires the matching
   released kernel and Theseus random-device module.
@@ -129,8 +135,9 @@ remaining evidence gap before adding another isolated runtime feature.
    release passes all consumer checks.
 2. Certify fixed-plan replay and retain the distributed partition, recovery,
    minimization, and lost-update counterexample.
-3. Execute the ordinary-container, C coverage, schedule-search, and pthread
-   synchronization tutorials with that same digest-pinned release.
+3. Execute the ordinary-container, C coverage, schedule-search, pthread
+   synchronization, and ordered KVM-exit replay tutorials with that same
+   digest-pinned release.
 4. Retain exact plans, locked workloads, complete result inventories, serial
    logs, reports, minimizations, replay results, host facts, runtime identities,
    and a cryptographic inventory for every validation file.
@@ -143,7 +150,7 @@ remaining evidence gap before adding another isolated runtime feature.
    execution.
 
 Exit when an amd64 user can retrieve one release and its indexed evidence,
-inspect all five representative product paths offline, and replay the minimized
+inspect all six representative product paths offline, and replay the minimized
 counterexample without undocumented inputs. Arm64 becomes demonstrated only
 when its independently indexed native assets exist.
 
@@ -160,6 +167,12 @@ Build a single ordered execution-decision stream that can control and replay:
 - Virtual clock reads and advancement without mid-quantum leakage.
 - Random and other external inputs consumed by the guest.
 - Network, storage, and process faults at exact replayable positions.
+
+The first slice is now implemented as an observation and rejection layer: a
+branch-aware ordered ledger records every handled KVM exit, and replay fails
+when that ledger changes. The remaining work is to turn the same stream into a
+control plane for runnable entities, interrupt delivery, clocks, and external
+inputs rather than merely detecting drift after it occurs.
 
 Move control into the lowest practical kernel, hypervisor, or paravirtualized
 boundary. Application instrumentation may expose semantics and coverage, but

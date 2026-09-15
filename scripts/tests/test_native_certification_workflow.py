@@ -67,13 +67,16 @@ def main() -> None:
         "31-c-basic-block-coverage",
         "33-search-thread-schedules",
         "35-control-pthread-synchronization",
+        "41-reject-execution-divergence",
     ):
         assert tutorial in VALIDATION
-    assert VALIDATION.count("theseus compose replay") == 3
+    assert VALIDATION.count("theseus compose replay") == 4
     assert "theseus replay work/replay" in VALIDATION
     assert "theseus compare campaign rerun" in VALIDATION
     assert "theseus evaluate capture campaign" in VALIDATION
     assert "theseus evaluate evaluation/theseus-evaluation.toml" in VALIDATION
+    assert "execution_decisions" in VALIDATION
+    assert 'status\\\": \\\"same' in VALIDATION
     assert "scripts/runtime_validation_evidence.py" in VALIDATION
     assert "scripts/reproducible_tar.py" in VALIDATION
     assert " jq " not in VALIDATION
