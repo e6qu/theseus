@@ -141,9 +141,11 @@ jobs:
               cp service/init service/guest/root/init
               chmod +x service/guest/root/init
               (cd service/guest/root && find . -print | cpio -o -H newc --quiet | gzip > ../initramfs.cpio.gz)
-              theseus compose plan > plan.json
-              theseus-topology certify --plan plan.json --output certificate
-              grep -F '"'"'"status"'"'": "'"'"passed"'"'"' certificate/certificate.json
+              theseus compose plan > /tutorial/plan.json
+              theseus-topology certify \
+                --plan /tutorial/plan.json --output /tutorial/certificate
+              grep -F '"'"'"status"'"'": "'"'"passed"'"'"' \
+                /tutorial/certificate/certificate.json
             '
           cp docs/tutorials/11-certify-runtime/certificate/certificate.json \
             "theseus-${TAG}-runtime-certificate-${ARCH}.json"
