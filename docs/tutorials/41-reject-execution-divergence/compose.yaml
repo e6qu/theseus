@@ -1,0 +1,26 @@
+name: strict-execution-replay
+
+services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [test]
+
+networks:
+  test: {}
+
+x-theseus:
+  campaign:
+    driver: api
+    max_runs: 1
+    max_operations_per_run: 1
+    operations:
+      - name: read_health
+        http:
+          url: http://127.0.0.1:8080/health
+          body_contains: ok
+    properties:
+      - name: health_is_always_ok
+        kind: always
+        service: api
+        contains: THES:HTTP:operation:read_health:PASS

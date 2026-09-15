@@ -4,7 +4,7 @@ Each directory is complete: make it your working directory and use the
 published Theseus artifact named in its README. No tutorial needs a Theseus
 source checkout.
 
-Tutorials 1–8, 10–11, and 14–40 need Linux with KVM and Docker. Tutorials 9,
+Tutorials 1–8, 10–11, and 14–41 need Linux with KVM and Docker. Tutorials 9,
 12, and 13 read recorded bundles with only the published binary. Tutorials 1
 and 2 currently use the arm64 runtime, because that is where the matching
 deterministic-CRNG kernel module is shipped.
@@ -102,6 +102,9 @@ deterministic-CRNG kernel module is shipped.
 40. [Explore test templates with automatic faults](40-compose-test-commands/) —
     package two command sets, derive service and asymmetric link faults from a
     two-service topology, then minimize and replay a lost update.
+41. [Reject low-level execution divergence](41-reject-execution-divergence/) —
+    run an uninstrumented container, inspect its ordered KVM-exit ledger, and
+    require the exact ledger on replay.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

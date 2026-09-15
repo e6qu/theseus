@@ -76,11 +76,12 @@ gh workflow run certify-deterministic-runtime.yml \
 Each worker runs Tutorial 11's fixed topology twice and Tutorial 30's
 three-service lost-update campaign. It verifies the required partition and
 recovery, minimizes the failure, and replays it. The same worker also executes
-Tutorials 14, 31, 33, and 35 with the published runtime: an ordinary container,
-C coverage guidance, bounded thread-schedule search, and pthread
-synchronization. It retains every plan, locked bundle, campaign inventory,
-report, minimization, replay result, serial log, host identity, and digest-pinned
-runtime identity in an inventoried validation archive. The released CLI also
+Tutorials 14, 31, 33, 35, and 41 with the published runtime: an ordinary
+container, C coverage guidance, bounded thread-schedule search, pthread
+synchronization, and exact ordered KVM-exit replay. It retains every plan,
+locked bundle, campaign inventory, report, minimization, replay result, serial
+log, host identity, and digest-pinned runtime identity in an inventoried
+validation archive. The released CLI also
 renders the report, compares the coverage campaign with its replay, captures
 an offline evaluation, evaluates its lock, minimizes the schedule failure, and
 replays every retained path.
@@ -93,7 +94,8 @@ the indexed assets must exist and verify on the named release.
 
 The certificate is evidence for the strict `linux-kvm-simulated-io-v1`
 profile, not a claim about tap networking, host-backed disks, or every clock
-read inside one exit-counted quantum.
+read inside one exit-counted quantum. Version 2 also requires nonempty ordered
+KVM-exit evidence for every service.
 
 ## Publish a failure from CI
 

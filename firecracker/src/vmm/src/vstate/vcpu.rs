@@ -5,7 +5,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{Ordering, fence};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
@@ -16,6 +16,8 @@ use std::{fmt, io, thread};
 use kvm_bindings::{KVM_SYSTEM_EVENT_RESET, KVM_SYSTEM_EVENT_SHUTDOWN};
 use kvm_ioctls::{VcpuExit, VcpuFd};
 use libc::{c_int, c_void, siginfo_t};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use vmm_sys_util::errno;
 use vmm_sys_util::eventfd::EventFd;
 
@@ -41,6 +43,66 @@ const VCPU_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 /// UART workloads keep their normal device path while still yielding stable
 /// execution identities at the exits Theseus controls.
 const EXECUTION_LOCATION_SAMPLE_EXITS: u64 = 64;
+
+/// Number of readable decisions retained beside the complete rolling digest.
+/// The digest covers every decision; this tail only makes a divergence useful
+/// to a human without allowing a long-running guest to consume unbounded RAM.
+const EXECUTION_DECISION_TAIL: usize = 32;
+
+/// Portable evidence for the exact ordered KVM exits handled by one vCPU.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ExecutionLedgerEvidence {
+    /// Number of decisions covered by `sha256`.
+    pub decisions: u64,
+    /// SHA-256 of length-framed decision records in execution order.
+    pub sha256: String,
+    /// Last bounded decisions, in order, for diagnosis.
+    pub tail: Vec<String>,
+}
+
+/// Runtime-owned rolling state. A campaign branch clones this state together
+/// with its VM checkpoint, so child suffixes continue the exact parent ledger.
+#[derive(Clone, Debug)]
+pub struct ExecutionLedger {
+    hasher: Sha256,
+    decisions: u64,
+    tail: VecDeque<String>,
+}
+
+impl Default for ExecutionLedger {
+    fn default() -> Self {
+        Self {
+            hasher: Sha256::new(),
+            decisions: 0,
+            tail: VecDeque::with_capacity(EXECUTION_DECISION_TAIL),
+        }
+    }
+}
+
+impl ExecutionLedger {
+    fn record(&mut self, decision: String) {
+        self.hasher.update(
+            u64::try_from(decision.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        self.hasher.update(decision.as_bytes());
+        self.decisions = self.decisions.saturating_add(1);
+        if self.tail.len() == EXECUTION_DECISION_TAIL {
+            self.tail.pop_front();
+        }
+        self.tail.push_back(decision);
+    }
+
+    /// Return stable, portable evidence without consuming the rolling state.
+    pub fn evidence(&self) -> ExecutionLedgerEvidence {
+        ExecutionLedgerEvidence {
+            decisions: self.decisions,
+            sha256: format!("{:x}", self.hasher.clone().finalize()),
+            tail: self.tail.iter().cloned().collect(),
+        }
+    }
+}
 
 /// Errors associated with the wrappers over KVM ioctls.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -126,6 +188,8 @@ pub struct Vcpu {
     /// Stable guest PCs sampled from the vCPU thread at handled KVM exits.
     execution_locations: Arc<Mutex<BTreeSet<u64>>>,
     execution_location_exits: u64,
+    /// Exact ordered ledger of guest-visible KVM exits handled for this vCPU.
+    execution_ledger: Arc<Mutex<ExecutionLedger>>,
 }
 
 /// States of the vCPU thread's run loop.
@@ -179,6 +243,7 @@ impl Vcpu {
             vclock_anchored: false,
             execution_locations: Arc::new(Mutex::new(BTreeSet::new())),
             execution_location_exits: 0,
+            execution_ledger: Arc::new(Mutex::new(ExecutionLedger::default())),
         })
     }
 
@@ -321,6 +386,7 @@ impl Vcpu {
             .copy_kvm_vcpu_fd(vm)
             .map_err(StartThreadedError::CopyFd)?;
         let execution_locations = self.execution_locations.clone();
+        let execution_ledger = self.execution_ledger.clone();
         let vcpu_thread = thread::Builder::new()
             .name(format!("fc_vcpu {}", self.kvm_vcpu.index))
             .spawn(move || {
@@ -337,6 +403,7 @@ impl Vcpu {
             response_receiver,
             vcpu_fd,
             execution_locations,
+            execution_ledger,
             vcpu_thread,
         ))
     }
@@ -623,8 +690,108 @@ impl Vcpu {
 
                 Ok(VcpuEmulation::Paused)
             }
-            emulation_result => handle_kvm_exit(&mut self.kvm_vcpu.peripherals, emulation_result),
+            emulation_result => handle_kvm_exit_recorded(
+                &mut self.kvm_vcpu.peripherals,
+                emulation_result,
+                &self.execution_ledger,
+            ),
         }
+    }
+}
+
+fn handle_kvm_exit_recorded(
+    peripherals: &mut Peripherals,
+    emulation_result: Result<VcpuExit<'_>, errno::Error>,
+    ledger: &Arc<Mutex<ExecutionLedger>>,
+) -> Result<VcpuEmulation, VcpuError> {
+    let (outcome, decision) = match emulation_result {
+        Ok(VcpuExit::MmioRead(address, data)) => {
+            let outcome = handle_kvm_exit(peripherals, Ok(VcpuExit::MmioRead(address, &mut *data)));
+            let decision = format!("mmio_read:{address:#x}:{}:{}", data.len(), hex_bytes(data));
+            (outcome, Some(decision))
+        }
+        #[cfg(target_arch = "x86_64")]
+        Ok(VcpuExit::IoIn(port, data)) => {
+            let outcome = handle_kvm_exit(peripherals, Ok(VcpuExit::IoIn(port, &mut *data)));
+            let decision = format!("pio_read:{port:#x}:{}:{}", data.len(), hex_bytes(data));
+            (outcome, Some(decision))
+        }
+        Ok(VcpuExit::MmioWrite(address, data)) => {
+            let decision = format!("mmio_write:{address:#x}:{}:{}", data.len(), hex_bytes(data));
+            (
+                handle_kvm_exit(peripherals, Ok(VcpuExit::MmioWrite(address, data))),
+                Some(decision),
+            )
+        }
+        #[cfg(target_arch = "x86_64")]
+        Ok(VcpuExit::IoOut(port, data)) => {
+            let decision = format!("pio_write:{port:#x}:{}:{}", data.len(), hex_bytes(data));
+            (
+                handle_kvm_exit(peripherals, Ok(VcpuExit::IoOut(port, data))),
+                Some(decision),
+            )
+        }
+        other => {
+            let decision = other.as_ref().ok().map(|exit| format!("kvm:{exit:?}"));
+            (handle_kvm_exit(peripherals, other), decision)
+        }
+    };
+    if let (Ok(VcpuEmulation::Handled | VcpuEmulation::Stopped), Some(decision)) =
+        (&outcome, decision)
+    {
+        ledger
+            .lock()
+            .expect("execution ledger lock poisoned")
+            .record(decision);
+    }
+    outcome
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+#[cfg(test)]
+mod execution_ledger_tests {
+    use super::{EXECUTION_DECISION_TAIL, ExecutionLedger};
+
+    #[test]
+    fn hashes_ordered_length_framed_decisions() {
+        let mut first = ExecutionLedger::default();
+        first.record("mmio_read:0x10:1".to_owned());
+        first.record("mmio_write:0x20:1:41".to_owned());
+
+        let mut same = ExecutionLedger::default();
+        same.record("mmio_read:0x10:1".to_owned());
+        same.record("mmio_write:0x20:1:41".to_owned());
+        assert_eq!(first.evidence(), same.evidence());
+
+        let mut reordered = ExecutionLedger::default();
+        reordered.record("mmio_write:0x20:1:41".to_owned());
+        reordered.record("mmio_read:0x10:1".to_owned());
+        assert_ne!(first.evidence().sha256, reordered.evidence().sha256);
+    }
+
+    #[test]
+    fn cloned_branch_continues_the_parent_digest_and_bounds_the_readable_tail() {
+        let mut parent = ExecutionLedger::default();
+        for index in 0..EXECUTION_DECISION_TAIL + 4 {
+            parent.record(format!("decision:{index}"));
+        }
+        let mut child = parent.clone();
+        child.record("child".to_owned());
+
+        let evidence = child.evidence();
+        assert_eq!(evidence.decisions, (EXECUTION_DECISION_TAIL + 5) as u64);
+        assert_eq!(evidence.tail.len(), EXECUTION_DECISION_TAIL);
+        assert_eq!(evidence.tail.last().map(String::as_str), Some("child"));
+        assert_ne!(evidence.sha256, parent.evidence().sha256);
     }
 }
 
@@ -791,6 +958,7 @@ pub struct VcpuHandle {
     /// VcpuFd
     pub vcpu_fd: VcpuFd,
     execution_locations: Arc<Mutex<BTreeSet<u64>>>,
+    execution_ledger: Arc<Mutex<ExecutionLedger>>,
     // Rust JoinHandles have to be wrapped in Option if you ever plan on 'join()'ing them.
     // We want to be able to join these threads in tests.
     vcpu_thread: Option<thread::JoinHandle<()>>,
@@ -813,6 +981,7 @@ impl VcpuHandle {
         response_receiver: Receiver<VcpuResponse>,
         vcpu_fd: VcpuFd,
         execution_locations: Arc<Mutex<BTreeSet<u64>>>,
+        execution_ledger: Arc<Mutex<ExecutionLedger>>,
         vcpu_thread: thread::JoinHandle<()>,
     ) -> Self {
         Self {
@@ -820,6 +989,7 @@ impl VcpuHandle {
             response_receiver,
             vcpu_fd,
             execution_locations,
+            execution_ledger,
             vcpu_thread: Some(vcpu_thread),
         }
     }
@@ -866,6 +1036,22 @@ impl VcpuHandle {
             .lock()
             .expect("execution coverage lock poisoned")
             .extend(locations);
+    }
+
+    /// Clone the complete rolling execution ledger for a campaign branch.
+    pub fn execution_ledger(&self) -> ExecutionLedger {
+        self.execution_ledger
+            .lock()
+            .expect("execution ledger lock poisoned")
+            .clone()
+    }
+
+    /// Continue a restored campaign branch from its parent's exact ledger.
+    pub fn seed_execution_ledger(&self, ledger: ExecutionLedger) {
+        *self
+            .execution_ledger
+            .lock()
+            .expect("execution ledger lock poisoned") = ledger;
     }
 }
 
@@ -1061,6 +1247,31 @@ pub(crate) mod tests {
             Ok(VcpuExit::MmioWrite(addr, &[0, 0, 0, 0])),
         );
         assert_eq!(res.unwrap(), VcpuEmulation::Handled);
+    }
+
+    #[test]
+    fn recorded_exit_includes_emulated_read_bytes_and_ignores_eagain() {
+        let (_, mut vcpu) = setup_vcpu(0x1000);
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let mut data = [0xff, 0xff];
+        let result = handle_kvm_exit_recorded(
+            &mut vcpu.kvm_vcpu.peripherals,
+            Ok(VcpuExit::MmioRead(0x10, &mut data)),
+            &ledger,
+        );
+        assert_eq!(result.unwrap(), VcpuEmulation::Handled);
+        assert_eq!(data, [0, 0]);
+        let evidence = ledger.lock().unwrap().evidence();
+        assert_eq!(evidence.decisions, 1);
+        assert_eq!(evidence.tail, ["mmio_read:0x10:2:0000"]);
+
+        let result = handle_kvm_exit_recorded(
+            &mut vcpu.kvm_vcpu.peripherals,
+            Err(errno::Error::new(libc::EAGAIN)),
+            &ledger,
+        );
+        assert_eq!(result.unwrap(), VcpuEmulation::Handled);
+        assert_eq!(ledger.lock().unwrap().evidence().decisions, 1);
     }
 
     impl PartialEq for VcpuResponse {

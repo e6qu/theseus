@@ -153,6 +153,35 @@ cp "$pthread/service/Dockerfile" "$pthread/service/main.c" \
   "$pthread/service/ready.c" "$pthread/service/theseus.toml" \
   "$validation/pthread-sync/source/service/"
 
+execution="$root/docs/tutorials/41-reject-execution-divergence"
+mkdir -p "$execution/api/work"
+docker build --load --platform "linux/$THESEUS_ARCH" \
+  -t theseus-validation-strict-execution "$execution"
+docker save theseus-validation-strict-execution -o "$execution/api/work/service.tar"
+prepare_runtime "$execution" api
+runtime "$execution" '
+  theseus compose plan > plan.json
+  theseus compose explore --output campaign compose.yaml
+  grep -E "\"execution_decisions\": [1-9][0-9]*" campaign/campaign-result.json
+  grep -E "\"sha256\": \"[0-9a-f]{64}\"" campaign/campaign-result.json
+  theseus report --format markdown --output report/report.md campaign
+  grep -F "Execution ledger" report/report.md
+  theseus compose replay campaign --output rerun
+  grep -A2 "\"replay_verification\"" rerun/campaign-result.json | grep "\"status\": \"passed\""
+  theseus compare campaign rerun > comparison.json
+  grep -F "\"status\": \"same\"" comparison.json
+'
+mkdir -p "$validation/strict-execution"
+cp "$execution/plan.json" "$execution/comparison.json" \
+  "$validation/strict-execution/"
+cp -a "$execution/campaign" "$execution/report" "$execution/rerun" \
+  "$validation/strict-execution/"
+mkdir -p "$validation/strict-execution/source/api"
+cp "$execution/.dockerignore" "$execution/Dockerfile" "$execution/compose.yaml" \
+  "$validation/strict-execution/source/"
+cp "$execution/api/theseus.toml" \
+  "$validation/strict-execution/source/api/"
+
 source_commit=$(git -C "$root" rev-parse HEAD)
 image_digest=$(docker image inspect "$THESEUS_IMAGE" --format '{{index .RepoDigests 0}}')
 kvm_api=$(python3 -c 'import fcntl, os; fd = os.open("/dev/kvm", os.O_RDWR); print(fcntl.ioctl(fd, 0xAE00, 0))')

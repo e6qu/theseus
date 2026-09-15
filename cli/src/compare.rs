@@ -88,6 +88,8 @@ struct Run {
     #[serde(default)]
     structured_choices: Coverage,
     #[serde(default)]
+    execution_ledgers: Coverage,
+    #[serde(default)]
     state_sha256: String,
     #[serde(default)]
     timeline: Vec<Boundary>,
@@ -120,6 +122,8 @@ struct Boundary {
     thread_synchronization: Coverage,
     #[serde(default)]
     structured_choices: Coverage,
+    #[serde(default)]
+    execution_ledgers: Coverage,
 }
 
 #[derive(Serialize)]
@@ -262,6 +266,15 @@ pub fn compare_campaigns(
                     right: json_summary(&right.actions),
                 });
             }
+            if left.execution_ledgers != right.execution_ledgers {
+                return Some(CampaignDivergence {
+                    run,
+                    boundary: None,
+                    reason: "ordered KVM execution ledger differs".to_owned(),
+                    left: json_summary(&left.execution_ledgers),
+                    right: json_summary(&right.execution_ledgers),
+                });
+            }
             for (boundary, (left, right)) in left.timeline.iter().zip(&right.timeline).enumerate() {
                 if !left.id.is_empty() && !right.id.is_empty() && left.id != right.id {
                     return Some(CampaignDivergence {
@@ -279,6 +292,15 @@ pub fn compare_campaigns(
                         reason: "first operation-boundary fault actions differ".to_owned(),
                         left: json_summary(&left.actions),
                         right: json_summary(&right.actions),
+                    });
+                }
+                if left.execution_ledgers != right.execution_ledgers {
+                    return Some(CampaignDivergence {
+                        run,
+                        boundary: Some(boundary),
+                        reason: "ordered KVM execution ledger differs".to_owned(),
+                        left: json_summary(&left.execution_ledgers),
+                        right: json_summary(&right.execution_ledgers),
                     });
                 }
                 if left.operation != right.operation
@@ -616,6 +638,22 @@ mod tests {
             .unwrap();
         assert_eq!(divergence.boundary, Some(0));
         assert_eq!(divergence.reason, "first structured choice differs");
+    }
+
+    #[test]
+    fn reports_the_first_changed_ordered_kvm_execution_ledger() {
+        let digest = "0123456789abcdef".repeat(4);
+        let runs = format!(
+            r#"[{{"index":0,"operations":["write"],"state_sha256":"same","timeline":[{{"operation":"write","service":"api","state_sha256":"same","execution_ledgers":{{"api":[{{"decisions":12,"sha256":"{digest}","tail":["mmio_read:0x10:1"]}}]}}}}]}}]"#
+        );
+        let changed = runs.replace("\"decisions\":12", "\"decisions\":13");
+        let (left, right) = write_pair(&result(&runs, "[]"), &result(&changed, "[]"));
+        let divergence = compare_campaigns(left.path(), right.path())
+            .unwrap()
+            .divergence
+            .unwrap();
+        assert_eq!(divergence.boundary, Some(0));
+        assert_eq!(divergence.reason, "ordered KVM execution ledger differs");
     }
 
     #[test]

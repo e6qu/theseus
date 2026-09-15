@@ -16,8 +16,10 @@ use tar::Archive;
 
 const INDEX_FORMAT: &str = "theseus-native-evidence-index-v2";
 const PROOF_FORMAT: &str = "theseus-counterexample-proof-v2";
-const VALIDATION_FORMAT: &str = "theseus-runtime-validation-v1";
-const CERTIFICATE_FORMAT: &str = "theseus-runtime-certificate-v1";
+const VALIDATION_FORMAT_V1: &str = "theseus-runtime-validation-v1";
+const VALIDATION_FORMAT_V2: &str = "theseus-runtime-validation-v2";
+const CERTIFICATE_FORMAT_V1: &str = "theseus-runtime-certificate-v1";
+const CERTIFICATE_FORMAT_V2: &str = "theseus-runtime-certificate-v2";
 const PROPERTY: &str = "distributed_lost_update_is_unreachable";
 const REQUIRED_FAULTS: [&str; 2] = [
     "backplane:partition@setup",
@@ -71,6 +73,22 @@ struct RuntimeCertificate {
     profile: CertificateProfile,
     source: CertificateSource,
     repeatability: CertificateRepeatability,
+    #[serde(default)]
+    services: BTreeMap<String, CertificateServiceEvidence>,
+}
+
+#[derive(Deserialize)]
+struct CertificateServiceEvidence {
+    #[serde(default)]
+    execution_ledgers: Vec<ExecutionLedgerEvidence>,
+}
+
+#[derive(Deserialize)]
+struct ExecutionLedgerEvidence {
+    decisions: u64,
+    sha256: String,
+    #[serde(default)]
+    tail: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -244,7 +262,7 @@ fn verify_asset_streaming(path: &Path, asset: &EvidenceAsset) -> Result<(), Evid
 fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(), EvidenceError> {
     let certificate: RuntimeCertificate = parse_json(path, bytes)?;
     require(
-        certificate.format == CERTIFICATE_FORMAT,
+        certificate.format == CERTIFICATE_FORMAT_V1 || certificate.format == CERTIFICATE_FORMAT_V2,
         "unsupported runtime certificate format",
     )?;
     require(
@@ -279,7 +297,28 @@ fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(
     require(
         certificate.repeatability.executions == 2,
         "runtime certificate must record two executions",
-    )
+    )?;
+    if certificate.format == CERTIFICATE_FORMAT_V2 {
+        require(
+            !certificate.services.is_empty()
+                && certificate.services.values().all(|service| {
+                    !service.execution_ledgers.is_empty()
+                        && service.execution_ledgers.iter().all(valid_execution_ledger)
+                }),
+            "runtime certificate has empty or malformed ordered KVM execution evidence",
+        )?;
+    }
+    Ok(())
+}
+
+fn valid_execution_ledger(ledger: &ExecutionLedgerEvidence) -> bool {
+    ledger.decisions > 0
+        && ledger.sha256.len() == 64
+        && ledger
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && !ledger.tail.is_empty()
 }
 
 fn verify_counterexample(
@@ -553,6 +592,18 @@ fn verify_runtime_validation(
         "pthread-sync/source/service/main.c",
         "pthread-sync/source/service/theseus.toml",
     ]);
+    let strict_required = BTreeSet::from([
+        "strict-execution/plan.json",
+        "strict-execution/campaign/campaign-result.json",
+        "strict-execution/campaign/replay-plan.json",
+        "strict-execution/report/report.md",
+        "strict-execution/rerun/campaign-result.json",
+        "strict-execution/comparison.json",
+        "strict-execution/source/.dockerignore",
+        "strict-execution/source/Dockerfile",
+        "strict-execution/source/compose.yaml",
+        "strict-execution/source/api/theseus.toml",
+    ]);
     let file = fs::File::open(path)
         .map_err(|error| EvidenceError(format!("cannot read {}: {error}", path.display())))?;
     let mut archive = Archive::new(GzDecoder::new(file));
@@ -584,7 +635,7 @@ fn verify_runtime_validation(
             .to_owned();
         let mut bytes = Vec::new();
         let mut hasher = Sha256::new();
-        if required.contains(name.as_str()) {
+        if required.contains(name.as_str()) || strict_required.contains(name.as_str()) {
             entry.read_to_end(&mut bytes).map_err(|error| {
                 EvidenceError(format!("cannot read archive member {name}: {error}"))
             })?;
@@ -616,7 +667,7 @@ fn verify_runtime_validation(
     let proof: RuntimeValidationProof =
         parse_json_bytes(&retained["evidence.json"], "runtime validation proof")?;
     require(
-        proof.format == VALIDATION_FORMAT,
+        proof.format == VALIDATION_FORMAT_V1 || proof.format == VALIDATION_FORMAT_V2,
         "unsupported runtime validation format",
     )?;
     require(
@@ -632,9 +683,29 @@ fn verify_runtime_validation(
         !proof.host.kernel_release.is_empty() && proof.host.kvm_api_version == 12,
         "runtime validation was not produced by KVM API version 12",
     )?;
+    let expected_scenarios = if proof.format == VALIDATION_FORMAT_V2 {
+        require(
+            strict_required
+                .iter()
+                .all(|name| retained.contains_key(*name)),
+            "runtime validation archive is missing strict execution evidence",
+        )?;
+        vec![
+            "container",
+            "coverage",
+            "schedule-search",
+            "pthread-sync",
+            "strict-execution",
+        ]
+    } else {
+        vec!["container", "coverage", "schedule-search", "pthread-sync"]
+    };
     require(
         proof.scenarios
-            == ["container", "coverage", "schedule-search", "pthread-sync"].map(str::to_owned),
+            == expected_scenarios
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
         "runtime validation does not contain the required scenarios",
     )?;
     files.remove("evidence.json");
@@ -662,6 +733,16 @@ fn verify_runtime_validation(
         require(
             plan["format"] == "theseus-compose-plan-v1",
             &format!("{name} is not a Compose plan"),
+        )?;
+    }
+    if proof.format == VALIDATION_FORMAT_V2 {
+        let plan: serde_json::Value = parse_json_bytes(
+            &retained["strict-execution/plan.json"],
+            "strict execution plan",
+        )?;
+        require(
+            plan["format"] == "theseus-compose-plan-v1",
+            "strict-execution/plan.json is not a Compose plan",
         )?;
     }
     let container: serde_json::Value =
@@ -747,6 +828,37 @@ fn verify_runtime_validation(
         "thread_synchronization_events",
         true,
     )?;
+    if proof.format == VALIDATION_FORMAT_V2 {
+        verify_validation_campaign(
+            &retained["strict-execution/campaign/campaign-result.json"],
+            "strict execution",
+            "execution_decisions",
+            false,
+        )?;
+        verify_campaign_execution_ledgers(
+            &retained["strict-execution/campaign/campaign-result.json"],
+            "strict execution",
+        )?;
+        verify_validation_campaign(
+            &retained["strict-execution/rerun/campaign-result.json"],
+            "strict execution replay",
+            "execution_decisions",
+            true,
+        )?;
+        verify_campaign_execution_ledgers(
+            &retained["strict-execution/rerun/campaign-result.json"],
+            "strict execution replay",
+        )?;
+        let comparison: serde_json::Value = parse_json_bytes(
+            &retained["strict-execution/comparison.json"],
+            "strict execution comparison",
+        )?;
+        require(
+            comparison["format"] == "theseus-campaign-comparison-v1"
+                && comparison["status"] == "same",
+            "strict execution comparison did not retain an identical replay",
+        )?;
+    }
     for name in [
         "coverage/report/report.md",
         "schedule-search/report/report.md",
@@ -754,7 +866,47 @@ fn verify_runtime_validation(
     ] {
         require(!retained[name].is_empty(), &format!("{name} is empty"))?;
     }
+    if proof.format == VALIDATION_FORMAT_V2 {
+        require(
+            String::from_utf8_lossy(&retained["strict-execution/report/report.md"])
+                .contains("Execution ledger"),
+            "strict execution report does not explain the execution ledger",
+        )?;
+    }
     Ok(())
+}
+
+fn verify_campaign_execution_ledgers(bytes: &[u8], scenario: &str) -> Result<(), EvidenceError> {
+    let value: serde_json::Value = parse_json_bytes(bytes, scenario)?;
+    let valid = value["runs"].as_array().is_some_and(|runs| {
+        runs.iter().any(|run| {
+            run["execution_ledgers"]
+                .as_object()
+                .is_some_and(|services| {
+                    services.values().any(|ledgers| {
+                        ledgers.as_array().is_some_and(|ledgers| {
+                            ledgers.iter().any(|ledger| {
+                                ledger["decisions"].as_u64().is_some_and(|count| count > 0)
+                                    && ledger["sha256"].as_str().is_some_and(|digest| {
+                                        digest.len() == 64
+                                            && digest.bytes().all(|byte| {
+                                                byte.is_ascii_hexdigit()
+                                                    && !byte.is_ascii_uppercase()
+                                            })
+                                    })
+                                    && ledger["tail"]
+                                        .as_array()
+                                        .is_some_and(|tail| !tail.is_empty())
+                            })
+                        })
+                    })
+                })
+        })
+    });
+    require(
+        valid,
+        &format!("{scenario} has no valid ordered KVM execution ledger"),
+    )
 }
 
 fn verify_validation_campaign(
@@ -894,6 +1046,17 @@ mod tests {
     }
 
     #[test]
+    fn verifies_legacy_certificate_and_validation_formats() {
+        let temporary = tempfile::tempdir().unwrap();
+        write_architecture_with_formats(temporary.path(), "amd64", "passed", true);
+        let index = write_index(temporary.path(), false);
+        assert_eq!(
+            verify_native_evidence(index).unwrap().architectures,
+            vec!["amd64"]
+        );
+    }
+
+    #[test]
     fn rejects_a_failed_replay_inside_a_consistent_archive() {
         let temporary = tempfile::tempdir().unwrap();
         write_architecture(temporary.path(), "amd64", "failed");
@@ -909,7 +1072,7 @@ mod tests {
     fn rejects_semantically_empty_runtime_validation() {
         let temporary = tempfile::tempdir().unwrap();
         write_architecture(temporary.path(), "amd64", "passed");
-        write_validation(temporary.path(), "amd64", 0);
+        write_validation(temporary.path(), "amd64", 0, false);
         let index = write_index(temporary.path(), false);
         let error = verify_native_evidence(index).unwrap_err();
         assert!(error
@@ -918,17 +1081,31 @@ mod tests {
     }
 
     fn write_architecture(directory: &Path, architecture: &str, replay_status: &str) {
+        write_architecture_with_formats(directory, architecture, replay_status, false);
+    }
+
+    fn write_architecture_with_formats(
+        directory: &Path,
+        architecture: &str,
+        replay_status: &str,
+        legacy: bool,
+    ) {
         let certificate_name = format!("theseus-{TAG}-runtime-certificate-{architecture}.json");
         let plan_contents = r#"{"format":"theseus-compose-plan-v1","services":{"service":{}}}"#;
         let certificate = serde_json::to_vec_pretty(&serde_json::json!({
-            "format": CERTIFICATE_FORMAT,
+            "format": if legacy { CERTIFICATE_FORMAT_V1 } else { CERTIFICATE_FORMAT_V2 },
             "status": "passed",
             "profile": {"id": "linux-kvm-simulated-io-v1", "architecture": architecture},
             "source": {
                 "plan_sha256": sha256(plan_contents.as_bytes()),
                 "plan_contents": plan_contents
             },
-            "repeatability": {"executions": 2}
+            "repeatability": {"executions": 2},
+            "services": {"service": {"execution_ledgers": [{
+                "decisions": 1,
+                "sha256": DIGEST,
+                "tail": ["mmio_read addr=0x0 len=1"]
+            }]}}
         }))
         .unwrap();
         fs::write(directory.join(&certificate_name), &certificate).unwrap();
@@ -1011,10 +1188,10 @@ mod tests {
         builder.append_dir_all("minimized", &root).unwrap();
         builder.into_inner().unwrap().finish().unwrap();
 
-        write_validation(directory, architecture, 1);
+        write_validation(directory, architecture, 1, legacy);
     }
 
-    fn write_validation(directory: &Path, architecture: &str, signal_count: u64) {
+    fn write_validation(directory: &Path, architecture: &str, signal_count: u64, legacy: bool) {
         let root = directory.join(format!("validation-{architecture}/validation"));
         if root.exists() {
             fs::remove_dir_all(&root).unwrap();
@@ -1033,6 +1210,15 @@ mod tests {
                 value["properties"] = serde_json::json!([{
                     "name": "lost_update_is_unreachable",
                     "status": "failed"
+                }]);
+            }
+            if signal == "execution_decisions" {
+                value["runs"] = serde_json::json!([{
+                    "execution_ledgers": {"api": [{
+                        "decisions": signal_count,
+                        "sha256": DIGEST,
+                        "tail": ["mmio_read addr=0x0 len=1"]
+                    }]}
                 }]);
             }
             serde_json::to_vec(&value).unwrap()
@@ -1141,8 +1327,45 @@ mod tests {
                 "pthread-sync/source/service/theseus.toml",
                 b"version = 1\n".to_vec(),
             ),
+            ("strict-execution/plan.json", plan.to_vec()),
+            (
+                "strict-execution/campaign/campaign-result.json",
+                campaign("execution_decisions", false),
+            ),
+            ("strict-execution/campaign/replay-plan.json", b"{}".to_vec()),
+            (
+                "strict-execution/report/report.md",
+                b"# Execution ledger\n".to_vec(),
+            ),
+            (
+                "strict-execution/rerun/campaign-result.json",
+                campaign("execution_decisions", true),
+            ),
+            (
+                "strict-execution/comparison.json",
+                br#"{"format":"theseus-campaign-comparison-v1","status":"same"}"#.to_vec(),
+            ),
+            (
+                "strict-execution/source/.dockerignore",
+                b"api/work\n".to_vec(),
+            ),
+            (
+                "strict-execution/source/Dockerfile",
+                b"FROM scratch\n".to_vec(),
+            ),
+            (
+                "strict-execution/source/compose.yaml",
+                b"services: {}\n".to_vec(),
+            ),
+            (
+                "strict-execution/source/api/theseus.toml",
+                b"version = 1\n".to_vec(),
+            ),
         ];
         for (name, bytes) in files {
+            if legacy && name.starts_with("strict-execution/") {
+                continue;
+            }
             let path = root.join(name);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, bytes).unwrap();
@@ -1152,7 +1375,7 @@ mod tests {
         fs::write(
             root.join("evidence.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "format": VALIDATION_FORMAT,
+                "format": if legacy { VALIDATION_FORMAT_V1 } else { VALIDATION_FORMAT_V2 },
                 "architecture": architecture,
                 "source_commit": COMMIT,
                 "runtime": {
@@ -1160,7 +1383,11 @@ mod tests {
                     "tag": format!("{TAG}-{architecture}")
                 },
                 "host": {"kernel_release": "6.8.0", "kvm_api_version": 12},
-                "scenarios": ["container", "coverage", "schedule-search", "pthread-sync"],
+                "scenarios": if legacy {
+                    vec!["container", "coverage", "schedule-search", "pthread-sync"]
+                } else {
+                    vec!["container", "coverage", "schedule-search", "pthread-sync", "strict-execution"]
+                },
                 "files": inventory,
             }))
             .unwrap(),

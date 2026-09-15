@@ -66,6 +66,7 @@ jobs:
           orchestrator::tree
           vmm_config::machine_config
           vmm_config::entropy
+          execution_ledger
           detrng
           rate_limiter::tests
 

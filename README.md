@@ -42,6 +42,8 @@ passing unit suite alone is not treated as runtime proof.
 - Bounded GCC C pthread scheduling at application basic-block boundaries, with
   explicit schedules and runnable-set decisions retained and replay-checked;
   default mutexes and untimed condition variables update the runnable set.
+- A rolling, branch-aware ledger of ordered KVM exits for every vCPU. Replay
+  rejects a changed exit sequence and reports the first divergent boundary.
 - SHA-addressed Linux runtime images for amd64 and arm64, plus published CLI
   binaries for Linux amd64/arm64 and macOS arm64.
 
@@ -64,6 +66,8 @@ passing unit suite alone is not treated as runtime proof.
   locking, and untimed condition waits/signals/broadcasts. Timed waits,
   cancellation, direct futex use, blocking I/O, and processes remain outside
   this profile.
+- The KVM-exit ledger detects divergence at hypervisor and device boundaries;
+  it observes but does not yet choose instruction, thread, or interrupt order.
 - `compare` finds the first difference in two recorded histories. It does not
   perform counterfactual re-exploration or prove causality.
 - Capturing a branch copies guest RAM into a memfd. Restored children then use
@@ -110,6 +114,8 @@ examples:
 16. Package ordinary commands in Antithesis-compatible test-template
     directories and let Theseus discover, select, overlap, stop, and replay
     them.
+17. Reject execution divergence in an uninstrumented container from its ordered
+    KVM-exit ledger.
 
 Each tutorial directory is its own working directory and complete input
 context. Runnable tutorials use published Theseus images or binaries, not a

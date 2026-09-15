@@ -184,5 +184,11 @@ docs/tutorials/40-compose-test-commands/campaign/
 docs/tutorials/40-compose-test-commands/minimized/
 docs/tutorials/40-compose-test-commands/rerun/
 docs/tutorials/40-compose-test-commands/report/
+docs/tutorials/41-reject-execution-divergence/api/work/
+docs/tutorials/41-reject-execution-divergence/plan.json
+docs/tutorials/41-reject-execution-divergence/campaign/
+docs/tutorials/41-reject-execution-divergence/report/
+docs/tutorials/41-reject-execution-divergence/rerun/
+docs/tutorials/41-reject-execution-divergence/comparison.json
 
 orchestrator/pivot/target/

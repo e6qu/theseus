@@ -11,7 +11,13 @@ import re
 
 
 ARCHITECTURES = ("amd64", "arm64")
-SCENARIOS = ("container", "coverage", "schedule-search", "pthread-sync")
+SCENARIOS = (
+    "container",
+    "coverage",
+    "schedule-search",
+    "pthread-sync",
+    "strict-execution",
+)
 COMMIT = re.compile(r"[0-9a-f]{40}")
 DIGEST_IMAGE = re.compile(r".+@sha256:[0-9a-f]{64}")
 REQUIRED = (
@@ -52,6 +58,16 @@ REQUIRED = (
     "pthread-sync/source/compose.yaml",
     "pthread-sync/source/service/main.c",
     "pthread-sync/source/service/theseus.toml",
+    "strict-execution/plan.json",
+    "strict-execution/campaign/campaign-result.json",
+    "strict-execution/campaign/replay-plan.json",
+    "strict-execution/report/report.md",
+    "strict-execution/rerun/campaign-result.json",
+    "strict-execution/comparison.json",
+    "strict-execution/source/.dockerignore",
+    "strict-execution/source/Dockerfile",
+    "strict-execution/source/compose.yaml",
+    "strict-execution/source/api/theseus.toml",
 )
 
 
@@ -99,7 +115,7 @@ def seal(args: argparse.Namespace) -> None:
     proof.write_text(
         json.dumps(
             {
-                "format": "theseus-runtime-validation-v1",
+                "format": "theseus-runtime-validation-v2",
                 "architecture": args.architecture,
                 "source_commit": args.source_commit,
                 "runtime": {"image": args.runtime_image, "tag": args.runtime_tag},
