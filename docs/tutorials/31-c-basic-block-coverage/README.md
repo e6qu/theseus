@@ -87,7 +87,7 @@ theseus compose explore --output campaign compose.yaml
 grep -n 'unique_application_blocks\|application_block_novelty' \
   campaign/campaign-result.json
 grep -R '^THES:COV:v1:classifier:branching:' campaign/runs/*/services/classifier/serial.log
-theseus report campaign --output report
+theseus report --format markdown --output report/report.md campaign
 grep -n 'application block' report/report.md
 theseus compose replay campaign --output rerun
 grep -n '"status": "passed"' rerun/campaign-result.json

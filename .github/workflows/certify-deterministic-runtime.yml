@@ -1,12 +1,21 @@
 name: certify deterministic runtime
 
 on:
+  workflow_run:
+    workflows: [publish-runtime]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
-        description: Published 12-character SHA release tag to certify
-        required: true
+        description: Published 12-character SHA release tag; omit to use the current commit
+        required: false
         type: string
+      architecture:
+        description: Native architecture set
+        required: true
+        default: amd64
+        type: choice
+        options: [amd64, arm64, both]
 
 permissions:
   attestations: write
@@ -16,9 +25,12 @@ permissions:
 jobs:
   resolve:
     name: resolve published SHA
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     outputs:
       commit: ${{ steps.release.outputs.commit }}
+      tag: ${{ steps.release.outputs.tag }}
+      matrix: ${{ steps.release.outputs.matrix }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -29,14 +41,34 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE: ghcr.io/e6qu/theseus
-          TAG: ${{ inputs.tag }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+          REQUESTED_ARCHITECTURE: ${{ inputs.architecture }}
+          RELEASE_COMMIT: ${{ github.event.workflow_run.head_sha }}
         run: |
+          if test "$GITHUB_EVENT_NAME" = workflow_run; then
+            commit="$RELEASE_COMMIT"
+            TAG=${commit::12}
+            matrix='{"include":[{"arch":"amd64","runner":["ubuntu-24.04"]}]}'
+          else
+            TAG=${DISPATCH_TAG:-$(git rev-parse --short=12 HEAD)}
+            case "$REQUESTED_ARCHITECTURE" in
+              amd64) matrix='{"include":[{"arch":"amd64","runner":["ubuntu-24.04"]}]}' ;;
+              arm64) matrix='{"include":[{"arch":"arm64","runner":["self-hosted","Linux","ARM64","kvm"]}]}' ;;
+              both) matrix='{"include":[{"arch":"amd64","runner":["ubuntu-24.04"]},{"arch":"arm64","runner":["self-hosted","Linux","ARM64","kvm"]}]}' ;;
+              *) echo "unsupported architecture selection" >&2; exit 2 ;;
+            esac
+          fi
           printf '%s\n' "$TAG" | grep -E '^[0-9a-f]{12}$'
           release=$(mktemp -d)
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
             --json isDraft,targetCommitish > "$release/release.json"
           test "$(jq -r .isDraft "$release/release.json")" = false
-          commit=$(jq -r .targetCommitish "$release/release.json")
+          published_commit=$(jq -r .targetCommitish "$release/release.json")
+          if test -n "${commit:-}"; then
+            test "$published_commit" = "$commit"
+          else
+            commit=$published_commit
+          fi
           printf '%s\n' "$commit" | grep -E '^[0-9a-f]{40}$'
           test "${commit::12}" = "$TAG"
           git merge-base --is-ancestor "$commit" origin/main
@@ -54,20 +86,19 @@ jobs:
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
               --source-ref refs/heads/main
           done
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          {
+            echo "commit=$commit"
+            echo "tag=$TAG"
+            echo "matrix=$matrix"
+          } >> "$GITHUB_OUTPUT"
 
   certify:
     name: certify (${{ matrix.arch }} KVM metal)
     needs: resolve
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: '["self-hosted","Linux","X64","kvm"]'
-          - arch: arm64
-            runner: '["self-hosted","Linux","ARM64","kvm"]'
-    runs-on: ${{ fromJSON(matrix.runner) }}
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -77,12 +108,12 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           IMAGE: ghcr.io/e6qu/theseus
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           test "$(git rev-parse --short=12 HEAD)" = "$TAG"
           test -c /dev/kvm
           test -r /dev/kvm
-          test -w /dev/kvm
+          test -w /dev/kvm || sudo chmod 666 /dev/kvm
           kvm_api=$(python3 -c 'import fcntl, os; fd = os.open("/dev/kvm", os.O_RDWR); print(fcntl.ioctl(fd, 0xAE00, 0))')
           test "$kvm_api" = 12
           docker pull "$IMAGE:$TAG-$ARCH"
@@ -92,7 +123,7 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           IMAGE: ghcr.io/e6qu/theseus
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           docker run --rm --privileged \
             -v "$GITHUB_WORKSPACE/docs/tutorials/11-certify-runtime":/tutorial \
@@ -118,7 +149,7 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           IMAGE: ghcr.io/e6qu/theseus
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           tutorial=docs/tutorials/30-multiservice-lost-update
           name=theseus-multiservice-lost-update
@@ -145,15 +176,15 @@ jobs:
                 --expect-counterexample distributed_lost_update_is_unreachable \
                 --output minimized
               theseus compose replay minimized --output rerun
-              grep -R '"'"'"value"'"'":1' campaign/runs/*/services/counter/serial.log
-              grep -R '"'"'"value"'"'":2' campaign/runs/*/services/counter/serial.log
-              grep -F 'backplane:partition@setup' minimized/minimization.json
-              grep -F 'backplane:heal@probe_partition' minimized/minimization.json
-              grep -E '"'"'"dropped"'"'": [1-9][0-9]*' rerun/services/*/result.json
-              grep -R '"'"'"network"'"'":"'"'"recovered"'"'"' rerun/services/writer-a/serial.log
-              grep -F '"'"'"kind"'"'": "'"'"partition"'"'"' rerun/topology-result.json
-              grep -F '"'"'"kind"'"'": "'"'"heal"'"'"' rerun/topology-result.json
-              grep -R '"'"'"value"'"'":1' rerun/services/counter/serial.log
+              grep -R "\"value\":1" campaign/runs/*/services/counter/serial.log
+              grep -R "\"value\":2" campaign/runs/*/services/counter/serial.log
+              grep -F "backplane:partition@setup" minimized/minimization.json
+              grep -F "backplane:heal@probe_partition" minimized/minimization.json
+              grep -E "\"dropped\": [1-9][0-9]*" rerun/services/*/result.json
+              grep -R "\"network\":\"recovered\"" rerun/services/writer-a/serial.log
+              grep -F "\"kind\": \"partition\"" rerun/topology-result.json
+              grep -F "\"kind\": \"heal\"" rerun/topology-result.json
+              grep -R "\"value\":1" rerun/services/counter/serial.log
             '
           source_commit=$(git rev-parse HEAD)
           image_digest=$(docker image inspect "$IMAGE:$TAG-$ARCH" --format '{{index .RepoDigests 0}}')
@@ -192,14 +223,23 @@ jobs:
           python3 scripts/reproducible_tar.py \
             --mtime "$source_date_epoch" --output "$archive" "$tutorial/minimized"
 
+      - name: Validate container, coverage, schedule search, and pthread synchronization
+        env:
+          THESEUS_ARCH: ${{ matrix.arch }}
+          THESEUS_IMAGE: ghcr.io/e6qu/theseus:${{ needs.resolve.outputs.tag }}-${{ matrix.arch }}
+          THESEUS_TAG: ${{ needs.resolve.outputs.tag }}
+        run: sh scripts/run_native_validation.sh
+
       - name: Stage architecture evidence
         env:
           ARCH: ${{ matrix.arch }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           mkdir native-evidence
           mv "theseus-${TAG}-runtime-certificate-${ARCH}.json" native-evidence/
           mv "theseus-${TAG}-multiservice-counterexample-${ARCH}.tar.gz" native-evidence/
+          mv ".native-evidence/${ARCH}/theseus-${TAG}-runtime-validation-${ARCH}.tar.gz" \
+            native-evidence/
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -222,20 +262,26 @@ jobs:
           path: native-evidence
           merge-multiple: true
 
-      - name: Index and verify both native architectures
+      - name: Index and verify the certified architectures
         env:
           COMMIT: ${{ needs.resolve.outputs.commit }}
           IMAGE: ghcr.io/e6qu/theseus
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
+          mapfile -t architectures < <(find native-evidence -maxdepth 1 -type f \
+            -name "theseus-${TAG}-runtime-certificate-*.json" -print | \
+            sed -E 's/.*-runtime-certificate-(amd64|arm64)\.json/\1/' | sort)
+          test "${#architectures[@]}" -gt 0
           index="native-evidence/theseus-${TAG}-native-evidence.json"
           python3 scripts/native_runtime_evidence.py index \
             --directory native-evidence --tag "$TAG" --source-commit "$COMMIT" \
+            --architectures "${architectures[@]}" \
             --output "$index"
-          docker pull "$IMAGE:$TAG-amd64"
-          docker run --rm --platform linux/amd64 \
+          verifier_arch=${architectures[0]}
+          docker pull "$IMAGE:$TAG-$verifier_arch"
+          docker run --rm --platform "linux/$verifier_arch" \
             -v "$GITHUB_WORKSPACE/native-evidence":/evidence:ro \
-            --entrypoint /usr/local/bin/theseus "$IMAGE:$TAG-amd64" \
+            --entrypoint /usr/local/bin/theseus "$IMAGE:$TAG-$verifier_arch" \
             evidence verify "/evidence/$(basename "$index")"
 
       - name: Attest the complete native evidence set
@@ -246,10 +292,11 @@ jobs:
       - name: Attach the complete evidence set to the SHA release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           gh release upload "$TAG" \
             native-evidence/*-runtime-certificate-*.json \
-            native-evidence/*-multiservice-counterexample-*.tar.gz --clobber
+            native-evidence/*-multiservice-counterexample-*.tar.gz \
+            native-evidence/*-runtime-validation-*.tar.gz --clobber
           gh release upload "$TAG" \
             "native-evidence/theseus-${TAG}-native-evidence.json" --clobber

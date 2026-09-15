@@ -1,8 +1,7 @@
 // Copyright 2026 Adrian Mârza (https://www.linkedin.com/in/adrian-m%C3%A2rza-52606512a/) and contributors to Theseus
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Offline verification for the complete, dual-architecture native KVM
-//! evidence set attached to a SHA release.
+//! Offline verification for native KVM evidence attached to a SHA release.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -15,8 +14,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tar::Archive;
 
-const INDEX_FORMAT: &str = "theseus-native-evidence-index-v1";
+const INDEX_FORMAT: &str = "theseus-native-evidence-index-v2";
 const PROOF_FORMAT: &str = "theseus-counterexample-proof-v2";
+const VALIDATION_FORMAT: &str = "theseus-runtime-validation-v1";
 const CERTIFICATE_FORMAT: &str = "theseus-runtime-certificate-v1";
 const PROPERTY: &str = "distributed_lost_update_is_unreachable";
 const REQUIRED_FAULTS: [&str; 2] = [
@@ -54,6 +54,7 @@ struct NativeEvidenceIndex {
 struct ArchitectureEvidence {
     certificate: EvidenceAsset,
     counterexample: EvidenceAsset,
+    validation: EvidenceAsset,
 }
 
 #[derive(Deserialize)]
@@ -119,8 +120,19 @@ struct ProofFile {
     bytes: u64,
 }
 
-/// Verify the signed index's files, both certificates, each archive inventory,
-/// and the required recovery-before-counterexample observations without KVM.
+#[derive(Deserialize)]
+struct RuntimeValidationProof {
+    format: String,
+    architecture: String,
+    source_commit: String,
+    runtime: ProofRuntime,
+    host: ProofHost,
+    scenarios: Vec<String>,
+    files: BTreeMap<String, ProofFile>,
+}
+
+/// Verify the signed index's files, certificates, archive inventories, and
+/// required runtime observations without KVM.
 pub fn verify_native_evidence(
     index_path: impl AsRef<Path>,
 ) -> Result<NativeEvidenceSummary, EvidenceError> {
@@ -136,10 +148,11 @@ pub fn verify_native_evidence(
         index.runtime_tag == index.source_commit[..12],
         "native evidence tag does not match its source commit",
     )?;
-    let expected = BTreeSet::from(["amd64".to_owned(), "arm64".to_owned()]);
+    let supported = BTreeSet::from(["amd64".to_owned(), "arm64".to_owned()]);
+    let expected = index.architectures.keys().cloned().collect::<BTreeSet<_>>();
     require(
-        index.architectures.keys().cloned().collect::<BTreeSet<_>>() == expected,
-        "native evidence index must contain exactly amd64 and arm64",
+        !expected.is_empty() && expected.is_subset(&supported),
+        "native evidence index must contain amd64, arm64, or both",
     )?;
     let directory = index_path.parent().unwrap_or_else(|| Path::new("."));
     for (architecture, evidence) in &index.architectures {
@@ -151,6 +164,10 @@ pub fn verify_native_evidence(
             "theseus-{}-multiservice-counterexample-{architecture}.tar.gz",
             index.runtime_tag
         );
+        let validation_name = format!(
+            "theseus-{}-runtime-validation-{architecture}.tar.gz",
+            index.runtime_tag
+        );
         require(
             evidence.certificate.file == certificate_name,
             &format!("unexpected {architecture} certificate filename"),
@@ -158,6 +175,10 @@ pub fn verify_native_evidence(
         require(
             evidence.counterexample.file == counterexample_name,
             &format!("unexpected {architecture} counterexample filename"),
+        )?;
+        require(
+            evidence.validation.file == validation_name,
+            &format!("unexpected {architecture} validation filename"),
         )?;
         let certificate_path = directory.join(&evidence.certificate.file);
         let certificate_bytes = verify_asset(&certificate_path, &evidence.certificate)?;
@@ -170,6 +191,14 @@ pub fn verify_native_evidence(
             &index.source_commit,
             &index.runtime_tag,
             &certificate_bytes,
+        )?;
+        let validation_path = directory.join(&evidence.validation.file);
+        verify_asset_streaming(&validation_path, &evidence.validation)?;
+        verify_runtime_validation(
+            &validation_path,
+            architecture,
+            &index.source_commit,
+            &index.runtime_tag,
         )?;
     }
     Ok(NativeEvidenceSummary {
@@ -478,13 +507,287 @@ fn verify_replay(retained: &BTreeMap<String, Vec<u8>>) -> Result<(), EvidenceErr
     )
 }
 
+fn verify_runtime_validation(
+    path: &Path,
+    architecture: &str,
+    source_commit: &str,
+    runtime_tag: &str,
+) -> Result<(), EvidenceError> {
+    let required = BTreeSet::from([
+        "evidence.json",
+        "container/plan.json",
+        "container/run/replay-plan.json",
+        "container/run/result.json",
+        "container/run/serial.log",
+        "container/replay.log",
+        "container/source/Dockerfile",
+        "container/source/theseus.toml",
+        "coverage/plan.json",
+        "coverage/campaign/campaign-result.json",
+        "coverage/campaign/replay-plan.json",
+        "coverage/report/report.md",
+        "coverage/rerun/campaign-result.json",
+        "coverage/comparison.json",
+        "coverage/evaluation.json",
+        "coverage/evaluation/theseus-evaluation.toml",
+        "coverage/evaluation/theseus-evaluation.lock",
+        "coverage/source/compose.yaml",
+        "coverage/source/service/main.c",
+        "coverage/source/service/theseus.toml",
+        "schedule-search/plan.json",
+        "schedule-search/campaign/campaign-result.json",
+        "schedule-search/campaign/replay-plan.json",
+        "schedule-search/report/report.md",
+        "schedule-search/minimized/minimization.json",
+        "schedule-search/minimized/replay-plan.json",
+        "schedule-search/rerun/campaign-result.json",
+        "schedule-search/source/compose.yaml",
+        "schedule-search/source/service/main.c",
+        "schedule-search/source/service/theseus.toml",
+        "pthread-sync/plan.json",
+        "pthread-sync/campaign/campaign-result.json",
+        "pthread-sync/campaign/replay-plan.json",
+        "pthread-sync/report/report.md",
+        "pthread-sync/rerun/campaign-result.json",
+        "pthread-sync/source/compose.yaml",
+        "pthread-sync/source/service/main.c",
+        "pthread-sync/source/service/theseus.toml",
+    ]);
+    let file = fs::File::open(path)
+        .map_err(|error| EvidenceError(format!("cannot read {}: {error}", path.display())))?;
+    let mut archive = Archive::new(GzDecoder::new(file));
+    let mut files = BTreeMap::new();
+    let mut retained = BTreeMap::<String, Vec<u8>>::new();
+    for entry in archive
+        .entries()
+        .map_err(|error| EvidenceError(format!("cannot open {}: {error}", path.display())))?
+    {
+        let mut entry = entry
+            .map_err(|error| EvidenceError(format!("cannot read {}: {error}", path.display())))?;
+        let entry_path = entry
+            .path()
+            .map_err(|error| EvidenceError(format!("invalid archive path: {error}")))?;
+        require_safe_archive_path(&entry_path)?;
+        let relative = entry_path.strip_prefix("validation").map_err(|_| {
+            EvidenceError("runtime validation archive root must be validation".to_owned())
+        })?;
+        if relative.as_os_str().is_empty() || entry.header().entry_type().is_dir() {
+            continue;
+        }
+        require(
+            entry.header().entry_type().is_file(),
+            "runtime validation archive may contain only files and directories",
+        )?;
+        let name = relative
+            .to_str()
+            .ok_or_else(|| EvidenceError("runtime validation path is not UTF-8".to_owned()))?
+            .to_owned();
+        let mut bytes = Vec::new();
+        let mut hasher = Sha256::new();
+        if required.contains(name.as_str()) {
+            entry.read_to_end(&mut bytes).map_err(|error| {
+                EvidenceError(format!("cannot read archive member {name}: {error}"))
+            })?;
+            hasher.update(&bytes);
+            retained.insert(name.clone(), bytes);
+        } else {
+            std::io::copy(&mut entry, &mut hasher).map_err(|error| {
+                EvidenceError(format!("cannot hash archive member {name}: {error}"))
+            })?;
+        }
+        let size = entry.header().size().unwrap_or(0);
+        require(
+            files
+                .insert(
+                    name,
+                    ProofFile {
+                        sha256: format!("{:x}", hasher.finalize()),
+                        bytes: size,
+                    },
+                )
+                .is_none(),
+            "runtime validation archive contains duplicate paths",
+        )?;
+    }
+    require(
+        required.iter().all(|name| retained.contains_key(*name)),
+        "runtime validation archive is missing required evidence",
+    )?;
+    let proof: RuntimeValidationProof =
+        parse_json_bytes(&retained["evidence.json"], "runtime validation proof")?;
+    require(
+        proof.format == VALIDATION_FORMAT,
+        "unsupported runtime validation format",
+    )?;
+    require(
+        proof.architecture == architecture && proof.source_commit == source_commit,
+        "runtime validation identity differs from its index",
+    )?;
+    require(
+        proof.runtime.tag == format!("{runtime_tag}-{architecture}"),
+        "runtime validation tag differs from its index",
+    )?;
+    require_digest_reference(&proof.runtime.image)?;
+    require(
+        !proof.host.kernel_release.is_empty() && proof.host.kvm_api_version == 12,
+        "runtime validation was not produced by KVM API version 12",
+    )?;
+    require(
+        proof.scenarios
+            == ["container", "coverage", "schedule-search", "pthread-sync"].map(str::to_owned),
+        "runtime validation does not contain the required scenarios",
+    )?;
+    files.remove("evidence.json");
+    require(
+        proof.files.len() == files.len()
+            && proof.files.iter().all(|(name, expected)| {
+                files.get(name).is_some_and(|actual| {
+                    expected.sha256 == actual.sha256 && expected.bytes == actual.bytes
+                })
+            }),
+        "runtime validation inventory does not match its contents",
+    )?;
+    let container_plan: serde_json::Value =
+        parse_json_bytes(&retained["container/plan.json"], "container plan")?;
+    require(
+        container_plan["format"] == "theseus-run-plan-v1",
+        "container/plan.json is not a run plan",
+    )?;
+    for name in [
+        "coverage/plan.json",
+        "schedule-search/plan.json",
+        "pthread-sync/plan.json",
+    ] {
+        let plan: serde_json::Value = parse_json_bytes(&retained[name], name)?;
+        require(
+            plan["format"] == "theseus-compose-plan-v1",
+            &format!("{name} is not a Compose plan"),
+        )?;
+    }
+    let container: serde_json::Value =
+        parse_json_bytes(&retained["container/run/result.json"], "container result")?;
+    require(
+        container["status"] == "passed",
+        "container scenario did not pass",
+    )?;
+    require(
+        String::from_utf8_lossy(&retained["container/run/serial.log"])
+            .contains("THES:HTTP:operation:read_health:PASS"),
+        "container scenario did not retain its health operation",
+    )?;
+    require(
+        String::from_utf8_lossy(&retained["container/replay.log"]).contains("replay passed"),
+        "container scenario did not retain a successful replay",
+    )?;
+    verify_validation_campaign(
+        &retained["coverage/campaign/campaign-result.json"],
+        "coverage",
+        "unique_application_blocks",
+        false,
+    )?;
+    verify_validation_campaign(
+        &retained["coverage/rerun/campaign-result.json"],
+        "coverage replay",
+        "unique_application_blocks",
+        true,
+    )?;
+    let comparison: serde_json::Value =
+        parse_json_bytes(&retained["coverage/comparison.json"], "campaign comparison")?;
+    require(
+        comparison["format"] == "theseus-campaign-comparison-v1",
+        "released CLI did not retain a campaign comparison",
+    )?;
+    let evaluation: serde_json::Value =
+        parse_json_bytes(&retained["coverage/evaluation.json"], "campaign evaluation")?;
+    require(
+        evaluation["status"] == "passed",
+        "released CLI did not retain a passing evaluation",
+    )?;
+    verify_validation_campaign(
+        &retained["schedule-search/campaign/campaign-result.json"],
+        "schedule search",
+        "thread_scheduling_decisions",
+        false,
+    )?;
+    let schedule: serde_json::Value = parse_json_bytes(
+        &retained["schedule-search/campaign/campaign-result.json"],
+        "schedule search",
+    )?;
+    require(
+        schedule["properties"].as_array().is_some_and(|properties| {
+            properties.iter().any(|property| {
+                property["name"] == "lost_update_is_unreachable" && property["status"] == "failed"
+            })
+        }),
+        "schedule search did not retain its lost-update counterexample",
+    )?;
+    let minimization: serde_json::Value = parse_json_bytes(
+        &retained["schedule-search/minimized/minimization.json"],
+        "schedule minimization",
+    )?;
+    require(
+        minimization["property"] == "lost_update_is_unreachable",
+        "schedule minimization names the wrong property",
+    )?;
+    verify_validation_campaign(
+        &retained["schedule-search/rerun/campaign-result.json"],
+        "schedule replay",
+        "thread_scheduling_decisions",
+        true,
+    )?;
+    verify_validation_campaign(
+        &retained["pthread-sync/campaign/campaign-result.json"],
+        "pthread synchronization",
+        "thread_synchronization_events",
+        false,
+    )?;
+    verify_validation_campaign(
+        &retained["pthread-sync/rerun/campaign-result.json"],
+        "pthread synchronization replay",
+        "thread_synchronization_events",
+        true,
+    )?;
+    for name in [
+        "coverage/report/report.md",
+        "schedule-search/report/report.md",
+        "pthread-sync/report/report.md",
+    ] {
+        require(!retained[name].is_empty(), &format!("{name} is empty"))?;
+    }
+    Ok(())
+}
+
+fn verify_validation_campaign(
+    bytes: &[u8],
+    scenario: &str,
+    signal: &str,
+    replay: bool,
+) -> Result<(), EvidenceError> {
+    let value: serde_json::Value = parse_json_bytes(bytes, scenario)?;
+    require(
+        value["format"] == "theseus-compose-campaign-result-v1",
+        &format!("{scenario} has the wrong campaign format"),
+    )?;
+    require(
+        value[signal].as_u64().is_some_and(|count| count > 0),
+        &format!("{scenario} retained no {signal}"),
+    )?;
+    if replay {
+        require(
+            value["replay_verification"]["status"] == "passed",
+            &format!("{scenario} did not pass replay verification"),
+        )?;
+    }
+    Ok(())
+}
+
 fn require_safe_archive_path(path: &Path) -> Result<(), EvidenceError> {
     require(
         !path.is_absolute()
             && path
                 .components()
                 .all(|component| matches!(component, Component::Normal(_))),
-        "counterexample archive contains an unsafe path",
+        "evidence archive contains an unsafe path",
     )
 }
 
@@ -580,12 +883,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_incomplete_architecture_set() {
+    fn verifies_one_published_architecture() {
         let temporary = tempfile::tempdir().unwrap();
         write_architecture(temporary.path(), "amd64", "passed");
         let index = write_index(temporary.path(), false);
-        let error = verify_native_evidence(index).unwrap_err();
-        assert!(error.to_string().contains("exactly amd64 and arm64"));
+        assert_eq!(
+            verify_native_evidence(index).unwrap().architectures,
+            vec!["amd64"]
+        );
     }
 
     #[test]
@@ -598,6 +903,18 @@ mod tests {
         assert!(error
             .to_string()
             .contains("one or more replay services did not pass"));
+    }
+
+    #[test]
+    fn rejects_semantically_empty_runtime_validation() {
+        let temporary = tempfile::tempdir().unwrap();
+        write_architecture(temporary.path(), "amd64", "passed");
+        write_validation(temporary.path(), "amd64", 0);
+        let index = write_index(temporary.path(), false);
+        let error = verify_native_evidence(index).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("coverage retained no unique_application_blocks"));
     }
 
     fn write_architecture(directory: &Path, architecture: &str, replay_status: &str) {
@@ -693,6 +1010,168 @@ mod tests {
         let mut builder = tar::Builder::new(encoder);
         builder.append_dir_all("minimized", &root).unwrap();
         builder.into_inner().unwrap().finish().unwrap();
+
+        write_validation(directory, architecture, 1);
+    }
+
+    fn write_validation(directory: &Path, architecture: &str, signal_count: u64) {
+        let root = directory.join(format!("validation-{architecture}/validation"));
+        if root.exists() {
+            fs::remove_dir_all(&root).unwrap();
+        }
+        let plan = br#"{"format":"theseus-compose-plan-v1"}"#;
+        let run_plan = br#"{"format":"theseus-run-plan-v1"}"#;
+        let campaign = |signal: &str, replay: bool| {
+            let mut value = serde_json::json!({
+                "format": "theseus-compose-campaign-result-v1",
+                (signal): signal_count
+            });
+            if replay {
+                value["replay_verification"] = serde_json::json!({"status": "passed"});
+            }
+            if signal == "thread_scheduling_decisions" {
+                value["properties"] = serde_json::json!([{
+                    "name": "lost_update_is_unreachable",
+                    "status": "failed"
+                }]);
+            }
+            serde_json::to_vec(&value).unwrap()
+        };
+        let files: Vec<(&str, Vec<u8>)> = vec![
+            ("container/plan.json", run_plan.to_vec()),
+            ("container/run/replay-plan.json", b"{}".to_vec()),
+            (
+                "container/run/result.json",
+                br#"{"status":"passed"}"#.to_vec(),
+            ),
+            (
+                "container/run/serial.log",
+                b"THES:HTTP:operation:read_health:PASS\n".to_vec(),
+            ),
+            ("container/replay.log", b"replay passed\n".to_vec()),
+            ("container/source/Dockerfile", b"FROM scratch\n".to_vec()),
+            ("container/source/theseus.toml", b"version = 1\n".to_vec()),
+            ("coverage/plan.json", plan.to_vec()),
+            (
+                "coverage/campaign/campaign-result.json",
+                campaign("unique_application_blocks", false),
+            ),
+            ("coverage/campaign/replay-plan.json", b"{}".to_vec()),
+            ("coverage/report/report.md", b"coverage\n".to_vec()),
+            (
+                "coverage/rerun/campaign-result.json",
+                campaign("unique_application_blocks", true),
+            ),
+            (
+                "coverage/comparison.json",
+                br#"{"format":"theseus-campaign-comparison-v1"}"#.to_vec(),
+            ),
+            (
+                "coverage/evaluation.json",
+                br#"{"status":"passed"}"#.to_vec(),
+            ),
+            (
+                "coverage/evaluation/theseus-evaluation.toml",
+                b"format = 2\n".to_vec(),
+            ),
+            (
+                "coverage/evaluation/theseus-evaluation.lock",
+                b"{}".to_vec(),
+            ),
+            ("coverage/source/compose.yaml", b"services: {}\n".to_vec()),
+            (
+                "coverage/source/service/main.c",
+                b"int main(void) {}\n".to_vec(),
+            ),
+            (
+                "coverage/source/service/theseus.toml",
+                b"version = 1\n".to_vec(),
+            ),
+            ("schedule-search/plan.json", plan.to_vec()),
+            (
+                "schedule-search/campaign/campaign-result.json",
+                campaign("thread_scheduling_decisions", false),
+            ),
+            ("schedule-search/campaign/replay-plan.json", b"{}".to_vec()),
+            ("schedule-search/report/report.md", b"schedule\n".to_vec()),
+            (
+                "schedule-search/minimized/minimization.json",
+                br#"{"property":"lost_update_is_unreachable"}"#.to_vec(),
+            ),
+            ("schedule-search/minimized/replay-plan.json", b"{}".to_vec()),
+            (
+                "schedule-search/rerun/campaign-result.json",
+                campaign("thread_scheduling_decisions", true),
+            ),
+            (
+                "schedule-search/source/compose.yaml",
+                b"services: {}\n".to_vec(),
+            ),
+            (
+                "schedule-search/source/service/main.c",
+                b"int main(void) {}\n".to_vec(),
+            ),
+            (
+                "schedule-search/source/service/theseus.toml",
+                b"version = 1\n".to_vec(),
+            ),
+            ("pthread-sync/plan.json", plan.to_vec()),
+            (
+                "pthread-sync/campaign/campaign-result.json",
+                campaign("thread_synchronization_events", false),
+            ),
+            ("pthread-sync/campaign/replay-plan.json", b"{}".to_vec()),
+            (
+                "pthread-sync/report/report.md",
+                b"synchronization\n".to_vec(),
+            ),
+            (
+                "pthread-sync/rerun/campaign-result.json",
+                campaign("thread_synchronization_events", true),
+            ),
+            (
+                "pthread-sync/source/compose.yaml",
+                b"services: {}\n".to_vec(),
+            ),
+            (
+                "pthread-sync/source/service/main.c",
+                b"int main(void) {}\n".to_vec(),
+            ),
+            (
+                "pthread-sync/source/service/theseus.toml",
+                b"version = 1\n".to_vec(),
+            ),
+        ];
+        for (name, bytes) in files {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        let mut inventory = BTreeMap::new();
+        inventory_tree(&root, &root, &mut inventory);
+        fs::write(
+            root.join("evidence.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "format": VALIDATION_FORMAT,
+                "architecture": architecture,
+                "source_commit": COMMIT,
+                "runtime": {
+                    "image": format!("ghcr.io/e6qu/theseus@sha256:{DIGEST}"),
+                    "tag": format!("{TAG}-{architecture}")
+                },
+                "host": {"kernel_release": "6.8.0", "kvm_api_version": 12},
+                "scenarios": ["container", "coverage", "schedule-search", "pthread-sync"],
+                "files": inventory,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let archive_name = format!("theseus-{TAG}-runtime-validation-{architecture}.tar.gz");
+        let archive = fs::File::create(directory.join(archive_name)).unwrap();
+        let encoder = GzEncoder::new(archive, Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        builder.append_dir_all("validation", &root).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
     }
 
     fn inventory_tree(
@@ -734,10 +1213,13 @@ mod tests {
                 let certificate = format!("theseus-{TAG}-runtime-certificate-{architecture}.json");
                 let counterexample =
                     format!("theseus-{TAG}-multiservice-counterexample-{architecture}.tar.gz");
+                let validation = format!("theseus-{TAG}-runtime-validation-{architecture}.tar.gz");
                 let (certificate_sha256, certificate_bytes) =
                     asset_metadata(&directory.join(&certificate));
                 let (counterexample_sha256, counterexample_bytes) =
                     asset_metadata(&directory.join(&counterexample));
+                let (validation_sha256, validation_bytes) =
+                    asset_metadata(&directory.join(&validation));
                 (
                     architecture.to_owned(),
                     serde_json::json!({
@@ -750,6 +1232,11 @@ mod tests {
                             "file": counterexample,
                             "sha256": counterexample_sha256,
                             "bytes": counterexample_bytes
+                        },
+                        "validation": {
+                            "file": validation,
+                            "sha256": validation_sha256,
+                            "bytes": validation_bytes
                         }
                     }),
                 )

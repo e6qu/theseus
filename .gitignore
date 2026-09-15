@@ -22,6 +22,7 @@ e2e/*.cpio.gz
 __pycache__/
 
 # Tutorial artifacts
+.native-evidence/
 docs/tutorials/01-replay-by-seed/vmlinux
 docs/tutorials/01-replay-by-seed/work/
 docs/tutorials/02-control-the-random/vmlinux

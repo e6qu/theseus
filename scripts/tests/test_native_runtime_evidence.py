@@ -106,6 +106,7 @@ def main() -> None:
             for suffix in (
                 f"runtime-certificate-{architecture}.json",
                 f"multiservice-counterexample-{architecture}.tar.gz",
+                f"runtime-validation-{architecture}.tar.gz",
             ):
                 (directory / f"theseus-{TAG}-{suffix}").write_text(suffix)
         index_path = directory / f"theseus-{TAG}-native-evidence.json"
@@ -121,11 +122,30 @@ def main() -> None:
             str(index_path),
         )
         index = json.loads(index_path.read_text())
+        assert index["format"] == "theseus-native-evidence-index-v2"
         assert list(index["architectures"]) == ["amd64", "arm64"]
         assert index["source_commit"] == COMMIT
         for evidence in index["architectures"].values():
             assert len(evidence["certificate"]["sha256"]) == 64
             assert len(evidence["counterexample"]["sha256"]) == 64
+            assert len(evidence["validation"]["sha256"]) == 64
+
+        amd64_index = directory / f"theseus-{TAG}-native-evidence-amd64.json"
+        run(
+            "index",
+            "--directory",
+            str(directory),
+            "--tag",
+            TAG,
+            "--source-commit",
+            COMMIT,
+            "--architectures",
+            "amd64",
+            "--output",
+            str(amd64_index),
+        )
+        single = json.loads(amd64_index.read_text())
+        assert list(single["architectures"]) == ["amd64"]
 
 
 if __name__ == "__main__":

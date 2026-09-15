@@ -43,10 +43,12 @@ The CLI is released for Linux amd64/arm64 and macOS arm64. macOS supports
 validation and planning only: a Firecracker timeline needs Linux and KVM.
 
 `evidence verify` is an offline check for a native-certification release set.
-It requires the index, both architecture certificates, and both portable
-counterexample archives in one directory. It verifies their hashes and
-contents without KVM, then confirms that both replays contain the required
-partition, dropped frame, recovery, and distributed lost update.
+It requires the index plus the certificate, portable counterexample, and
+runtime-validation archive for every architecture named by that index. It
+verifies their hashes and complete file inventories without KVM. It then checks
+the fixed-plan certificate, the partition/recovery/lost-update replay, and the
+container, coverage, schedule-search, and pthread-synchronization runs. An index
+may certify amd64, arm64, or both; the command reports the exact scope.
 
 ## Explore an SDK guest
 

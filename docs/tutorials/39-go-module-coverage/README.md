@@ -92,7 +92,7 @@ theseus compose explore --output campaign compose.yaml
 ```sh
 grep -R '^THES:COV:v1:classifier:command:' \
   campaign/runs/*/services/classifier/serial.log
-theseus report campaign --output report
+theseus report --format markdown --output report/report.md campaign
 grep -n 'cmd/classifier/main.go\|logic/logic.go' report/report.md
 theseus compose replay campaign --output rerun
 grep -n '"status": "passed"' rerun/campaign-result.json

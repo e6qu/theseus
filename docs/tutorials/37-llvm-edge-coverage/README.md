@@ -101,7 +101,7 @@ grep -R '^THES:COV:v2:classifier:' campaign/runs/*/services/classifier/serial.lo
 grep -n 'unique_application_edges\|application_block_novelty' \
   campaign/campaign-result.json
 find campaign/checkpoint/services/classifier/artifacts -name 'coverage-*' -print
-theseus report campaign --output report
+theseus report --format markdown --output report/report.md campaign
 grep -n 'LLVM-instrumented application edge\|main.cc\|plugin.c' report/report.md
 theseus compose replay campaign --output rerun
 grep -n '"status": "passed"' rerun/campaign-result.json

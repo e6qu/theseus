@@ -91,7 +91,7 @@ grep -n 'thread_scheduling_decisions\|lost_update_is_reachable' \
   campaign/campaign-result.json
 grep -R '^THES:SCHED:v1:ledger:deposit:' \
   campaign/runs/*/services/ledger/serial.log | head
-theseus report campaign --output report
+theseus report --format markdown --output report/report.md campaign
 grep -n 'Thread scheduling\|Scheduling decisions' report/report.md
 ```
 
