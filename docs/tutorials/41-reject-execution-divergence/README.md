@@ -64,6 +64,7 @@ grep -n -A8 '"execution_ledgers"' campaign/campaign-result.json
 grep -n -A8 '"machine_execution_ledgers"' campaign/campaign-result.json
 grep -n -A4 '"machine_execution_traces"' campaign/campaign-result.json
 grep -m1 '"host:serial_input:' campaign/campaign-result.json
+grep -m1 '"vcpu:0:interrupt:serial:' campaign/campaign-result.json
 theseus compose replay campaign --output rerun
 grep -A2 '"replay_verification"' rerun/campaign-result.json
 theseus compare campaign rerun > comparison.json
@@ -74,7 +75,10 @@ Each ledger contains a decision count, a SHA-256 identity for the complete
 stream, and the last 32 readable decisions. Per-vCPU ledgers preserve local
 order. The exact machine trace prefixes guest exits with `vcpu:` and the HTTP
 operation's UART command with `host:`. It preserves the complete order needed
-to drive replay. The machine ledger is its compact digest and readable tail.
+to drive replay. A `vcpu:0:interrupt:serial:` record shows that the UART
+interrupt request was injected on the recorded vCPU turn instead of racing
+through an asynchronous irqfd. The machine ledger is the compact digest and
+readable tail of this stream.
 
 Before a restored campaign leaf runs, Theseus validates its inherited
 checkpoint prefix and installs the remaining exact trace. At each emulated
@@ -82,8 +86,9 @@ device effect it admits only the recorded vCPU and verifies the exit kind,
 address, width, and payload. Before UART input, it requires the recorded host
 event and exact bytes. Replay fails on the first wrong turn, input, or value,
 even when final HTTP and serial output might otherwise look the same. This does
-not control instruction or interrupt scheduling between KVM exits, or when the
-guest consumes queued input.
+not control instruction scheduling, when the guest services the injected
+interrupt, timer or non-UART interrupts, or when the guest consumes queued
+input.
 
 ## 6. Clean up (optional)
 

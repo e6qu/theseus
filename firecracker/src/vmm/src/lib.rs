@@ -737,7 +737,14 @@ impl Vmm {
                     .raw_input(bytes)
                     .map_err(|error| VmmError::ControlChannel(error.to_string()))
             },
-        )
+        )?;
+
+        if let Some(vm) = self.vm.as_kvm()
+            && vm.deterministic_interrupt_controller().is_some()
+        {
+            vm.kick_vcpus_for_interrupt_delivery()?;
+        }
+        Ok(())
     }
 
     /// Theseus: report bytes still waiting in the emulated UART receive FIFO.
