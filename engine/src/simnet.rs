@@ -27,8 +27,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use rand_chacha::ChaCha8Rng;
 use rand_chacha::rand_core::{RngCore, SeedableRng};
+use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -317,6 +317,8 @@ struct SimSwitchPort {
     rx_queue: VecDeque<PendingFrame>,
     rx_queue_frames: u32,
     dropped: u64,
+    duplicated: u64,
+    corrupted: u64,
     trace: Arc<Mutex<Vec<SimNetFrame>>>,
 }
 
@@ -330,6 +332,10 @@ pub struct SimSwitch {
     /// Per-path EtherType loss rules. Unlike a NIC-wide packet rule, these
     /// apply only while a frame crosses one selected switch path.
     packet_drop_rules: BTreeMap<(String, String, SimNetPacketSelector), SimSwitchPacketDropRule>,
+    /// Full deterministic packet conditions for one directed path. These are
+    /// independent of the source NIC so another peer on the same network is
+    /// unaffected by an asymmetric campaign fault.
+    link_conditions: BTreeMap<(String, String), SimSwitchLinkConditions>,
     round: u64,
     next_frame: u64,
 }
@@ -337,6 +343,14 @@ pub struct SimSwitch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SimSwitchPacketDropRule {
     drop_ppm: u32,
+    rng: ChaCha8Rng,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SimSwitchLinkConditions {
+    config: SimNetConfig,
+    tx_queue: VecDeque<PendingTransmit>,
+    tx_bytes_remaining: u64,
     rng: ChaCha8Rng,
 }
 
@@ -348,6 +362,8 @@ pub struct SimSwitchState {
     ports: BTreeMap<String, SimSwitchPortState>,
     blocked_links: BTreeSet<(String, String)>,
     packet_drop_rules: BTreeMap<(String, String, SimNetPacketSelector), SimSwitchPacketDropRule>,
+    #[serde(default)]
+    link_conditions: BTreeMap<(String, String), SimSwitchLinkConditions>,
     round: u64,
     next_frame: u64,
 }
@@ -357,6 +373,10 @@ struct SimSwitchPortState {
     rx_queue: VecDeque<PendingFrame>,
     rx_queue_frames: u32,
     dropped: u64,
+    #[serde(default)]
+    duplicated: u64,
+    #[serde(default)]
+    corrupted: u64,
 }
 
 /// Shared ownership used by all simulated NICs in one topology runner.
@@ -405,12 +425,15 @@ impl SimSwitch {
                             rx_queue: port.rx_queue.clone(),
                             rx_queue_frames: port.rx_queue_frames,
                             dropped: port.dropped,
+                            duplicated: port.duplicated,
+                            corrupted: port.corrupted,
                         },
                     )
                 })
                 .collect(),
             blocked_links: self.blocked_links.clone(),
             packet_drop_rules: self.packet_drop_rules.clone(),
+            link_conditions: self.link_conditions.clone(),
             round: self.round,
             next_frame: self.next_frame,
         }
@@ -430,9 +453,12 @@ impl SimSwitch {
             port.rx_queue = saved.rx_queue;
             port.rx_queue_frames = saved.rx_queue_frames;
             port.dropped = saved.dropped;
+            port.duplicated = saved.duplicated;
+            port.corrupted = saved.corrupted;
         }
         self.blocked_links = state.blocked_links;
         self.packet_drop_rules = state.packet_drop_rules;
+        self.link_conditions = state.link_conditions;
         self.round = state.round;
         self.next_frame = state.next_frame;
         Ok(())
@@ -456,6 +482,8 @@ impl SimSwitch {
                 rx_queue: VecDeque::new(),
                 rx_queue_frames,
                 dropped: 0,
+                duplicated: 0,
+                corrupted: 0,
                 trace,
             },
         );
@@ -468,6 +496,8 @@ impl SimSwitch {
             .retain(|(source, destination)| source != port && destination != port);
         self.packet_drop_rules
             .retain(|(source, destination, _), _| source != port && destination != port);
+        self.link_conditions
+            .retain(|(source, destination), _| source != port && destination != port);
     }
 
     /// Block or restore a single directed path between two attached ports.
@@ -490,6 +520,47 @@ impl SimSwitch {
             self.blocked_links.insert(link);
         } else {
             self.blocked_links.remove(&link);
+        }
+        Ok(())
+    }
+
+    /// Set or restore complete packet conditions on one directed path.
+    pub fn set_link_conditions(
+        &mut self,
+        source: &str,
+        destination: &str,
+        conditions: Option<SimNetConfig>,
+        seed: u64,
+    ) -> Result<(), SimSwitchError> {
+        if !self.ports.contains_key(source) {
+            return Err(SimSwitchError::InvalidPort(source.to_owned()));
+        }
+        if !self.ports.contains_key(destination) {
+            return Err(SimSwitchError::InvalidPort(destination.to_owned()));
+        }
+        let key = (source.to_owned(), destination.to_owned());
+        if let Some(config) = conditions {
+            let state =
+                self.link_conditions
+                    .entry(key)
+                    .or_insert_with(|| SimSwitchLinkConditions {
+                        config,
+                        tx_queue: VecDeque::new(),
+                        tx_bytes_remaining: config.tx_bytes_per_round,
+                        rng: ChaCha8Rng::seed_from_u64(link_conditions_seed(
+                            seed,
+                            source,
+                            destination,
+                        )),
+                    });
+            state.config = config;
+            if config.tx_bytes_per_round != 0 {
+                state.tx_bytes_remaining = config.tx_bytes_per_round;
+            }
+        } else if let Some(mut state) = self.link_conditions.remove(&key) {
+            while let Some(frame) = state.tx_queue.pop_front() {
+                self.queue_switch_receive(destination, frame.delay_rounds, frame.bytes, 0);
+            }
         }
         Ok(())
     }
@@ -549,64 +620,166 @@ impl SimSwitch {
     }
 
     fn deliver(&mut self, source: &str, include_source: bool, delay_rounds: u32, frame: &[u8]) {
-        let ready_round = self.round.saturating_add(u64::from(delay_rounds));
-        let sequence = self.next_frame;
-        self.next_frame = self.next_frame.saturating_add(1);
-        let packet_drop_rules = &mut self.packet_drop_rules;
-        for (port, destination) in &mut self.ports {
-            if include_source || port != source {
-                if self
-                    .blocked_links
-                    .contains(&(source.to_owned(), port.clone()))
+        let ports = self.ports.keys().cloned().collect::<Vec<_>>();
+        for port in ports {
+            if !include_source && port == source {
+                continue;
+            }
+            if self
+                .blocked_links
+                .contains(&(source.to_owned(), port.clone()))
+            {
+                self.drop_switch_frame(&port, SimNetDropReason::LinkPartition, frame);
+                continue;
+            }
+            if self
+                .packet_drop_rules
+                .iter_mut()
+                .filter(|((rule_source, rule_destination, selector), _)| {
+                    rule_source == source && rule_destination == &port && selector.matches(frame)
+                })
+                .max_by_key(|((_, _, selector), _)| selector.specificity())
+                .is_some_and(|(_, rule)| rule.rng.next_u32() % 1_000_000 < rule.drop_ppm)
+            {
+                self.drop_switch_frame(&port, SimNetDropReason::PacketRule, frame);
+                continue;
+            }
+
+            let key = (source.to_owned(), port.clone());
+            let mut deliveries = Vec::new();
+            let mut dropped = None;
+            let mut duplicated = false;
+            let mut corrupted = false;
+            let mut rx_queue_frames = 0;
+            if let Some(link) = self.link_conditions.get_mut(&key) {
+                rx_queue_frames = link.config.rx_queue_frames;
+                if link.config.mtu_bytes != 0 && frame.len() > link.config.mtu_bytes as usize {
+                    dropped = Some(SimNetDropReason::Mtu);
+                } else if link.config.drop_ppm != 0
+                    && link.rng.next_u32() % 1_000_000 < link.config.drop_ppm
                 {
-                    destination.dropped += 1;
-                    trace_drop(
-                        &destination.trace,
-                        self.round,
-                        SimNetDropReason::LinkPartition,
-                        frame,
-                    );
-                    continue;
+                    dropped = Some(SimNetDropReason::RandomLoss);
+                } else {
+                    let jitter = u32::try_from(
+                        link.rng.next_u64() % (u64::from(link.config.jitter_rounds) + 1),
+                    )
+                    .expect("configured jitter fits u32");
+                    let delay = delay_rounds
+                        .saturating_add(link.config.latency_rounds)
+                        .saturating_add(jitter);
+                    let mut bytes = frame.to_vec();
+                    if !bytes.is_empty()
+                        && link.config.corrupt_ppm != 0
+                        && link.rng.next_u32() % 1_000_000 < link.config.corrupt_ppm
+                    {
+                        let index = usize::try_from(
+                            link.rng.next_u64()
+                                % u64::try_from(bytes.len()).expect("frame length fits u64"),
+                        )
+                        .expect("frame index fits usize");
+                        bytes[index] ^= 1_u8 << (link.rng.next_u32() % 8);
+                        corrupted = true;
+                    }
+                    let duplicate = link.config.duplicate_ppm != 0
+                        && link.rng.next_u32() % 1_000_000 < link.config.duplicate_ppm;
+                    duplicated = duplicate;
+                    for bytes in
+                        std::iter::once(bytes.clone()).chain(duplicate.then_some(bytes).into_iter())
+                    {
+                        let pending = PendingTransmit {
+                            delay_rounds: delay,
+                            bytes,
+                        };
+                        let length =
+                            u64::try_from(pending.bytes.len()).expect("frame length fits u64");
+                        let unlimited = link.config.tx_bytes_per_round == 0;
+                        let can_send = unlimited
+                            || link.tx_bytes_remaining >= length
+                            || link.tx_bytes_remaining == link.config.tx_bytes_per_round;
+                        if can_send {
+                            if !unlimited {
+                                link.tx_bytes_remaining =
+                                    link.tx_bytes_remaining.saturating_sub(length);
+                            }
+                            deliveries.push(pending);
+                        } else if link.config.tx_queue_frames != 0
+                            && link.tx_queue.len() >= link.config.tx_queue_frames as usize
+                        {
+                            dropped = Some(SimNetDropReason::TransmitQueue);
+                        } else {
+                            link.tx_queue.push_back(pending);
+                        }
+                    }
                 }
-                if packet_drop_rules
-                    .iter_mut()
-                    .filter(|((rule_source, rule_destination, selector), _)| {
-                        rule_source == source && rule_destination == port && selector.matches(frame)
-                    })
-                    .max_by_key(|((_, _, selector), _)| selector.specificity())
-                    .is_some_and(|(_, rule)| rule.rng.next_u32() % 1_000_000 < rule.drop_ppm)
-                {
-                    destination.dropped += 1;
-                    trace_drop(
-                        &destination.trace,
-                        self.round,
-                        SimNetDropReason::PacketRule,
-                        frame,
-                    );
-                    continue;
-                }
-                if destination.rx_queue_frames != 0
-                    && destination.rx_queue.len() >= destination.rx_queue_frames as usize
-                {
-                    destination.dropped += 1;
-                    trace_drop(
-                        &destination.trace,
-                        self.round,
-                        SimNetDropReason::ReceiveQueue,
-                        frame,
-                    );
-                    continue;
-                }
-                push_pending(
-                    &mut destination.rx_queue,
-                    PendingFrame {
-                        ready_round,
-                        sequence,
-                        bytes: frame.to_vec(),
-                    },
+            } else {
+                deliveries.push(PendingTransmit {
+                    delay_rounds,
+                    bytes: frame.to_vec(),
+                });
+            }
+            if let Some(reason) = dropped {
+                self.drop_switch_frame(&port, reason, frame);
+            }
+            if let Some(destination) = self.ports.get_mut(&port) {
+                destination.duplicated = destination
+                    .duplicated
+                    .saturating_add(u64::from(duplicated));
+                destination.corrupted = destination
+                    .corrupted
+                    .saturating_add(u64::from(corrupted));
+            }
+            for delivery in deliveries {
+                self.queue_switch_receive(
+                    &port,
+                    delivery.delay_rounds,
+                    delivery.bytes,
+                    rx_queue_frames,
                 );
             }
         }
+    }
+
+    fn drop_switch_frame(&mut self, destination: &str, reason: SimNetDropReason, frame: &[u8]) {
+        if let Some(port) = self.ports.get_mut(destination) {
+            port.dropped = port.dropped.saturating_add(1);
+            trace_drop(&port.trace, self.round, reason, frame);
+        }
+    }
+
+    fn queue_switch_receive(
+        &mut self,
+        destination: &str,
+        delay_rounds: u32,
+        bytes: Vec<u8>,
+        link_limit: u32,
+    ) {
+        let Some(port) = self.ports.get_mut(destination) else {
+            return;
+        };
+        let limit = match (port.rx_queue_frames, link_limit) {
+            (0, link) | (link, 0) => link,
+            (baseline, link) => baseline.min(link),
+        };
+        if limit != 0 && port.rx_queue.len() >= limit as usize {
+            port.dropped = port.dropped.saturating_add(1);
+            trace_drop(
+                &port.trace,
+                self.round,
+                SimNetDropReason::ReceiveQueue,
+                &bytes,
+            );
+            return;
+        }
+        let sequence = self.next_frame;
+        self.next_frame = self.next_frame.saturating_add(1);
+        push_pending(
+            &mut port.rx_queue,
+            PendingFrame {
+                ready_round: self.round.saturating_add(u64::from(delay_rounds)),
+                sequence,
+                bytes,
+            },
+        );
     }
 
     fn receive(&mut self, port: &str) -> Option<Vec<u8>> {
@@ -627,9 +800,45 @@ impl SimSwitch {
             .map_or(0, |destination| destination.dropped)
     }
 
+    fn duplicated(&self, port: &str) -> u64 {
+        self.ports.get(port).map_or(0, |port| port.duplicated)
+    }
+
+    fn corrupted(&self, port: &str) -> u64 {
+        self.ports.get(port).map_or(0, |port| port.corrupted)
+    }
+
     /// Advance the deterministic topology scheduler by one round.
     pub fn advance_round(&mut self) {
         self.round = self.round.saturating_add(1);
+        let keys = self.link_conditions.keys().cloned().collect::<Vec<_>>();
+        for key in keys {
+            let mut ready = Vec::new();
+            let mut rx_queue_frames = 0;
+            if let Some(link) = self.link_conditions.get_mut(&key) {
+                rx_queue_frames = link.config.rx_queue_frames;
+                if link.config.tx_bytes_per_round != 0 {
+                    link.tx_bytes_remaining = link.config.tx_bytes_per_round;
+                }
+                while let Some(frame) = link.tx_queue.front() {
+                    let length = u64::try_from(frame.bytes.len()).expect("frame length fits u64");
+                    if link.config.tx_bytes_per_round != 0
+                        && link.tx_bytes_remaining < length
+                        && link.tx_bytes_remaining != link.config.tx_bytes_per_round
+                    {
+                        break;
+                    }
+                    let frame = link.tx_queue.pop_front().expect("checked link queue");
+                    if link.config.tx_bytes_per_round != 0 {
+                        link.tx_bytes_remaining = link.tx_bytes_remaining.saturating_sub(length);
+                    }
+                    ready.push(frame);
+                }
+            }
+            for frame in ready {
+                self.queue_switch_receive(&key.1, frame.delay_rounds, frame.bytes, rx_queue_frames);
+            }
+        }
     }
 
     /// Return sorted port names for a replayable topology fingerprint.
@@ -653,6 +862,17 @@ fn link_packet_rule_seed(
     hasher.update([selector.ip_protocol.unwrap_or(0)]);
     hasher.update(selector.source_port.unwrap_or(0).to_be_bytes());
     hasher.update(selector.destination_port.unwrap_or(0).to_be_bytes());
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("SHA-256 prefix is 8 bytes"))
+}
+
+fn link_conditions_seed(seed: u64, source: &str, destination: &str) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(seed.to_le_bytes());
+    hasher.update(b"link-conditions\0");
+    hasher.update(source.as_bytes());
+    hasher.update([0]);
+    hasher.update(destination.as_bytes());
     let digest = hasher.finalize();
     u64::from_le_bytes(digest[..8].try_into().expect("SHA-256 prefix is 8 bytes"))
 }
@@ -943,6 +1163,22 @@ impl SimNet {
             .is_ok()
     }
 
+    /// Set or restore all packet conditions on one directed switch path.
+    pub fn set_link_conditions(
+        &mut self,
+        destination: &str,
+        conditions: Option<SimNetConfig>,
+    ) -> bool {
+        let (Some(switch), Some(source)) = (&self.switch, &self.endpoint) else {
+            return false;
+        };
+        switch
+            .lock()
+            .expect("simulated switch lock poisoned")
+            .set_link_conditions(source, destination, conditions, self.config.seed)
+            .is_ok()
+    }
+
     /// Return the stable switch port name for a topology NIC.
     pub fn endpoint(&self) -> Option<&str> {
         self.endpoint.as_deref()
@@ -950,21 +1186,22 @@ impl SimNet {
 
     /// Return deterministic frame counters for this NIC.
     pub fn stats(&self) -> SimNetStats {
-        let ingress_dropped = if let (Some(switch), Some(endpoint)) = (&self.switch, &self.endpoint)
-        {
-            switch
-                .lock()
-                .expect("simulated switch lock poisoned")
-                .dropped(endpoint)
+        let ingress = if let (Some(switch), Some(endpoint)) = (&self.switch, &self.endpoint) {
+            let switch = switch.lock().expect("simulated switch lock poisoned");
+            (
+                switch.dropped(endpoint),
+                switch.duplicated(endpoint),
+                switch.corrupted(endpoint),
+            )
         } else {
-            0
+            (0, 0, 0)
         };
         SimNetStats {
             tx_frames: self.tx_frames,
             rx_frames: self.rx_frames,
-            dropped: self.dropped.saturating_add(ingress_dropped),
-            duplicated: self.duplicated,
-            corrupted: self.corrupted,
+            dropped: self.dropped.saturating_add(ingress.0),
+            duplicated: self.duplicated.saturating_add(ingress.1),
+            corrupted: self.corrupted.saturating_add(ingress.2),
             tx_sha256: self.tx_hasher.clone().finalize().into(),
             rx_sha256: self.rx_hasher.clone().finalize().into(),
         }
@@ -1685,17 +1922,71 @@ mod tests {
         assert_eq!(switch.receive("replica"), None);
         assert_eq!(switch.receive("auditor"), Some(b"request".to_vec()));
         assert_eq!(switch.dropped("replica"), 1);
-        assert!(
-            replica_trace
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|frame| { frame.drop_reason == Some(SimNetDropReason::LinkPartition) })
-        );
+        assert!(replica_trace
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|frame| { frame.drop_reason == Some(SimNetDropReason::LinkPartition) }));
 
         switch.set_link_blocked("api", "replica", false).unwrap();
         switch.deliver("api", false, 0, b"retry");
         assert_eq!(switch.receive("replica"), Some(b"retry".to_vec()));
+    }
+
+    #[test]
+    fn shared_switch_applies_and_recovers_full_directed_link_conditions() {
+        let mut switch = SimSwitch::new();
+        switch
+            .attach("api", 0, Arc::new(Mutex::new(Vec::new())))
+            .unwrap();
+        switch
+            .attach("replica", 0, Arc::new(Mutex::new(Vec::new())))
+            .unwrap();
+        switch
+            .attach("auditor", 0, Arc::new(Mutex::new(Vec::new())))
+            .unwrap();
+        switch
+            .set_link_conditions(
+                "api",
+                "replica",
+                Some(SimNetConfig {
+                    duplicate_ppm: 1_000_000,
+                    corrupt_ppm: 1_000_000,
+                    latency_rounds: 2,
+                    tx_bytes_per_round: 7,
+                    tx_queue_frames: 1,
+                    rx_queue_frames: 2,
+                    mtu_bytes: 8,
+                    ..Default::default()
+                }),
+                42,
+            )
+            .unwrap();
+
+        switch.deliver("api", false, 0, b"payload");
+        assert_eq!(switch.receive("auditor"), Some(b"payload".to_vec()));
+        assert_eq!(switch.receive("replica"), None);
+        switch.advance_round();
+        switch.advance_round();
+        let changed = switch.receive("replica").unwrap();
+        assert_eq!(
+            changed
+                .iter()
+                .zip(b"payload")
+                .map(|(actual, original)| (actual ^ original).count_ones())
+                .sum::<u32>(),
+            1
+        );
+        assert_eq!(switch.duplicated("replica"), 1);
+        assert_eq!(switch.corrupted("replica"), 1);
+        switch.advance_round();
+        assert_eq!(switch.receive("replica"), Some(changed));
+
+        switch
+            .set_link_conditions("api", "replica", None, 42)
+            .unwrap();
+        switch.deliver("api", false, 0, b"recovered");
+        assert_eq!(switch.receive("replica"), Some(b"recovered".to_vec()));
     }
 
     #[test]
@@ -1721,13 +2012,11 @@ mod tests {
         switch.deliver("api", false, 0, &arp);
         assert_eq!(switch.receive("replica"), Some(arp.to_vec()));
         assert_eq!(switch.dropped("replica"), 1);
-        assert!(
-            replica_trace
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|frame| { frame.drop_reason == Some(SimNetDropReason::PacketRule) })
-        );
+        assert!(replica_trace
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|frame| { frame.drop_reason == Some(SimNetDropReason::PacketRule) }));
 
         switch
             .set_link_packet_drop_rule("api", "replica", 0x0800.into(), None, 42)

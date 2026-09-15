@@ -90,6 +90,10 @@ struct ComposeTheseus {
 #[serde(deny_unknown_fields)]
 struct ComposeCampaign {
     driver: String,
+    /// Expand a bounded catalog of service and directed-network failures from
+    /// the locked topology and ordinary operation boundaries.
+    #[serde(default)]
+    fault_profile: Option<ComposeFaultProfile>,
     /// Discover an Antithesis-compatible test template from the service
     /// images instead of spelling out every command as a Compose operation.
     #[serde(default)]
@@ -515,12 +519,56 @@ pub enum CampaignFaultKind {
     Heal,
     LinkPartition,
     LinkHeal,
+    LinkFault,
+    LinkRecover,
+    ServiceStop,
+    ServiceStart,
+    ServiceKill,
+    ServiceRestart,
     StorageFault,
     StorageRecover,
     NetworkFault,
     NetworkRecover,
     PacketFault,
     PacketRecover,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposeFaultProfile {
+    Standard,
+}
+
+fn empty_campaign_fault(kind: CampaignFaultKind) -> ComposeCampaignFault {
+    ComposeCampaignFault {
+        kind,
+        required: false,
+        service: None,
+        network: None,
+        from: None,
+        to: None,
+        drive: None,
+        after: None,
+        at_round: None,
+        duration_rounds: None,
+        nanoseconds: None,
+        error_ppm: None,
+        latency_rounds: None,
+        torn_write_bytes: None,
+        corrupt_read_xor: None,
+        ethertype: None,
+        ip_protocol: None,
+        source_port: None,
+        destination_port: None,
+        drop_ppm: None,
+        duplicate_ppm: None,
+        corrupt_ppm: None,
+        jitter_rounds: None,
+        tx_bytes_per_round: None,
+        mtu_bytes: None,
+        tx_queue_frames: None,
+        rx_queue_frames: None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1250,6 +1298,8 @@ fn is_default_campaign_coverage(value: &CampaignCoverage) -> bool {
 #[derive(Debug, Clone, Serialize)]
 pub struct CampaignPlan {
     pub driver: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fault_profile: Option<ComposeFaultProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_template: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3974,8 +4024,12 @@ fn campaign_plan(
     }
     validate_campaign_operation_rules(&operations, &campaign.stages, &initial_state)?;
     validate_test_command_model(&operations, &campaign.stages)?;
-    let mut faults = Vec::with_capacity(campaign.faults.len());
-    for candidate in campaign.faults {
+    let mut campaign_faults = campaign.faults;
+    if campaign.fault_profile == Some(ComposeFaultProfile::Standard) {
+        campaign_faults.extend(standard_fault_profile(&operations, services));
+    }
+    let mut faults = Vec::with_capacity(campaign_faults.len());
+    for candidate in campaign_faults {
         let has_network_conditions = candidate.drop_ppm.is_some()
             || candidate.duplicate_ppm.is_some()
             || candidate.corrupt_ppm.is_some()
@@ -4061,6 +4115,82 @@ fn campaign_plan(
                     at_round: Some(fault.at_round),
                     duration_rounds: fault.duration_rounds,
                     nanoseconds: fault.nanoseconds,
+                    error_ppm: None,
+                    latency_rounds: None,
+                    torn_write_bytes: None,
+                    corrupt_read_xor: None,
+                    ethertype: None,
+                    ip_protocol: None,
+                    source_port: None,
+                    destination_port: None,
+                    drop_ppm: None,
+                    duplicate_ppm: None,
+                    corrupt_ppm: None,
+                    jitter_rounds: None,
+                    tx_bytes_per_round: None,
+                    mtu_bytes: None,
+                    tx_queue_frames: None,
+                    rx_queue_frames: None,
+                });
+            }
+            CampaignFaultKind::ServiceStop
+            | CampaignFaultKind::ServiceStart
+            | CampaignFaultKind::ServiceKill
+            | CampaignFaultKind::ServiceRestart => {
+                let service_name = candidate.service.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign service lifecycle action requires service".to_owned(),
+                    )
+                })?;
+                let after = candidate.after.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign service lifecycle action requires after".to_owned(),
+                    )
+                })?;
+                let (after, after_input) = normalize_campaign_fault_after(after, &operations)?;
+                let service = services.get_mut(service_name).ok_or_else(|| {
+                    ComposeError::Invalid(format!(
+                        "campaign lifecycle action references unknown service {service_name:?}"
+                    ))
+                })?;
+                let Some(contract) = service.run.container_service.as_mut() else {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign lifecycle action requires image-backed service {service_name:?} with a container_service contract"
+                    )));
+                };
+                contract.campaign = true;
+                if candidate.network.is_some()
+                    || candidate.from.is_some()
+                    || candidate.to.is_some()
+                    || candidate.drive.is_some()
+                    || candidate.at_round.is_some()
+                    || candidate.duration_rounds.is_some()
+                    || candidate.nanoseconds.is_some()
+                    || candidate.error_ppm.is_some()
+                    || candidate.latency_rounds.is_some()
+                    || candidate.torn_write_bytes.is_some()
+                    || candidate.corrupt_read_xor.is_some()
+                    || candidate.ethertype.is_some()
+                    || has_network_conditions
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign service lifecycle actions accept only service and after"
+                            .to_owned(),
+                    ));
+                }
+                faults.push(CampaignFaultPlan {
+                    kind: candidate.kind,
+                    required: candidate.required,
+                    service: Some(service_name.to_owned()),
+                    network: None,
+                    from: None,
+                    to: None,
+                    drive: None,
+                    after,
+                    after_input,
+                    at_round: None,
+                    duration_rounds: None,
+                    nanoseconds: None,
                     error_ppm: None,
                     latency_rounds: None,
                     torn_write_bytes: None,
@@ -4338,15 +4468,22 @@ fn campaign_plan(
                     rx_queue_frames: None,
                 });
             }
-            CampaignFaultKind::NetworkFault | CampaignFaultKind::NetworkRecover => {
+            CampaignFaultKind::NetworkFault
+            | CampaignFaultKind::NetworkRecover
+            | CampaignFaultKind::LinkFault
+            | CampaignFaultKind::LinkRecover => {
+                let directed = matches!(
+                    candidate.kind,
+                    CampaignFaultKind::LinkFault | CampaignFaultKind::LinkRecover
+                );
                 let network = candidate.network.as_deref().ok_or_else(|| {
                     ComposeError::Invalid(
-                        "campaign network_fault/network_recover action requires network".to_owned(),
+                        "campaign network/link fault action requires network".to_owned(),
                     )
                 })?;
                 let after = candidate.after.as_deref().ok_or_else(|| {
                     ComposeError::Invalid(
-                        "campaign network_fault/network_recover action requires after".to_owned(),
+                        "campaign network/link fault action requires after".to_owned(),
                     )
                 })?;
                 let (after, after_input) = normalize_campaign_fault_after(after, &operations)?;
@@ -4358,9 +4495,31 @@ fn campaign_plan(
                         "campaign action references unknown network {network:?}",
                     )));
                 }
+                let endpoints = match (candidate.from.as_deref(), candidate.to.as_deref()) {
+                    (Some(from), Some(to)) if directed && from != to => {
+                        for service_name in [from, to] {
+                            let service = services.get(service_name).ok_or_else(|| {
+                                ComposeError::Invalid(format!(
+                                    "campaign directed link action references unknown service {service_name:?}"
+                                ))
+                            })?;
+                            if !service.networks.iter().any(|name| name == network) {
+                                return Err(ComposeError::Invalid(format!(
+                                    "campaign directed link action service {service_name:?} is not on network {network:?}"
+                                )));
+                            }
+                        }
+                        Some((from, to))
+                    }
+                    (None, None) if !directed => None,
+                    _ => {
+                        return Err(ComposeError::Invalid(
+                            "link_fault/link_recover require both distinct from and to services; network_fault/network_recover do not accept them"
+                                .to_owned(),
+                        ));
+                    }
+                };
                 if candidate.service.is_some()
-                    || candidate.from.is_some()
-                    || candidate.to.is_some()
                     || candidate.drive.is_some()
                     || candidate.at_round.is_some()
                     || candidate.duration_rounds.is_some()
@@ -4371,20 +4530,24 @@ fn campaign_plan(
                     || candidate.ethertype.is_some()
                 {
                     return Err(ComposeError::Invalid(
-                        "campaign network_fault/network_recover actions accept only network, after, and packet-condition fields"
+                        "campaign network/link fault actions accept network, after, optional directed from/to, and packet-condition fields"
                             .to_owned(),
                     ));
                 }
-                if matches!(candidate.kind, CampaignFaultKind::NetworkFault)
-                    && !has_network_conditions
+                if matches!(
+                    candidate.kind,
+                    CampaignFaultKind::NetworkFault | CampaignFaultKind::LinkFault
+                ) && !has_network_conditions
                     && candidate.latency_rounds.is_none()
                 {
                     return Err(ComposeError::Invalid(
                         "campaign network_fault must set one packet-condition field".to_owned(),
                     ));
                 }
-                if matches!(candidate.kind, CampaignFaultKind::NetworkRecover)
-                    && (has_network_conditions || candidate.latency_rounds.is_some())
+                if matches!(
+                    candidate.kind,
+                    CampaignFaultKind::NetworkRecover | CampaignFaultKind::LinkRecover
+                ) && (has_network_conditions || candidate.latency_rounds.is_some())
                 {
                     return Err(ComposeError::Invalid(
                         "campaign network_recover accepts only network and after".to_owned(),
@@ -4406,8 +4569,8 @@ fn campaign_plan(
                     required: candidate.required,
                     service: None,
                     network: Some(network.to_owned()),
-                    from: None,
-                    to: None,
+                    from: endpoints.map(|(from, _)| from.to_owned()),
+                    to: endpoints.map(|(_, to)| to.to_owned()),
                     drive: None,
                     after,
                     after_input,
@@ -4719,6 +4882,7 @@ fn campaign_plan(
     }
     Ok(Some(CampaignPlan {
         driver: campaign.driver,
+        fault_profile: campaign.fault_profile,
         test_template: (selected_templates.len() == 1).then(|| selected_templates[0].clone()),
         test_templates: (selected_templates.len() > 1)
             .then_some(selected_templates)
@@ -4735,6 +4899,109 @@ fn campaign_plan(
         max_faults_per_run: campaign.max_faults_per_run,
         max_operations_per_run: campaign.max_operations_per_run,
     }))
+}
+
+/// Build a useful failure catalog from facts already locked in the plan. The
+/// cap is deliberately applied while expanding each stable, sorted topology so
+/// a wide Compose file cannot turn one profile into an unbounded search input.
+fn standard_fault_profile(
+    operations: &[OperationPlan],
+    services: &mut BTreeMap<String, ComposeServicePlan>,
+) -> Vec<ComposeCampaignFault> {
+    const MAX_PROFILE_CANDIDATES: usize = 512;
+    let boundaries = operations
+        .iter()
+        .filter(|operation| {
+            !matches!(
+                operation.command,
+                Some(
+                    ComposeTestCommand::First
+                        | ComposeTestCommand::Eventually
+                        | ComposeTestCommand::Finally
+                )
+            ) && !matches!(
+                operation.shell_phase,
+                Some(
+                    ComposeShellPhase::Setup
+                        | ComposeShellPhase::Completion
+                        | ComposeShellPhase::Assertion
+                        | ComposeShellPhase::Recovery
+                )
+            )
+        })
+        .map(|operation| operation.name.clone())
+        .collect::<Vec<_>>();
+    let lifecycle_services = services
+        .iter_mut()
+        .filter_map(|(name, service)| {
+            service.run.container_service.as_mut().map(|contract| {
+                contract.campaign = true;
+                name.clone()
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut network_services = BTreeMap::<String, Vec<String>>::new();
+    for (name, service) in services.iter() {
+        for network in &service.networks {
+            network_services
+                .entry(network.clone())
+                .or_default()
+                .push(name.clone());
+        }
+    }
+    let mut generated = Vec::new();
+    for after in boundaries {
+        for service in &lifecycle_services {
+            for kind in [
+                CampaignFaultKind::ServiceStop,
+                CampaignFaultKind::ServiceKill,
+                CampaignFaultKind::ServiceRestart,
+            ] {
+                let mut fault = empty_campaign_fault(kind);
+                fault.service = Some(service.clone());
+                fault.after = Some(after.clone());
+                generated.push(fault);
+                if generated.len() == MAX_PROFILE_CANDIDATES {
+                    return generated;
+                }
+            }
+        }
+        for (network, endpoints) in &network_services {
+            for from in endpoints {
+                for to in endpoints.iter().filter(|to| *to != from) {
+                    let mut partition = empty_campaign_fault(CampaignFaultKind::LinkPartition);
+                    partition.network = Some(network.clone());
+                    partition.from = Some(from.clone());
+                    partition.to = Some(to.clone());
+                    partition.after = Some(after.clone());
+                    generated.push(partition);
+                    if generated.len() == MAX_PROFILE_CANDIDATES {
+                        return generated;
+                    }
+
+                    let mut degraded = empty_campaign_fault(CampaignFaultKind::LinkFault);
+                    degraded.network = Some(network.clone());
+                    degraded.from = Some(from.clone());
+                    degraded.to = Some(to.clone());
+                    degraded.after = Some(after.clone());
+                    degraded.drop_ppm = Some(100_000);
+                    degraded.duplicate_ppm = Some(10_000);
+                    degraded.corrupt_ppm = Some(1_000);
+                    degraded.latency_rounds = Some(2);
+                    degraded.jitter_rounds = Some(2);
+                    degraded.tx_bytes_per_round = Some(4_096);
+                    degraded.mtu_bytes = Some(1_200);
+                    degraded.tx_queue_frames = Some(8);
+                    degraded.rx_queue_frames = Some(8);
+                    generated.push(degraded);
+                    if generated.len() == MAX_PROFILE_CANDIDATES {
+                        return generated;
+                    }
+                }
+            }
+        }
+    }
+    generated
 }
 
 fn normalize_operation_serial_guards(
@@ -7089,6 +7356,55 @@ mod tests {
             .operations
             .iter()
             .any(|operation| operation.name.contains("helper")));
+    }
+
+    #[test]
+    fn standard_fault_profile_expands_only_ordinary_template_boundaries() {
+        let directory = image_fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    test_template: main\n    max_parallel_commands: 1\n    max_operations_per_run: 4\n    fault_profile: standard\n",
+            &[
+                ("opt/antithesis/test/v1/main/first_prepare", 0o755),
+                (
+                    "opt/antithesis/test/v1/main/parallel_driver_write",
+                    0o755,
+                ),
+                ("opt/antithesis/test/v1/main/eventually_check", 0o755),
+            ],
+        );
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert!(
+            plan.services["api"]
+                .run
+                .container_service
+                .as_ref()
+                .unwrap()
+                .campaign
+        );
+        let campaign = plan.campaign.unwrap();
+        assert_eq!(campaign.fault_profile, Some(ComposeFaultProfile::Standard));
+        assert_eq!(campaign.faults.len(), 7);
+        assert!(campaign.faults.iter().all(|fault| fault
+            .after
+            .as_deref()
+            .is_some_and(|after| after.contains("start"))));
+        assert_eq!(
+            campaign
+                .faults
+                .iter()
+                .filter(|fault| matches!(fault.kind, CampaignFaultKind::ServiceKill))
+                .count(),
+            1
+        );
+        let links = campaign
+            .faults
+            .iter()
+            .filter(|fault| matches!(fault.kind, CampaignFaultKind::LinkFault))
+            .collect::<Vec<_>>();
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].drop_ppm, Some(100_000));
+        assert_eq!(links[0].latency_rounds, Some(2));
+        assert_eq!(links[0].mtu_bytes, Some(1_200));
     }
 
     #[test]

@@ -63,6 +63,8 @@ struct TopologyPlan {
 struct CampaignPlan {
     driver: String,
     #[serde(default)]
+    fault_profile: Option<CampaignFaultProfile>,
+    #[serde(default)]
     test_template: Option<String>,
     #[serde(default)]
     test_templates: Vec<String>,
@@ -398,12 +400,24 @@ enum CampaignFaultKind {
     Heal,
     LinkPartition,
     LinkHeal,
+    LinkFault,
+    LinkRecover,
+    ServiceStop,
+    ServiceStart,
+    ServiceKill,
+    ServiceRestart,
     StorageFault,
     StorageRecover,
     NetworkFault,
     NetworkRecover,
     PacketFault,
     PacketRecover,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CampaignFaultProfile {
+    Standard,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2117,6 +2131,43 @@ impl ServiceVm {
         Ok(())
     }
 
+    fn set_network_link_conditions(
+        &self,
+        network: &str,
+        destination: &str,
+        action: Option<&CampaignAction>,
+    ) -> Result<(), String> {
+        let (_, id) = self
+            .networks
+            .iter()
+            .find(|(name, _)| name == network)
+            .ok_or_else(|| format!("service is not on network: {network}"))?;
+        let conditions = action.map(|action| SimNetConfig {
+            drop_ppm: action.drop_ppm.unwrap_or(0),
+            duplicate_ppm: action.duplicate_ppm.unwrap_or(0),
+            corrupt_ppm: action.corrupt_ppm.unwrap_or(0),
+            latency_rounds: action.latency_rounds.unwrap_or(0),
+            jitter_rounds: action.jitter_rounds.unwrap_or(0),
+            tx_bytes_per_round: action.tx_bytes_per_round.unwrap_or(0),
+            mtu_bytes: action.mtu_bytes.unwrap_or(0),
+            tx_queue_frames: action.tx_queue_frames.unwrap_or(0),
+            rx_queue_frames: action.rx_queue_frames.unwrap_or(0),
+            ..SimNetConfig::default()
+        });
+        let vmm = self.vmm.lock().expect("VMM lock poisoned");
+        if !vmm
+            .with_simulated_network(id, |net| {
+                net.set_simulated_link_conditions(destination, conditions)
+            })
+            .unwrap_or(false)
+        {
+            return Err(format!(
+                "network does not have a simulated topology link: {network}"
+            ));
+        }
+        Ok(())
+    }
+
     fn set_storage_fault(
         &self,
         storage: &[StoragePlan],
@@ -2599,7 +2650,8 @@ fn checkpoint_campaign_operation(
     }
     let mut round = parent.round;
     terminate_campaign_shell_processes(event, topology, &mut services, &switches, &mut round)?;
-    let mut applied = recover_campaign_faults(event, topology, &mut services)?;
+    let mut applied =
+        recover_campaign_faults(event, topology, &mut services, &switches, &mut round)?;
     let mut target = services
         .remove(&event.service)
         .ok_or_else(|| format!("campaign operation service disappeared: {}", event.service))?;
@@ -2626,6 +2678,8 @@ fn recover_campaign_faults(
     event: &CampaignEvent,
     topology: &TopologyPlan,
     services: &mut BTreeMap<String, ServiceRuntime>,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    round: &mut u64,
 ) -> Result<Vec<AppliedCampaignAction>, String> {
     if event.recover_faults.is_empty() {
         return Ok(Vec::new());
@@ -2641,6 +2695,8 @@ fn recover_campaign_faults(
             &mut driver,
             topology,
             services,
+            switches,
+            round,
         )?);
         Ok::<(), String>(())
     });
@@ -6433,13 +6489,19 @@ fn campaign_fault_combinations(
         selected: &mut Vec<usize>,
         output: &mut Vec<Vec<usize>>,
     ) {
+        if output.len() == MAX_CAMPAIGN_CANDIDATES {
+            return;
+        }
         if !selected.is_empty() {
             output.push(selected.clone());
         }
-        if selected.len() == maximum {
+        if selected.len() == maximum || output.len() == MAX_CAMPAIGN_CANDIDATES {
             return;
         }
         for (offset, index) in applicable.iter().enumerate().skip(start) {
+            if output.len() == MAX_CAMPAIGN_CANDIDATES {
+                return;
+            }
             if selected
                 .iter()
                 .all(|chosen| campaign_faults_compatible(&faults[*chosen], &faults[*index]))
@@ -6457,6 +6519,18 @@ fn campaign_fault_combinations(
 }
 
 fn campaign_faults_compatible(first: &CampaignFault, second: &CampaignFault) -> bool {
+    let service_action = |fault: &CampaignFault| {
+        matches!(
+            fault.kind,
+            CampaignFaultKind::ServiceStop
+                | CampaignFaultKind::ServiceStart
+                | CampaignFaultKind::ServiceKill
+                | CampaignFaultKind::ServiceRestart
+        )
+    };
+    if service_action(first) && service_action(second) && first.service == second.service {
+        return false;
+    }
     let lifecycle = |fault: &CampaignFault| {
         matches!(
             fault.kind,
@@ -6497,6 +6571,12 @@ fn campaign_fault_applies(
         | CampaignFaultKind::Heal
         | CampaignFaultKind::LinkPartition
         | CampaignFaultKind::LinkHeal
+        | CampaignFaultKind::LinkFault
+        | CampaignFaultKind::LinkRecover
+        | CampaignFaultKind::ServiceStop
+        | CampaignFaultKind::ServiceStart
+        | CampaignFaultKind::ServiceKill
+        | CampaignFaultKind::ServiceRestart
         | CampaignFaultKind::StorageFault
         | CampaignFaultKind::StorageRecover
         | CampaignFaultKind::NetworkFault
@@ -6883,6 +6963,10 @@ fn campaign_recovery_action(
     let kind = match fault.kind {
         CampaignFaultKind::Partition => CampaignFaultKind::Heal,
         CampaignFaultKind::LinkPartition => CampaignFaultKind::LinkHeal,
+        CampaignFaultKind::LinkFault => CampaignFaultKind::LinkRecover,
+        CampaignFaultKind::ServiceStop | CampaignFaultKind::ServiceKill => {
+            CampaignFaultKind::ServiceStart
+        }
         CampaignFaultKind::StorageFault => CampaignFaultKind::StorageRecover,
         CampaignFaultKind::NetworkFault => CampaignFaultKind::NetworkRecover,
         CampaignFaultKind::PacketFault => CampaignFaultKind::PacketRecover,
@@ -6891,6 +6975,9 @@ fn campaign_recovery_action(
         | CampaignFaultKind::ClockJump
         | CampaignFaultKind::Heal
         | CampaignFaultKind::LinkHeal
+        | CampaignFaultKind::LinkRecover
+        | CampaignFaultKind::ServiceStart
+        | CampaignFaultKind::ServiceRestart
         | CampaignFaultKind::StorageRecover
         | CampaignFaultKind::NetworkRecover
         | CampaignFaultKind::PacketRecover => return Ok(None),
@@ -6937,6 +7024,33 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
             match fault.kind {
                 CampaignFaultKind::LinkPartition => "link_partition",
                 CampaignFaultKind::LinkHeal => "link_heal",
+                _ => unreachable!(),
+            },
+            campaign_fault_barrier_name(fault)
+        ),
+        CampaignFaultKind::LinkFault | CampaignFaultKind::LinkRecover => format!(
+            "{}:{}->{}:{}@{}",
+            fault.network.as_deref().expect("validated action network"),
+            fault.from.as_deref().expect("validated action source"),
+            fault.to.as_deref().expect("validated action destination"),
+            if matches!(fault.kind, CampaignFaultKind::LinkFault) {
+                "link_fault"
+            } else {
+                "link_recover"
+            },
+            campaign_fault_barrier_name(fault)
+        ),
+        CampaignFaultKind::ServiceStop
+        | CampaignFaultKind::ServiceStart
+        | CampaignFaultKind::ServiceKill
+        | CampaignFaultKind::ServiceRestart => format!(
+            "{}:{}@{}",
+            fault.service.as_deref().expect("validated service target"),
+            match fault.kind {
+                CampaignFaultKind::ServiceStop => "service_stop",
+                CampaignFaultKind::ServiceStart => "service_start",
+                CampaignFaultKind::ServiceKill => "service_kill",
+                CampaignFaultKind::ServiceRestart => "service_restart",
                 _ => unreachable!(),
             },
             campaign_fault_barrier_name(fault)
@@ -10256,6 +10370,8 @@ fn inject_campaign_events(
                 driver,
                 topology,
                 services,
+                switches,
+                round,
             )?);
         }
     }
@@ -10306,6 +10422,8 @@ fn inject_campaign_operation(
             driver,
             topology,
             services,
+            switches,
+            round,
         )?);
     }
     Ok(barrier)
@@ -10317,6 +10435,8 @@ fn apply_campaign_action(
     driver: &mut ServiceRuntime,
     topology: &TopologyPlan,
     services: &mut BTreeMap<String, ServiceRuntime>,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    round: &mut u64,
 ) -> Result<AppliedCampaignAction, String> {
     match action.kind {
         CampaignFaultKind::Partition | CampaignFaultKind::Heal => {
@@ -10393,6 +10513,76 @@ fn apply_campaign_action(
                     "directed link {} after the operation barrier",
                     if blocked { "partitioned" } else { "healed" }
                 ),
+            })
+        }
+        CampaignFaultKind::LinkFault | CampaignFaultKind::LinkRecover => {
+            let network = action
+                .network
+                .as_deref()
+                .ok_or_else(|| "campaign directed link fault has no network".to_owned())?;
+            let from = action
+                .from
+                .as_deref()
+                .ok_or_else(|| "campaign directed link fault has no source".to_owned())?;
+            let to = action
+                .to
+                .as_deref()
+                .ok_or_else(|| "campaign directed link fault has no destination".to_owned())?;
+            let recover = matches!(action.kind, CampaignFaultKind::LinkRecover);
+            let destination = if to == driver_name {
+                driver.vm.network_endpoint(network)?
+            } else {
+                services
+                    .get(to)
+                    .ok_or_else(|| format!("campaign link destination did not start: {to}"))?
+                    .vm
+                    .network_endpoint(network)?
+            }
+            .ok_or_else(|| {
+                format!("campaign link destination is not on network: {to}/{network}")
+            })?;
+            if from == driver_name {
+                driver.vm.set_network_link_conditions(
+                    network,
+                    &destination,
+                    (!recover).then_some(action),
+                )?;
+            } else {
+                services
+                    .get(from)
+                    .ok_or_else(|| format!("campaign link source did not start: {from}"))?
+                    .vm
+                    .set_network_link_conditions(
+                        network,
+                        &destination,
+                        (!recover).then_some(action),
+                    )?;
+            }
+            Ok(AppliedCampaignAction {
+                operation: action.operation.clone(),
+                kind: if recover {
+                    "link_recover"
+                } else {
+                    "link_fault"
+                }
+                .to_owned(),
+                target: format!("network:{network}/{from}->{to}"),
+                detail: if recover {
+                    "restored the directed link".to_owned()
+                } else {
+                    format!(
+                        "drop_ppm={}, duplicate_ppm={}, corrupt_ppm={}, latency_rounds={}, jitter_rounds={}, tx_bytes_per_round={}, mtu_bytes={}, tx_queue_frames={}, rx_queue_frames={}",
+                        action.drop_ppm.unwrap_or(0),
+                        action.duplicate_ppm.unwrap_or(0),
+                        action.corrupt_ppm.unwrap_or(0),
+                        action.latency_rounds.unwrap_or(0),
+                        action.jitter_rounds.unwrap_or(0),
+                        action.tx_bytes_per_round.unwrap_or(0),
+                        action.mtu_bytes.unwrap_or(0),
+                        action.tx_queue_frames.unwrap_or(0),
+                        action.rx_queue_frames.unwrap_or(0),
+                    )
+                },
             })
         }
         CampaignFaultKind::NetworkFault | CampaignFaultKind::NetworkRecover => {
@@ -10667,10 +10857,138 @@ fn apply_campaign_action(
                 ),
             })
         }
+        CampaignFaultKind::ServiceStop
+        | CampaignFaultKind::ServiceStart
+        | CampaignFaultKind::ServiceKill
+        | CampaignFaultKind::ServiceRestart => {
+            let service = action
+                .service
+                .as_deref()
+                .ok_or_else(|| "campaign service action has no service".to_owned())?;
+            let verb = match action.kind {
+                CampaignFaultKind::ServiceStop => "stop",
+                CampaignFaultKind::ServiceStart => "start",
+                CampaignFaultKind::ServiceKill => "kill",
+                CampaignFaultKind::ServiceRestart => "restart",
+                _ => unreachable!(),
+            };
+            apply_service_process_action(
+                service,
+                verb,
+                &action.operation,
+                driver_name,
+                driver,
+                services,
+                switches,
+                round,
+            )?;
+            Ok(AppliedCampaignAction {
+                operation: action.operation.clone(),
+                kind: format!("service_{verb}"),
+                target: format!("service:{service}"),
+                detail: format!("service process group {verb} completed at the operation barrier"),
+            })
+        }
         CampaignFaultKind::Pause | CampaignFaultKind::Restart | CampaignFaultKind::ClockJump => {
             Err("campaign lifecycle fault cannot be applied at an operation barrier".to_owned())
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_service_process_action(
+    service_name: &str,
+    verb: &str,
+    operation: &str,
+    driver_name: &str,
+    driver: &mut ServiceRuntime,
+    services: &mut BTreeMap<String, ServiceRuntime>,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    round: &mut u64,
+) -> Result<(), String> {
+    let name = format!("fault_{operation}_{service_name}_{verb}");
+    let command = serde_json::to_string(&serde_json::json!({
+        "name": &name,
+        "action": verb,
+    }))
+    .expect("service action serializes");
+    let bytes = format!("THES:SERVICE:action:{command}\n").into_bytes();
+    let checkpoint = format!("THES:CHECKPOINT:{name}");
+    let pass = format!("THES:SERVICE:action:{name}:PASS");
+
+    if service_name == driver_name {
+        let serial = driver.serial_logs[0].clone();
+        let offset = fs::metadata(&serial)
+            .map_err(|error| error.to_string())?
+            .len() as usize;
+        driver.vm.push_serial_input(&bytes)?;
+        wait_for_serial_after_rounds(
+            &serial,
+            offset,
+            checkpoint.as_bytes(),
+            "service action checkpoint",
+            driver,
+            services,
+            switches,
+            round,
+        )?;
+        let response = fs::read(&serial).map_err(|error| error.to_string())?;
+        if !response[offset..]
+            .windows(pass.len())
+            .any(|window| window == pass.as_bytes())
+        {
+            return Err(format!("service {service_name:?} failed to {verb}"));
+        }
+        return Ok(());
+    }
+
+    let mut target = services
+        .remove(service_name)
+        .ok_or_else(|| format!("campaign service action target did not start: {service_name}"))?;
+    let serial = target.serial_logs[0].clone();
+    let offset = fs::metadata(&serial)
+        .map_err(|error| error.to_string())?
+        .len() as usize;
+    let result = (|| {
+        target.vm.push_serial_input(&bytes)?;
+        for step in 0..=CAMPAIGN_BARRIER_MAX_ROUNDS {
+            if fs::read(&serial).is_ok_and(|serial| {
+                serial[offset..]
+                    .windows(checkpoint.len())
+                    .any(|window| window == checkpoint.as_bytes())
+            }) {
+                let response = fs::read(&serial).map_err(|error| error.to_string())?;
+                return response[offset..]
+                    .windows(pass.len())
+                    .any(|window| window == pass.as_bytes())
+                    .then_some(())
+                    .ok_or_else(|| format!("service {service_name:?} failed to {verb}"));
+            }
+            if step == CAMPAIGN_BARRIER_MAX_ROUNDS || *round == u64::MAX {
+                break;
+            }
+            *round += 1;
+            target.vm.pump();
+            target.vm.advance_simulated_networks()?;
+            driver.vm.pump();
+            driver.vm.advance_simulated_networks()?;
+            for service in services.values_mut() {
+                service.vm.pump();
+                service.vm.advance_simulated_networks()?;
+            }
+            for switch in switches.values() {
+                switch
+                    .lock()
+                    .map_err(|_| "simulated switch lock poisoned".to_owned())?
+                    .advance_round();
+            }
+        }
+        Err(format!(
+            "service {service_name:?} did not acknowledge {verb} within {CAMPAIGN_BARRIER_MAX_ROUNDS} topology rounds"
+        ))
+    })();
+    services.insert(service_name.to_owned(), target);
+    result
 }
 
 fn wait_for_serial_with_topology_rounds(
@@ -12819,6 +13137,7 @@ mod tests {
     fn campaign_marker_guards_use_the_restored_parent_transcript() {
         let mut campaign = CampaignPlan {
             driver: "api".to_owned(),
+            fault_profile: None,
             test_template: None,
             test_templates: Vec::new(),
             max_parallel_commands: 2,
@@ -15532,6 +15851,15 @@ mod tests {
                 CampaignFaultKind::LinkPartition,
                 CampaignFaultKind::LinkHeal,
             ),
+            (CampaignFaultKind::LinkFault, CampaignFaultKind::LinkRecover),
+            (
+                CampaignFaultKind::ServiceStop,
+                CampaignFaultKind::ServiceStart,
+            ),
+            (
+                CampaignFaultKind::ServiceKill,
+                CampaignFaultKind::ServiceStart,
+            ),
             (
                 CampaignFaultKind::StorageFault,
                 CampaignFaultKind::StorageRecover,
@@ -15551,6 +15879,12 @@ mod tests {
             assert!(std::mem::discriminant(&action.kind) == std::mem::discriminant(&recovery));
             assert_eq!(action.operation, "eventual");
         }
+        assert!(campaign_recovery_action(
+            &campaign_fault(CampaignFaultKind::ServiceRestart),
+            "eventual"
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]

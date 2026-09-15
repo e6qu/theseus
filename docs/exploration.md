@@ -133,6 +133,39 @@ compose with the lifecycle. Explicit operations can still use the named-process
 launch/completion protocol. Tutorial 40 uses image discovery without a host
 orchestration script or a duplicated command list.
 
+## Generate ordinary distributed-system faults
+
+Add one field instead of enumerating every service, directed link, and command
+boundary:
+
+```yaml
+x-theseus:
+  campaign:
+    driver: api
+    fault_profile: standard
+    max_faults_per_run: 2
+```
+
+The `standard` profile inspects the locked Compose topology. At eligible driver
+and anytime boundaries it generates service stop, kill, and restart choices
+for image services. For every ordered pair on a shared network, it also
+generates a directed partition and a directed degradation with 10% loss, 1%
+duplication, 0.1% corruption, two rounds of latency and jitter, 4096 bytes per
+round, a 1200-byte MTU, and eight-frame transmit and receive queues.
+
+The expansion is deterministic and capped at 512 candidates. The complete
+catalog is written to the plan; `max_faults_per_run` still bounds each
+timeline. Theseus does not generate faults after setup, completion, first,
+eventually, finally, assertion, or recovery commands. It restores stopped or
+killed services and directed network conditions before terminal checks.
+
+Use explicit `faults` alongside the profile when a test needs a different
+target or condition. The additional operation-boundary kinds are
+`service_stop`, `service_start`, `service_kill`, `service_restart`,
+`link_fault`, and `link_recover`. A link fault accepts the same packet-condition
+fields as `network_fault`, plus distinct `from` and `to` services on its
+network.
+
 ## Require a fault and recovery path
 
 Operation-barrier faults are optional search choices unless they set

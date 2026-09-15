@@ -99,9 +99,9 @@ deterministic-CRNG kernel module is shipped.
 39. [Cover a Go module](39-go-module-coverage/) — instrument a Go command and
     its imported main-module packages in one published-tool build, then retain
     source-associated blocks through reporting and replay.
-40. [Run test templates](40-compose-test-commands/) — package two independent
-    command sets under `/opt/antithesis/test/v1`, let Theseus select one per
-    timeline, then minimize and replay a lost update.
+40. [Explore test templates with automatic faults](40-compose-test-commands/) —
+    package two command sets, derive service and asymmetric link faults from a
+    two-service topology, then minimize and replay a lost update.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

@@ -5,6 +5,10 @@ services:
     x-theseus:
       manifest: api/theseus.toml
     networks: [test]
+  worker:
+    x-theseus:
+      manifest: worker/theseus.toml
+    networks: [test]
 
 networks:
   test: {}
@@ -12,10 +16,10 @@ networks:
 x-theseus:
   campaign:
     driver: api
+    fault_profile: standard
     max_parallel_commands: 2
     max_runs: 128
     max_operations_per_run: 8
-    faults: []
     properties:
       - name: lost_update_is_unreachable
         kind: unreachable
