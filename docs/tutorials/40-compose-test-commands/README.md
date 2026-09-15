@@ -1,8 +1,7 @@
-# Tutorial 40: Run test templates
+# Tutorial 40: Explore test templates with automatic faults
 
-Package two independent test templates in one image. Let Theseus discover both
-and select one for each generated timeline. The directory layout also works
-with Antithesis.
+Discover two Antithesis-compatible test templates, generate faults from a
+two-service topology, find a lost update, minimize it, and replay it.
 
 ## Before you start
 
@@ -13,28 +12,28 @@ export THESEUS_TAG=<12-character-release-sha>
 export THESEUS_IMAGE=ghcr.io/e6qu/theseus:$THESEUS_TAG
 ```
 
-## 1. Build the image
+## 1. Build the service images
 
-Read both templates:
+Read the test commands:
 
 ```sh
 find test-template smoke-template -maxdepth 1 -type f -print -exec sed -n '1,80p' {} \;
 ```
 
-The filename prefix is the lifecycle contract. `first_` prepares state,
-`parallel_driver_` may run concurrently, `serial_driver_` runs without a live
-parallel driver, and `eventually_` or `finally_` ends a timeline.
+The filename prefix defines when Theseus may run a command. The image contains
+independent `lost-update` and `smoke` templates under
+`/opt/antithesis/test/v1/`.
 
 ```sh
-name=theseus-test-template-tutorial
-mkdir -p api/work
-docker build --load -t "$name" .
-docker save "$name" -o api/work/service.tar
+mkdir -p api/work worker/work
+docker build --load --target test-driver -t theseus-template-driver .
+docker save theseus-template-driver -o api/work/service.tar
+docker build --load --target service -t theseus-template-worker .
+docker save theseus-template-worker -o worker/work/service.tar
 ```
 
-The Dockerfile installs `lost-update` and `smoke` under
-`/opt/antithesis/test/v1/`. Theseus reads both directories from the saved
-image. There is no command list or orchestration script to maintain.
+Only the API image contains test commands. The worker is an ordinary service
+on the same Compose network.
 
 ## 2. Enter Theseus
 
@@ -48,34 +47,38 @@ Run the remaining commands inside the container.
 ## 3. Prepare the locked plan
 
 ```sh
-mkdir -p api/work/runtime api/work/guest
-cp /usr/local/bin/firecracker api/work/runtime/firecracker
-cp /usr/local/bin/theseus-image api/work/runtime/theseus-image
-cp /opt/theseus/vmlinux api/work/guest/vmlinux
+for service in api worker; do
+  mkdir -p "$service/work/runtime" "$service/work/guest"
+  cp /usr/local/bin/firecracker "$service/work/runtime/firecracker"
+  cp /usr/local/bin/theseus-image "$service/work/runtime/theseus-image"
+  cp /opt/theseus/vmlinux "$service/work/guest/vmlinux"
+done
+
 theseus compose plan > plan.json
-grep -n 'test_templates\|test_command_path\|shell_process' plan.json
+grep -n 'test_templates\|fault_profile\|service_kill\|link_fault' plan.json | head -n 20
 ```
 
-The plan lists `lost-update` and `smoke`. Operations are scoped to one of them;
-Theseus never mixes their commands in one timeline.
+`fault_profile: standard` expands the locked services, networks, and ordinary
+command boundaries into a bounded candidate catalog. It includes service
+stop, kill, and restart actions plus asymmetric partitions, latency, loss,
+duplication, corruption, bandwidth, MTU, and queue limits. It does not add
+faults to setup, completion, eventually, or finally commands.
 
-`max_parallel_commands: 2` gives each parallel command two process slots. The
-explorer decides how many to start and when to join them.
-
-## 4. Run the campaign
+## 4. Run the exploration
 
 ```sh
 theseus compose explore --expect-counterexample lost_update_is_unreachable \
   --output campaign compose.yaml
 grep -R '"value":1,"commits":2' campaign/runs/*/services/api/serial.log
-grep -n '"test_template"' campaign/campaign-result.json | head
+grep -n '"faults"\|"actions"\|"test_template"' campaign/campaign-result.json | head -n 30
 ```
 
-Two writers read zero before either writes. Both then write one. The serial
-command records two completed writes and the incorrect final value. The result
-also records which template produced every timeline.
+The explorer selects one template and a bounded set of generated faults for
+each timeline. Before an eventually or finally command, Theseus recovers every
+active generated fault. The retained result records the selected candidates,
+their exact targets, their effects, and their recovery actions.
 
-## 5. Inspect, minimize, and replay the failure
+## 5. Inspect, minimize, and replay
 
 ```sh
 theseus compose explore --minimize campaign \
@@ -84,10 +87,9 @@ theseus compose replay minimized --output rerun
 grep '"value":1,"commits":2' rerun/services/api/serial.log
 ```
 
-An `eventually_` command may instead start while drivers are live. Theseus
-kills those commands across their image services and restores active campaign
-faults before running the eventual check. A `finally_` command waits for every
-started command to finish.
+The minimized plan keeps only the operations and faults needed to reproduce
+the failure. Replay applies the same service and link actions at the same
+operation barriers.
 
 Render the report:
 
@@ -98,10 +100,7 @@ sed -n '1,180p' report/report.md
 
 ## 6. Clean up (optional)
 
-Keep the four evidence directories while investigating. Remove generated files
-when you no longer need them:
-
 ```sh
 exit
-rm -rf api/work plan.json campaign minimized rerun report
+rm -rf api/work worker/work plan.json campaign minimized rerun report
 ```

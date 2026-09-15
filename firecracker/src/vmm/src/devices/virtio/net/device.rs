@@ -574,6 +574,19 @@ impl Net {
         }
     }
 
+    /// Set or restore complete packet conditions on one directed simulated
+    /// topology-switch path.
+    pub fn set_simulated_link_conditions(
+        &mut self,
+        destination: &str,
+        conditions: Option<SimNetConfig>,
+    ) -> bool {
+        match &mut self.backend {
+            NetBackend::Sim(sim) => sim.set_link_conditions(destination, conditions),
+            NetBackend::Tap(_) => false,
+        }
+    }
+
     /// Return this simulated NIC's stable topology-switch port name.
     pub fn simulated_endpoint(&self) -> Option<String> {
         match &self.backend {

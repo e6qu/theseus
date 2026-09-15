@@ -33,7 +33,7 @@ Use these labels consistently:
 | Ordinary container workloads | Partial | Image-backed services and a Compose subset work; Kubernetes and broad Compose compatibility do not. |
 | Deterministic replay | Partial | Seeds, locked inputs, schedules, faults, checkpoints, and bundles are retained, but uncontrolled kernel and application behavior can still escape the model. |
 | Feedback-guided exploration | Partial | One bounded decision-prefix policy combines coverage, properties, topology states, structured choices, runnable sets, faults, and prior outcomes; it is not yet validated at production scale. |
-| Fault injection | Partial | Network, packet, partition, process, storage, and clock operations exist; asymmetric degradation, latency, clogs, CPU throttling, and a mature custom-fault interface do not. |
+| Fault injection | Partial | Explicit and topology-derived profiles cover service lifecycle, asymmetric network degradation and partitions, storage, packet, and clock operations. CPU throttling, network clogs, and a mature custom-fault interface remain open. |
 | Assertions and guidance | Partial | Always, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
 | Coverage guidance | Partial | GCC C and Go basic blocks plus LLVM C/C++/Rust edges cover native executables, shared libraries, a selected Cargo graph, and a selected Go command's imported main-module packages. Compose locks manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go external modules and CGO, Java, and production-scale validation remain open. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
@@ -85,6 +85,10 @@ Theseus currently has:
   selects one template. Filename roles, bounded parallel slots, source paths,
   terminal fault recovery, and eventual process termination remain locked and
   replayable.
+- An opt-in `standard` fault profile derived from ordinary command boundaries,
+  image services, and shared networks. It generates bounded service
+  stop/kill/restart, directed partition, and directed packet-condition
+  candidates, then recovers active faults before terminal checks.
 
 The baseline has important limits:
 
@@ -114,33 +118,7 @@ The baseline has important limits:
   certifications complete and their retained evidence is independently
   verified.
 
-## Active delivery: autonomous fault profiles
-
-Move common failures from hand-authored operation barriers into bounded,
-replayable profiles that can accompany any discovered test template:
-
-1. Add an opt-in default profile that derives valid network and service fault
-   candidates from the locked topology instead of requiring one YAML entry per
-   target.
-2. Add operation-boundary service stop, kill, and restart/recovery actions with
-   exact service identity and lifecycle evidence.
-3. Add asymmetric latency, loss, duplication, corruption, bandwidth, queue,
-   and MTU candidates for eligible directed links, using the simulated switch
-   rather than host traffic control.
-4. Keep startup, first commands, eventually/finally commands, and result
-   collection quiet. Terminal commands must recover every active generated
-   fault before running.
-5. Retain the expanded candidate catalog, selected actions, recovery actions,
-   and effects in plans, decision traces, replay, minimization, and reports.
-6. Extend a self-contained distributed tutorial to discover multiple templates,
-   explore the default profile, minimize one failure, and replay it from a
-   published runtime.
-
-Exit when a user can point Theseus at an ordinary multi-service image set,
-declare a bounded profile, and obtain understandable, replayable faulted
-timelines without enumerating each link and service action by hand.
-
-## Priority 0: make the current product real for users
+## Active delivery: make the current product real for users
 
 Close the difference between merged source, published artifacts, and retained
 runtime evidence before adding another isolated runtime feature.
@@ -246,13 +224,10 @@ Antithesis without constructing low-level campaign schedules by hand.
 
 - Let the explorer vary command ordering, parallelism, structured inputs,
   faults, and schedules while keeping lifecycle contracts intact.
-- Add asymmetric latency and loss, slow/jammed links, network clogs, process
-  stop/kill/restart, CPU throttling, clock jumps, and configurable custom
-  faults.
-- Support quiet periods and final fault windows so startup and result
-  collection are not accidentally corrupted.
-- Make useful default fault profiles available while keeping every injected
-  fault visible and replayable.
+- Add CPU throttling, network clogs, broader clock behavior, and configurable
+  custom faults to the generated profile model.
+- Generalize quiet periods and explicit fault windows beyond the current
+  lifecycle roles and automatic terminal recovery.
 
 Exit when an ordinary distributed system can bring its existing test commands
 and have Theseus autonomously compose hundreds of replayable scenarios across

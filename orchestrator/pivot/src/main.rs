@@ -143,6 +143,21 @@ struct CampaignHttpOperation {
 }
 
 #[derive(serde::Deserialize)]
+struct CampaignServiceAction {
+    name: String,
+    action: CampaignServiceActionKind,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CampaignServiceActionKind {
+    Stop,
+    Start,
+    Kill,
+    Restart,
+}
+
+#[derive(serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum HttpMethod {
     Get,
@@ -1147,7 +1162,7 @@ fn report_shell_operation(name: &str, result: ShellOperationResult) {
 
 fn stop_service(pid: libc::pid_t) {
     unsafe {
-        libc::kill(pid, libc::SIGTERM);
+        libc::kill(-pid, libc::SIGTERM);
     }
     for _ in 0..20 {
         let status = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
@@ -1157,9 +1172,46 @@ fn stop_service(pid: libc::pid_t) {
         thread::sleep(Duration::from_millis(50));
     }
     unsafe {
-        libc::kill(pid, libc::SIGKILL);
+        libc::kill(-pid, libc::SIGKILL);
         libc::waitpid(pid, std::ptr::null_mut(), 0);
     }
+}
+
+fn fork_service(spec: &InitSpec) -> Result<libc::pid_t, String> {
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        unsafe {
+            libc::setpgid(0, 0);
+        }
+        exec_image(spec);
+    }
+    if pid < 0 {
+        Err("could not start service".to_owned())
+    } else {
+        unsafe {
+            libc::setpgid(pid, pid);
+        }
+        Ok(pid)
+    }
+}
+
+fn wait_for_service_contract(
+    spec: &InitSpec,
+    service: Option<&ContainerService>,
+    healthcheck: Option<&ContainerHealthcheck>,
+) -> Result<(), String> {
+    if let Some(service) = service {
+        if let Some(ready) = &service.ready {
+            wait_for_ready(ready)?;
+        }
+        if let Some(ready) = &service.grpc_ready {
+            wait_for_grpc_ready(ready)?;
+        }
+    }
+    if let Some(healthcheck) = healthcheck {
+        run_healthcheck(spec, healthcheck)?;
+    }
+    Ok(())
 }
 
 fn power_off() -> ! {
@@ -1334,14 +1386,13 @@ fn main() {
         exec_image(&spec);
     }
 
-    let pid = unsafe { libc::fork() };
-    if pid == 0 {
-        exec_image(&spec);
-    }
-    if pid < 0 {
-        eprintln!("THES:HTTP:ready:FAIL could not start service");
-        power_off();
-    }
+    let mut pid = match fork_service(&spec) {
+        Ok(pid) => pid,
+        Err(_) => {
+            eprintln!("THES:HTTP:ready:FAIL could not start service");
+            power_off();
+        }
+    };
 
     if let Some(service) = service {
         if let Some(ready) = &service.ready {
@@ -1384,12 +1435,14 @@ fn main() {
     if service.campaign {
         let mut running_shell_operations = BTreeMap::new();
         let mut shell_completion_count = 0_u64;
+        let mut service_stopped = false;
         loop {
             let (protocol, command) = match channel.next_command_any(&[
                 "THES:HTTP:operation:",
                 "THES:GRPC:operation:",
                 "THES:SHELL:operation:",
                 "THES:SHELL:terminate:",
+                "THES:SERVICE:action:",
             ]) {
                 Ok(command) => command,
                 Err(error) => {
@@ -1451,7 +1504,7 @@ fn main() {
                 channel
                     .checkpoint(&name)
                     .expect("campaign operation checkpoint");
-            } else {
+            } else if protocol == 3 {
                 let termination: TerminateShellOperations = match serde_json::from_str(&command) {
                     Ok(termination) => termination,
                     Err(error) => {
@@ -1472,6 +1525,75 @@ fn main() {
                 channel
                     .checkpoint(&termination.name)
                     .expect("campaign termination checkpoint");
+            } else {
+                let action: CampaignServiceAction = match serde_json::from_str(&command) {
+                    Ok(action) => action,
+                    Err(error) => {
+                        eprintln!("THES:SERVICE:action:FAIL invalid command: {error}");
+                        continue;
+                    }
+                };
+                let result = match action.action {
+                    CampaignServiceActionKind::Stop if pid > 0 && !service_stopped => {
+                        let rc = unsafe { libc::kill(-pid, libc::SIGSTOP) };
+                        if rc == 0 {
+                            service_stopped = true;
+                            Ok(())
+                        } else {
+                            Err("could not stop service process group".to_owned())
+                        }
+                    }
+                    CampaignServiceActionKind::Start if service_stopped => {
+                        let rc = unsafe { libc::kill(-pid, libc::SIGCONT) };
+                        if rc == 0 {
+                            service_stopped = false;
+                            wait_for_service_contract(&spec, Some(service), healthcheck)
+                        } else {
+                            Err("could not continue service process group".to_owned())
+                        }
+                    }
+                    CampaignServiceActionKind::Start if pid == 0 => match fork_service(&spec) {
+                        Ok(new_pid) => {
+                            pid = new_pid;
+                            wait_for_service_contract(&spec, Some(service), healthcheck)
+                        }
+                        Err(error) => Err(error),
+                    },
+                    CampaignServiceActionKind::Kill if pid > 0 => {
+                        unsafe {
+                            libc::kill(-pid, libc::SIGKILL);
+                            libc::waitpid(pid, std::ptr::null_mut(), 0);
+                        }
+                        pid = 0;
+                        service_stopped = false;
+                        Ok(())
+                    }
+                    CampaignServiceActionKind::Restart => {
+                        if pid > 0 {
+                            stop_service(pid);
+                        }
+                        service_stopped = false;
+                        match fork_service(&spec) {
+                            Ok(new_pid) => {
+                                pid = new_pid;
+                                wait_for_service_contract(&spec, Some(service), healthcheck)
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    CampaignServiceActionKind::Stop => Err("service is already stopped".to_owned()),
+                    CampaignServiceActionKind::Start => {
+                        Err("service is already running".to_owned())
+                    }
+                    CampaignServiceActionKind::Kill => Err("service is already killed".to_owned()),
+                };
+                match result {
+                    Ok(()) => println!("THES:SERVICE:action:{}:PASS", action.name),
+                    Err(error) => eprintln!("THES:SERVICE:action:{}:FAIL {error}", action.name),
+                }
+                channel
+                    .checkpoint(&action.name)
+                    .expect("campaign service action checkpoint");
             }
         }
     }
@@ -1512,6 +1634,14 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_service_lifecycle_actions() {
+        let action: CampaignServiceAction =
+            serde_json::from_str(r#"{"name":"fault_write_api_kill","action":"kill"}"#).unwrap();
+        assert_eq!(action.name, "fault_write_api_kill");
+        assert!(matches!(action.action, CampaignServiceActionKind::Kill));
+    }
 
     #[test]
     fn separates_application_coverage_from_command_json() {
