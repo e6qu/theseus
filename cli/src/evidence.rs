@@ -342,13 +342,17 @@ fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(
     if certificate.format == CERTIFICATE_FORMAT_V4 {
         require(
             certificate.services.values().all(|service| {
-                service.machine_execution_trace_decisions.is_some_and(|count| {
-                    count > 0
-                        && service
-                            .machine_execution_ledger
-                            .as_ref()
-                            .is_some_and(|ledger| usize::try_from(ledger.decisions) == Ok(count))
-                })
+                service
+                    .machine_execution_trace_decisions
+                    .is_some_and(|count| {
+                        count > 0
+                            && service
+                                .machine_execution_ledger
+                                .as_ref()
+                                .is_some_and(|ledger| {
+                                    usize::try_from(ledger.decisions) == Ok(count)
+                                })
+                    })
             }),
             "runtime certificate has missing or inconsistent active execution replay evidence",
         )?;
@@ -826,14 +830,18 @@ fn verify_runtime_validation(
     let comparison: serde_json::Value =
         parse_json_bytes(&retained["coverage/comparison.json"], "campaign comparison")?;
     require(
-        comparison["format"] == "theseus-campaign-comparison-v1",
-        "released CLI did not retain a campaign comparison",
+        comparison["format"] == "theseus-campaign-comparison-v1" && comparison["status"] == "same",
+        "released CLI did not retain an identical campaign comparison",
     )?;
     let evaluation: serde_json::Value =
         parse_json_bytes(&retained["coverage/evaluation.json"], "campaign evaluation")?;
     require(
-        evaluation["status"] == "passed",
-        "released CLI did not retain a passing evaluation",
+        evaluation["format"] == "theseus-public-evaluation-v1"
+            && evaluation["status"] == "passed"
+            && evaluation["workloads"]
+                .as_array()
+                .is_some_and(|workloads| !workloads.is_empty()),
+        "released CLI did not retain a non-empty passing evaluation",
     )?;
     verify_validation_campaign(
         &retained["schedule-search/campaign/campaign-result.json"],
@@ -960,29 +968,20 @@ fn verify_runtime_validation(
 fn verify_campaign_execution_ledgers(bytes: &[u8], scenario: &str) -> Result<(), EvidenceError> {
     let value: serde_json::Value = parse_json_bytes(bytes, scenario)?;
     let valid = value["runs"].as_array().is_some_and(|runs| {
-        runs.iter().any(|run| {
-            run["execution_ledgers"]
-                .as_object()
-                .is_some_and(|services| {
-                    services.values().any(|ledgers| {
-                        ledgers.as_array().is_some_and(|ledgers| {
-                            ledgers.iter().any(|ledger| {
-                                ledger["decisions"].as_u64().is_some_and(|count| count > 0)
-                                    && ledger["sha256"].as_str().is_some_and(|digest| {
-                                        digest.len() == 64
-                                            && digest.bytes().all(|byte| {
-                                                byte.is_ascii_hexdigit()
-                                                    && !byte.is_ascii_uppercase()
-                                            })
-                                    })
-                                    && ledger["tail"]
-                                        .as_array()
-                                        .is_some_and(|tail| !tail.is_empty())
+        !runs.is_empty()
+            && runs.iter().all(|run| {
+                run["execution_ledgers"]
+                    .as_object()
+                    .is_some_and(|services| {
+                        !services.is_empty()
+                            && services.values().all(|ledgers| {
+                                ledgers.as_array().is_some_and(|ledgers| {
+                                    !ledgers.is_empty()
+                                        && ledgers.iter().all(valid_json_execution_ledger)
+                                })
                             })
-                        })
                     })
-                })
-        })
+            })
     });
     require(
         valid,
@@ -996,25 +995,14 @@ fn verify_campaign_machine_execution_ledgers(
 ) -> Result<(), EvidenceError> {
     let value: serde_json::Value = parse_json_bytes(bytes, scenario)?;
     let valid = value["runs"].as_array().is_some_and(|runs| {
-        runs.iter().any(|run| {
-            run["machine_execution_ledgers"]
-                .as_object()
-                .is_some_and(|services| {
-                    !services.is_empty()
-                        && services.values().all(|ledger| {
-                            ledger["decisions"].as_u64().is_some_and(|count| count > 0)
-                                && ledger["sha256"].as_str().is_some_and(|digest| {
-                                    digest.len() == 64
-                                        && digest.bytes().all(|byte| {
-                                            byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()
-                                        })
-                                })
-                                && ledger["tail"]
-                                    .as_array()
-                                    .is_some_and(|tail| !tail.is_empty())
-                        })
-                })
-        })
+        !runs.is_empty()
+            && runs.iter().all(|run| {
+                run["machine_execution_ledgers"]
+                    .as_object()
+                    .is_some_and(|services| {
+                        !services.is_empty() && services.values().all(valid_json_execution_ledger)
+                    })
+            })
     });
     require(
         valid,
@@ -1037,13 +1025,12 @@ fn verify_campaign_machine_execution_traces(
                     return false;
                 };
                 !traces.is_empty()
+                    && traces.keys().eq(ledgers.keys())
                     && traces.iter().all(|(service, trace)| {
                         trace.as_array().is_some_and(|records| {
                             !records.is_empty()
                                 && records.iter().all(|record| {
-                                    record
-                                        .as_str()
-                                        .is_some_and(|record| record.starts_with("vcpu:"))
+                                    record.as_str().is_some_and(valid_machine_execution_record)
                                 })
                                 && ledgers
                                     .get(service)
@@ -1057,6 +1044,26 @@ fn verify_campaign_machine_execution_traces(
         valid,
         &format!("{scenario} has no valid active machine execution replay trace"),
     )
+}
+
+fn valid_json_execution_ledger(ledger: &serde_json::Value) -> bool {
+    ledger["decisions"].as_u64().is_some_and(|count| count > 0)
+        && ledger["sha256"].as_str().is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+        && ledger["tail"]
+            .as_array()
+            .is_some_and(|tail| !tail.is_empty())
+}
+
+fn valid_machine_execution_record(record: &str) -> bool {
+    record
+        .strip_prefix("vcpu:")
+        .and_then(|record| record.split_once(':'))
+        .is_some_and(|(vcpu, effect)| vcpu.parse::<u8>().is_ok() && !effect.is_empty())
 }
 
 fn verify_validation_campaign(
@@ -1230,6 +1237,55 @@ mod tests {
             .contains("coverage retained no unique_application_blocks"));
     }
 
+    #[test]
+    fn rejects_partial_execution_evidence_in_any_retained_run() {
+        let partial = serde_json::to_vec(&serde_json::json!({
+            "runs": [
+                {"execution_ledgers": {"api": [{
+                    "decisions": 1,
+                    "sha256": DIGEST,
+                    "tail": ["mmio_read:0x0:1:00"]
+                }]}},
+                {"execution_ledgers": {}}
+            ]
+        }))
+        .unwrap();
+        assert!(
+            verify_campaign_execution_ledgers(&partial, "strict execution")
+                .unwrap_err()
+                .to_string()
+                .contains("no valid ordered KVM execution ledger")
+        );
+    }
+
+    #[test]
+    fn rejects_machine_traces_with_missing_services_or_malformed_actors() {
+        let result = |traces: serde_json::Value| {
+            serde_json::to_vec(&serde_json::json!({
+                "runs": [{
+                    "machine_execution_ledgers": {
+                        "api": {"decisions": 1},
+                        "worker": {"decisions": 1}
+                    },
+                    "machine_execution_traces": traces
+                }]
+            }))
+            .unwrap()
+        };
+        for traces in [
+            serde_json::json!({"api": ["vcpu:0:mmio_read:0x0:1:00"]}),
+            serde_json::json!({
+                "api": ["vcpu:not-a-number:mmio_read:0x0:1:00"],
+                "worker": ["vcpu:0:mmio_read:0x0:1:00"]
+            }),
+        ] {
+            assert!(
+                verify_campaign_machine_execution_traces(&result(traces), "strict execution")
+                    .is_err()
+            );
+        }
+    }
+
     fn write_architecture(directory: &Path, architecture: &str, replay_status: &str) {
         write_architecture_with_formats(directory, architecture, replay_status, false);
     }
@@ -1243,7 +1299,7 @@ mod tests {
         let certificate_name = format!("theseus-{TAG}-runtime-certificate-{architecture}.json");
         let plan_contents = r#"{"format":"theseus-compose-plan-v1","services":{"service":{}}}"#;
         let certificate = serde_json::to_vec_pretty(&serde_json::json!({
-            "format": if legacy { CERTIFICATE_FORMAT_V1 } else { CERTIFICATE_FORMAT_V3 },
+            "format": if legacy { CERTIFICATE_FORMAT_V1 } else { CERTIFICATE_FORMAT_V4 },
             "status": "passed",
             "profile": {"id": "linux-kvm-simulated-io-v1", "architecture": architecture},
             "source": {
@@ -1261,7 +1317,8 @@ mod tests {
                     "decisions": 1,
                     "sha256": DIGEST,
                     "tail": ["vcpu:0:mmio_read addr=0x0 len=1"]
-                }
+                },
+                "machine_execution_trace_decisions": 1
             }}
         }))
         .unwrap();
@@ -1380,7 +1437,10 @@ mod tests {
                         "decisions": signal_count,
                         "sha256": DIGEST,
                         "tail": ["vcpu:0:mmio_read addr=0x0 len=1"]
-                    }}
+                    }},
+                    "machine_execution_traces": {"api": [
+                        "vcpu:0:mmio_read:0x0:1:00"
+                    ]}
                 }]);
             }
             serde_json::to_vec(&value).unwrap()
@@ -1412,11 +1472,11 @@ mod tests {
             ),
             (
                 "coverage/comparison.json",
-                br#"{"format":"theseus-campaign-comparison-v1"}"#.to_vec(),
+                br#"{"format":"theseus-campaign-comparison-v1","status":"same"}"#.to_vec(),
             ),
             (
                 "coverage/evaluation.json",
-                br#"{"status":"passed"}"#.to_vec(),
+                br#"{"format":"theseus-public-evaluation-v1","status":"passed","workloads":[{"name":"coverage"}]}"#.to_vec(),
             ),
             (
                 "coverage/evaluation/theseus-evaluation.toml",
@@ -1537,7 +1597,7 @@ mod tests {
         fs::write(
             root.join("evidence.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "format": if legacy { VALIDATION_FORMAT_V1 } else { VALIDATION_FORMAT_V3 },
+                "format": if legacy { VALIDATION_FORMAT_V1 } else { VALIDATION_FORMAT_V4 },
                 "architecture": architecture,
                 "source_commit": COMMIT,
                 "runtime": {
