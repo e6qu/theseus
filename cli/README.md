@@ -24,6 +24,7 @@ theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
 theseus compose replay replay-dir [--output replay-dir]
+theseus compose verify checkpoint-bundle-dir
 theseus compose explore [--output campaign-dir] [compose.yaml]
 theseus compose explore --minimize campaign-dir [--output minimized-dir]
 ```
@@ -508,6 +509,12 @@ locked artifacts; and `clock_jump` advances the guest's enabled virtual clock
 by `nanoseconds`. The replay directory contains `replay-plan.json` and, for
 each service, locked artifacts, one serial log per boot, applied faults, and
 `result.json`.
+
+`compose verify` checks a complete ready-checkpoint campaign or standalone
+bundle offline: locked inputs, configuration, state/RAM/context hashes,
+ancestry, UART logs, and complete execution ledgers. It reports integrity, not
+native execution certification. Retain the whole output directory; individual
+campaign run directories can share a checkpoint and are not standalone exports.
 
 `compose test` needs Linux and KVM. macOS keeps supporting `compose validate`
 and `compose plan`; it reports a direct missing-runner error for execution.

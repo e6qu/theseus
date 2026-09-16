@@ -3,6 +3,14 @@
 set -eu
 : "${THESEUS_ARCH:?set native architecture}"
 : "${THESEUS_IMAGE:?set published compiler/runtime image}"
+case "$THESEUS_ARCH" in amd64|arm64) ;; *) echo 'unsupported architecture' >&2; exit 2 ;; esac
+if test -n "${THESEUS_SOURCE_RUNTIME:-}"; then
+  case "$THESEUS_SOURCE_RUNTIME" in /*) ;; *) echo 'source runtime must be an absolute directory' >&2; exit 2 ;; esac
+  for binary in theseus theseus-topology theseus-image firecracker; do
+    test -x "$THESEUS_SOURCE_RUNTIME/$binary"
+  done
+  test -f "$THESEUS_SOURCE_RUNTIME/vmlinux"
+fi
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 tutorial="$root/docs/tutorials/30-multiservice-lost-update"
 for service in counter worker; do
@@ -25,6 +33,17 @@ commands='
   grep -F "\"kind\": \"partition\"" rerun/topology-result.json
   grep -F "\"kind\": \"heal\"" rerun/topology-result.json
   grep -F "\"value\":1" rerun/services/counter/serial.log
+  theseus compose verify campaign
+  theseus compose verify minimized
+  theseus compose verify rerun
+  mkdir retained
+  cp -a minimized retained/minimized
+  theseus compose verify retained/minimized
+  theseus compose replay retained/minimized --output retained/rerun
+  theseus compose verify retained/rerun
+  for service in counter writer-a writer-b; do
+    cmp rerun/services/$service/serial.log retained/rerun/services/$service/serial.log
+  done
 '
 if test -n "${THESEUS_SOURCE_RUNTIME:-}"; then
   for service in counter worker; do

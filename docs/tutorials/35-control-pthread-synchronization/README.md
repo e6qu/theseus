@@ -66,6 +66,9 @@ grep -n 'runnable_prefixes\|max_variants' plan.json
 
 ## 4. Run the exploration
 
+Theseus captures a checkpoint at service readiness. Each case and replay
+inherits that boot state and checks resumed execution, not repeatable boot.
+
 ```sh
 theseus compose explore --output campaign compose.yaml
 ```
@@ -87,11 +90,17 @@ schedule chooses who resumes.
 
 ```sh
 theseus compose replay campaign --output rerun
+theseus compose verify campaign
+theseus compose verify rerun
 grep -R '"value":42' rerun/services/workers/serial.log
 grep -n 'replay_verification' rerun/campaign-result.json
 ```
 
 Replay rejects a changed scheduling decision or synchronization event.
+
+Keep the entire `campaign` directory to replay it elsewhere. `compose verify`
+checks retained inputs, checkpoint ancestry, and complete execution hashes
+offline; it does not certify native execution.
 
 ## 6. Clean up (optional)
 

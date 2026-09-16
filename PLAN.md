@@ -146,45 +146,35 @@ architecture images, multi-architecture manifest, kernel, modules,
 instrumentation tools, SBOMs, build inputs, and attestations. Close the
 remaining evidence gap before adding another isolated runtime feature.
 
-Native certification exposed variable i8042 polling after a guest reset even
-when serial output and virtual time matched. The terminal admission fix and
-standalone machine-stream replay close that source-level gap; source PR CI
-exercises the UART/reset path on amd64 KVM. Do not mark the release portfolio
-demonstrated until the merged SHA's full certification and indexed evidence
-pass. In-kernel timer control remains next after this release gate.
-Standalone RNG-backed boot replay also exposed variable guest queue addresses
-from uncontrolled kernel allocation. UART-only and health-check examples omit
-that unused device explicitly; do not generalize their evidence to arbitrary
-RNG-backed boot. Ready-checkpoint replay now captures a paused UART/RNG guest
-with VM state, RAM, its inherited execution prefix, device/control state, and
-pending userspace interrupts. Version-3 bundles lock every member; the baseline
-and all replays restore that same state and actively check the resumed suffix.
-Tutorial 42 makes that distinction explicit. It retains Linux's random state
-in RAM and reads the standard devices directly. This is not controlled boot:
-retain the inherited prefix as such, never normalize queue addresses or relax
-trace comparison. Native source CI exercises both standard random devices,
-UART input, and three exact checkpoint replays on amd64 KVM; require
-the merged release's corresponding evidence before marking it product-ready.
+Source CI qualifies UART/reset replay, standard random devices from retained
+CRNG state, and one- and two-service whole-topology roots on amd64 KVM. Roots
+retain VM state, RAM, UART ancestry, full inherited execution prefixes,
+pending userspace interrupts, switch/NIC queues, and scheduler state. They do
+not establish deterministic boot, instruction scheduling, or in-kernel timers.
+Fresh-boot replay remains a separate contract and must never silently discard
+boot decisions or normalize variable device addresses.
 
-The released amd64 qualification for `c92f9e076f9b` still fails its fixed-plan
-replay before dependency startup. The full release portfolio is not
-demonstrated. Whole-topology ready roots now retain VM state/RAM, simulated
-NIC/switch queues and seeded link state, scheduler cursors, UART ancestry,
-transient devices, pending interrupts, and full inherited execution prefixes.
-Fixed-plan and campaign replay can restore that locked root. Version-5
-certificates identify checkpoint ancestry and a nonempty actively replayed
-suffix; fresh-boot v4 remains a separate contract. Tutorial 11 uses this
-starting-state boundary and does not claim fresh-boot restart proof. Startup
-divergence retains its first error and partial machine stream instead of
-exhausting dependency rounds. Native PR CI covers one-service and two-service
-dependency roots, exact repeated replay, corrupted-RAM prelaunch rejection,
-and startup divergence. Require the merged release's certificate and complete
-indexed portfolio before marking this product-ready.
-Standalone UART/RNG or checkpoint source evidence does not substitute for
-that release proof. Never silently drop boot decisions from a fresh-boot
-contract. Restart can introduce another uncontrolled boot and remains a
-separate qualification gap. Complete the portfolio below before advancing
-to in-kernel timer control.
+The next qualification runs ordinary containers, C coverage, thread schedule
+search, pthread synchronization, ordered execution replay, and the distributed
+partition/recovery counterexample with the current source runtime. Campaign
+and minimized roots retain their own locked inputs. Operation-prefix replay
+checks recorded execution before resuming; final campaign ledgers must hash
+complete service streams, not only their paused prefixes. A 512 MiB LRU budget
+bounds cached prefix RAM, excluding the immutable root and active working
+branches; it is not a process-RSS limit.
+
+`theseus compose verify` checks portable ready-checkpoint bundles offline:
+locked inputs, configuration identity, state/RAM/context, ancestry, UART logs,
+and full machine/vCPU execution ledgers. It does not deserialize native CPU
+state or certify execution provenance. Retained RAM may contain secrets.
+
+Source qualification records the source commit and actual binary hashes and
+labels a published compiler image as a build dependency. It must not issue a
+publishable release index. The full released portfolio remains unproven until
+the merged SHA's certification and complete indexed evidence pass. Remove this
+gate only on that evidence, not on source CI or packaging success. Restart can
+introduce another uncontrolled boot and remains separately qualified. Complete
+the portfolio below before advancing to in-kernel timer control.
 
 1. Automatically execute the released amd64 runtime on native KVM after its
    release passes all consumer checks.

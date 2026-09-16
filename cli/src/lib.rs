@@ -17,6 +17,9 @@ mod go_coverage;
 mod manifest;
 mod report;
 mod runner;
+mod topology_evidence;
+
+pub use topology_evidence::{verify_topology_bundle, TopologyBundleSummary};
 
 pub use cargo_coverage::{
     cargo_coverage, cargo_coverage_rustc_wrapper, is_cargo_coverage_wrapper, CargoCoverageOutput,

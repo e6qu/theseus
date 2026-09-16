@@ -89,6 +89,10 @@ file. The retained replay uses its locked copies instead of these source files.
 
 ## 4. Run the expected counterexample
 
+Theseus boots the three services once and captures their ready state, RAM,
+and network queues. Every timeline inherits this state. Replay checks resumed
+execution; it does not prove repeatable boot.
+
 ```sh
 theseus compose explore \
   --expect-counterexample distributed_lost_update_is_unreachable \
@@ -125,6 +129,9 @@ theseus compose explore --minimize campaign \
   --output minimized
 sed -n '1,180p' minimized/minimization.json
 theseus compose replay minimized --output rerun
+theseus compose verify campaign
+theseus compose verify minimized
+theseus compose verify rerun
 grep -n 'partition\|heal' rerun/topology-result.json
 grep -E '"dropped": [1-9][0-9]*' rerun/services/*/result.json
 grep -R '"network":"recovered"' rerun/services/writer-a/serial.log
@@ -137,6 +144,10 @@ uses the minimized plan and artifacts. It does not rebuild either image or
 select a new operation schedule. Its artifact paths are relative to the locked
 bundle, so the complete `minimized` directory can be moved and replayed
 elsewhere.
+
+`compose verify` checks locked inputs, RAM, ancestry, logs, and full execution
+hashes without KVM. It does not certify native execution. Treat retained RAM
+as sensitive: it can contain application secrets.
 
 ## 6. Clean up (optional)
 

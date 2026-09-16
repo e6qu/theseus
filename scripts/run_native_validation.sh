@@ -10,6 +10,14 @@ case "$THESEUS_ARCH" in
   *) echo "unsupported architecture: $THESEUS_ARCH" >&2; exit 2 ;;
 esac
 
+if test -n "${THESEUS_SOURCE_RUNTIME:-}"; then
+  case "$THESEUS_SOURCE_RUNTIME" in /*) ;; *) echo 'source runtime must be an absolute directory' >&2; exit 2 ;; esac
+  for binary in theseus theseus-topology theseus-image firecracker; do
+    test -x "$THESEUS_SOURCE_RUNTIME/$binary"
+  done
+  test -f "$THESEUS_SOURCE_RUNTIME/vmlinux"
+fi
+
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 validation="$root/.native-evidence/$THESEUS_ARCH/validation"
 rm -rf "$validation"
@@ -86,6 +94,8 @@ runtime "$coverage" '
   grep -E "\"unique_application_blocks\": [1-9][0-9]*" campaign/campaign-result.json
   theseus report --format markdown --output report/report.md campaign
   theseus compose replay campaign --output rerun
+  theseus compose verify campaign > bundle-verification.json
+  theseus compose verify rerun > replay-bundle-verification.json
   grep -A2 "\"replay_verification\"" rerun/campaign-result.json | grep "\"status\": \"passed\""
   theseus compare campaign rerun > comparison.json
   grep -F "\"format\": \"theseus-campaign-comparison-v1\"" comparison.json
@@ -126,6 +136,9 @@ runtime "$schedule" '
   theseus compose explore --minimize campaign \
     --expect-counterexample lost_update_is_unreachable --output minimized
   theseus compose replay minimized --output rerun
+  theseus compose verify campaign > bundle-verification.json
+  theseus compose verify minimized > minimized-bundle-verification.json
+  theseus compose verify rerun > replay-bundle-verification.json
   grep -A2 "\"replay_verification\"" rerun/campaign-result.json | grep "\"status\": \"passed\""
 '
 mkdir -p "$validation/schedule-search"
@@ -157,6 +170,8 @@ runtime "$pthread" '
   grep -E "\"thread_synchronization_events\": [1-9][0-9]*" campaign/campaign-result.json
   theseus report --format markdown --output report/report.md campaign
   theseus compose replay campaign --output rerun
+  theseus compose verify campaign > bundle-verification.json
+  theseus compose verify rerun > replay-bundle-verification.json
   grep -A2 "\"replay_verification\"" rerun/campaign-result.json | grep "\"status\": \"passed\""
 '
 mkdir -p "$validation/pthread-sync"
@@ -185,6 +200,8 @@ runtime "$execution" '
   theseus report --format markdown --output report/report.md campaign
   grep -F "Execution ledger" report/report.md
   theseus compose replay campaign --output rerun
+  theseus compose verify campaign > bundle-verification.json
+  theseus compose verify rerun > replay-bundle-verification.json
   grep -A2 "\"replay_verification\"" rerun/campaign-result.json | grep "\"status\": \"passed\""
   theseus compare campaign rerun > comparison.json
   grep -F "\"status\": \"same\"" comparison.json

@@ -77,6 +77,10 @@ grep -n 'application_blocks' plan.json
 
 ## 4. Run the campaign
 
+Theseus boots once, pauses at service readiness, and retains a checkpoint.
+Every input and replay inherits that boot state. Replay checks resumed
+execution, not repeatable boot.
+
 ```sh
 theseus compose explore --output campaign compose.yaml
 ```
@@ -90,12 +94,15 @@ grep -R '^THES:COV:v1:classifier:branching:' campaign/runs/*/services/classifier
 theseus report --format markdown --output report/report.md campaign
 grep -n 'application block' report/report.md
 theseus compose replay campaign --output rerun
+theseus compose verify campaign
+theseus compose verify rerun
 grep -n '"status": "passed"' rerun/campaign-result.json
 ```
 
-The replay succeeds only if the recorded application-block sets and novelty
-match. The raw serial records, structured campaign result, locked service
-image, and human-readable report remain available for inspection.
+Replay checks the recorded application blocks and complete machine stream.
+Keep the whole `campaign` directory, including its checkpoint and artifacts,
+to move or replay it elsewhere. `compose verify` checks retained integrity
+without KVM; it does not certify native execution.
 
 ## 6. Clean up (optional)
 

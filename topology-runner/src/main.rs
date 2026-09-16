@@ -1840,8 +1840,8 @@ enum CampaignPrefixResult {
     SerialGuardRejected,
 }
 
-/// Restore a checkpoint for each distinct operation/action prefix once, then
-/// fork every leaf from its nearest materialized ancestor. This is a real tree
+/// Materialize operation/action prefixes within a bounded LRU cache, then
+/// fork every leaf from its nearest retained ancestor. This is a real tree
 /// rather than a cache keyed only by operation names: the key includes the
 /// exact serial input and barrier actions, so a faulted prefix never leaks into
 /// an ordinary sibling.

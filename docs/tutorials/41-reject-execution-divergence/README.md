@@ -52,6 +52,10 @@ theseus compose plan > plan.json
 
 ## 4. Run the campaign
 
+Theseus retains a checkpoint at service readiness. The campaign and replay
+inherit its boot prefix and check resumed execution. They do not prove
+repeatable fresh boot.
+
 ```sh
 theseus compose explore --output campaign compose.yaml
 ```
@@ -67,6 +71,8 @@ grep -m1 '"host:serial_input:' campaign/campaign-result.json
 grep -m1 '"vcpu:0:interrupt:serial:' campaign/campaign-result.json
 grep -m1 '"vcpu:0:interrupt:virtio-' campaign/campaign-result.json
 theseus compose replay campaign --output rerun
+theseus compose verify campaign
+theseus compose verify rerun
 grep -A2 '"replay_verification"' rerun/campaign-result.json
 theseus compare campaign rerun > comparison.json
 grep '"status": "same"' comparison.json
@@ -81,7 +87,7 @@ that UART and service-device requests were injected on recorded vCPU turns
 instead of racing through asynchronous irqfds. The machine ledger is the
 compact digest and readable tail of this stream.
 
-Before a restored campaign leaf runs, Theseus validates its inherited
+Before an uncached operation prefix or restored campaign leaf runs, Theseus validates its inherited
 checkpoint prefix and installs the remaining exact trace. At each emulated
 device effect it admits only the recorded vCPU and verifies the exit kind,
 address, width, and payload. Before UART input, it requires the recorded host
@@ -89,6 +95,10 @@ event and exact bytes. Replay fails on the first wrong turn, input, or value,
 even when final HTTP and serial output might otherwise look the same. This does
 not control instruction scheduling, when the guest services an injected
 interrupt, in-kernel timer delivery, or when the guest consumes queued input.
+
+Keep the entire `campaign` directory, including RAM and locked artifacts.
+`compose verify` checks its integrity offline; it does not certify native
+execution. Checkpoints may contain application secrets retained in guest RAM.
 
 ## 6. Clean up (optional)
 

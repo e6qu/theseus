@@ -198,6 +198,23 @@ for input after its readiness marker. The baseline and replay restore the same
 locked state, rather than booting independently. Campaigns may reuse this root
 for their operation-prefix tree; retain the complete output directory.
 
+Ready-root exports copy locked runtime and guest inputs into their own
+`checkpoint/artifacts/` directory. Replayed campaigns and minimized bundles
+retain a local root with the same identity; they do not require the original
+campaign directory. Campaign run subdirectories share the campaign root:
+move the whole campaign, not an individual `runs/000` directory.
+
+`theseus compose verify bundle-dir` checks ready-root integrity without KVM.
+It binds configuration, members, execution ancestry, UART bytes, and complete
+machine/vCPU ledgers, including their campaign aggregates. It does not decode
+KVM CPU state or establish native execution provenance. Active replay remains
+a separate runtime operation.
+
+The operation-prefix cache uses a deterministic LRU policy with a 512 MiB
+materialized-RAM budget. Evicted prefixes can be reconstructed from retained
+ancestors. The immutable root, active working branches, binary context, and
+other host allocations are outside that budget; this is not a process-RSS cap.
+
 `starting_checkpoint` locks `metadata.json`; metadata locks every service's
 `vmstate` and `memory` plus the bounded binary `context.bin`. Context contains
 simulated NIC queues, seeded link state and framed digest input, switch queues,
