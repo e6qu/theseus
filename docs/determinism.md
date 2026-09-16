@@ -177,12 +177,13 @@ Low-level clients pause with `PATCH /vm`, then
 Load into an unconfigured API VM using `action_type: "Load"`, `directory`,
 `checkpoint_sha256`, `serial_out_path`, and an `execution` object containing
 `evidence_path` and optional `replay_trace_path`. Loading leaves the VM paused;
-resume with `PATCH /vm` and `{"state":"Resumed"}`. Outputs must be new.
+resume with `PATCH /vm` and `{"state":"Resumed"}`. Evidence output must be new;
+UART output must be new or an empty regular file, not an existing log or symlink.
 The origin is assigned only by verified load, not accepted from API clients.
 Raw `/snapshot/load` remains separate and cannot supply execution capture.
 
 This workflow currently excludes live block, network, vsock, pmem, balloon,
-memory-hotplug, and rate-limited RNG devices. It requires native Linux/KVM,
+memory-hotplug, and rate-limited UART/RNG devices. It requires native Linux/KVM,
 a compatible CPU/runtime, and the same architecture; RAM can contain secrets.
 Kernel timers and arbitrary instruction order are still uncontrolled. A
 checkpoint improves the starting state, not those guarantees. Exploration

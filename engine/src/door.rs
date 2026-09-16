@@ -24,7 +24,7 @@ use std::sync::Barrier;
 
 pub use theseus_sdk::{CMD_SETUP_COMPLETE, MAGIC};
 use theseus_sdk::{
-    OFS_COMMAND, OFS_EVENT, OFS_LOG, OFS_MAGIC, OFS_STATUS, STATUS_EVENTS_PENDING,
+    OFS_COMMAND, OFS_EVENT, OFS_LOG, OFS_STATUS, STATUS_EVENTS_PENDING,
 };
 
 use theseus_sdk::bus::BusDevice;
@@ -144,6 +144,7 @@ impl BusDevice for TheseusDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use theseus_sdk::OFS_MAGIC;
 
     #[test]
     fn test_magic() {
@@ -234,9 +235,8 @@ mod tests {
         original.push_event(7);
         original.write(0, OFS_COMMAND, &[CMD_SETUP_COMPLETE]);
         original.write(0, OFS_LOG, &[9]);
-        let bytes = serde_json::to_vec(&original.checkpoint_state()).unwrap();
         let mut restored = TheseusDevice::new();
-        restored.restore_checkpoint_state(serde_json::from_slice(&bytes).unwrap());
+        restored.restore_checkpoint_state(original.checkpoint_state());
         assert_eq!(restored.event_log(), original.event_log());
         for expected in [42, 7, 0] {
             let mut byte = [0];

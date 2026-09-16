@@ -328,6 +328,8 @@ pub struct Vmm {
     shutdown_exit_code: Option<FcExitCode>,
     execution_evidence_file: Option<std::fs::File>,
     execution_config: Option<execution::ExecutionConfig>,
+    // Output token-bucket state is not part of execution checkpoints.
+    serial_output_rate_limited: bool,
 
     /// VM object.
     pub vm: Vm,

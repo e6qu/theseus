@@ -122,6 +122,7 @@ pub struct I8042Device {
 }
 
 impl I8042Device {
+    #[cfg(any(target_arch = "x86_64", test))]
     pub(crate) fn checkpoint_state(&self) -> crate::checkpoint::KeyboardState {
         crate::checkpoint::KeyboardState {
             status: self.status, control: self.control, outp: self.outp, cmd: self.cmd,
@@ -129,6 +130,7 @@ impl I8042Device {
         }
     }
 
+    #[cfg(any(target_arch = "x86_64", test))]
     pub(crate) fn restore_checkpoint_state(&mut self, state: &crate::checkpoint::KeyboardState) {
         self.status = state.status;
         self.control = state.control;

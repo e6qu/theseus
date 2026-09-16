@@ -427,6 +427,7 @@ pub fn build_microvm_for_boot(
         shutdown_exit_code: None,
         execution_evidence_file,
         execution_config: vm_resources.execution.clone(),
+        serial_output_rate_limited: vm_resources.serial_rate_limiter_cfg.is_some(),
         vm,
         device_manager,
     };
@@ -652,6 +653,7 @@ pub fn build_microvm_from_snapshot(
         shutdown_exit_code: None,
         execution_evidence_file: None,
         execution_config: None,
+        serial_output_rate_limited: vm_resources.serial_rate_limiter_cfg.is_some(),
         vm,
         device_manager,
     };
@@ -1016,6 +1018,7 @@ pub(crate) mod tests {
             shutdown_exit_code: None,
             execution_evidence_file: None,
             execution_config: None,
+            serial_output_rate_limited: false,
             vm: Vm::Kvm(Arc::new(vm)),
             device_manager: default_device_manager(),
         }
@@ -1036,6 +1039,7 @@ pub(crate) mod tests {
             shutdown_exit_code: None,
             execution_evidence_file: None,
             execution_config: None,
+            serial_output_rate_limited: false,
             vm: Vm::Kvm(vm),
             device_manager,
         }

@@ -716,13 +716,20 @@ impl PrebootApiController<'_> {
     ) -> Result<VmmData, VmmActionError> {
         use crate::vmm_config::snapshot::{MemBackendConfig, MemBackendType, SnapshotLoadHugePageConfig};
         let invalid = |reason: String| VmmActionError::InternalVmm(VmmError::ExecutionCoverage(reason));
-        if self.boot_path || self.vm_resources.execution.is_some() {
+        if self.boot_path || self.vm_resources.execution.is_some() || self.vm_resources.serial_rate_limiter_cfg.is_some() {
             return Err(invalid("load an execution checkpoint into an unconfigured VM".into()));
         }
         // Validate all members and the inherited prefix before creating outputs
         // or vCPU threads. That prefix is captured, never rerun as kernel boot.
         let verified = config.verify().map_err(VmmActionError::InternalVmm)?;
         let expected = config.execution.read_replay_trace().map_err(VmmActionError::InternalVmm)?;
+        match std::fs::symlink_metadata(&config.serial_out_path) {
+            Ok(metadata) if !metadata.file_type().is_file() || metadata.len() != 0 => {
+                return Err(invalid("checkpoint UART output must be new or an empty regular file".into()));
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(invalid(error.to_string())),
+            _ => {}
+        }
         if expected.as_ref().is_some_and(|trace| !trace.starts_with(&verified.metadata.execution.trace)) {
             return Err(invalid("replay trace does not begin with the retained checkpoint prefix".into()));
         }

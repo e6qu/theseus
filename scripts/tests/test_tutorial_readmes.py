@@ -38,7 +38,7 @@ for directory in directories[13:]:
     text = (directory / "README.md").read_text()
     for heading in (
         "## Before you start",
-        "## 1. Build",
+        "## 1. Inspect" if directory.name == "42-replay-from-ready" else "## 1. Build",
         "## 2. Enter",
         "## 3. Prepare",
         "## 4. Run",

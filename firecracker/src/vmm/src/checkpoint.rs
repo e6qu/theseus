@@ -232,6 +232,7 @@ impl Vmm {
             || self.shutdown_exit_code.is_some()
             || self.execution_config.is_none()
             || self.machine_config.virtual_time.is_none()
+            || self.serial_output_rate_limited
             || self
                 .execution_config
                 .as_ref()

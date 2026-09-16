@@ -137,6 +137,10 @@ impl Evidence {
             Some("the original execution already diverged from its replay protocol")
         } else if self.machine_execution_trace.is_empty() {
             Some("the original execution retained no machine decisions")
+        } else if self.start.as_ref().is_some_and(|start| {
+            start.inherited_decisions >= self.machine_execution_trace.len() as u64
+        }) {
+            Some("checkpoint evidence retained no resumed execution suffix")
         } else {
             None
         };

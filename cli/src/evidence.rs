@@ -547,6 +547,103 @@ fn verify_minimization(bytes: &[u8]) -> Result<(), EvidenceError> {
     )
 }
 
+fn verify_api_origin(
+    plan: &serde_json::Value,
+    execution: &crate::execution::Evidence,
+    files: &BTreeMap<String, ProofFile>,
+    retained: &BTreeMap<String, Vec<u8>>,
+    architecture: &str,
+) -> Result<(), EvidenceError> {
+    if plan["format"] == "theseus-replay-plan-v2" {
+        return require(
+            execution.start.is_none()
+                && plan["checkpoint"].is_null()
+                && matches!(
+                    plan["run"]["replay_start"].as_str(),
+                    None | Some("fresh_boot")
+                ),
+            "fresh-boot replay cannot claim checkpoint ancestry",
+        );
+    }
+    require(
+        plan["format"] == "theseus-replay-plan-v3"
+            && plan["run"]["replay_start"] == "ready_checkpoint",
+        "checkpoint replay requires a version-3 ready-checkpoint plan",
+    )?;
+    for (field, name) in [
+        ("metadata", "metadata.json"),
+        ("vmstate", "vmstate"),
+        ("memory", "memory"),
+        ("prelude", "prelude.log"),
+    ] {
+        let relative = format!("checkpoint/{name}");
+        let member = &plan["checkpoint"][field];
+        require(
+            member["path"] == relative,
+            "checkpoint inventory must use fixed bundle-local paths",
+        )?;
+        let indexed = files
+            .get(&format!("container/run/{relative}"))
+            .ok_or_else(|| {
+                EvidenceError("runtime validation omitted a locked checkpoint member".into())
+            })?;
+        require(
+            member["sha256"] == indexed.sha256,
+            "checkpoint identity differs from retained bytes",
+        )?;
+    }
+    let metadata: serde_json::Value = parse_json_bytes(
+        retained
+            .get("container/run/checkpoint/metadata.json")
+            .ok_or_else(|| EvidenceError("checkpoint metadata was not retained".into()))?,
+        "checkpoint metadata",
+    )?;
+    require(
+        metadata["format"] == "theseus-checkpoint-v1" && metadata["architecture"] == architecture,
+        "checkpoint format or architecture differs from native validation",
+    )?;
+    let config = &metadata["machine_config"];
+    let run = &plan["run"];
+    require(
+        config["vcpu_count"] == run["vcpu_count"]
+            && config["mem_size_mib"] == run["mem_size_mib"]
+            && !run["virtual_time"].is_null()
+            && config["virtual_time"] == run["virtual_time"]
+            && if run["entropy_device"] == false {
+                metadata["entropy"].is_null()
+            } else {
+                metadata["entropy"]["seed"] == run["seed"]
+            },
+        "checkpoint configuration differs from its replay plan",
+    )?;
+    for (field, name) in [("snapshot", "vmstate"), ("memory", "memory")] {
+        let indexed = &files[&format!("container/run/checkpoint/{name}")];
+        require(
+            metadata[field]["sha256"] == indexed.sha256
+                && metadata[field]["bytes"] == indexed.bytes,
+            "checkpoint metadata does not bind its state and RAM",
+        )?;
+    }
+    let memory_bytes = run["mem_size_mib"]
+        .as_u64()
+        .and_then(|mib| mib.checked_mul(1024 * 1024));
+    require(
+        memory_bytes.is_some() && metadata["memory"]["bytes"].as_u64() == memory_bytes,
+        "checkpoint RAM length differs from its machine configuration",
+    )?;
+    let prefix: Vec<String> = serde_json::from_value(metadata["execution"]["trace"].clone())
+        .map_err(|error| EvidenceError(format!("invalid checkpoint execution prefix: {error}")))?;
+    require(
+        execution.start.as_ref().is_some_and(|start| {
+            start.kind == "checkpoint"
+                && start.checkpoint_sha256 == plan["checkpoint"]["metadata"]["sha256"]
+                && start.inherited_decisions == prefix.len() as u64
+        }) && prefix.len() < execution.machine_execution_trace.len()
+            && execution.machine_execution_trace.starts_with(&prefix),
+        "execution origin or inherited prefix differs from its retained checkpoint",
+    )
+}
+
 fn verify_replay(retained: &BTreeMap<String, Vec<u8>>) -> Result<(), EvidenceError> {
     let topology: serde_json::Value = parse_json_bytes(
         &retained["evidence/replay/topology-result.json"],
@@ -691,9 +788,16 @@ fn verify_runtime_validation(
             .to_owned();
         let mut bytes = Vec::new();
         let mut hasher = Sha256::new();
+        if name == "container/run/checkpoint/metadata.json" {
+            require(
+                entry.header().size().unwrap_or(u64::MAX) <= 128 * 1024 * 1024,
+                "checkpoint metadata exceeds 128 MiB",
+            )?;
+        }
         if required.contains(name.as_str())
             || strict_required.contains(name.as_str())
             || api_required.contains(name.as_str())
+            || name == "container/run/checkpoint/metadata.json"
         {
             entry.read_to_end(&mut bytes).map_err(|error| {
                 EvidenceError(format!("cannot read archive member {name}: {error}"))
@@ -832,6 +936,7 @@ fn verify_runtime_validation(
     )?;
     if proof.format == VALIDATION_FORMAT_V5
         || replay_plan["format"] == "theseus-replay-plan-v2"
+        || replay_plan["format"] == "theseus-replay-plan-v3"
         || container["execution_evidence"] == "execution.json"
     {
         require(
@@ -839,8 +944,10 @@ fn verify_runtime_validation(
             "runtime validation is missing API machine-stream replay evidence",
         )?;
         require(
-            replay_plan["format"] == "theseus-replay-plan-v2"
-                && container["execution_evidence"] == "execution.json",
+            matches!(
+                replay_plan["format"].as_str(),
+                Some("theseus-replay-plan-v2" | "theseus-replay-plan-v3")
+            ) && container["execution_evidence"] == "execution.json",
             "container run did not require machine-stream capture",
         )?;
         let vcpu_count = replay_plan["run"]["vcpu_count"]
@@ -857,6 +964,7 @@ fn verify_runtime_validation(
         )?;
         original.validate(vcpu_count).map_err(EvidenceError)?;
         replay.validate(vcpu_count).map_err(EvidenceError)?;
+        verify_api_origin(&replay_plan, &original, &files, &retained, architecture)?;
         require(original.boundary == "guest_exit" && original.replay_error.is_none()
             && !original.machine_execution_trace.is_empty() && original == replay,
             "container API replay did not reproduce the exact admitted machine stream through guest exit")?;
@@ -1289,6 +1397,62 @@ fn require(condition: bool, message: &str) -> Result<(), EvidenceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_checkpoint_evidence_binds_members_origin_and_prefix() {
+        let mut plan = serde_json::json!({"format":"theseus-replay-plan-v3",
+            "run":{"replay_start":"ready_checkpoint", "seed":42, "vcpu_count":1, "mem_size_mib":1,
+                "virtual_time":{"tick_ns":1000000,"exits_per_tick":10}}, "checkpoint":{}});
+        let mut files = BTreeMap::new();
+        for (field, name, bytes) in [
+            ("metadata", "metadata.json", 100),
+            ("vmstate", "vmstate", 20),
+            ("memory", "memory", 1024 * 1024),
+            ("prelude", "prelude.log", 10),
+        ] {
+            plan["checkpoint"][field] =
+                serde_json::json!({"path":format!("checkpoint/{name}"),"sha256":"a".repeat(64)});
+            files.insert(
+                format!("container/run/checkpoint/{name}"),
+                ProofFile {
+                    bytes,
+                    sha256: "a".repeat(64),
+                },
+            );
+        }
+        let metadata = serde_json::json!({"format":"theseus-checkpoint-v1","architecture":"amd64",
+            "machine_config":{"vcpu_count":1,"mem_size_mib":1,"virtual_time":plan["run"]["virtual_time"]},
+            "entropy":{"seed":42},"snapshot":{"sha256":"a".repeat(64),"bytes":20},
+            "memory":{"sha256":"a".repeat(64),"bytes":1024*1024},
+            "execution":{"trace":["vcpu:0:pio_write:0x3f8:1:41"]}});
+        let mut retained = BTreeMap::from([(
+            "container/run/checkpoint/metadata.json".into(),
+            serde_json::to_vec(&metadata).unwrap(),
+        )]);
+        // Origin validation is separate from digest/terminal validation; the
+        // archive verifier invokes both on original and replay evidence.
+        let mut execution: crate::execution::Evidence = serde_json::from_value(serde_json::json!({
+            "format":"theseus-execution-v1","boundary":"guest_exit","replay_error":null,
+            "execution_ledgers":[],"machine_execution_ledger":{"decisions":0,"sha256":"","tail":[]},
+            "machine_execution_trace":["vcpu:0:pio_write:0x3f8:1:41","vcpu:0:pio_write:0x64:1:fe"],
+            "start":{"kind":"checkpoint","checkpoint_sha256":"a".repeat(64),"inherited_decisions":1}})).unwrap();
+        verify_api_origin(&plan, &execution, &files, &retained, "amd64").unwrap();
+        execution.start.as_mut().unwrap().inherited_decisions = 0;
+        assert!(verify_api_origin(&plan, &execution, &files, &retained, "amd64").is_err());
+        execution.start.as_mut().unwrap().inherited_decisions = 1;
+        assert!(verify_api_origin(&plan, &execution, &files, &retained, "arm64").is_err());
+        let mut changed = metadata;
+        changed["memory"]["sha256"] = "b".repeat(64).into();
+        retained.insert(
+            "container/run/checkpoint/metadata.json".into(),
+            serde_json::to_vec(&changed).unwrap(),
+        );
+        assert!(verify_api_origin(&plan, &execution, &files, &retained, "amd64").is_err());
+        files.remove("container/run/checkpoint/memory");
+        assert!(verify_api_origin(&plan, &execution, &files, &retained, "amd64").is_err());
+        plan["format"] = "theseus-replay-plan-v2".into();
+        assert!(verify_api_origin(&plan, &execution, &files, &retained, "amd64").is_err());
+    }
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use std::path::PathBuf;

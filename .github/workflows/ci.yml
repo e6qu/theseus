@@ -73,7 +73,6 @@ jobs:
           mkdir -p work/runtime work/guest/root/bin
           cp ../../../firecracker/build/cargo_target/debug/firecracker work/runtime/firecracker
           cp "$release/theseus-$tag-linux-amd64/vmlinux" work/guest/vmlinux
-          cp "$release/theseus-$tag-linux-amd64/theseus_rng.ko" work/runtime/theseus_rng.ko
           cp /bin/busybox work/guest/root/bin/busybox
           cp init work/guest/root/init
           chmod +x work/guest/root/init
@@ -92,7 +91,6 @@ jobs:
           mkdir -p work/runtime work/guest/root/bin
           cp ../04-read-serial/work/runtime/firecracker work/runtime/firecracker
           cp ../04-read-serial/work/guest/vmlinux work/guest/vmlinux
-          cp ../04-read-serial/work/runtime/theseus_rng.ko work/guest/root/theseus_rng.ko
           cp /bin/busybox work/guest/root/bin/busybox
           cp init work/guest/root/init
           chmod +x work/guest/root/init

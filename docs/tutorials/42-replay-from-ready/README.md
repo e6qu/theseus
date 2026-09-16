@@ -14,10 +14,10 @@ export THESEUS_IMAGE=ghcr.io/e6qu/theseus:$THESEUS_TAG
 ```
 
 The guest reads a simulated UART TTY, as a Raspberry Pi application would read
-`/dev/ttyS0` or `/dev/ttyAMA0`. The matching published kernel module supplies
-seeded bytes for `/dev/urandom` and `/dev/random`; the Linux CRNG is not replayed.
+`/dev/ttyS0` or `/dev/ttyAMA0`. The checkpoint retains Linux's random state in
+guest RAM. Read `/dev/urandom` and `/dev/random` directly; no module or SDK is needed.
 
-## 1. Build the test inputs
+## 1. Inspect the guest and input
 
 ```sh
 sed -n '1,100p' init
@@ -43,7 +43,6 @@ mkdir -p work/runtime work/guest/root/bin
 cp /usr/local/bin/firecracker work/runtime/firecracker
 cp /opt/theseus/vmlinux work/guest/vmlinux
 cp /bin/busybox work/guest/root/bin/busybox
-cp /opt/theseus/theseus_rng.ko work/guest/root/theseus_rng.ko
 cp init work/guest/root/init
 chmod +x work/guest/root/init
 (cd work/guest/root && find . -print | cpio -o -H newc --quiet | gzip > ../initramfs.cpio.gz)
