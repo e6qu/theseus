@@ -101,9 +101,11 @@ while True:
             assert output is not None, "execution must be configured before boot"
             assert entropy_configured == ENTROPY_DEVICE
             started = True
-            if MODE == "checkpoint":
+            if MODE in ("checkpoint", "capture_error"):
                 admit("vcpu:0:pio_write:0x3f8:1:41")
             serial.write_text("THES:M:42\n")
+        elif endpoint == "/execution-checkpoint" and MODE == "capture_error":
+            status = "400 Bad Request"
         elif endpoint == "/execution-checkpoint" and body["action_type"] == "Create":
             assert MODE == "checkpoint" and started
             directory = Path(body["directory"])

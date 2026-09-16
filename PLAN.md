@@ -164,6 +164,15 @@ trace comparison. Native source CI exercises both standard random devices,
 UART input, and three exact checkpoint replays on amd64 KVM; require
 the merged release's corresponding evidence before marking it product-ready.
 
+The released amd64 qualification for `c92f9e076f9b` still fails its fixed-plan
+replay before dependency startup. The full release portfolio is not
+demonstrated. Next, give topology/certification runs an explicit retained
+starting checkpoint with locked ancestry (or control their boot), and retain
+the first replay divergence even when startup fails. Standalone UART/RNG
+checkpoint evidence does not substitute for that topology proof; never silently
+drop boot decisions from a fresh-boot contract. Then complete the portfolio
+below before advancing to in-kernel timer control.
+
 1. Automatically execute the released amd64 runtime on native KVM after its
    release passes all consumer checks.
 2. Certify fixed-plan replay and retain the distributed partition, recovery,

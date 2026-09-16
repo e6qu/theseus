@@ -391,6 +391,9 @@ impl Bundle {
         })();
         // Never use the original bootstrap as the baseline: baseline and all
         // replays take precisely the same verified restore path.
+        if capture.is_err() && child.try_wait().ok().flatten().is_none() {
+            let _ = pause_and_flush(&socket);
+        }
         let _ = child.kill();
         let _ = child.wait();
         let _ = fs::remove_file(socket);
@@ -2013,6 +2016,25 @@ mem_size_mib = 128
         let logs = root.join("rerun");
         assert!(replay_to(&bundle, &logs).is_err());
         assert!(!logs.exists());
+    }
+
+    #[test]
+    fn failed_checkpoint_capture_retains_a_paused_boot_cut_without_a_baseline() {
+        let directory = ready_checkpoint_fixture();
+        let root = directory.path();
+        let runtime = root.join("runtime/firecracker");
+        let script = fs::read_to_string(&runtime)
+            .unwrap()
+            .replace("MODE = \"checkpoint\"", "MODE = \"capture_error\"");
+        fs::write(&runtime, script).unwrap();
+        let bundle = root.join("bundle");
+        assert!(test(root.join("theseus.toml"), &bundle).is_err());
+        let cut = crate::execution::Evidence::read(&bundle.join("boot/execution.json"), 1).unwrap();
+        assert_eq!(cut.boundary, "pause");
+        assert!(!cut.machine_execution_trace.is_empty());
+        assert!(!bundle.join("execution.json").exists());
+        assert!(!bundle.join("checkpoint/metadata.json").exists());
+        assert!(replay_to(&bundle, root.join("rerun")).is_err());
     }
 
     #[test]
