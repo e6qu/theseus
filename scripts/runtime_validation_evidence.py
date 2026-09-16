@@ -106,6 +106,12 @@ def seal(args: argparse.Namespace) -> None:
     missing = [name for name in REQUIRED if not (root / name).is_file()]
     if missing:
         fail("missing runtime validation evidence: " + ", ".join(missing))
+    fixed = root / "fixed-plan"
+    if fixed.exists():
+        for name in ("certificate.json", "first/replay-plan.json", "replay/topology-result.json",
+                     "first/checkpoint/starting-state/metadata.json", "first/checkpoint/starting-state/context.bin"):
+            if not (fixed / name).is_file():
+                fail("missing fixed-plan starting-state evidence: " + name)
     proof = root / "evidence.json"
     if proof.exists():
         fail("runtime validation proof already exists")

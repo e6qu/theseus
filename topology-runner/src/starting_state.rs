@@ -51,6 +51,26 @@ pub(super) fn check_recorded_origin(
         if Some(recorded) != origin(topology, Some(root), name) {
             return Err(format!("recorded checkpoint origin differs for {name:?}"));
         }
+        let trace: Vec<String> = serde_json::from_value(value["machine_execution_trace"].clone())
+            .map_err(|_| "missing recorded machine trace".to_owned())?;
+        let (machine, ledgers) = CheckpointExecutionState {
+            trace,
+            pending_interrupts: Vec::new(),
+        }
+        .restore(usize::from(topology.services[name].run.run.vcpu_count))?;
+        if serde_json::to_value(machine.ledger_evidence()).map_err(|error| error.to_string())?
+            != value["machine_execution_ledger"]
+            || serde_json::to_value(
+                ledgers
+                    .iter()
+                    .map(ExecutionLedger::evidence)
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(|error| error.to_string())?
+                != value["execution_ledgers"]
+        {
+            return Err(format!("recorded execution hashes or tails for {name:?} do not cover the complete retained stream"));
+        }
     }
     Ok(())
 }
@@ -91,6 +111,7 @@ struct Manifest {
     configuration_sha256: String,
     context: CheckpointArtifact,
     services: BTreeMap<String, Members>,
+    execution_prefixes: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -197,7 +218,16 @@ pub(super) fn retain(
     fs::create_dir(directory).map_err(|error| error.to_string())?;
     let mut stored = BTreeMap::new();
     let mut members = BTreeMap::new();
+    let mut execution_prefixes = BTreeMap::new();
     for (name, vm) in &root.services {
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.contains('/')
+            || name.contains('\\')
+        {
+            return Err("unsafe checkpoint service name".to_owned());
+        }
         let scheduler = &root.scheduler[name];
         let service = directory.join(name);
         fs::create_dir(&service).map_err(|error| error.to_string())?;
@@ -214,6 +244,7 @@ pub(super) fn retain(
             .as_ref()
             .ok_or("checkpoint is missing machine execution state")?
             .checkpoint_state();
+        execution_prefixes.insert(name.clone(), execution.trace.clone());
         if execution
             .trace
             .last()
@@ -272,6 +303,7 @@ pub(super) fn retain(
         architecture: runtime_architecture()?.to_owned(),
         configuration_sha256: configuration(topology)?,
         services: members,
+        execution_prefixes,
         context: artifact(&directory.join("context.bin"), MAX_CONTEXT)
             .map_err(|error| error.to_string())?,
     };
@@ -319,6 +351,10 @@ pub(super) fn load(
         || metadata.architecture != runtime_architecture()?
         || metadata.configuration_sha256 != configuration(topology)?
         || metadata.services.keys().ne(topology.services.keys())
+        || metadata
+            .execution_prefixes
+            .keys()
+            .ne(topology.services.keys())
     {
         return Err(
             "starting checkpoint format, architecture, service set, or VM configuration differs"
@@ -341,6 +377,11 @@ pub(super) fn load(
     let mut services = BTreeMap::new();
     let mut scheduler = BTreeMap::new();
     for (name, state) in context.services {
+        if metadata.execution_prefixes.get(&name) != Some(&state.execution.trace) {
+            return Err(
+                "checkpoint context differs from its inspectable inherited prefix".to_owned(),
+            );
+        }
         if name.is_empty()
             || name == "."
             || name == ".."
@@ -362,10 +403,11 @@ pub(super) fn load(
         checked(&service.join("vmstate"), &members.vmstate, MAX_CONTEXT)?;
         checked(&service.join("memory"), &members.memory, MAX_MEMORY)?;
         if members.memory.bytes != u64::from(profile.run.run.mem_size_mib) * 1024 * 1024
-            || state.networks.keys().ne(profile.networks.iter())
+            || state.networks.keys().collect::<BTreeSet<_>>()
+                != profile.networks.iter().collect::<BTreeSet<_>>()
             || state.program_counters.len() != usize::from(profile.run.run.vcpu_count)
             || state.serial_contents.is_empty()
-            || state.serial_pending_bytes > 16
+            || state.serial_pending_bytes > 64
             || state.devices.keyboard.is_some() != cfg!(target_arch = "x86_64")
             || state
                 .devices
@@ -380,12 +422,24 @@ pub(super) fn load(
         let (machine, ledgers) = state
             .execution
             .restore(usize::from(profile.run.run.vcpu_count))?;
+        state
+            .devices
+            .validate()
+            .map_err(|error| error.to_string())?;
         let branch = BranchPoint::import_snapshot(
             &service.join("vmstate"),
             &service.join("memory"),
             profile.run.run.seed,
         )
         .map_err(|error| error.to_string())?;
+        let microvm = branch.microvm_state().map_err(|error| error.to_string())?;
+        if microvm.vm_info.mem_size_mib != u64::from(profile.run.run.mem_size_mib)
+            || microvm.vcpu_states.len() != usize::from(profile.run.run.vcpu_count)
+        {
+            return Err(format!(
+                "retained VM state for {name:?} differs from its locked configuration"
+            ));
+        }
         services.insert(
             name.clone(),
             ServiceVmCheckpoint {
@@ -534,6 +588,66 @@ mod tests {
             .kernel
             .sha256 = "d".repeat(64);
         assert_ne!(digest, configuration(&changed).unwrap());
+    }
+
+    #[test]
+    fn missing_checkpoint_identity_and_corrupt_context_fail_before_restore() {
+        let directory = std::env::temp_dir().join(format!(
+            "theseus-root-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let topology = topology();
+        let path = directory.join("metadata.json");
+        write_new(&directory.join("context.bin"), b"invalid context").unwrap();
+        let manifest = Manifest {
+            format: "theseus-topology-checkpoint-v1".to_owned(),
+            execution_prefixes: BTreeMap::new(),
+            architecture: runtime_architecture().unwrap().to_owned(),
+            configuration_sha256: configuration(&topology).unwrap(),
+            context: artifact(&directory.join("context.bin"), MAX_CONTEXT).unwrap(),
+            services: [(
+                "api".to_owned(),
+                Members {
+                    vmstate: CheckpointArtifact {
+                        bytes: 1,
+                        sha256: "a".repeat(64),
+                    },
+                    memory: CheckpointArtifact {
+                        bytes: 1024 * 1024,
+                        sha256: "b".repeat(64),
+                    },
+                },
+            )]
+            .into(),
+        };
+        write_new(&path, &serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let locked = Artifact {
+            path: path.display().to_string(),
+            sha256: artifact(&path, MAX_CONTEXT).unwrap().sha256,
+        };
+        let wrong = Artifact {
+            path: locked.path.clone(),
+            sha256: "c".repeat(64),
+        };
+        assert!(load(&topology, &wrong)
+            .err()
+            .unwrap()
+            .contains("identity changed"));
+        assert!(load(&topology, &locked)
+            .err()
+            .unwrap()
+            .contains("invalid checkpoint context"));
+        fs::write(directory.join("context.bin"), b"changed").unwrap();
+        assert!(load(&topology, &locked)
+            .err()
+            .unwrap()
+            .contains("member changed"));
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

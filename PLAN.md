@@ -194,6 +194,10 @@ to in-kernel timer control.
    and a cryptographic inventory for every validation file.
    Version-5 validation must include exact standalone container run/replay
    evidence and a retained passing active-replay check, not only replay stdout.
+   A v5 checkpoint certificate also requires the complete fixed-plan witness
+   in that archive: locked state/RAM/context, inherited prefixes, both run
+   results and logs, and the identical indexed certificate. JSON alone is not
+   a replayable checkpoint witness.
 5. Make the released CLI reject incomplete, renamed, unsafe, mismatched, or
    semantically empty evidence while reporting the exact certified
    architecture set. Exercise its offline report, comparison, evaluation,

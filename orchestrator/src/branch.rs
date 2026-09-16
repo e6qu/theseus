@@ -13,10 +13,9 @@
 //! (see [`BranchPoint::child_seed`]); virtual time, clock state and memory
 //! contents are identical. This is the Antithesis branch-point semantics.
 //!
-//! v1 copies guest RAM eagerly per branch point. The copy-on-write
-//! optimization (uffd write-protect, share pages until written) is the
-//! follow-up; the interface here is designed to make that a transparent
-//! change.
+//! Capture copies guest RAM eagerly once per branch point. Children restore
+//! with private copy-on-write file mappings; untouched pages are shared and
+//! child writes are isolated. Exporting a durable root adds a disk copy.
 
 use std::fs::File;
 use std::io::{self, Write};

@@ -229,6 +229,7 @@ pub fn verify_native_evidence(
             architecture,
             &index.source_commit,
             &index.runtime_tag,
+            &certificate_bytes,
         )?;
     }
     Ok(NativeEvidenceSummary {
@@ -742,6 +743,7 @@ fn verify_runtime_validation(
     architecture: &str,
     source_commit: &str,
     runtime_tag: &str,
+    certificate_bytes: &[u8],
 ) -> Result<(), EvidenceError> {
     let required = BTreeSet::from([
         "evidence.json",
@@ -842,7 +844,12 @@ fn verify_runtime_validation(
             || strict_required.contains(name.as_str())
             || api_required.contains(name.as_str())
             || name == "container/run/checkpoint/metadata.json"
+            || (name.starts_with("fixed-plan/") && name.ends_with(".json"))
         {
+            require(
+                entry.header().size().unwrap_or(u64::MAX) <= 128 * 1024 * 1024,
+                "retained validation JSON exceeds 128 MiB",
+            )?;
             entry.read_to_end(&mut bytes).map_err(|error| {
                 EvidenceError(format!("cannot read archive member {name}: {error}"))
             })?;
@@ -873,6 +880,11 @@ fn verify_runtime_validation(
     )?;
     let proof: RuntimeValidationProof =
         parse_json_bytes(&retained["evidence.json"], "runtime validation proof")?;
+    let certificate: serde_json::Value =
+        parse_json_bytes(certificate_bytes, "runtime certificate")?;
+    if certificate["format"] == CERTIFICATE_FORMAT_V5 {
+        verify_fixed_plan(&files, &retained, architecture, certificate_bytes)?;
+    }
     require(
         matches!(
             proof.format.as_str(),
@@ -1184,6 +1196,237 @@ fn verify_runtime_validation(
                 .contains("Execution ledger"),
             "strict execution report does not explain the execution ledger",
         )?;
+    }
+    Ok(())
+}
+
+/// Bind a checkpoint certificate to the entire retained first/replay witness.
+/// RAM/context are streamed into the inventory; only inspectable JSON is read.
+fn verify_fixed_plan(
+    files: &BTreeMap<String, ProofFile>,
+    retained: &BTreeMap<String, Vec<u8>>,
+    architecture: &str,
+    certificate_bytes: &[u8],
+) -> Result<(), EvidenceError> {
+    let get = |name: &str| {
+        retained
+            .get(name)
+            .ok_or_else(|| EvidenceError(format!("missing fixed-plan evidence: {name}")))
+    };
+    require(
+        get("fixed-plan/certificate.json")? == certificate_bytes,
+        "retained fixed-plan certificate differs from its indexed asset",
+    )?;
+    let first: serde_json::Value =
+        parse_json_bytes(get("fixed-plan/first/replay-plan.json")?, "fixed-plan plan")?;
+    let certificate: serde_json::Value =
+        parse_json_bytes(certificate_bytes, "fixed-plan certificate")?;
+    require(
+        certificate["source"]["plan_contents"]
+            .as_str()
+            .is_some_and(|contents| {
+                contents.as_bytes() == get("fixed-plan/first/replay-plan.json").unwrap()
+            }),
+        "fixed-plan witness differs from the certificate's exact embedded plan",
+    )?;
+    verify_fixed_plan_artifacts(&first, "fixed-plan/first", files)?;
+    let metadata_path = "fixed-plan/first/checkpoint/starting-state/metadata.json";
+    let metadata: serde_json::Value =
+        parse_json_bytes(get(metadata_path)?, "topology checkpoint metadata")?;
+    let identity = first["starting_checkpoint"]["sha256"]
+        .as_str()
+        .ok_or_else(|| EvidenceError("fixed plan lacks its checkpoint identity".to_owned()))?;
+    require(
+        files
+            .get(metadata_path)
+            .is_some_and(|file| file.sha256 == identity)
+            && first["starting_checkpoint"]["path"] == "checkpoint/starting-state/metadata.json"
+            && first["replay_start"] == "ready_checkpoint"
+            && metadata["format"] == "theseus-topology-checkpoint-v1"
+            && metadata["architecture"] == architecture,
+        "fixed-plan checkpoint identity, path, format, or architecture differs",
+    )?;
+    let services = first["services"]
+        .as_object()
+        .ok_or_else(|| EvidenceError("fixed plan has no services".to_owned()))?;
+    require(
+        !services.is_empty()
+            && metadata["services"]
+                .as_object()
+                .is_some_and(|members| members.keys().eq(services.keys()))
+            && metadata["execution_prefixes"]
+                .as_object()
+                .is_some_and(|prefixes| prefixes.keys().eq(services.keys())),
+        "fixed-plan checkpoint service or prefix set differs",
+    )?;
+    let member =
+        |name: &str, expected: &serde_json::Value, maximum: u64| -> Result<(), EvidenceError> {
+            let file = files.get(name).ok_or_else(|| {
+                EvidenceError(format!("missing fixed-plan checkpoint member: {name}"))
+            })?;
+            require(
+                expected["sha256"].as_str() == Some(file.sha256.as_str())
+                    && expected["bytes"].as_u64() == Some(file.bytes)
+                    && file.bytes <= maximum,
+                "fixed-plan checkpoint member hash, size, or bound differs",
+            )
+        };
+    member(
+        "fixed-plan/first/checkpoint/starting-state/context.bin",
+        &metadata["context"],
+        128 * 1024 * 1024,
+    )?;
+    for (name, profile) in services {
+        require(
+            !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\']),
+            "unsafe fixed-plan service name",
+        )?;
+        let memory = &metadata["services"][name]["memory"];
+        let memory_mib = profile["run"]["run"]["mem_size_mib"].as_u64().unwrap_or(0);
+        require(
+            (1..=65536).contains(&memory_mib)
+                && memory["bytes"].as_u64() == Some(memory_mib * 1024 * 1024),
+            "fixed-plan RAM length differs from its VM configuration",
+        )?;
+        member(
+            &format!("fixed-plan/first/checkpoint/starting-state/{name}/memory"),
+            memory,
+            64 * 1024 * 1024 * 1024,
+        )?;
+        member(
+            &format!("fixed-plan/first/checkpoint/starting-state/{name}/vmstate"),
+            &metadata["services"][name]["vmstate"],
+            128 * 1024 * 1024,
+        )?;
+        let prefix = metadata["execution_prefixes"][name]
+            .as_array()
+            .ok_or_else(|| EvidenceError("missing fixed-plan execution prefix".to_owned()))?;
+        require(
+            !prefix.is_empty()
+                && first["checkpoint_prefixes"][name].as_u64() == Some(prefix.len() as u64),
+            "fixed-plan ancestry count differs",
+        )?;
+        let original: serde_json::Value = parse_json_bytes(
+            get(&format!("fixed-plan/first/services/{name}/result.json"))?,
+            "first service result",
+        )?;
+        let replay: serde_json::Value = parse_json_bytes(
+            get(&format!("fixed-plan/replay/services/{name}/result.json"))?,
+            "replayed service result",
+        )?;
+        for result in [&original, &replay] {
+            require(
+                result["status"] == "passed"
+                    && result["error"].is_null()
+                    && result["execution_start"]["kind"] == "topology_checkpoint"
+                    && result["execution_start"]["checkpoint_sha256"] == identity
+                    && result["execution_start"]["inherited_decisions"].as_u64()
+                        == Some(prefix.len() as u64),
+                "fixed-plan result failed or has a different checkpoint origin",
+            )?;
+            let trace = result["machine_execution_trace"]
+                .as_array()
+                .ok_or_else(|| EvidenceError("missing fixed-plan machine trace".to_owned()))?;
+            require(
+                trace.len() > prefix.len() && trace.starts_with(prefix),
+                "fixed-plan stream lacks its exact ancestry and nonempty suffix",
+            )?;
+            let evidence: crate::execution::Evidence = serde_json::from_value(serde_json::json!({
+                "format": "theseus-execution-v1", "boundary": "guest_exit", "replay_error": null,
+                "execution_ledgers": result["execution_ledgers"], "machine_execution_ledger": result["machine_execution_ledger"],
+                "machine_execution_trace": result["machine_execution_trace"]
+            })).map_err(|error| EvidenceError(error.to_string()))?;
+            let cpus = profile["run"]["run"]["vcpu_count"]
+                .as_u64()
+                .filter(|count| (1..=32).contains(count))
+                .ok_or_else(|| EvidenceError("invalid fixed-plan CPU count".to_owned()))?
+                as u8;
+            evidence.validate(cpus).map_err(EvidenceError)?;
+        }
+        for field in [
+            "machine_execution_trace",
+            "execution_ledgers",
+            "machine_execution_ledger",
+            "serial_sha256",
+            "storage_sha256",
+            "network_traffic",
+            "entropy_probe_sha256",
+            "virtual_time_ns",
+        ] {
+            require(
+                original[field] == replay[field],
+                &format!("fixed-plan replay differs at {name}.{field}"),
+            )?;
+        }
+        require(
+            replay["checks"].as_array().is_some_and(|checks| {
+                checks.iter().any(|check| {
+                    check["name"] == "replay_machine_execution_trace" && check["status"] == "passed"
+                })
+            }),
+            "fixed-plan witness lacks passing active replay admission",
+        )?;
+        for execution in ["first", "replay"] {
+            let serial = files
+                .get(&format!(
+                    "fixed-plan/{execution}/services/{name}/serial.log"
+                ))
+                .ok_or_else(|| EvidenceError("missing fixed-plan UART output".to_owned()))?;
+            require(
+                original["serial_sha256"][0].as_str() == Some(serial.sha256.as_str()),
+                "fixed-plan UART digest differs from retained bytes",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_fixed_plan_artifacts(
+    value: &serde_json::Value,
+    base: &str,
+    files: &BTreeMap<String, ProofFile>,
+) -> Result<(), EvidenceError> {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let (Some(path), Some(digest)) = (map.get("path"), map.get("sha256")) {
+                let path = path
+                    .as_str()
+                    .ok_or_else(|| EvidenceError("invalid fixed-plan artifact path".to_owned()))?;
+                let mut parts: Vec<&str> = base.split('/').collect();
+                for component in Path::new(path).components() {
+                    match component {
+                        Component::Normal(part) => parts.push(part.to_str().ok_or_else(|| {
+                            EvidenceError("non-UTF8 fixed-plan artifact".to_owned())
+                        })?),
+                        Component::CurDir => {}
+                        Component::ParentDir if parts.len() > 1 => {
+                            parts.pop();
+                        }
+                        _ => {
+                            return Err(EvidenceError(
+                                "fixed-plan artifact escapes the retained witness".to_owned(),
+                            ))
+                        }
+                    }
+                }
+                let name = parts.join("/");
+                require(
+                    files
+                        .get(&name)
+                        .is_some_and(|file| digest.as_str() == Some(file.sha256.as_str())),
+                    &format!("fixed-plan locked artifact is absent or changed: {name}"),
+                )?;
+            }
+            for child in map.values() {
+                verify_fixed_plan_artifacts(child, base, files)?;
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                verify_fixed_plan_artifacts(child, base, files)?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1574,6 +1817,122 @@ mod tests {
         wrong = certificate.clone();
         wrong["format"] = CERTIFICATE_FORMAT_V4.into();
         assert!(verify(&wrong).is_err());
+    }
+
+    #[test]
+    fn fixed_plan_archive_requires_ram_ancestry_and_active_replay() {
+        let mut files = BTreeMap::new();
+        let mut retained = BTreeMap::new();
+        fn store(
+            name: &str,
+            value: &serde_json::Value,
+            files: &mut BTreeMap<String, ProofFile>,
+            retained: &mut BTreeMap<String, Vec<u8>>,
+        ) {
+            let bytes = serde_json::to_vec(value).unwrap();
+            files.insert(
+                name.to_owned(),
+                ProofFile {
+                    sha256: sha256(&bytes),
+                    bytes: bytes.len() as u64,
+                },
+            );
+            retained.insert(name.to_owned(), bytes);
+        }
+        let prefix = "vcpu:0:pio_read:0x64:1:00";
+        let trace = [
+            prefix,
+            "host:serial_input:1:2a",
+            "vcpu:0:pio_write:0x64:1:fe",
+        ];
+        let root = "fixed-plan/first/checkpoint/starting-state";
+        let metadata = serde_json::json!({"format": "theseus-topology-checkpoint-v1", "architecture": "amd64",
+            "context": {"bytes": 1, "sha256": DIGEST}, "execution_prefixes": {"service": [prefix]},
+            "services": {"service": {"memory": {"bytes": 1024*1024, "sha256": DIGEST}, "vmstate": {"bytes": 1, "sha256": DIGEST}}}});
+        let metadata_path = format!("{root}/metadata.json");
+        store(&metadata_path, &metadata, &mut files, &mut retained);
+        let identity = files[&metadata_path].sha256.clone();
+        for (name, bytes) in [
+            ("context.bin", 1),
+            ("service/vmstate", 1),
+            ("service/memory", 1024 * 1024),
+        ] {
+            files.insert(
+                format!("{root}/{name}"),
+                ProofFile {
+                    sha256: DIGEST.to_owned(),
+                    bytes,
+                },
+            );
+        }
+        let plan = serde_json::json!({"format": "theseus-compose-plan-v1", "replay_start": "ready_checkpoint",
+            "starting_checkpoint": {"path": "checkpoint/starting-state/metadata.json", "sha256": identity},
+            "checkpoint_prefixes": {"service": 1}, "services": {"service": {"run": {"run": {"vcpu_count": 1, "mem_size_mib": 1}}}}});
+        store(
+            "fixed-plan/first/replay-plan.json",
+            &plan,
+            &mut files,
+            &mut retained,
+        );
+        let certificate = serde_json::json!({"source": {"plan_contents": String::from_utf8(retained["fixed-plan/first/replay-plan.json"].clone()).unwrap()}});
+        store(
+            "fixed-plan/certificate.json",
+            &certificate,
+            &mut files,
+            &mut retained,
+        );
+        let certificate_bytes = retained["fixed-plan/certificate.json"].clone();
+        let ledger = |decisions: Vec<&str>| {
+            let mut digest = Sha256::new();
+            for record in &decisions {
+                digest.update((record.len() as u64).to_le_bytes());
+                digest.update(record.as_bytes());
+            }
+            serde_json::json!({"decisions": decisions.len(), "sha256": format!("{:x}", digest.finalize()), "tail": decisions})
+        };
+        let result = serde_json::json!({"status": "passed", "error": null, "serial_sha256": [DIGEST],
+            "execution_start": {"kind": "topology_checkpoint", "checkpoint_sha256": identity, "inherited_decisions": 1},
+            "machine_execution_trace": trace, "machine_execution_ledger": ledger(trace.to_vec()),
+            "execution_ledgers": [ledger(vec!["pio_read:0x64:1:00", "pio_write:0x64:1:fe"])],
+            "checks": [{"name": "replay_machine_execution_trace", "status": "passed"}]});
+        for execution in ["first", "replay"] {
+            store(
+                &format!("fixed-plan/{execution}/services/service/result.json"),
+                &result,
+                &mut files,
+                &mut retained,
+            );
+            files.insert(
+                format!("fixed-plan/{execution}/services/service/serial.log"),
+                ProofFile {
+                    sha256: DIGEST.to_owned(),
+                    bytes: 1,
+                },
+            );
+        }
+        verify_fixed_plan(&files, &retained, "amd64", &certificate_bytes).unwrap();
+        assert!(verify_fixed_plan(&files, &retained, "arm64", &certificate_bytes).is_err());
+        let memory = files.remove(&format!("{root}/service/memory")).unwrap();
+        assert!(verify_fixed_plan(&files, &retained, "amd64", &certificate_bytes).is_err());
+        files.insert(format!("{root}/service/memory"), memory);
+        let mut wrong = result.clone();
+        wrong["checks"] = serde_json::json!([]);
+        store(
+            "fixed-plan/replay/services/service/result.json",
+            &wrong,
+            &mut files,
+            &mut retained,
+        );
+        assert!(verify_fixed_plan(&files, &retained, "amd64", &certificate_bytes).is_err());
+        wrong = result.clone();
+        wrong["execution_start"]["inherited_decisions"] = 2.into();
+        store(
+            "fixed-plan/replay/services/service/result.json",
+            &wrong,
+            &mut files,
+            &mut retained,
+        );
+        assert!(verify_fixed_plan(&files, &retained, "amd64", &certificate_bytes).is_err());
     }
 
     #[test]

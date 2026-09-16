@@ -206,6 +206,10 @@ undelivered userspace interrupts. Loading checks architecture, VM configuration,
 member hashes and lengths, and reconstructs rolling ledgers before creating VMs.
 Each service result identifies the root digest and inherited decision count.
 Version-5 runtime certificates distinguish this contract from fresh-boot v4.
+The native validation archive retains the complete certificate directory under
+`fixed-plan/`. Offline verification binds its exact embedded plan, state/RAM/
+context inventory, runtime/guest artifacts, prefixes, ledgers, serial bytes,
+and passing active replay. Certificate JSON alone is not a replayable root.
 
 Boot decisions remain retained ancestry; only the resumed suffix executes
 again. A restart can introduce an uncontrolled new boot. This feature does not

@@ -122,6 +122,23 @@ pub struct ExecutionDeviceState {
     pub keyboard: Option<KeyboardState>,
 }
 
+impl ExecutionDeviceState {
+    /// Validate architecture and bounded queues before creating restored VMs.
+    pub fn validate(&self) -> Result<(), VmmError> {
+        if self.keyboard.is_some() != cfg!(target_arch = "x86_64")
+            || self
+                .keyboard
+                .as_ref()
+                .is_some_and(|keyboard| keyboard.buffer.len() > 16)
+            || self.control.host_events.len() > 1_048_576
+            || self.control.event_log.len() > 1_048_576
+        {
+            return Err(failure("invalid transient device state"));
+        }
+        Ok(())
+    }
+}
+
 /// Hash a bounded, regular checkpoint member without loading RAM into memory.
 pub fn artifact(path: &Path, maximum: u64) -> Result<CheckpointArtifact, VmmError> {
     let metadata = fs::symlink_metadata(path).map_err(failure)?;
@@ -272,16 +289,7 @@ impl Vmm {
         &mut self,
         state: &ExecutionDeviceState,
     ) -> Result<(), VmmError> {
-        if state.keyboard.is_some() != cfg!(target_arch = "x86_64")
-            || state
-                .keyboard
-                .as_ref()
-                .is_some_and(|keyboard| keyboard.buffer.len() > 16)
-            || state.control.host_events.len() > 1_048_576
-            || state.control.event_log.len() > 1_048_576
-        {
-            return Err(failure("invalid transient device state"));
-        }
+        state.validate()?;
         self.device_manager
             .mmio_platform_devices
             .theseus

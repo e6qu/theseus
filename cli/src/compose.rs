@@ -7332,6 +7332,24 @@ mod tests {
             .contains("manages topology checkpoints"));
     }
 
+    #[test]
+    fn compose_accepts_explicit_topology_checkpoint_and_requires_all_clocks() {
+        let directory = fixture("services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\nx-theseus:\n  replay_start: ready_checkpoint\n");
+        let path = directory.path().join("compose.yaml");
+        let plan = load_compose_plan(&path).unwrap();
+        assert_eq!(
+            plan.replay_start,
+            crate::manifest::ReplayStart::ReadyCheckpoint
+        );
+        let manifest = directory.path().join("api/theseus.toml");
+        let text = fs::read_to_string(&manifest).unwrap();
+        fs::write(&manifest, text.split("[run.virtual_time]").next().unwrap()).unwrap();
+        assert!(load_compose_plan(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("virtual time on every service"));
+    }
+
     fn image_fixture(compose: &str, files: &[(&str, u32)]) -> tempfile::TempDir {
         let directory = fixture(compose);
         fs::write(
