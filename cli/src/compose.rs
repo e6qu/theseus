@@ -7334,7 +7334,7 @@ mod tests {
 
     #[test]
     fn compose_accepts_explicit_topology_checkpoint_and_requires_all_clocks() {
-        let directory = fixture("services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\nx-theseus:\n  replay_start: ready_checkpoint\n");
+        let directory = fixture("services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  replay_start: ready_checkpoint\n");
         let path = directory.path().join("compose.yaml");
         let plan = load_compose_plan(&path).unwrap();
         assert_eq!(
