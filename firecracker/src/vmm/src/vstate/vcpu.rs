@@ -552,9 +552,15 @@ impl MachineExecutionController {
             let Some(expected_record) = expected.get(state.position) else {
                 break pending;
             };
-            if machine_record_actor(expected_record) == Some(MachineExecutionActor::Vcpu(vcpu))
-            {
+            if expected_record.starts_with(&format!("vcpu:{vcpu}:interrupt:")) {
                 break pending;
+            }
+            if machine_record_actor(expected_record) == Some(MachineExecutionActor::Vcpu(vcpu)) {
+                // A pending interrupt may have arrived before an earlier
+                // recorded device access by this same vCPU. Let KVM produce
+                // that effect first; exact interrupt identity is the turn,
+                // not merely vCPU ownership.
+                return Ok(false);
             }
             drop(pending);
             let (next, timeout) = self
@@ -1773,6 +1779,30 @@ mod execution_ledger_tests {
             assert_eq!(ledger.lock().unwrap().evidence().decisions, 0);
             assert_eq!(controller.replay_error(), Some(error));
         }
+    }
+
+    #[test]
+    fn pending_interrupt_waits_behind_an_earlier_same_vcpu_device_effect() {
+        let controller = MachineExecutionController::default();
+        controller.enable_deterministic_interrupts();
+        controller
+            .enforce(vec![
+                "vcpu:0:pio_write:0x3f9:1:05".into(),
+                "vcpu:0:interrupt:serial:4".into(),
+            ])
+            .unwrap();
+        controller.request_edge_interrupt("serial", 4).unwrap();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        assert!(
+            !controller
+                .deliver_pending_interrupt_with(0, &ledger, |_| {
+                    panic!("interrupt injected before the recorded device access")
+                })
+                .unwrap()
+        );
+        assert_eq!(controller.execution_state().trace().len(), 0);
+        assert_eq!(controller.pending_interrupts_for_test(), [("serial", 4)]);
+        assert_eq!(controller.replay_divergence(), None);
     }
 
     #[test]
