@@ -10961,13 +10961,7 @@ fn inject_serial_events_with_service_rounds(
                 )
             })?
             .len() as usize;
-        rounds = rounds.saturating_add(push_serial_input_with_service_rounds(
-            service,
-            &decode_hex(&event.data_hex)?,
-            services,
-            switches,
-            max_rounds.saturating_sub(rounds),
-        )?);
+        service.push_serial_input(&decode_hex(&event.data_hex)?)?;
         if let Some(checkpoint) = &event.checkpoint {
             let used = wait_for_serial_with_service_rounds(
                 serial_log,
@@ -10981,39 +10975,6 @@ fn inject_serial_events_with_service_rounds(
             )?;
             rounds = rounds.saturating_add(used);
         }
-    }
-    Ok(rounds)
-}
-
-// The emulated 16550 UART has a 64-byte receive FIFO. Keep each recorded host
-// input effect fixed-size and let the guest empty the FIFO between effects so
-// logical commands are not constrained by that hardware transport detail.
-const SERIAL_INPUT_FIFO_CAPACITY: usize = 64;
-
-fn push_serial_input_with_service_rounds(
-    service: &mut ServiceVm,
-    bytes: &[u8],
-    services: &mut BTreeMap<String, ServiceRuntime>,
-    switches: &BTreeMap<String, SharedSimSwitch>,
-    max_rounds: u64,
-) -> Result<u64, String> {
-    if bytes.is_empty() {
-        service.push_serial_input(bytes)?;
-        return Ok(0);
-    }
-
-    let mut rounds = 0u64;
-    for chunk in bytes.chunks(SERIAL_INPUT_FIFO_CAPACITY) {
-        while service.serial_input_depth()? != 0 {
-            if rounds == max_rounds {
-                return Err(format!(
-                    "service did not consume UART input within {max_rounds} topology rounds"
-                ));
-            }
-            advance_topology_round_with_target(service, services, switches)?;
-            rounds += 1;
-        }
-        service.push_serial_input(chunk)?;
     }
     Ok(rounds)
 }
@@ -11094,13 +11055,7 @@ fn inject_campaign_events(
                 )
             })?
             .len() as usize;
-        push_campaign_serial_input(
-            driver,
-            &decode_hex(&event.data_hex)?,
-            services,
-            switches,
-            round,
-        )?;
+        driver.vm.push_serial_input(&decode_hex(&event.data_hex)?)?;
         if let Some(checkpoint) = &event.checkpoint {
             barriers.push(wait_for_serial_after_rounds(
                 serial_log,
@@ -11153,13 +11108,7 @@ fn inject_campaign_operation(
             )
         })?
         .len() as usize;
-    push_campaign_serial_input(
-        driver,
-        &decode_hex(&event.data_hex)?,
-        services,
-        switches,
-        round,
-    )?;
+    driver.vm.push_serial_input(&decode_hex(&event.data_hex)?)?;
     let barrier = match &event.checkpoint {
         Some(checkpoint) => wait_for_serial_after_rounds(
             serial_log,
@@ -11679,7 +11628,7 @@ fn apply_service_process_action(
         let offset = fs::metadata(&serial)
             .map_err(|error| error.to_string())?
             .len() as usize;
-        push_campaign_serial_input(driver, &bytes, services, switches, round)?;
+        driver.vm.push_serial_input(&bytes)?;
         wait_for_serial_after_rounds(
             &serial,
             offset,
@@ -11708,7 +11657,7 @@ fn apply_service_process_action(
         .map_err(|error| error.to_string())?
         .len() as usize;
     let result = (|| {
-        push_detached_service_serial_input(&mut target, driver, &bytes, services, switches, round)?;
+        target.vm.push_serial_input(&bytes)?;
         for step in 0..=CAMPAIGN_BARRIER_MAX_ROUNDS {
             if fs::read(&serial).is_ok_and(|serial| {
                 serial[offset..]
@@ -11726,7 +11675,20 @@ fn apply_service_process_action(
                 break;
             }
             *round += 1;
-            advance_detached_service_round(&mut target, driver, services, switches)?;
+            target.vm.pump();
+            target.vm.advance_simulated_networks()?;
+            driver.vm.pump();
+            driver.vm.advance_simulated_networks()?;
+            for service in services.values_mut() {
+                service.vm.pump();
+                service.vm.advance_simulated_networks()?;
+            }
+            for switch in switches.values() {
+                switch
+                    .lock()
+                    .map_err(|_| "simulated switch lock poisoned".to_owned())?
+                    .advance_round();
+            }
         }
         Err(format!(
             "service {service_name:?} did not acknowledge {verb} within {CAMPAIGN_BARRIER_MAX_ROUNDS} topology rounds"
@@ -11852,75 +11814,6 @@ fn dependency_startup_order(topology: &TopologyPlan) -> Result<Vec<String>, Stri
 
 const CAMPAIGN_BARRIER_MAX_ROUNDS: u64 = 512;
 
-fn push_campaign_serial_input(
-    target: &mut ServiceRuntime,
-    bytes: &[u8],
-    services: &mut BTreeMap<String, ServiceRuntime>,
-    switches: &BTreeMap<String, SharedSimSwitch>,
-    round: &mut u64,
-) -> Result<(), String> {
-    if bytes.is_empty() {
-        return target.vm.push_serial_input(bytes);
-    }
-
-    for chunk in bytes.chunks(SERIAL_INPUT_FIFO_CAPACITY) {
-        wait_for_campaign_serial_fifo(target, services, switches, round)?;
-        target.vm.push_serial_input(chunk)?;
-    }
-    Ok(())
-}
-
-fn wait_for_campaign_serial_fifo(
-    target: &mut ServiceRuntime,
-    services: &mut BTreeMap<String, ServiceRuntime>,
-    switches: &BTreeMap<String, SharedSimSwitch>,
-    round: &mut u64,
-) -> Result<(), String> {
-    for step in 0..=CAMPAIGN_BARRIER_MAX_ROUNDS {
-        if target.vm.serial_input_depth()? == 0 {
-            return Ok(());
-        }
-        if step == CAMPAIGN_BARRIER_MAX_ROUNDS || *round == u64::MAX {
-            break;
-        }
-        *round += 1;
-        advance_campaign_operation_round(target, services, switches)?;
-    }
-    Err(format!(
-        "service did not consume UART input within {CAMPAIGN_BARRIER_MAX_ROUNDS} topology rounds"
-    ))
-}
-
-fn push_detached_service_serial_input(
-    target: &mut ServiceRuntime,
-    driver: &mut ServiceRuntime,
-    bytes: &[u8],
-    services: &mut BTreeMap<String, ServiceRuntime>,
-    switches: &BTreeMap<String, SharedSimSwitch>,
-    round: &mut u64,
-) -> Result<(), String> {
-    if bytes.is_empty() {
-        return target.vm.push_serial_input(bytes);
-    }
-
-    for chunk in bytes.chunks(SERIAL_INPUT_FIFO_CAPACITY) {
-        for step in 0..=CAMPAIGN_BARRIER_MAX_ROUNDS {
-            if target.vm.serial_input_depth()? == 0 {
-                break;
-            }
-            if step == CAMPAIGN_BARRIER_MAX_ROUNDS || *round == u64::MAX {
-                return Err(format!(
-                    "service did not consume UART input within {CAMPAIGN_BARRIER_MAX_ROUNDS} topology rounds"
-                ));
-            }
-            *round += 1;
-            advance_detached_service_round(target, driver, services, switches)?;
-        }
-        target.vm.push_serial_input(chunk)?;
-    }
-    Ok(())
-}
-
 /// Drive every service and simulated network once.  The target is held outside
 /// the service map while a prefix operation is injected, so keep it explicit.
 fn advance_campaign_operation_round(
@@ -11930,29 +11823,6 @@ fn advance_campaign_operation_round(
 ) -> Result<(), String> {
     target.vm.pump();
     target.vm.advance_simulated_networks()?;
-    for service in services.values_mut() {
-        service.vm.pump();
-        service.vm.advance_simulated_networks()?;
-    }
-    for switch in switches.values() {
-        switch
-            .lock()
-            .map_err(|_| "simulated switch lock poisoned".to_owned())?
-            .advance_round();
-    }
-    Ok(())
-}
-
-fn advance_detached_service_round(
-    target: &mut ServiceRuntime,
-    driver: &mut ServiceRuntime,
-    services: &mut BTreeMap<String, ServiceRuntime>,
-    switches: &BTreeMap<String, SharedSimSwitch>,
-) -> Result<(), String> {
-    target.vm.pump();
-    target.vm.advance_simulated_networks()?;
-    driver.vm.pump();
-    driver.vm.advance_simulated_networks()?;
     for service in services.values_mut() {
         service.vm.pump();
         service.vm.advance_simulated_networks()?;

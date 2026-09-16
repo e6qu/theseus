@@ -720,12 +720,11 @@ impl Vmm {
         })
     }
 
-    /// Theseus: inject bytes into the emulated UART without using the host
-    /// process stdin. Exploration uses this so sibling timelines never share
-    /// an input source.
+    /// Theseus: inject one logical input into the emulated UART without using
+    /// host process stdin. Bytes beyond the hardware FIFO are queued inside
+    /// the snapshotted serial device, so sibling timelines never share an
+    /// input source or inherit a transport-sized command limit.
     pub fn push_serial_input(&mut self, bytes: &[u8]) -> Result<(), VmmError> {
-        use devices::legacy::serial::RawIOHandler;
-
         #[cfg(target_arch = "x86_64")]
         let serial = self
             .device_manager
@@ -754,8 +753,7 @@ impl Vmm {
                 serial
                     .lock()
                     .expect("Poisoned lock")
-                    .serial
-                    .raw_input(bytes)
+                    .enqueue_raw_input(bytes)
                     .map_err(|error| VmmError::ControlChannel(error.to_string()))
             },
         )?;
@@ -763,12 +761,12 @@ impl Vmm {
         Ok(())
     }
 
-    /// Theseus: report bytes still waiting in the emulated UART receive FIFO.
+    /// Theseus: report bytes still waiting for the guest to read from UART.
     ///
     /// Campaign checkpoints use this alongside an input receipt to distinguish
-    /// bytes accepted by the UART from bytes the guest has read. The value is
-    /// part of the serial device snapshot, so it is stable while a paused VM
-    /// is captured or restored.
+    /// bytes accepted by the UART transport from bytes the guest has read. The
+    /// hardware FIFO and its pending host queue are both snapshotted, so the
+    /// value is stable while a paused VM is captured or restored.
     pub fn serial_input_depth(&self) -> Result<usize, VmmError> {
         #[cfg(target_arch = "x86_64")]
         let serial = self
@@ -788,13 +786,8 @@ impl Vmm {
             .inner
             .clone();
 
-        Ok(serial
-            .lock()
-            .expect("Poisoned lock")
-            .serial
-            .state()
-            .in_buffer
-            .len())
+        let locked = serial.lock().expect("Poisoned lock");
+        Ok(locked.serial.state().in_buffer.len() + locked.pending_input.len())
     }
 
     /// Theseus: drain guest→host control-channel events (commands/markers).
