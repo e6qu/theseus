@@ -300,29 +300,82 @@ fn apply_filesystem_contract(spec: &InitSpec) -> Result<(), String> {
         }
     }
     if spec.read_only {
-        let root = b"/\0".as_ptr().cast();
-        // Linux rootfs cannot be remounted read-only directly. Establish a
-        // bind mount first, then make that mount read-only. Existing tmpfs
-        // children remain separate writable mounts, matching Compose.
+        // Linux rootfs cannot itself become read-only. Enter a separate bind
+        // mount of it instead, carrying writable virtual and tmpfs children
+        // into that tree before making only the new root mount read-only.
+        let staging = "/.theseus-root";
+        let new_root = "/.theseus-root/root";
+        fs::create_dir_all(staging)
+            .map_err(|error| format!("create read-only root staging directory: {error}"))?;
+        let staging_c = CString::new(staging).unwrap();
+        let tmpfs = CString::new("tmpfs").unwrap();
         if unsafe {
             libc::mount(
-                root,
-                root,
-                std::ptr::null(),
-                libc::MS_BIND | libc::MS_REC,
+                tmpfs.as_ptr(),
+                staging_c.as_ptr(),
+                tmpfs.as_ptr(),
+                0,
                 std::ptr::null(),
             )
         } != 0
         {
             return Err(format!(
-                "bind root for read-only remount: {}",
+                "mount read-only root staging filesystem: {}",
                 std::io::Error::last_os_error()
             ));
+        }
+        fs::create_dir_all(new_root)
+            .map_err(|error| format!("create bound root directory: {error}"))?;
+        let source_root = CString::new("/").unwrap();
+        let new_root_c = CString::new(new_root).unwrap();
+        if unsafe {
+            libc::mount(
+                source_root.as_ptr(),
+                new_root_c.as_ptr(),
+                std::ptr::null(),
+                libc::MS_BIND,
+                std::ptr::null(),
+            )
+        } != 0
+        {
+            return Err(format!(
+                "bind image root: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let mut writable_mounts = std::collections::BTreeSet::from([
+            "/dev".to_owned(),
+            "/proc".to_owned(),
+            "/sys".to_owned(),
+        ]);
+        writable_mounts.extend(spec.tmpfs.iter().cloned());
+        for source in writable_mounts {
+            let target = format!("{new_root}{source}");
+            let source_c = CString::new(source.as_str())
+                .map_err(|_| "writable mount path contains NUL".to_owned())?;
+            let target_c = CString::new(target.as_str())
+                .map_err(|_| "bound writable mount path contains NUL".to_owned())?;
+            if unsafe {
+                libc::mount(
+                    source_c.as_ptr(),
+                    target_c.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND | libc::MS_REC,
+                    std::ptr::null(),
+                )
+            } != 0
+            {
+                return Err(format!(
+                    "carry writable mount {source}: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
         }
         if unsafe {
             libc::mount(
                 std::ptr::null(),
-                root,
+                new_root_c.as_ptr(),
                 std::ptr::null(),
                 libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY,
                 std::ptr::null(),
@@ -330,7 +383,15 @@ fn apply_filesystem_contract(spec: &InitSpec) -> Result<(), String> {
         } != 0
         {
             return Err(format!(
-                "remount bound root read-only: {}",
+                "remount bound image root read-only: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if unsafe { libc::chroot(new_root_c.as_ptr()) } != 0
+            || unsafe { libc::chdir(source_root.as_ptr()) } != 0
+        {
+            return Err(format!(
+                "enter read-only image root: {}",
                 std::io::Error::last_os_error()
             ));
         }
