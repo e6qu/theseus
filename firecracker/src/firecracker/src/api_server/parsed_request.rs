@@ -34,7 +34,7 @@ use crate::api_server::request::hotplug::memory::{
 };
 use crate::api_server::request::hotplug::parse_unplug_device;
 use crate::api_server::request::serial::parse_put_serial;
-use crate::api_server::request::execution::{parse_put_execution, parse_patch_execution, parse_put_serial_input};
+use crate::api_server::request::execution::{parse_put_execution, parse_patch_execution, parse_put_serial_input, parse_put_execution_checkpoint};
 
 #[derive(Debug)]
 pub(crate) enum RequestAction {
@@ -104,6 +104,7 @@ impl TryFrom<&Request> for ParsedRequest {
             (Method::Put, "logger", Some(body)) => parse_put_logger(body),
             (Method::Put, "serial", Some(body)) => parse_put_serial(body),
             (Method::Put, "execution", Some(body)) if path_tokens.next().is_none() => parse_put_execution(body),
+            (Method::Put, "execution-checkpoint", Some(body)) if path_tokens.next().is_none() => parse_put_execution_checkpoint(body),
             (Method::Put, "serial-input", Some(body)) if path_tokens.next().is_none() => parse_put_serial_input(body),
             (Method::Put, "machine-config", Some(body)) => parse_put_machine_config(body),
             (Method::Put, "metrics", Some(body)) => parse_put_metrics(body),

@@ -41,6 +41,7 @@ jobs:
             rate_limiter::tests
           cargo test -p vmm --lib simulated_storage -- --test-threads=1
           cargo test -p vmm --lib unactivated_simulated -- --test-threads=1
+          cargo test -p vmm --lib checkpoint -- --test-threads=1
           cargo test -p firecracker -- api_server::request::execution
 
       - name: Check self-contained tutorials
@@ -72,6 +73,7 @@ jobs:
           mkdir -p work/runtime work/guest/root/bin
           cp ../../../firecracker/build/cargo_target/debug/firecracker work/runtime/firecracker
           cp "$release/theseus-$tag-linux-amd64/vmlinux" work/guest/vmlinux
+          cp "$release/theseus-$tag-linux-amd64/theseus_rng.ko" work/runtime/theseus_rng.ko
           cp /bin/busybox work/guest/root/bin/busybox
           cp init work/guest/root/init
           chmod +x work/guest/root/init
@@ -83,6 +85,33 @@ jobs:
             cmp work/replay/execution.json "work/rerun-$attempt/execution.json"
           done
           python3 -c 'import json; e = json.load(open("work/replay/execution.json")); t = e["machine_execution_trace"]; assert "host:serial_input:6:32312e35430a" in t; assert t[-1] == "vcpu:0:pio_write:0x64:1:fe", t[-10:]'
+
+      - name: Replay RNG and UART from a retained ready checkpoint on native KVM
+        working-directory: docs/tutorials/42-replay-from-ready
+        run: |
+          mkdir -p work/runtime work/guest/root/bin
+          cp ../04-read-serial/work/runtime/firecracker work/runtime/firecracker
+          cp ../04-read-serial/work/guest/vmlinux work/guest/vmlinux
+          cp ../04-read-serial/work/runtime/theseus_rng.ko work/guest/root/theseus_rng.ko
+          cp /bin/busybox work/guest/root/bin/busybox
+          cp init work/guest/root/init
+          chmod +x work/guest/root/init
+          (cd work/guest/root && find . -print | cpio -o -H newc --quiet | gzip > ../initramfs.cpio.gz)
+          ../../../cli/target/debug/theseus test --output work/replay theseus.toml
+          for attempt in 1 2 3; do
+            ../../../cli/target/debug/theseus replay --output "work/rerun-$attempt" work/replay
+            cmp work/replay/execution.json "work/rerun-$attempt/execution.json"
+            cmp work/replay/serial.log "work/rerun-$attempt/serial.log"
+          done
+          python3 -c 'import json; e = json.load(open("work/replay/execution.json")); p = json.load(open("work/replay/checkpoint/metadata.json"))["execution"]["trace"]; assert e["start"]["kind"] == "checkpoint"; assert e["start"]["inherited_decisions"] == len(p); assert e["machine_execution_trace"][:len(p)] == p; assert "host:serial_input:6:32312e35430a" in e["machine_execution_trace"][len(p):]; assert e["boundary"] == "guest_exit" and e["replay_error"] is None'
+
+      - name: Retain ready-checkpoint replay diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-ready-checkpoint-replay
+          path: docs/tutorials/42-replay-from-ready/work/
+          if-no-files-found: ignore
 
       - name: Report native replay divergence
         if: failure()

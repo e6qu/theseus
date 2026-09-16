@@ -106,6 +106,10 @@ deterministic-CRNG kernel module is shipped.
     run an uninstrumented container, inspect its per-vCPU exit streams and
     machine-wide execution stream, and require the exact trace on replay.
 
+42. [Replay from a ready checkpoint](42-replay-from-ready/) — boot an RNG-backed
+    guest once, retain its state, and replay serial and standard random-device
+    reads from that same checkpoint without claiming deterministic kernel boot.
+
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),
 [branching](../guides/branching-timelines/), and

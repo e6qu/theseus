@@ -139,6 +139,8 @@ struct Guest {
 #[serde(deny_unknown_fields)]
 struct Run {
     seed: u64,
+    #[serde(default)]
+    replay_start: ReplayStart,
     #[serde(default = "default_entropy_device")]
     entropy_device: bool,
     vcpu_count: u8,
@@ -398,6 +400,8 @@ pub struct RunPlan {
     pub runtime: RuntimePlan,
     pub guest: GuestPlan,
     pub run: RunPlanConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<CheckpointPlan>,
     pub events: Vec<EventPlan>,
     pub network: NetworkPlan,
     #[serde(default)]
@@ -414,6 +418,29 @@ pub struct RunPlan {
 pub struct ArtifactPlan {
     pub path: String,
     pub sha256: String,
+}
+
+/// Fixed members of an immutable ready checkpoint in a replay bundle.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckpointPlan {
+    pub metadata: ArtifactPlan,
+    pub vmstate: ArtifactPlan,
+    pub memory: ArtifactPlan,
+    pub prelude: ArtifactPlan,
+}
+
+/// Kernel boot is either replayed afresh or inherited from a retained checkpoint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayStart {
+    #[default]
+    FreshBoot,
+    ReadyCheckpoint,
+}
+
+fn is_fresh_boot(start: &ReplayStart) -> bool {
+    *start == ReplayStart::FreshBoot
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -443,6 +470,8 @@ pub struct GuestPlan {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RunPlanConfig {
     pub seed: u64,
+    #[serde(default, skip_serializing_if = "is_fresh_boot")]
+    pub replay_start: ReplayStart,
     /// Attach the seeded virtio RNG. UART-only guests can omit this device.
     #[serde(
         default = "default_entropy_device",
@@ -694,6 +723,15 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             "max_rounds must be greater than zero".to_owned(),
         ));
     }
+    if manifest.run.replay_start == ReplayStart::ReadyCheckpoint
+        && (manifest.run.virtual_time.is_none()
+            || manifest.explore.is_some()
+            || manifest.events.is_empty())
+    {
+        return Err(LoadError::InvalidRunConfig(
+            "ready_checkpoint requires virtual_time and ready-gated UART events; exploration manages its own checkpoints".into(),
+        ));
+    }
     if manifest.explore.is_some() && !manifest.run.entropy_device {
         return Err(LoadError::InvalidRunConfig(
             "exploration requires entropy_device = true for branch reseeding and probes".to_owned(),
@@ -817,6 +855,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
         },
         run: RunPlanConfig {
             seed: manifest.run.seed,
+            replay_start: manifest.run.replay_start,
             entropy_device: manifest.run.entropy_device,
             vcpu_count: manifest.run.vcpu_count,
             mem_size_mib: manifest.run.mem_size_mib,
@@ -824,6 +863,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             max_rounds: manifest.run.max_rounds,
             virtual_time: manifest.run.virtual_time,
         },
+        checkpoint: None,
         events,
         network: NetworkPlan {
             loopback: manifest.network.loopback,

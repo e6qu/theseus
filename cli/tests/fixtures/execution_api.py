@@ -20,6 +20,9 @@ expected = None
 trace = []
 error = None
 started = False
+machine = None
+entropy = None
+origin = None
 
 
 def ledger(records):
@@ -45,12 +48,15 @@ def evidence(boundary):
     if replay_error is None and expected is not None and trace != expected:
         replay_error = f"machine execution replay stopped at decision {len(trace)} of {len(expected)}"
     local = [record.split(":", 2)[2] for record in trace if record.startswith("vcpu:0:")]
-    output.write_text(json.dumps({
+    value = {
         "format": "theseus-execution-v1", "boundary": boundary,
         "execution_ledgers": [ledger(local)],
         "machine_execution_ledger": ledger(trace), "machine_execution_trace": trace,
         "replay_error": replay_error,
-    }) + "\n")
+    }
+    if origin is not None:
+        value["start"] = origin
+    output.write_text(json.dumps(value) + "\n")
 
 
 while True:
@@ -77,6 +83,8 @@ while True:
         status = "204 No Content"
         if endpoint == "/boot-source":
             assert body["boot_args"] == "console=ttyS0 reboot=k panic=-1 quiet loglevel=0"
+        elif endpoint == "/machine-config":
+            machine = body
         elif endpoint == "/serial":
             serial = Path(body["serial_out_path"])
         elif endpoint == "/execution" and method == "PUT":
@@ -88,17 +96,49 @@ while True:
         elif endpoint == "/entropy":
             assert ENTROPY_DEVICE, "unused RNG must not be attached"
             entropy_configured = True
+            entropy = body
         elif endpoint == "/actions":
             assert output is not None, "execution must be configured before boot"
             assert entropy_configured == ENTROPY_DEVICE
             started = True
+            if MODE == "checkpoint":
+                admit("vcpu:0:pio_write:0x3f8:1:41")
             serial.write_text("THES:M:42\n")
+        elif endpoint == "/execution-checkpoint" and body["action_type"] == "Create":
+            assert MODE == "checkpoint" and started
+            directory = Path(body["directory"])
+            directory.mkdir()
+            (directory / "vmstate").write_bytes(b"retained VM state")
+            (directory / "memory").write_bytes(b"\0" * (machine["mem_size_mib"] * 1024 * 1024))
+            def member(name):
+                data = (directory / name).read_bytes()
+                return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            (directory / "metadata.json").write_text(json.dumps({
+                "format": "theseus-checkpoint-v1", "architecture": "amd64", "machine_config": machine,
+                "entropy": entropy, "snapshot": member("vmstate"), "memory": member("memory"),
+                "execution": {"trace": trace, "pending_interrupts": []},
+                "control": {"host_events": [], "event_log": []}, "keyboard": None,
+            }))
+        elif endpoint == "/execution-checkpoint" and body["action_type"] == "Load":
+            assert MODE == "checkpoint" and not started
+            directory = Path(body["directory"])
+            metadata = (directory / "metadata.json").read_bytes()
+            assert hashlib.sha256(metadata).hexdigest() == body["checkpoint_sha256"]
+            trace = json.loads(metadata)["execution"]["trace"]
+            output = Path(body["execution"]["evidence_path"])
+            assert not output.exists()
+            output.touch()
+            serial = Path(body["serial_out_path"])
+            origin = {"kind": "checkpoint", "checkpoint_sha256": body["checkpoint_sha256"], "inherited_decisions": len(trace)}
+            if body["execution"]["replay_trace_path"]:
+                expected = json.loads(Path(body["execution"]["replay_trace_path"]).read_text())
+                assert expected[:len(trace)] == trace
         elif endpoint == "/serial-input":
             assert started
             data = bytes.fromhex(body["data_hex"])
             if admit(f"host:serial_input:{len(data)}:{data.hex()}"):
                 serial.write_text(serial.read_text() + "sensor reading: " + data.decode())
-                if MODE == "exit":
+                if MODE in ("exit", "checkpoint"):
                     admit("vcpu:0:pio_write:0x64:1:fe")
                     evidence("guest_exit" if error is None else "runtime_error")
                     done = True
@@ -107,7 +147,12 @@ while True:
                 evidence("runtime_error")
                 done = True
         elif endpoint == "/vm":
-            assert method == "PATCH" and body == {"state": "Paused"}
+            assert method == "PATCH"
+            if body == {"state": "Resumed"}:
+                assert MODE == "checkpoint" and origin is not None
+                started = True
+            else:
+                assert body == {"state": "Paused"}
         elif endpoint == "/execution" and method == "PATCH":
             evidence("pause")
         connection.sendall(f"HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n".encode())

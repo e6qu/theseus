@@ -33,7 +33,8 @@ use theseus_sdk::bus::BusDevice;
 pub const THESEUS_MEM_LEN: u64 = 0x8;
 
 /// A guest→host event, recorded in order of arrival.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ControlEvent {
     /// Guest signalled setup completion (`CMD_SETUP_COMPLETE`).
     SetupComplete,
@@ -43,7 +44,7 @@ pub enum ControlEvent {
     GuestLog(u8),
 }
 
-/// The Theseus control device. Always present on the PIO bus in this fork.
+/// The Theseus control device, connected through MMIO on both architectures.
 #[derive(Debug, Default)]
 pub struct TheseusDevice {
     /// Host→guest event FIFO. The orchestrator enqueues bytes; the guest pops
@@ -53,7 +54,24 @@ pub struct TheseusDevice {
     event_log: Vec<ControlEvent>,
 }
 
+/// Portable FIFO and event-log state retained by execution checkpoints.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlState {
+    pub host_events: VecDeque<u8>,
+    pub event_log: Vec<ControlEvent>,
+}
+
 impl TheseusDevice {
+    pub fn checkpoint_state(&self) -> ControlState {
+        ControlState { host_events: self.host_events.clone(), event_log: self.event_log.clone() }
+    }
+
+    pub fn restore_checkpoint_state(&mut self, state: ControlState) {
+        self.host_events = state.host_events;
+        self.event_log = state.event_log;
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -207,5 +225,23 @@ mod tests {
         // Writes to the read-only magic window are inert too.
         dev.write(0, OFS_MAGIC, &[0x01]);
         assert!(dev.event_log().is_empty());
+    }
+
+    #[test]
+    fn checkpoint_restores_control_fifo_and_log_without_replaying_commands() {
+        let mut original = TheseusDevice::new();
+        original.push_event(42);
+        original.push_event(7);
+        original.write(0, OFS_COMMAND, &[CMD_SETUP_COMPLETE]);
+        original.write(0, OFS_LOG, &[9]);
+        let bytes = serde_json::to_vec(&original.checkpoint_state()).unwrap();
+        let mut restored = TheseusDevice::new();
+        restored.restore_checkpoint_state(serde_json::from_slice(&bytes).unwrap());
+        assert_eq!(restored.event_log(), original.event_log());
+        for expected in [42, 7, 0] {
+            let mut byte = [0];
+            restored.read(0, OFS_EVENT, &mut byte);
+            assert_eq!(byte[0], expected);
+        }
     }
 }

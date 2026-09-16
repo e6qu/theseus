@@ -20,6 +20,21 @@ pub struct ExecutionConfig {
     pub evidence_path: PathBuf,
     /// JSON array of exact decisions to admit, installed before the first vCPU run.
     pub replay_trace_path: Option<PathBuf>,
+    /// Set internally only after a verified checkpoint load.
+    #[serde(skip)]
+    pub(crate) start: Option<ExecutionStart>,
+}
+
+/// Immutable checkpoint origin; its prefix is inherited, not rerun from boot.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionStart {
+    /// `checkpoint` for a retained paused guest.
+    pub kind: String,
+    /// Digest of the checkpoint metadata, which binds state and RAM.
+    pub checkpoint_sha256: String,
+    /// Number of decisions inherited before the resumed execution.
+    pub inherited_decisions: u64,
 }
 
 /// Complete machine decisions, local ledgers, and the observed terminal boundary.
@@ -38,12 +53,20 @@ pub struct ExecutionEvidence {
     pub machine_execution_trace: Vec<String>,
     /// First active divergence or an unconsumed expected suffix.
     pub replay_error: Option<String>,
+    /// Absent for legacy fresh-boot capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<ExecutionStart>,
 }
 
 impl ExecutionConfig {
     pub(crate) fn prepare(&self) -> Result<(File, Option<Vec<String>>), VmmError> {
+        let expected = self.read_replay_trace()?;
+        Ok((self.create_evidence_file()?, expected))
+    }
+
+    pub(crate) fn read_replay_trace(&self) -> Result<Option<Vec<String>>, VmmError> {
         // Read and validate before creating output or starting vCPU threads.
-        let expected = self
+        self
             .replay_trace_path
             .as_ref()
             .map(|path| {
@@ -65,8 +88,11 @@ impl ExecutionConfig {
                     .map_err(VmmError::ExecutionCoverage)?;
                 Ok(trace)
             })
-            .transpose()?;
-        let file = OpenOptions::new()
+            .transpose()
+    }
+
+    pub(crate) fn create_evidence_file(&self) -> Result<File, VmmError> {
+        OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&self.evidence_path)
@@ -75,8 +101,7 @@ impl ExecutionConfig {
                     "create {}: {error}",
                     self.evidence_path.display()
                 ))
-            })?;
-        Ok((file, expected))
+            })
     }
 }
 
@@ -107,6 +132,7 @@ impl Vmm {
             machine_execution_ledger: self.machine_execution_ledger_evidence()?,
             machine_execution_trace: self.machine_execution_trace()?,
             replay_error: self.machine_execution_replay_error()?,
+            start: self.execution_config.as_ref().and_then(|config| config.start.clone()),
         };
         let file = self
             .execution_evidence_file
@@ -142,6 +168,7 @@ mod execution_ledger_tests {
         let config = ExecutionConfig {
             evidence_path: file.as_path().to_path_buf(),
             replay_trace_path: None,
+            start: None,
         };
         assert!(config.prepare().unwrap_err().to_string().contains("create"));
     }
@@ -154,6 +181,7 @@ mod execution_ledger_tests {
         let config = ExecutionConfig {
             evidence_path: output.clone(),
             replay_trace_path: Some(input.as_path().to_path_buf()),
+            start: None,
         };
         assert!(config.prepare().is_err());
         assert!(!output.exists());

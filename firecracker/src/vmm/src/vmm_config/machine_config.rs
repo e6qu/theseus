@@ -20,10 +20,9 @@ fn default_exits_per_tick() -> u64 {
     DEFAULT_EXITS_PER_TICK
 }
 
-/// Theseus (Track B′): virtual time configuration. When present, the guest
-/// clock advances deterministically — one `tick_ns` tick per
-/// `exits_per_tick` guest-visible exits — instead of following the host
-/// clock. x86_64 only.
+/// Theseus exit-counted virtual time on amd64 and arm64. Each configured exit
+/// quantum advances the counter by `tick_ns`; counters still free-run between
+/// boundaries, and in-kernel timers are not controlled by this setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VirtualTimeConfig {

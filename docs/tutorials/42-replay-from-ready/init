@@ -1,0 +1,15 @@
+#!/bin/busybox sh
+set -eu
+/bin/busybox mkdir -p /dev
+/bin/busybox mount -t devtmpfs devtmpfs /dev
+/bin/busybox stty -echo -opost </dev/ttyS0
+# Replace the guest's random-device reads with the published seeded driver.
+/bin/busybox insmod /theseus_rng.ko
+printf 'THES:M:42\n' >/dev/ttyS0
+IFS= read -r measurement </dev/ttyS0
+printf 'sensor reading: %s\n' "$measurement" >/dev/ttyS0
+printf 'urandom: '
+/bin/busybox od -An -N16 -tx1 /dev/urandom
+printf 'random: '
+/bin/busybox od -An -N16 -tx1 /dev/random
+/bin/busybox reboot -f

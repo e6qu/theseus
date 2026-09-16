@@ -122,6 +122,24 @@ pub struct I8042Device {
 }
 
 impl I8042Device {
+    pub(crate) fn checkpoint_state(&self) -> crate::checkpoint::KeyboardState {
+        crate::checkpoint::KeyboardState {
+            status: self.status, control: self.control, outp: self.outp, cmd: self.cmd,
+            buffer: (0..self.buf_len()).map(|index| self.buf[self.bhead.0.wrapping_add(index) % BUF_SIZE]).collect(),
+        }
+    }
+
+    pub(crate) fn restore_checkpoint_state(&mut self, state: &crate::checkpoint::KeyboardState) {
+        self.status = state.status;
+        self.control = state.control;
+        self.outp = state.outp;
+        self.cmd = state.cmd;
+        self.buf.fill(0);
+        self.buf[..state.buffer.len()].copy_from_slice(&state.buffer);
+        self.bhead = Wrapping(0);
+        self.btail = Wrapping(state.buffer.len());
+    }
+
     /// Complete reset synchronously on the vCPU's machine-stream turn.
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn attach_reset_controller(&self, controller: &Arc<MachineExecutionController>) {
@@ -364,6 +382,24 @@ mod tests {
         fn eq(&self, other: &I8042Error) -> bool {
             self.to_string() == other.to_string()
         }
+    }
+
+    #[test]
+    fn checkpoint_preserves_keyboard_registers_and_wrapped_fifo() {
+        let mut original = I8042Device::new(EventFd::new(libc::EFD_NONBLOCK).unwrap()).unwrap();
+        original.control = 3;
+        original.cmd = 0x60;
+        original.status = 1;
+        original.bhead = Wrapping(usize::MAX - 1);
+        original.btail = original.bhead + Wrapping(3);
+        for (index, byte) in [7, 8, 9].into_iter().enumerate() {
+            original.buf[original.bhead.0.wrapping_add(index) % BUF_SIZE] = byte;
+        }
+        let mut restored = I8042Device::new(EventFd::new(libc::EFD_NONBLOCK).unwrap()).unwrap();
+        restored.restore_checkpoint_state(&original.checkpoint_state());
+        assert_eq!((restored.control, restored.cmd, restored.status), (3, 0x60, 1));
+        assert_eq!(restored.buf_len(), 3);
+        assert_eq!(&restored.buf[..3], &[7, 8, 9]);
     }
 
     #[test]
