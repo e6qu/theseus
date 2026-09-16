@@ -80,7 +80,7 @@ pub struct VmCommon {
     /// Userfaultfd kept open for snapshot restore.
     pub uffd: Option<Uffd>,
     /// Handles to vCPU threads.
-    pub vcpus_handles: Arc<Mutex<Vec<VcpuHandle>>>,
+    pub vcpus_handles: Mutex<Vec<VcpuHandle>>,
     /// One total order for handled exits and their device effects across all
     /// vCPUs in this VM.
     pub machine_execution: Arc<MachineExecutionController>,
@@ -182,10 +182,6 @@ impl KvmVm {
 
         let vcpus_exit_evt = EventFd::new(libc::EFD_NONBLOCK).map_err(VmError::EventFd)?;
 
-        let vcpus_handles = Arc::new(Mutex::new(Vec::new()));
-        let machine_execution = Arc::new(MachineExecutionController::default());
-        machine_execution.attach_vcpu_handles(Arc::downgrade(&vcpus_handles));
-
         Ok(VmCommon {
             fd: Arc::new(fd),
             max_memslots: kvm.max_nr_memslots(),
@@ -196,8 +192,8 @@ impl KvmVm {
             mmio_bus: Arc::new(Bus::new()),
             kvm,
             uffd: None,
-            vcpus_handles,
-            machine_execution,
+            vcpus_handles: Mutex::new(Vec::new()),
+            machine_execution: Arc::new(MachineExecutionController::default()),
             vcpus_exit_evt,
         })
     }
@@ -1025,25 +1021,6 @@ pub(crate) mod tests {
 
         // We can't trigger an invalid vector
         msix_group.trigger(4).unwrap_err();
-    }
-
-    #[test]
-    fn execution_ledger_defers_msi_vector_group_trigger() {
-        let vm = setup_vm_with_memory(mib_to_bytes(128));
-        vm.enable_deterministic_interrupts();
-        let controller = vm.deterministic_interrupt_controller().unwrap();
-        let vm = Arc::new(vm);
-        let msix_group = KvmVm::create_msix_group(vm, 1).unwrap();
-        let gsi = msix_group.vectors[0].gsi;
-
-        msix_group.trigger(0).unwrap();
-        msix_group.trigger(0).unwrap();
-
-        assert_eq!(
-            controller.pending_interrupts_for_test(),
-            [("virtio-msix", gsi), ("virtio-msix", gsi)]
-        );
-        assert!(msix_group.vectors[0].event_fd.read().is_err());
     }
 
     #[test]

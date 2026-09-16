@@ -10,6 +10,7 @@ use crate::logger::{IncMetric, METRICS, error};
 use crate::pci::PciSBDF;
 use crate::pci::msix::MsixTableEntry;
 use crate::snapshot::Persist;
+use crate::vstate::vcpu::MachineExecutionController;
 use crate::vstate::vm::KvmVm;
 
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -75,6 +76,18 @@ impl MsixVector {
 
         Ok(())
     }
+
+    fn trigger(
+        &self,
+        controller: Option<&MachineExecutionController>,
+    ) -> Result<(), InterruptError> {
+        if let Some(controller) = controller {
+            controller.request_edge_interrupt("virtio-msix", self.gsi)?;
+        } else {
+            self.event_fd.write(1)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -110,11 +123,8 @@ impl MsixVectorGroup {
             .vectors
             .get(index)
             .ok_or(InterruptError::InvalidVectorIndex(index))?;
-        if let Some(controller) = self.vm.deterministic_interrupt_controller() {
-            controller.request_edge_interrupt("virtio-msix", vector.gsi)?;
-        } else {
-            vector.event_fd.write(1)?;
-        }
+        let controller = self.vm.deterministic_interrupt_controller();
+        vector.trigger(controller.as_deref())?;
         METRICS.interrupts.triggers.inc();
         Ok(())
     }
@@ -261,5 +271,32 @@ impl<'a> Persist<'a> for MsixVectorGroup {
             vm: constructor_args,
             vectors,
         })
+    }
+}
+
+#[cfg(test)]
+mod execution_ledger_tests {
+    use super::{MachineExecutionController, MsixVector};
+
+    #[test]
+    fn msix_edge_requests_bypass_eventfd_without_coalescing() {
+        let controller = MachineExecutionController::default();
+        let vector = MsixVector::new(42, false).unwrap();
+
+        vector.trigger(Some(&controller)).unwrap();
+        vector.trigger(Some(&controller)).unwrap();
+
+        assert_eq!(
+            controller.pending_interrupts_for_test(),
+            [("virtio-msix", 42), ("virtio-msix", 42)]
+        );
+        assert!(vector.event_fd.read().is_err());
+    }
+
+    #[test]
+    fn ordinary_msix_requests_still_write_eventfd() {
+        let vector = MsixVector::new(42, false).unwrap();
+        vector.trigger(None).unwrap();
+        assert_eq!(vector.event_fd.read().unwrap(), 1);
     }
 }

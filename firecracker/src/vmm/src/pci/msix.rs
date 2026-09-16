@@ -226,7 +226,7 @@ impl MsixConfig {
 
         // When MSI-X becomes usable, inject messages retained while the
         // function or individual vectors were disabled or masked.
-        if (!old_enabled && self.enabled) || (old_masked && !self.masked) {
+        if self.enabled && !self.masked && (!old_enabled || old_masked) {
             for (index, entry) in self.table_entries.clone().iter().enumerate() {
                 // Table indices are bounded by MAX_MSIX_VECTORS_PER_DEVICE (2048), fitting in u16.
                 #[allow(clippy::cast_possible_truncation)]
