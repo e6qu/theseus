@@ -7350,6 +7350,27 @@ mod tests {
             .contains("virtual time on every service"));
     }
 
+    #[test]
+    fn runtime_witness_tutorial_is_a_valid_checkpoint_plan() {
+        let compose = include_str!("../../docs/tutorials/11-certify-runtime/compose.yaml")
+            .replace("  service:", "  api:")
+            .replace("service/theseus.toml", "api/theseus.toml");
+        let directory = fixture(&compose);
+        let manifest = include_str!("../../docs/tutorials/11-certify-runtime/service/theseus.toml")
+            .replace("guest/initramfs.cpio.gz", "guest/initramfs.cpio");
+        fs::write(directory.path().join("api/theseus.toml"), manifest).unwrap();
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(
+            plan.replay_start,
+            crate::manifest::ReplayStart::ReadyCheckpoint
+        );
+        assert_eq!(
+            plan.services["api"].run.events[0].data_hex,
+            "66696e6973680a"
+        );
+        assert_eq!(plan.services["api"].run.storage.len(), 1);
+    }
+
     fn image_fixture(compose: &str, files: &[(&str, u32)]) -> tempfile::TempDir {
         let directory = fixture(compose);
         fs::write(

@@ -23,6 +23,7 @@ Run the remaining steps inside the container.
 ```sh
 sed -n '1,220p' compose.yaml
 sed -n '1,200p' service/theseus.toml
+sed -n '1,120p' service/init
 mkdir -p service/runtime service/guest/root/bin
 cp /usr/local/bin/firecracker service/runtime/firecracker
 cp /opt/theseus/vmlinux service/guest/vmlinux
