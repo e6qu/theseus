@@ -125,7 +125,7 @@ x-theseus:
         requires_state: {phase: partitioned}
         sets_state: {phase: partition_probed}
         shell:
-          command: [/bin/sh, -c, "printf partition-probe | /bin/busybox nc -u -w 1 counter 9; printf '{\"network\":\"partition_probe_sent\"}\n'"]
+          command: [/bin/sh, -c, "/bin/busybox nc -u -z -w 0 counter 9; printf '{\"network\":\"partition_probe_sent\"}\n'"]
           output_json: true
 
       - name: verify_recovery
