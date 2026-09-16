@@ -204,6 +204,10 @@ simulated NIC queues, seeded link state and framed digest input, switch queues,
 UART transcripts, scheduler state, control/PS/2 state, execution prefixes, and
 undelivered userspace interrupts. Loading checks architecture, VM configuration,
 member hashes and lengths, and reconstructs rolling ledgers before creating VMs.
+Root loading copies RAM into a sealed memfd and verifies the copied bytes,
+so later changes to the retained file cannot alter child mappings. Capture
+also seals in-process RAM images. Import is an eager RAM copy; child restores
+remain private COW mappings, not a zero-copy workflow.
 Each service result identifies the root digest and inherited decision count.
 Version-5 runtime certificates distinguish this contract from fresh-boot v4.
 The native validation archive retains the complete certificate directory under

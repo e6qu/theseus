@@ -174,8 +174,10 @@ certificates identify checkpoint ancestry and a nonempty actively replayed
 suffix; fresh-boot v4 remains a separate contract. Tutorial 11 uses this
 starting-state boundary and does not claim fresh-boot restart proof. Startup
 divergence retains its first error and partial machine stream instead of
-exhausting dependency rounds. Validate this source path on native KVM, then
-require its merged release's certificate and complete indexed portfolio.
+exhausting dependency rounds. Native PR CI covers one-service and two-service
+dependency roots, exact repeated replay, corrupted-RAM prelaunch rejection,
+and startup divergence. Require the merged release's certificate and complete
+indexed portfolio before marking this product-ready.
 Standalone UART/RNG or checkpoint source evidence does not substitute for
 that release proof. Never silently drop boot decisions from a fresh-boot
 contract. Restart can introduce another uncontrolled boot and remains a

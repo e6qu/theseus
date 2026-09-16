@@ -4,7 +4,7 @@
 //! Durable topology roots. Boot is inherited, never claimed to be replayed.
 
 use super::*;
-use std::io::Write;
+use std::io::{Read, Write};
 use vmm::checkpoint::{artifact, CheckpointArtifact, ExecutionDeviceState};
 use vmm::vstate::vcpu::CheckpointExecutionState;
 
@@ -199,6 +199,19 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .map_err(|error| error.to_string())?
+        .take(MAX_CONTEXT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_CONTEXT {
+        return Err("checkpoint context or metadata exceeds 128 MiB".to_owned());
+    }
+    Ok(bytes)
+}
+
 fn checked(path: &Path, expected: &CheckpointArtifact, maximum: u64) -> Result<(), String> {
     let actual = artifact(path, maximum).map_err(|error| error.to_string())?;
     if actual.bytes != expected.bytes || actual.sha256 != expected.sha256 {
@@ -342,7 +355,7 @@ pub(super) fn load(
     if actual.sha256 != locked.sha256 {
         return Err("starting checkpoint identity changed".to_owned());
     }
-    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    let bytes = read_bounded(path)?;
     if format!("{:x}", Sha256::digest(&bytes)) != locked.sha256 {
         return Err("starting checkpoint changed during read".to_owned());
     }
@@ -363,7 +376,7 @@ pub(super) fn load(
     }
     let context_path = directory.join("context.bin");
     checked(&context_path, &metadata.context, MAX_CONTEXT)?;
-    let bytes = fs::read(&context_path).map_err(|error| error.to_string())?;
+    let bytes = read_bounded(&context_path)?;
     if format!("{:x}", Sha256::digest(&bytes)) != metadata.context.sha256 {
         return Err("checkpoint context changed during read".to_owned());
     }
@@ -432,6 +445,21 @@ pub(super) fn load(
             profile.run.run.seed,
         )
         .map_err(|error| error.to_string())?;
+        // Bind the immutable COPIED bytes, not only the mutable source files.
+        let mut memory = branch
+            .memory_file()
+            .try_clone()
+            .map_err(|error| error.to_string())?;
+        let mut digest = Sha256::new();
+        std::io::copy(&mut memory, &mut digest).map_err(|error| error.to_string())?;
+        if branch.mem_size() != members.memory.bytes
+            || format!("{:x}", digest.finalize()) != members.memory.sha256
+            || format!("{:x}", Sha256::digest(branch.snapshot_bytes())) != members.vmstate.sha256
+        {
+            return Err(format!(
+                "checkpoint bytes for {name:?} changed during immutable import"
+            ));
+        }
         let microvm = branch.microvm_state().map_err(|error| error.to_string())?;
         if microvm.vm_info.mem_size_mib != u64::from(profile.run.run.mem_size_mib)
             || microvm.vcpu_states.len() != usize::from(profile.run.run.vcpu_count)
