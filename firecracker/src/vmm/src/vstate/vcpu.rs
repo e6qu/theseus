@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering, fence};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
-use std::sync::{Arc, Barrier, Condvar, Mutex};
+use std::sync::{Arc, Barrier, Condvar, Mutex, Weak};
 use std::time::Duration;
 use std::{fmt, io, thread};
 
@@ -148,6 +148,7 @@ pub struct MachineExecutionController {
     state: Mutex<MachineExecutionControl>,
     pending_interrupts: Mutex<VecDeque<PendingInterrupt>>,
     deterministic_interrupts: AtomicBool,
+    interrupt_kickers: Mutex<Vec<Weak<Mutex<Option<VcpuInterruptKick>>>>>,
     turn_changed: Condvar,
 }
 
@@ -162,6 +163,7 @@ impl Default for MachineExecutionController {
             }),
             pending_interrupts: Mutex::new(VecDeque::new()),
             deterministic_interrupts: AtomicBool::new(false),
+            interrupt_kickers: Mutex::new(Vec::new()),
             turn_changed: Condvar::new(),
         }
     }
@@ -171,6 +173,89 @@ impl Default for MachineExecutionController {
 struct PendingInterrupt {
     source: &'static str,
     gsi: u32,
+    coalesce: bool,
+}
+
+/// A separate KVM mapping lets device threads wake a vCPU without taking the
+/// handle lock held by pause, snapshot, and query operations.
+#[derive(Debug)]
+struct VcpuInterruptKick {
+    vcpu_fd: VcpuFd,
+    // musl models pthread_t as a pointer, glibc as an integer. Keep only its
+    // opaque identity; this code never dereferences it.
+    pthread: usize,
+    ready: Arc<AtomicBool>,
+}
+
+impl VcpuInterruptKick {
+    fn kick(&mut self) -> io::Result<()> {
+        // Requests queued during startup are consumed at the first guest
+        // entry. Do not signal a thread before it installs the kick handler.
+        if !self.ready.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.vcpu_fd.set_kvm_immediate_exit(1);
+        fence(Ordering::Release);
+        // SAFETY: VcpuHandle clears this object under the same mutex before
+        // joining the thread, so its pthread handle cannot be reused here.
+        let result = unsafe {
+            libc::pthread_kill(self.pthread as libc::pthread_t, sigrtmin() + VCPU_RTSIG_OFFSET)
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(result))
+        }
+    }
+}
+
+/// A device interrupt request routed through the deterministic machine stream.
+#[derive(Clone, Debug)]
+pub(crate) struct DeferredInterrupt {
+    controller: Weak<MachineExecutionController>,
+    source: &'static str,
+    gsi: u32,
+    coalesce: bool,
+}
+
+impl DeferredInterrupt {
+    pub(crate) fn level(
+        controller: &Arc<MachineExecutionController>,
+        source: &'static str,
+        gsi: u32,
+    ) -> Self {
+        Self {
+            controller: Arc::downgrade(controller),
+            source,
+            gsi,
+            coalesce: true,
+        }
+    }
+
+    pub(crate) fn edge(
+        controller: &Arc<MachineExecutionController>,
+        source: &'static str,
+        gsi: u32,
+    ) -> Self {
+        Self {
+            controller: Arc::downgrade(controller),
+            source,
+            gsi,
+            coalesce: false,
+        }
+    }
+
+    pub(crate) fn trigger(&self) -> io::Result<()> {
+        self.controller
+            .upgrade()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "interrupt controller was dropped",
+                )
+            })?
+            .request_interrupt(self.source, self.gsi, self.coalesce)
+    }
 }
 
 impl MachineExecutionController {
@@ -199,10 +284,18 @@ impl MachineExecutionController {
         state.execution = execution;
         state.expected = None;
         state.divergence = None;
-        *self
+        let mut live_interrupts = self
             .pending_interrupts
             .lock()
-            .expect("pending interrupt queue lock poisoned") = pending_interrupts;
+            .expect("pending interrupt queue lock poisoned");
+        let mut restored_interrupts = pending_interrupts;
+        for interrupt in live_interrupts.drain(..) {
+            if !interrupt.coalesce || !restored_interrupts.contains(&interrupt) {
+                restored_interrupts.push_back(interrupt);
+            }
+        }
+        *live_interrupts = restored_interrupts;
+        drop(live_interrupts);
         self.turn_changed.notify_all();
     }
 
@@ -210,23 +303,57 @@ impl MachineExecutionController {
         self.deterministic_interrupts.store(true, Ordering::Release);
     }
 
+    fn attach_interrupt_kicker(&self, kicker: Weak<Mutex<Option<VcpuInterruptKick>>>) {
+        self.interrupt_kickers
+            .lock()
+            .expect("vCPU interrupt kicker list lock poisoned")
+            .push(kicker);
+    }
+
     pub(crate) fn deterministic_interrupts_enabled(&self) -> bool {
         self.deterministic_interrupts.load(Ordering::Acquire)
     }
 
-    pub(crate) fn request_interrupt(&self, source: &'static str, gsi: u32) {
-        let interrupt = PendingInterrupt { source, gsi };
+    pub(crate) fn request_edge_interrupt(&self, source: &'static str, gsi: u32) -> io::Result<()> {
+        self.request_interrupt(source, gsi, false)
+    }
+
+    fn request_interrupt(&self, source: &'static str, gsi: u32, coalesce: bool) -> io::Result<()> {
+        let interrupt = PendingInterrupt {
+            source,
+            gsi,
+            coalesce,
+        };
         let mut pending = self
             .pending_interrupts
             .lock()
             .expect("pending interrupt queue lock poisoned");
-        // A UART IRQ remains asserted until the guest clears its source.
-        // Repeated triggers before injection are not distinct line transitions.
-        if !pending.contains(&interrupt) {
+        // Level sources remain asserted until the guest clears their status;
+        // repeated triggers before injection are not new line transitions.
+        if !coalesce || !pending.contains(&interrupt) {
             pending.push_back(interrupt);
         }
         drop(pending);
         self.turn_changed.notify_all();
+        self.kick_vcpus()
+    }
+
+    fn kick_vcpus(&self) -> io::Result<()> {
+        let mut kickers = self
+            .interrupt_kickers
+            .lock()
+            .expect("vCPU interrupt kicker list lock poisoned");
+        kickers.retain(|kicker| kicker.strong_count() > 0);
+        for kicker in kickers.iter().filter_map(Weak::upgrade) {
+            if let Some(kicker) = kicker
+                .lock()
+                .expect("vCPU interrupt kicker lock poisoned")
+                .as_mut()
+            {
+                kicker.kick()?;
+            }
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -483,14 +610,33 @@ fn machine_record_actor(record: &str) -> Option<MachineExecutionActor> {
         return valid_machine_host_effect(effect).then_some(MachineExecutionActor::Host);
     }
     let (vcpu, effect) = record.strip_prefix("vcpu:")?.split_once(':')?;
-    if effect.is_empty() {
+    if !valid_machine_vcpu_effect(effect) {
         return None;
     }
     let id = vcpu.parse::<u8>().ok()?;
     (vcpu == id.to_string()).then_some(MachineExecutionActor::Vcpu(id))
 }
 
+fn valid_machine_vcpu_effect(effect: &str) -> bool {
+    let Some(interrupt) = effect.strip_prefix("interrupt:") else {
+        return !effect.is_empty();
+    };
+    let Some((source, gsi_text)) = interrupt.split_once(':') else {
+        return false;
+    };
+    let Ok(gsi) = gsi_text.parse::<u32>() else {
+        return false;
+    };
+    matches!(
+        source,
+        "serial" | "virtio-mmio" | "virtio-msix" | "vmgenid" | "vmclock" | "i8042"
+    ) && gsi_text == gsi.to_string()
+}
+
 fn valid_machine_host_effect(effect: &str) -> bool {
+    if effect == "ctrl_alt_del" {
+        return true;
+    }
     if let Some(byte) = effect.strip_prefix("control_event:") {
         return valid_lowercase_hex(byte) && byte.len() == 2;
     }
@@ -814,21 +960,30 @@ impl Vcpu {
         let vcpu_fd = self
             .copy_kvm_vcpu_fd(vm)
             .map_err(StartThreadedError::CopyFd)?;
+        let interrupt_vcpu_fd = self
+            .machine_execution
+            .deterministic_interrupts_enabled()
+            .then(|| self.copy_kvm_vcpu_fd(vm))
+            .transpose()
+            .map_err(StartThreadedError::CopyFd)?;
         let execution_locations = self.execution_locations.clone();
         let execution_ledger = self.execution_ledger.clone();
         let machine_execution = self.machine_execution.clone();
+        let kick_ready = Arc::new(AtomicBool::new(false));
+        let thread_kick_ready = Arc::clone(&kick_ready);
         let vcpu_thread = thread::Builder::new()
             .name(format!("fc_vcpu {}", self.kvm_vcpu.index))
             .spawn(move || {
                 let filter = &*seccomp_filter;
                 self.register_kick_signal_handler();
+                thread_kick_ready.store(true, Ordering::Release);
                 // Synchronization to make sure thread local data is initialized.
                 barrier.wait();
                 self.run(filter);
             })
             .map_err(StartThreadedError::Spawn)?;
 
-        Ok(VcpuHandle::new(
+        let handle = VcpuHandle::new(
             event_sender,
             response_receiver,
             vcpu_fd,
@@ -836,7 +991,21 @@ impl Vcpu {
             execution_ledger,
             machine_execution,
             vcpu_thread,
-        ))
+        );
+        if let Some(vcpu_fd) = interrupt_vcpu_fd {
+            *handle
+                .interrupt_kicker
+                .lock()
+                .expect("vCPU interrupt kicker lock poisoned") = Some(VcpuInterruptKick {
+                vcpu_fd,
+                pthread: handle.vcpu_thread.as_ref().unwrap().pthread_handle() as usize,
+                ready: kick_ready,
+            });
+            handle
+                .machine_execution
+                .attach_interrupt_kicker(Arc::downgrade(&handle.interrupt_kicker));
+        }
+        Ok(handle)
     }
 
     /// Main loop of the vCPU thread.
@@ -1276,6 +1445,7 @@ pub(crate) fn hex_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod execution_ledger_tests {
     use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
 
     use super::{
         EXECUTION_DECISION_TAIL, ExecutionLedger, MachineExecutionController,
@@ -1341,20 +1511,40 @@ mod execution_ledger_tests {
     fn pending_interrupts_are_coalesced_and_survive_branch_state_restore() {
         let source = MachineExecutionController::default();
         source.enable_deterministic_interrupts();
-        source.request_interrupt("serial", 4);
-        source.request_interrupt("serial", 4);
+        source.request_interrupt("serial", 4, true).unwrap();
+        source.request_interrupt("serial", 4, true).unwrap();
+        source.request_edge_interrupt("vmclock", 6).unwrap();
+        source.request_edge_interrupt("vmclock", 6).unwrap();
 
         let state = source.execution_state();
-        assert_eq!(state.pending_interrupts.len(), 1);
+        assert_eq!(state.pending_interrupts.len(), 3);
         assert_eq!(state.pending_interrupts[0].source, "serial");
         assert_eq!(state.pending_interrupts[0].gsi, 4);
+        assert_eq!(state.pending_interrupts[1].source, "vmclock");
+        assert_eq!(state.pending_interrupts[2].source, "vmclock");
 
         let restored = MachineExecutionController::default();
+        restored.request_edge_interrupt("vmgenid", 5).unwrap();
         restored.restore_execution_state(state);
         let restored_state = restored.execution_state();
-        assert_eq!(restored_state.pending_interrupts.len(), 1);
+        assert_eq!(restored_state.pending_interrupts.len(), 4);
         assert_eq!(restored_state.pending_interrupts[0].source, "serial");
         assert_eq!(restored_state.pending_interrupts[0].gsi, 4);
+        assert_eq!(restored_state.pending_interrupts[3].source, "vmgenid");
+        assert_eq!(restored_state.pending_interrupts[3].gsi, 5);
+    }
+
+    #[test]
+    fn interrupt_kicker_links_do_not_keep_vcpu_handles_alive() {
+        let controller = MachineExecutionController::default();
+        let kicker = Arc::new(Mutex::new(None));
+        controller.attach_interrupt_kicker(Arc::downgrade(&kicker));
+        controller.request_edge_interrupt("vmclock", 6).unwrap();
+        assert_eq!(Arc::strong_count(&kicker), 1);
+
+        drop(kicker);
+        controller.request_edge_interrupt("vmclock", 6).unwrap();
+        assert!(controller.interrupt_kickers.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -1426,6 +1616,11 @@ mod execution_ledger_tests {
     fn active_replay_rejects_malformed_host_effects() {
         let controller = MachineExecutionController::default();
         assert!(controller.enforce(vec!["host:".to_owned()]).is_err());
+        assert!(
+            MachineExecutionController::default()
+                .enforce(vec!["host:ctrl_alt_del".to_owned()])
+                .is_ok()
+        );
         assert!(controller
             .enforce(vec!["host:serial_input:2:2a".to_owned()])
             .is_err());
@@ -1441,6 +1636,12 @@ mod execution_ledger_tests {
         assert!(controller.enforce(vec!["vcpu:0:".to_owned()]).is_err());
         assert!(controller
             .enforce(vec!["vcpu:00:mmio_read:0x0:1:00".to_owned()])
+            .is_err());
+        assert!(controller
+            .enforce(vec!["vcpu:0:interrupt:unknown:4".to_owned()])
+            .is_err());
+        assert!(controller
+            .enforce(vec!["vcpu:0:interrupt:serial:04".to_owned()])
             .is_err());
     }
 }
@@ -1610,6 +1811,7 @@ pub struct VcpuHandle {
     execution_locations: Arc<Mutex<BTreeSet<u64>>>,
     execution_ledger: Arc<Mutex<ExecutionLedger>>,
     machine_execution: Arc<MachineExecutionController>,
+    interrupt_kicker: Arc<Mutex<Option<VcpuInterruptKick>>>,
     // Rust JoinHandles have to be wrapped in Option if you ever plan on 'join()'ing them.
     // We want to be able to join these threads in tests.
     vcpu_thread: Option<thread::JoinHandle<()>>,
@@ -1643,6 +1845,7 @@ impl VcpuHandle {
             execution_locations,
             execution_ledger,
             machine_execution,
+            interrupt_kicker: Arc::new(Mutex::new(None)),
             vcpu_thread: Some(vcpu_thread),
         }
     }
@@ -1751,6 +1954,10 @@ impl VcpuHandle {
 // Wait for the Vcpu thread to finish execution
 impl Drop for VcpuHandle {
     fn drop(&mut self) {
+        self.interrupt_kicker
+            .lock()
+            .expect("vCPU interrupt kicker lock poisoned")
+            .take();
         // The vCPU thread owns the response sender, so the channel disconnects
         // once it exits. Wait for that disconnect (draining any stale responses)
         // with a timeout rather than joining unconditionally, so a thread that

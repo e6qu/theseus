@@ -240,15 +240,6 @@ impl KvmVm {
         self.common.vcpus_handles.lock().expect("Poisoned lock")
     }
 
-    /// Wake vCPUs so a queued deterministic interrupt is delivered before
-    /// their next guest entry.
-    pub(crate) fn kick_vcpus_for_interrupt_delivery(&self) -> Result<(), crate::VmmError> {
-        self.vcpus_handles()
-            .iter_mut()
-            .try_for_each(VcpuHandle::kick)
-            .map_err(|_| crate::VmmError::VcpuMessage)
-    }
-
     /// Route device interrupt requests through the machine execution stream.
     pub(crate) fn enable_deterministic_interrupts(&self) {
         self.common
@@ -989,7 +980,7 @@ pub(crate) mod tests {
     /// Enable all vectors MSI-X vector group
     pub fn enable_all_vectors(vector_group: &MsixVectorGroup) {
         for route in &vector_group.vectors {
-            route.enable(&vector_group.vm.common.fd).unwrap();
+            route.enable(&vector_group.vm).unwrap();
         }
     }
 

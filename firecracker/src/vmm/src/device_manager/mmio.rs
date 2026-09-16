@@ -210,8 +210,15 @@ impl MMIOVirtioDevices {
                     .register_ioevent(queue_evt, &io_addr, u32::try_from(i).unwrap())
                     .map_err(MmioError::RegisterIoEvent)?;
             }
-            vm.register_irq(&mmio_device.interrupt.irq_evt, gsi)
-                .map_err(MmioError::RegisterIrqFd)?;
+            if let Some(controller) = vm.deterministic_interrupt_controller() {
+                mmio_device
+                    .interrupt
+                    .defer_interrupt(controller, "virtio-mmio", gsi)?;
+                vm.register_irq_route(gsi);
+            } else {
+                vm.register_irq(&mmio_device.interrupt.irq_evt, gsi)
+                    .map_err(MmioError::RegisterIrqFd)?;
+            }
         }
 
         vm.common.mmio_bus.insert(
@@ -456,7 +463,7 @@ impl MMIOPlatformDevices {
         let serial_guard = serial.lock().expect("Poisoned lock");
         let interrupt = serial_guard.serial.interrupt_evt();
         if let Some(controller) = vm.deterministic_interrupt_controller() {
-            interrupt.defer_interrupt(controller, "serial", gsi)?;
+            interrupt.defer_level_interrupt(controller, "serial", gsi)?;
             vm.register_irq_route(gsi);
         } else {
             vm.register_irq(interrupt, gsi)

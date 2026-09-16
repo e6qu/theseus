@@ -676,9 +676,10 @@ impl<'a> Persist<'a> for PciDevices {
             )?
         }
 
-        // After PCI devices are restored, we must set up the GSI routes (one KVM_SET_GSI_ROUTING call for all vectors),
-        // and enable all unmasked vectors (one kvm_irqfd call per vector).
-        // Ordering: routing must be set before IRQFDs to avoid kernel panics on
+        // After PCI devices are restored, set up all GSI routes in one call and
+        // enable unmasked vectors. Ordinary VMs register irqfds; deterministic
+        // VMs retain the route and inject through the machine stream.
+        // Routing must precede irqfd registration to avoid kernel panics on
         // older AMD/SVM hosts (see kernel commit a80ced6ea514).
         if !pci_devices.virtio_devices.is_empty() {
             constructor_args

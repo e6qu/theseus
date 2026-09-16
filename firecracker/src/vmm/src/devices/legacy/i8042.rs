@@ -10,8 +10,10 @@ use std::num::Wrapping;
 use std::sync::{Arc, Barrier};
 
 use serde::Serialize;
+use vm_superio::Trigger;
 use vmm_sys_util::eventfd::EventFd;
 
+use super::EventFdTrigger;
 use crate::logger::{IncMetric, SharedIncMetric, error, warn};
 use crate::vstate::bus::BusDevice;
 
@@ -97,7 +99,7 @@ pub struct I8042Device {
     reset_evt: EventFd,
 
     /// Keyboard interrupt event (IRQ 1).
-    pub kbd_interrupt_evt: EventFd,
+    pub kbd_interrupt_evt: EventFdTrigger,
 
     /// The i8042 status register.
     status: u8,
@@ -122,7 +124,7 @@ impl I8042Device {
     pub fn new(reset_evt: EventFd) -> Result<I8042Device, std::io::Error> {
         Ok(I8042Device {
             reset_evt,
-            kbd_interrupt_evt: EventFd::new(libc::EFD_NONBLOCK)?,
+            kbd_interrupt_evt: EventFdTrigger::new(EventFd::new(libc::EFD_NONBLOCK)?),
             control: CB_POST_OK | CB_KBD_INT,
             cmd: 0,
             outp: 0,
@@ -153,7 +155,7 @@ impl I8042Device {
             return Err(I8042Error::KbdInterruptDisabled);
         }
         self.kbd_interrupt_evt
-            .write(1)
+            .trigger()
             .map_err(I8042Error::KbdInterruptFailure)
     }
 
