@@ -1281,6 +1281,18 @@
                         "index": 1,
                         "type": "dword",
                         "op": "eq",
+                        "val": 1074310753,
+                        "comment": "KVM_IRQ_LINE"
+                    }
+                ]
+            },
+            {
+                "syscall": "ioctl",
+                "args": [
+                    {
+                        "index": 1,
+                        "type": "dword",
+                        "op": "eq",
                         "val": 2147790488,
                         "comment": "KVM_GET_MP_STATE"
                     }

@@ -82,16 +82,23 @@ in the same serialized turn in which they affect the guest. Replay checks the
 expected input before delivery. A `vcpu:` or `host:` prefix identifies the
 actor.
 
+In deterministic VMs, the UART does not signal KVM through an asynchronous
+irqfd. It queues the interrupt request in the branch state. A vCPU injects that
+request with `KVM_IRQ_LINE` before its next guest entry and records
+`vcpu:<id>:interrupt:serial:<gsi>` in the same machine stream. Checkpoints retain
+an undelivered request, and replay requires the same vCPU delivery turn.
+
 The VM-wide gate retains the bounded exact trace as well as the rolling digest.
 Checkpoints clone both forms into each child. Locked replay admits only the
 actor named by the next record and requires its complete exit or input payload
 to match. A wrong prefix, actor, input, payload, missing suffix, or extra event
 fails replay.
 
-This controls concurrent emulated device effects and explicit host inputs at
-the KVM boundary. Theseus does not yet make guest instructions deterministic,
-choose Linux thread or process execution, or schedule timer and device
-interrupt delivery between exits.
+This controls concurrent emulated device effects, explicit host inputs, and
+UART interrupt injection at the KVM boundary. Theseus does not yet make guest
+instructions deterministic, choose Linux thread or process execution, control
+when the guest services an injected interrupt, or schedule timer and non-UART
+device interrupts between exits.
 
 - Rate limiters use host timerfds — **rejected** when virtual time is
   enabled (`validate_deterministic_config`).
@@ -125,9 +132,10 @@ interrupt delivery between exits.
   direct futex use, blocking syscalls, processes, and uninstrumented library
   concurrency remain outside the supported scheduling profile.
 - **Execution between KVM exits.** The machine replay gate selects and verifies
-  vCPU turns and explicit host inputs at controlled boundaries. It cannot
-  control or explain divergence that happens entirely between those
-  boundaries, including interrupt delivery and guest-side input consumption.
+  vCPU turns, explicit host inputs, and UART interrupt injection at controlled
+  boundaries. It cannot control or explain divergence that happens entirely
+  between those boundaries, including guest interrupt servicing, timer and
+  non-UART interrupt delivery, and guest-side input consumption.
 
 ## Replay fingerprints
 

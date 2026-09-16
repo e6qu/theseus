@@ -64,7 +64,7 @@ pub struct RoutingEntry {
 #[derive(Debug)]
 pub struct VmCommon {
     /// The KVM file descriptor used to access this KvmVm.
-    pub fd: VmFd,
+    pub fd: Arc<VmFd>,
     max_memslots: u32,
     /// The guest memory of this KvmVm.
     pub guest_memory: GuestMemoryMmap,
@@ -183,7 +183,7 @@ impl KvmVm {
         let vcpus_exit_evt = EventFd::new(libc::EFD_NONBLOCK).map_err(VmError::EventFd)?;
 
         Ok(VmCommon {
-            fd,
+            fd: Arc::new(fd),
             max_memslots: kvm.max_nr_memslots(),
             guest_memory: GuestMemoryMmap::default(),
             next_kvm_slot: AtomicU32::new(0),
@@ -238,6 +238,32 @@ impl KvmVm {
     /// Returns a locked reference to the vCPU handles.
     pub fn vcpus_handles(&self) -> MutexGuard<'_, Vec<VcpuHandle>> {
         self.common.vcpus_handles.lock().expect("Poisoned lock")
+    }
+
+    /// Wake vCPUs so a queued deterministic interrupt is delivered before
+    /// their next guest entry.
+    pub(crate) fn kick_vcpus_for_interrupt_delivery(&self) -> Result<(), crate::VmmError> {
+        self.vcpus_handles()
+            .iter_mut()
+            .try_for_each(VcpuHandle::kick)
+            .map_err(|_| crate::VmmError::VcpuMessage)
+    }
+
+    /// Route device interrupt requests through the machine execution stream.
+    pub(crate) fn enable_deterministic_interrupts(&self) {
+        self.common
+            .machine_execution
+            .enable_deterministic_interrupts();
+    }
+
+    /// Return the deterministic interrupt controller when this VM uses it.
+    pub(crate) fn deterministic_interrupt_controller(
+        &self,
+    ) -> Option<Arc<MachineExecutionController>> {
+        self.common
+            .machine_execution
+            .deterministic_interrupts_enabled()
+            .then(|| Arc::clone(&self.common.machine_execution))
     }
 
     /// Sets the userfaultfd (used during snapshot restore).
@@ -706,6 +732,12 @@ impl KvmVm {
     pub fn register_irq(&self, fd: &EventFd, gsi: u32) -> Result<(), errno::Error> {
         self.common.fd.register_irqfd(fd, gsi)?;
 
+        self.register_irq_route(gsi);
+        Ok(())
+    }
+
+    /// Register the routing table entry for an IRQ delivered without irqfd.
+    pub(crate) fn register_irq_route(&self, gsi: u32) {
         let mut entry = kvm_irq_routing_entry {
             gsi,
             type_: KVM_IRQ_ROUTING_IRQCHIP,
@@ -732,7 +764,6 @@ impl KvmVm {
                     masked: false,
                 },
             );
-        Ok(())
     }
 
     /// Register an MSI device interrupt

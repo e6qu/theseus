@@ -7,14 +7,14 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::os::fd::AsRawFd;
-use std::sync::atomic::{Ordering, fence};
+use std::sync::atomic::{AtomicBool, Ordering, fence};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::sync::{Arc, Barrier, Condvar, Mutex};
 use std::time::Duration;
 use std::{fmt, io, thread};
 
 use kvm_bindings::{KVM_SYSTEM_EVENT_RESET, KVM_SYSTEM_EVENT_SHUTDOWN};
-use kvm_ioctls::{VcpuExit, VcpuFd};
+use kvm_ioctls::{VcpuExit, VcpuFd, VmFd};
 use libc::{c_int, c_void, siginfo_t};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -113,19 +113,11 @@ impl ExecutionLedger {
 
 /// Branch-owned machine execution state. Unlike portable evidence, this keeps
 /// every bounded decision needed to actively enforce a later replay.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct MachineExecutionState {
     ledger: ExecutionLedger,
     trace: Vec<String>,
-}
-
-impl Default for MachineExecutionState {
-    fn default() -> Self {
-        Self {
-            ledger: ExecutionLedger::default(),
-            trace: Vec::new(),
-        }
-    }
+    pending_interrupts: VecDeque<PendingInterrupt>,
 }
 
 impl MachineExecutionState {
@@ -148,11 +140,14 @@ struct MachineExecutionControl {
     divergence: Option<String>,
 }
 
-/// Shared gate that serializes device effects and explicit host inputs and,
-/// during replay, admits only the actor named by the next retained decision.
+/// Shared gate that serializes device effects, explicit host inputs, and
+/// controlled interrupt injection and, during replay, admits only the actor
+/// named by the next retained decision.
 #[derive(Debug)]
 pub struct MachineExecutionController {
     state: Mutex<MachineExecutionControl>,
+    pending_interrupts: Mutex<VecDeque<PendingInterrupt>>,
+    deterministic_interrupts: AtomicBool,
     turn_changed: Condvar,
 }
 
@@ -165,21 +160,37 @@ impl Default for MachineExecutionController {
                 position: 0,
                 divergence: None,
             }),
+            pending_interrupts: Mutex::new(VecDeque::new()),
+            deterministic_interrupts: AtomicBool::new(false),
             turn_changed: Condvar::new(),
         }
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingInterrupt {
+    source: &'static str,
+    gsi: u32,
+}
+
 impl MachineExecutionController {
     fn execution_state(&self) -> MachineExecutionState {
-        self.state
+        let mut execution = self
+            .state
             .lock()
             .expect("machine execution controller lock poisoned")
             .execution
-            .clone()
+            .clone();
+        execution.pending_interrupts = self
+            .pending_interrupts
+            .lock()
+            .expect("pending interrupt queue lock poisoned")
+            .clone();
+        execution
     }
 
-    fn restore_execution_state(&self, execution: MachineExecutionState) {
+    fn restore_execution_state(&self, mut execution: MachineExecutionState) {
+        let pending_interrupts = std::mem::take(&mut execution.pending_interrupts);
         let mut state = self
             .state
             .lock()
@@ -188,7 +199,150 @@ impl MachineExecutionController {
         state.execution = execution;
         state.expected = None;
         state.divergence = None;
+        *self
+            .pending_interrupts
+            .lock()
+            .expect("pending interrupt queue lock poisoned") = pending_interrupts;
         self.turn_changed.notify_all();
+    }
+
+    pub(crate) fn enable_deterministic_interrupts(&self) {
+        self.deterministic_interrupts.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn deterministic_interrupts_enabled(&self) -> bool {
+        self.deterministic_interrupts.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn request_interrupt(&self, source: &'static str, gsi: u32) {
+        let interrupt = PendingInterrupt { source, gsi };
+        let mut pending = self
+            .pending_interrupts
+            .lock()
+            .expect("pending interrupt queue lock poisoned");
+        // A UART IRQ remains asserted until the guest clears its source.
+        // Repeated triggers before injection are not distinct line transitions.
+        if !pending.contains(&interrupt) {
+            pending.push_back(interrupt);
+        }
+        drop(pending);
+        self.turn_changed.notify_all();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_interrupts_for_test(&self) -> Vec<(&'static str, u32)> {
+        self.pending_interrupts
+            .lock()
+            .expect("pending interrupt queue lock poisoned")
+            .iter()
+            .map(|interrupt| (interrupt.source, interrupt.gsi))
+            .collect()
+    }
+
+    fn deliver_pending_interrupt(
+        &self,
+        vcpu: u8,
+        vm_fd: &VmFd,
+        ledger: &Arc<Mutex<ExecutionLedger>>,
+    ) -> Result<bool, String> {
+        if !self.deterministic_interrupts_enabled() {
+            return Ok(false);
+        }
+        let mut state = self
+            .state
+            .lock()
+            .expect("machine execution controller lock poisoned");
+        let mut pending = loop {
+            if let Some(detail) = state.divergence.clone() {
+                return Err(detail);
+            }
+            let pending = self
+                .pending_interrupts
+                .lock()
+                .expect("pending interrupt queue lock poisoned");
+            let Some(_) = pending.front() else {
+                if state
+                    .expected
+                    .as_ref()
+                    .and_then(|expected| expected.get(state.position))
+                    .is_some_and(|record| record.starts_with(&format!("vcpu:{vcpu}:interrupt:")))
+                {
+                    let detail = format!(
+                        "machine execution replay expected an interrupt at decision {}, but no interrupt was pending",
+                        state.position
+                    );
+                    state.divergence = Some(detail.clone());
+                    self.turn_changed.notify_all();
+                    return Err(detail);
+                }
+                return Ok(false);
+            };
+            let Some(expected) = state.expected.as_ref() else {
+                break pending;
+            };
+            let Some(expected_record) = expected.get(state.position) else {
+                break pending;
+            };
+            if machine_record_actor(expected_record) == Some(MachineExecutionActor::Vcpu(vcpu))
+            {
+                break pending;
+            }
+            drop(pending);
+            let (next, timeout) = self
+                .turn_changed
+                .wait_timeout(state, MACHINE_EXECUTION_TURN_TIMEOUT)
+                .expect(
+                    "machine execution controller lock poisoned while waiting to deliver interrupt",
+                );
+            state = next;
+            if timeout.timed_out() {
+                let detail = format!(
+                    "machine execution replay could not deliver a pending interrupt at decision {} because another actor was expected",
+                    state.position
+                );
+                state.divergence = Some(detail.clone());
+                self.turn_changed.notify_all();
+                return Err(detail);
+            }
+        };
+        let interrupt = pending.front().expect("pending interrupt disappeared");
+        let decision = format!("interrupt:{}:{}", interrupt.source, interrupt.gsi);
+        let record = format!("vcpu:{vcpu}:{decision}");
+        if let Some(expected) = state.expected.as_ref() {
+            let expected_record = expected.get(state.position);
+            if expected_record != Some(&record) {
+                let detail = format!(
+                    "machine execution replay diverged at decision {}: expected {:?}, observed {record:?}",
+                    state.position, expected_record
+                );
+                state.divergence = Some(detail.clone());
+                self.turn_changed.notify_all();
+                return Err(detail);
+            }
+        }
+        if state.execution.trace.len() == MACHINE_EXECUTION_TRACE_LIMIT {
+            let detail = format!(
+                "machine execution trace exceeded {MACHINE_EXECUTION_TRACE_LIMIT} decisions"
+            );
+            state.divergence = Some(detail.clone());
+            self.turn_changed.notify_all();
+            return Err(detail);
+        }
+        vm_fd
+            .set_irq_line(interrupt.gsi, true)
+            .and_then(|()| vm_fd.set_irq_line(interrupt.gsi, false))
+            .map_err(|error| format!("failed to deliver {decision}: {error}"))?;
+        pending.pop_front();
+        drop(pending);
+        ledger
+            .lock()
+            .expect("execution ledger lock poisoned")
+            .record(decision);
+        state.execution.ledger.record(record.clone());
+        state.execution.trace.push(record);
+        state.position = state.position.saturating_add(1);
+        self.turn_changed.notify_all();
+        Ok(true)
     }
 
     fn enforce(&self, expected: Vec<String>) -> Result<(), String> {
@@ -426,6 +580,8 @@ pub struct Vcpu {
 
     /// File descriptor for vcpu to trigger exit event on vmm.
     exit_evt: EventFd,
+    /// Shared VM descriptor used for synchronous deterministic IRQ delivery.
+    vm_fd: Arc<VmFd>,
     /// Debugger emitter for gdb events
     #[cfg(feature = "gdb")]
     gdb_event: Option<Sender<usize>>,
@@ -501,6 +657,7 @@ impl Vcpu {
 
         Ok(Vcpu {
             exit_evt,
+            vm_fd: Arc::clone(&vm.common.fd),
             event_receiver,
             event_sender: Some(event_sender),
             response_receiver: Some(response_receiver),
@@ -942,6 +1099,14 @@ impl Vcpu {
             self.vclock_anchored = true;
         }
 
+        self.machine_execution
+            .deliver_pending_interrupt(
+                self.kvm_vcpu.index,
+                &self.vm_fd,
+                &self.execution_ledger,
+            )
+            .map_err(VcpuError::FaultyKvmExit)?;
+
         if self.kvm_vcpu.fd.get_kvm_run().immediate_exit == 1u8 {
             warn!("Requested a vCPU run with immediate_exit enabled. The operation was skipped");
             self.kvm_vcpu.fd.set_kvm_immediate_exit(0);
@@ -1110,6 +1275,8 @@ pub(crate) fn hex_bytes(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod execution_ledger_tests {
+    use std::collections::VecDeque;
+
     use super::{
         EXECUTION_DECISION_TAIL, ExecutionLedger, MachineExecutionController,
         MachineExecutionState,
@@ -1156,6 +1323,7 @@ mod execution_ledger_tests {
         controller.restore_execution_state(MachineExecutionState {
             ledger,
             trace: vec!["vcpu:0:mmio_write:0x10:1:2a".to_owned()],
+            pending_interrupts: VecDeque::new(),
         });
         controller
             .enforce(vec![
@@ -1170,11 +1338,32 @@ mod execution_ledger_tests {
     }
 
     #[test]
+    fn pending_interrupts_are_coalesced_and_survive_branch_state_restore() {
+        let source = MachineExecutionController::default();
+        source.enable_deterministic_interrupts();
+        source.request_interrupt("serial", 4);
+        source.request_interrupt("serial", 4);
+
+        let state = source.execution_state();
+        assert_eq!(state.pending_interrupts.len(), 1);
+        assert_eq!(state.pending_interrupts[0].source, "serial");
+        assert_eq!(state.pending_interrupts[0].gsi, 4);
+
+        let restored = MachineExecutionController::default();
+        restored.restore_execution_state(state);
+        let restored_state = restored.execution_state();
+        assert_eq!(restored_state.pending_interrupts.len(), 1);
+        assert_eq!(restored_state.pending_interrupts[0].source, "serial");
+        assert_eq!(restored_state.pending_interrupts[0].gsi, 4);
+    }
+
+    #[test]
     fn active_replay_rejects_a_different_checkpoint_prefix() {
         let controller = MachineExecutionController::default();
         controller.restore_execution_state(MachineExecutionState {
             ledger: ExecutionLedger::default(),
             trace: vec!["vcpu:0:mmio_write:0x10:1:2a".to_owned()],
+            pending_interrupts: VecDeque::new(),
         });
         assert!(
             controller
@@ -1467,6 +1656,11 @@ impl VcpuHandle {
         self.event_sender
             .send(event)
             .expect("event sender channel closed on vcpu end.");
+        self.kick()
+    }
+
+    /// Interrupt `KVM_RUN` so this vCPU can observe newly queued machine work.
+    pub(crate) fn kick(&mut self) -> Result<(), VcpuSendEventError> {
         // Kick the vcpu so it picks up the message.
         // Add a fence to ensure the write is visible to the vpu thread
         self.vcpu_fd.set_kvm_immediate_exit(1);

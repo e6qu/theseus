@@ -96,9 +96,9 @@ The certificate is evidence for the strict `linux-kvm-simulated-io-v1`
 profile, not a claim about tap networking, host-backed disks, or every clock
 read inside one exit-counted quantum. Version 2 requires nonempty per-vCPU
 KVM-exit evidence, version 3 adds a machine-wide stream, and version 4 requires
-the complete bounded stream used to gate active replay. The stream orders both
-`vcpu:` exits and explicit `host:` UART, control-channel, and clock-jump
-effects.
+the complete bounded stream used to gate active replay. The stream orders
+`vcpu:` exits, synchronous UART interrupt injection, and explicit `host:`
+UART, control-channel, and clock-jump effects.
 
 ## Publish a failure from CI
 

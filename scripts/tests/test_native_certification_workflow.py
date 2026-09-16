@@ -57,6 +57,7 @@ def main() -> None:
     assert "scripts/native_runtime_evidence.py seal" in WORKFLOW
     assert "scripts/run_native_validation.sh" in WORKFLOW
     assert 'grep -F "\\\"host:serial_input:"' in VALIDATION
+    assert 'grep -F "\\\"vcpu:0:interrupt:serial:"' in VALIDATION
     assert "runtime-validation-${ARCH}.tar.gz" in WORKFLOW
     assert '--runtime-tag "$TAG-$ARCH"' in WORKFLOW
     assert '--kvm-api-version "$kvm_api"' in WORKFLOW

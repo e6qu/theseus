@@ -65,15 +65,17 @@ impl PortIODeviceManager {
             Self::I8042_KDB_DATA_REGISTER_SIZE,
         )?;
 
-        vm.register_irq(
-            self.stdio_serial
-                .lock()
-                .expect("Poisoned lock")
-                .serial
-                .interrupt_evt(),
-            Self::COM1_GSI,
-        )
-        .map_err(|e| LegacyDeviceError::EventFd(std::io::Error::from_raw_os_error(e.errno())))?;
+        let serial = self.stdio_serial.lock().expect("Poisoned lock");
+        let interrupt = serial.serial.interrupt_evt();
+        if let Some(controller) = vm.deterministic_interrupt_controller() {
+            interrupt.defer_interrupt(controller, "serial", Self::COM1_GSI)?;
+            vm.register_irq_route(Self::COM1_GSI);
+        } else {
+            vm.register_irq(interrupt, Self::COM1_GSI).map_err(|e| {
+                LegacyDeviceError::EventFd(std::io::Error::from_raw_os_error(e.errno()))
+            })?;
+        }
+        drop(serial);
 
         vm.register_irq(
             &self.i8042.lock().expect("Poisoned lock").kbd_interrupt_evt,
