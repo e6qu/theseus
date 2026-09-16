@@ -16,6 +16,11 @@ CERTIFICATION_MANIFEST = (
 
 
 def main() -> None:
+    source_ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert 'sh scripts/run_native_validation.sh || validation_status=$?' in source_ci
+    assert 'sh scripts/run_native_counterexample.sh || counterexample_status=$?' in source_ci
+    assert 'test "$validation_status" -eq 0' in source_ci
+    assert 'test "$counterexample_status" -eq 0' in source_ci
     assert "workflow_run:" in WORKFLOW
     assert "workflows: [publish-runtime]" in WORKFLOW
     assert "default: amd64" in WORKFLOW

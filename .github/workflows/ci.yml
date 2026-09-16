@@ -227,8 +227,12 @@ jobs:
           export THESEUS_SOURCE_RUNTIME="$runtime"
           export THESEUS_TAG=$(git rev-parse --short=12 HEAD)
           docker pull "$THESEUS_IMAGE"
-          sh scripts/run_native_validation.sh
-          sh scripts/run_native_counterexample.sh
+          validation_status=0
+          sh scripts/run_native_validation.sh || validation_status=$?
+          counterexample_status=0
+          sh scripts/run_native_counterexample.sh || counterexample_status=$?
+          test "$validation_status" -eq 0
+          test "$counterexample_status" -eq 0
 
       - name: Retain native product workflow diagnostics
         if: always()
