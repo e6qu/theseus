@@ -130,6 +130,70 @@ impl MachineExecutionState {
     pub fn trace(&self) -> &[String] {
         &self.trace
     }
+
+    /// Serialize the bounded prefix and undelivered requests, not hash internals.
+    pub fn checkpoint_state(&self) -> CheckpointExecutionState {
+        CheckpointExecutionState {
+            trace: self.trace.clone(),
+            pending_interrupts: self.pending_interrupts.iter().map(|request| CheckpointInterrupt {
+                source: request.source.to_owned(), gsi: request.gsi, coalesce: request.coalesce,
+            }).collect(),
+        }
+    }
+}
+
+/// Portable state from which all execution hashes are independently rebuilt.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckpointExecutionState {
+    /// Complete inherited decisions.
+    pub trace: Vec<String>,
+    /// Ordered requests that have not yet reached KVM.
+    pub pending_interrupts: Vec<CheckpointInterrupt>,
+}
+
+/// A retained userspace-device interrupt request.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckpointInterrupt {
+    /// Stable supported device source.
+    pub source: String,
+    /// Guest system interrupt number.
+    pub gsi: u32,
+    /// Whether repeated level requests coalesce.
+    pub coalesce: bool,
+}
+
+impl CheckpointExecutionState {
+    /// Validate actors and queues, then recompute local and machine hash state.
+    pub fn restore(&self, vcpu_count: usize) -> Result<(MachineExecutionState, Vec<ExecutionLedger>), String> {
+        MachineExecutionController::validate_trace(&self.trace)?;
+        if vcpu_count == 0 || vcpu_count > 255 || self.pending_interrupts.len() > MACHINE_EXECUTION_TRACE_LIMIT {
+            return Err("checkpoint has an invalid vCPU or pending-interrupt count".into());
+        }
+        let mut machine = MachineExecutionState::default();
+        let mut local = vec![ExecutionLedger::default(); vcpu_count];
+        for record in &self.trace {
+            if let Some(MachineExecutionActor::Vcpu(id)) = machine_record_actor(record) {
+                let ledger = local.get_mut(usize::from(id)).ok_or("checkpoint trace names an absent vCPU")?;
+                ledger.record(record.splitn(3, ':').nth(2).expect("validated decision").to_owned());
+            }
+            machine.ledger.record(record.clone());
+        }
+        machine.trace = self.trace.clone();
+        for request in &self.pending_interrupts {
+            let source = match request.source.as_str() {
+                "serial" => "serial", "i8042" => "i8042", "virtio-mmio" => "virtio-mmio",
+                "virtio-msix" => "virtio-msix", "vmgenid" => "vmgenid", "vmclock" => "vmclock",
+                _ => return Err("checkpoint contains an unsupported interrupt source".into()),
+            };
+            if request.gsi >= 1024 {
+                return Err("checkpoint interrupt is outside the supported GSI range".into());
+            }
+            machine.pending_interrupts.push_back(PendingInterrupt { source, gsi: request.gsi, coalesce: request.coalesce });
+        }
+        Ok((machine, local))
+    }
 }
 
 #[derive(Debug)]
@@ -1577,6 +1641,34 @@ mod execution_ledger_tests {
 
     #[derive(Default)]
     struct CountingDevice { reads: usize, writes: usize }
+
+    #[test]
+    fn checkpoint_rebuilds_all_hashes_and_preserves_interrupt_order() {
+        use super::{CheckpointExecutionState, CheckpointInterrupt};
+        let checkpoint = CheckpointExecutionState {
+            trace: vec!["vcpu:0:pio_write:0x3f8:1:2a".into(), "host:serial_input:1:41".into(),
+                "vcpu:1:mmio_read:0x1000:1:00".into()],
+            pending_interrupts: vec![
+                CheckpointInterrupt { source: "serial".into(), gsi: 4, coalesce: true },
+                CheckpointInterrupt { source: "virtio-mmio".into(), gsi: 5, coalesce: false },
+            ],
+        };
+        let checkpoint: CheckpointExecutionState = serde_json::from_slice(&serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+        let (machine, local) = checkpoint.restore(2).unwrap();
+        let mut expected = ExecutionLedger::default();
+        for record in &checkpoint.trace { expected.record(record.clone()); }
+        assert_eq!(machine.ledger_evidence(), expected.evidence());
+        assert_eq!(local[0].evidence().tail, ["pio_write:0x3f8:1:2a"]);
+        assert_eq!(local[1].evidence().tail, ["mmio_read:0x1000:1:00"]);
+        assert_eq!(machine.pending_interrupts.iter().map(|irq| (irq.source, irq.gsi)).collect::<Vec<_>>(), [("serial", 4), ("virtio-mmio", 5)]);
+        assert!(checkpoint.restore(1).unwrap_err().contains("absent vCPU"));
+        let mut invalid = checkpoint;
+        invalid.pending_interrupts[0].source = "unknown".into();
+        assert!(invalid.restore(2).unwrap_err().contains("unsupported"));
+        invalid.pending_interrupts[0].source = "serial".into();
+        invalid.pending_interrupts[0].gsi = 1024;
+        assert!(invalid.restore(2).is_err());
+    }
 
     #[test]
     fn recorded_interrupt_waits_for_async_completion_before_injection() {

@@ -112,7 +112,7 @@ woken, and exit status is published before event-loop notification.
 
 ### Single-service bundles
 
-New `theseus test` bundles use `theseus-replay-plan-v2` and require
+Fresh-boot `theseus test` bundles use `theseus-replay-plan-v2` and require
 `execution.json`. This file contains the full machine trace, per-vCPU ledgers,
 machine ledger, observed boundary, and first active replay error. `[[events]]`
 become exact `host:serial_input` decisions after the ready marker, not bytes
@@ -144,8 +144,51 @@ Low-level API clients can `PUT /execution` before a fresh boot with
 `evidence_path` and an optional `replay_trace_path` (a JSON array). The output
 must not exist. `PUT /serial-input` accepts a bounded lowercase `data_hex`
 payload. `PATCH /execution` with `{}` flushes a paused VM; natural exit flushes
-automatically. This API capture configuration does not support snapshot load;
+automatically. Raw `/snapshot/load` cannot load execution capture context;
 in-process topology checkpoint replay retains its existing branch-owned state.
+
+### Ready-checkpoint bundles
+
+Set `run.replay_start = "ready_checkpoint"` for a UART/RNG guest with virtual
+time and ready-gated events. The guest must print `THES:M:42` and wait for
+input. Theseus boots once, pauses at readiness, and saves a full checkpoint.
+Both the first test result and every replay restore that same checkpoint.
+They never use the bootstrap VM as the baseline or fall back to fresh boot.
+
+Version-3 replay plans lock `checkpoint/metadata.json`, `vmstate`, `memory`,
+and `prelude.log`, in addition to the runtime and guest inputs. Metadata binds
+state/RAM hashes and lengths, machine/clock/entropy configuration, the complete
+inherited trace, pending userspace interrupts, control FIFO/log, and amd64 PS/2
+registers/FIFO. Loading rebuilds machine and local hashes from the validated
+prefix and installs an expected complete trace before the first resume.
+Snapshot restore retains vCPU registers, virtual-clock counters, UART state,
+and RNG state. New restore-time notifications join the retained pending queue
+in the same order for the baseline and replay.
+
+`execution.json.start` identifies the metadata digest and inherited decision
+count. The prefix is captured ancestry, not actively replayed kernel boot;
+only the suffix is admitted anew through guest exit. Boot output stays in
+`boot/serial.log` and locked `checkpoint/prelude.log`. `serial.log` and checks
+cover resumed output only. Missing members, wrong identities, changed RAM,
+inconsistent origins/prefixes, and incompatible snapshots fail closed.
+
+Low-level clients pause with `PATCH /vm`, then
+`PUT /execution-checkpoint` with `{"action_type":"Create","directory":"new-directory"}`.
+Load into an unconfigured API VM using `action_type: "Load"`, `directory`,
+`checkpoint_sha256`, `serial_out_path`, and an `execution` object containing
+`evidence_path` and optional `replay_trace_path`. Loading leaves the VM paused;
+resume with `PATCH /vm` and `{"state":"Resumed"}`. Evidence output must be new;
+UART output must be new or an empty regular file, not an existing log or symlink.
+The origin is assigned only by verified load, not accepted from API clients.
+Raw `/snapshot/load` remains separate and cannot supply execution capture.
+
+This workflow currently excludes live block, network, vsock, pmem, balloon,
+memory-hotplug, and rate-limited UART/RNG devices. It requires native Linux/KVM,
+a compatible CPU/runtime, and the same architecture; RAM can contain secrets.
+Kernel timers and arbitrary instruction order are still uncontrolled. A
+checkpoint improves the starting state, not those guarantees. Exploration
+keeps its existing branch-managed checkpoint workflow; Compose likewise manages
+whole-topology checkpoints and rejects this single-service flag.
 
 This controls concurrent emulated device effects, explicit host inputs, and
 supported userspace device interrupt injection at the KVM boundary. Theseus

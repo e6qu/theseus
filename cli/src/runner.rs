@@ -26,8 +26,18 @@ use crate::{load_plan, CheckKind, LoadError, RunPlan};
 
 const READY_MARKER: &[u8] = b"THES:M:42";
 const API_READY_TIMEOUT: Duration = Duration::from_secs(5);
+// State/RAM persistence and hashing are bounded operations, not API startup.
+const CHECKPOINT_API_TIMEOUT: Duration = Duration::from_secs(300);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const EXECUTION_REPLAY_FORMAT: &str = "theseus-replay-plan-v2";
+const CHECKPOINT_REPLAY_FORMAT: &str = "theseus-replay-plan-v3";
+
+fn captures_execution(plan: &RunPlan) -> bool {
+    matches!(
+        plan.format.as_str(),
+        EXECUTION_REPLAY_FORMAT | CHECKPOINT_REPLAY_FORMAT
+    )
+}
 // Match the topology runner: host-clock-dependent kernel diagnostics are not
 // application evidence. This is the boot policy of version-2 replay plans;
 // legacy plans keep their original command line.
@@ -239,7 +249,13 @@ pub fn test(manifest: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<Test
         return Err(RunError::UnsupportedStorageFaults);
     }
     let output = absolute_output(output.as_ref())?;
-    let bundle = Bundle::create(&output, manifest, &plan)?;
+    let mut bundle = Bundle::create(&output, manifest, &plan)?;
+    if plan.run.replay_start == crate::manifest::ReplayStart::ReadyCheckpoint {
+        if let Err(error) = bundle.capture_ready_checkpoint() {
+            bundle.record_error(&error)?;
+            return Err(error);
+        }
+    }
     let execution = match execute(&bundle.replay_plan, &bundle.root, &bundle.root, None) {
         Ok(execution) => execution,
         Err(error) => {
@@ -277,10 +293,11 @@ fn replay_inner(bundle: &Path, output: Option<&Path>) -> Result<ReplayResult, Ru
     let plan_path = bundle.join("replay-plan.json");
     let plan = read_plan(&plan_path)?;
     validate_replay_plan(&plan_path, &plan)?;
-    let expected = if plan.format == EXECUTION_REPLAY_FORMAT {
+    let expected = if captures_execution(&plan) {
         let path = bundle.join("execution.json");
         let evidence = crate::execution::Evidence::read(&path, plan.run.vcpu_count)?;
         evidence.require_replayable(&path)?;
+        validate_execution_origin(&bundle, &plan, &evidence)?;
         Some(evidence)
     } else {
         None
@@ -335,6 +352,75 @@ struct Bundle {
 }
 
 impl Bundle {
+    fn capture_ready_checkpoint(&mut self) -> Result<(), RunError> {
+        use crate::manifest::CheckpointPlan;
+        let boot = self.root.join("boot");
+        fs::create_dir(&boot).map_err(|source| RunError::Create {
+            path: boot.clone(),
+            source,
+        })?;
+        let initramfs = materialize_initramfs(&self.replay_plan, &self.root, &boot)?;
+        let (mut child, socket, serial) = launch_runtime(&self.replay_plan, &self.root, &boot)?;
+        let directory = self.root.join("checkpoint");
+        let capture = (|| {
+            configure_boot(
+                &mut child,
+                &self.replay_plan,
+                &self.root,
+                &initramfs,
+                &socket,
+                &serial,
+                true,
+                None,
+            )?;
+            wait_for_ready(
+                serial.clone(),
+                &mut child,
+                self.replay_plan.run.timeout_secs,
+            )?;
+            api_request(&socket, "PATCH", "/vm", json!({"state":"Paused"}))?;
+            api_put(
+                &socket,
+                "/execution-checkpoint",
+                json!({
+                    "action_type":"Create", "directory":path_text(&directory)?,
+                }),
+            )?;
+            api_request(&socket, "PATCH", "/execution", json!({}))?;
+            Ok::<_, RunError>(())
+        })();
+        // Never use the original bootstrap as the baseline: baseline and all
+        // replays take precisely the same verified restore path.
+        if capture.is_err() && child.try_wait().ok().flatten().is_none() {
+            let _ = pause_and_flush(&socket);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = fs::remove_file(socket);
+        capture?;
+        let prelude = directory.join("prelude.log");
+        fs::copy(&serial, &prelude).map_err(|source| RunError::Copy {
+            from: serial,
+            to: prelude,
+            source,
+        })?;
+        let locked = |name: &str| -> Result<crate::manifest::ArtifactPlan, RunError> {
+            let path = format!("checkpoint/{name}");
+            Ok(crate::manifest::ArtifactPlan {
+                sha256: digest_file(&self.root.join(&path))?,
+                path,
+            })
+        };
+        self.replay_plan.checkpoint = Some(CheckpointPlan {
+            metadata: locked("metadata.json")?,
+            vmstate: locked("vmstate")?,
+            memory: locked("memory")?,
+            prelude: locked("prelude.log")?,
+        });
+        verify_checkpoint(&self.root, &self.replay_plan)?;
+        write_json(&self.root.join("replay-plan.json"), &self.replay_plan)
+    }
+
     fn create(root: &Path, manifest: &Path, source_plan: &RunPlan) -> Result<Self, RunError> {
         if root.exists() {
             return Err(RunError::BundleExists(root.to_path_buf()));
@@ -374,7 +460,13 @@ impl Bundle {
         let mut replay_plan = source_plan.clone();
         // A versioned plan makes execution.json mandatory. Removing that file
         // or result.json cannot silently select legacy seed-only replay.
-        replay_plan.format = EXECUTION_REPLAY_FORMAT.to_owned();
+        replay_plan.format =
+            if source_plan.run.replay_start == crate::manifest::ReplayStart::ReadyCheckpoint {
+                CHECKPOINT_REPLAY_FORMAT
+            } else {
+                EXECUTION_REPLAY_FORMAT
+            }
+            .to_owned();
         replay_plan.manifest = "manifest.toml".to_owned();
         replay_plan.runtime.firecracker.path = "artifacts/firecracker".to_owned();
         if let Some(adapter) = &mut replay_plan.runtime.image_adapter {
@@ -405,8 +497,7 @@ impl Bundle {
             },
             error: None,
             checks: execution.checks.clone(),
-            execution_evidence: (self.replay_plan.format == EXECUTION_REPLAY_FORMAT)
-                .then_some("execution.json"),
+            execution_evidence: captures_execution(&self.replay_plan).then_some("execution.json"),
         };
         write_json(&self.root.join("result.json"), &record)
     }
@@ -417,8 +508,7 @@ impl Bundle {
             status: "failed",
             error: Some(error.to_string()),
             checks: Vec::new(),
-            execution_evidence: (self.replay_plan.format == EXECUTION_REPLAY_FORMAT)
-                .then_some("execution.json"),
+            execution_evidence: captures_execution(&self.replay_plan).then_some("execution.json"),
         };
         write_json(&self.root.join("result.json"), &record)
     }
@@ -451,8 +541,13 @@ fn execute(
         path: run_directory.to_path_buf(),
         source,
     })?;
-    let initramfs = materialize_initramfs(plan, artifact_base, run_directory)?;
-    let capture = plan.format == EXECUTION_REPLAY_FORMAT;
+    verify_checkpoint(artifact_base, plan)?;
+    let initramfs = if plan.checkpoint.is_none() {
+        Some(materialize_initramfs(plan, artifact_base, run_directory)?)
+    } else {
+        None
+    };
+    let capture = captures_execution(plan);
     let expected_trace = expected
         .map(|evidence| {
             let path = run_directory.join("expected-execution.json");
@@ -460,44 +555,13 @@ fn execute(
             Ok::<_, RunError>(path)
         })
         .transpose()?;
-    let socket = run_directory.join("firecracker.sock");
-    let serial_log = run_directory.join("serial.log");
-    let firecracker_log = run_directory.join("firecracker.log");
-    let _ = fs::remove_file(&socket);
-    File::create(&serial_log).map_err(|source| RunError::Create {
-        path: serial_log.clone(),
-        source,
-    })?;
-    let log = File::create(&firecracker_log).map_err(|source| RunError::Create {
-        path: firecracker_log.clone(),
-        source,
-    })?;
-
-    let firecracker = resolved_path(artifact_base, &plan.runtime.firecracker.path);
-    let socket_text = path_text(&socket)?;
-    let mut child = Command::new(&firecracker)
-        .arg("--api-sock")
-        .arg(socket_text)
-        .arg("--no-seccomp")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::from(log.try_clone().map_err(|source| {
-            RunError::Write {
-                path: firecracker_log.clone(),
-                source,
-            }
-        })?))
-        .stderr(Stdio::from(log))
-        .spawn()
-        .map_err(|source| RunError::Spawn {
-            path: firecracker.clone(),
-            source,
-        })?;
+    let (mut child, socket, serial_log) = launch_runtime(plan, artifact_base, run_directory)?;
 
     let result = configure_and_wait(
         &mut child,
         plan,
         artifact_base,
-        &initramfs,
+        initramfs.as_deref(),
         &socket,
         &serial_log,
         capture,
@@ -519,6 +583,7 @@ fn execute(
             &run_directory.join("execution.json"),
             plan.run.vcpu_count,
         )?;
+        validate_execution_origin(artifact_base, plan, &evidence)?;
         execution.checks.push(match &evidence.replay_error {
             Some(error) => failed("machine_execution", "machine_execution", error),
             None => passed(
@@ -548,6 +613,43 @@ fn execute(
         }
     }
     Ok(execution)
+}
+
+fn launch_runtime(
+    plan: &RunPlan,
+    artifact_base: &Path,
+    directory: &Path,
+) -> Result<(Child, PathBuf, PathBuf), RunError> {
+    let socket = directory.join("firecracker.sock");
+    let serial = directory.join("serial.log");
+    let log_path = directory.join("firecracker.log");
+    File::create(&serial).map_err(|source| RunError::Create {
+        path: serial.clone(),
+        source,
+    })?;
+    let log = File::create(&log_path).map_err(|source| RunError::Create {
+        path: log_path.clone(),
+        source,
+    })?;
+    let runtime = resolved_path(artifact_base, &plan.runtime.firecracker.path);
+    let child = Command::new(&runtime)
+        .arg("--api-sock")
+        .arg(path_text(&socket)?)
+        .arg("--no-seccomp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(log.try_clone().map_err(|source| {
+            RunError::Write {
+                path: log_path,
+                source,
+            }
+        })?))
+        .stderr(Stdio::from(log))
+        .spawn()
+        .map_err(|source| RunError::Spawn {
+            path: runtime,
+            source,
+        })?;
+    Ok((child, socket, serial))
 }
 
 fn materialize_initramfs(
@@ -615,12 +717,54 @@ fn configure_and_wait(
     child: &mut Child,
     plan: &RunPlan,
     artifact_base: &Path,
-    initramfs: &Path,
+    initramfs: Option<&Path>,
     socket: &Path,
     serial_log: &Path,
     capture: bool,
     expected_trace: Option<&Path>,
 ) -> Result<Execution, RunError> {
+    if let Some(checkpoint) = &plan.checkpoint {
+        wait_for_socket(socket, child)?;
+        api_put(
+            socket,
+            "/execution-checkpoint",
+            json!({
+                "action_type": "Load",
+                "directory": path_text(&artifact_base.join("checkpoint"))?,
+                "checkpoint_sha256": checkpoint.metadata.sha256,
+                "execution": {
+                    "evidence_path": path_text(&serial_log.with_file_name("execution.json"))?,
+                    "replay_trace_path": expected_trace.map(path_text).transpose()?,
+                },
+                "serial_out_path": path_text(serial_log)?,
+            }),
+        )?;
+        api_request(socket, "PATCH", "/vm", json!({ "state": "Resumed" }))?;
+    } else {
+        configure_boot(
+            child,
+            plan,
+            artifact_base,
+            initramfs.expect("fresh boot initramfs"),
+            socket,
+            serial_log,
+            capture,
+            expected_trace,
+        )?;
+    }
+    send_events_and_wait(child, plan, socket, serial_log, capture)
+}
+
+fn configure_boot(
+    child: &mut Child,
+    plan: &RunPlan,
+    artifact_base: &Path,
+    initramfs: &Path,
+    socket: &Path,
+    serial_log: &Path,
+    capture: bool,
+    expected_trace: Option<&Path>,
+) -> Result<(), RunError> {
     wait_for_socket(socket, child)?;
     let kernel = path_text(&resolved_path(artifact_base, &plan.guest.kernel.path))?;
     let initramfs = path_text(initramfs)?;
@@ -668,9 +812,20 @@ fn configure_and_wait(
         "/actions",
         json!({ "action_type": "InstanceStart" }),
     )?;
+    Ok(())
+}
 
+fn send_events_and_wait(
+    child: &mut Child,
+    plan: &RunPlan,
+    socket: &Path,
+    serial_log: &Path,
+    capture: bool,
+) -> Result<Execution, RunError> {
     if !plan.events.is_empty() {
-        wait_for_ready(serial_log.to_path_buf(), child, plan.run.timeout_secs)?;
+        if plan.checkpoint.is_none() {
+            wait_for_ready(serial_log.to_path_buf(), child, plan.run.timeout_secs)?;
+        }
         for event in &plan.events {
             if capture {
                 // Keep each manifest payload one exact host-input decision.
@@ -1059,7 +1214,11 @@ fn api_request(
         reason: source.to_string(),
     })?;
     stream
-        .set_read_timeout(Some(API_READY_TIMEOUT))
+        .set_read_timeout(Some(if endpoint == "/execution-checkpoint" {
+            CHECKPOINT_API_TIMEOUT
+        } else {
+            API_READY_TIMEOUT
+        }))
         .map_err(|source| RunError::Api {
             endpoint,
             reason: source.to_string(),
@@ -1158,12 +1317,187 @@ fn read_api_response(stream: UnixStream) -> std::io::Result<String> {
 
 fn verify_artifact(base: &Path, artifact: &crate::manifest::ArtifactPlan) -> Result<(), RunError> {
     let path = resolved_path(base, &artifact.path);
-    let bytes = fs::read(&path).map_err(|source| RunError::Read {
+    if !Path::new(&artifact.path).is_absolute() {
+        let canonical_base = fs::canonicalize(base).map_err(|source| RunError::Read {
+            path: base.into(),
+            source,
+        })?;
+        let canonical = fs::canonicalize(&path).map_err(|source| RunError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        if !canonical.starts_with(canonical_base) {
+            return Err(RunError::InvalidBundle {
+                path,
+                reason: "artifact resolves outside its bundle through a symlinked directory".into(),
+            });
+        }
+    }
+    if digest_file(&path)? != artifact.sha256 {
+        return Err(RunError::DigestMismatch { path });
+    }
+    Ok(())
+}
+
+fn digest_file(path: &Path) -> Result<String, RunError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| RunError::Read {
+        path: path.into(),
+        source,
+    })?;
+    if !metadata.file_type().is_file() || metadata.len() > 64 * 1024 * 1024 * 1024 {
+        return Err(RunError::InvalidBundle {
+            path: path.into(),
+            reason: "artifact must be a bounded regular file, not a symlink".into(),
+        });
+    }
+    let mut file = BufReader::new(File::open(path).map_err(|source| RunError::Read {
+        path: path.into(),
+        source,
+    })?);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 65536];
+    let mut bytes = 0u64;
+    loop {
+        let count = file.read(&mut buffer).map_err(|source| RunError::Read {
+            path: path.into(),
+            source,
+        })?;
+        if count == 0 {
+            break;
+        }
+        bytes += count as u64;
+        if bytes > metadata.len() {
+            return Err(RunError::InvalidBundle {
+                path: path.into(),
+                reason: "artifact changed while hashing".into(),
+            });
+        }
+        hasher.update(&buffer[..count]);
+    }
+    if bytes != metadata.len() {
+        return Err(RunError::InvalidBundle {
+            path: path.into(),
+            reason: "artifact changed while hashing".into(),
+        });
+    }
+    Ok(hex(hasher.finalize()))
+}
+
+fn checkpoint_metadata(base: &Path, plan: &RunPlan) -> Result<Value, RunError> {
+    let path = base.join("checkpoint/metadata.json");
+    let invalid = |reason: &str| RunError::InvalidBundle {
+        path: path.clone(),
+        reason: reason.into(),
+    };
+    let mut bytes = Vec::new();
+    File::open(&path)
+        .and_then(|file| file.take(128 * 1024 * 1024 + 1).read_to_end(&mut bytes))
+        .map_err(|source| RunError::Read {
+            path: path.clone(),
+            source,
+        })?;
+    if bytes.len() > 128 * 1024 * 1024 {
+        return Err(invalid("checkpoint metadata exceeds 128 MiB"));
+    }
+    let metadata: Value = serde_json::from_slice(&bytes).map_err(|source| RunError::ParsePlan {
         path: path.clone(),
         source,
     })?;
-    if hex(Sha256::digest(bytes)) != artifact.sha256 {
-        return Err(RunError::DigestMismatch { path });
+    let config = &metadata["machine_config"];
+    if metadata["format"] != "theseus-checkpoint-v1"
+        || !matches!(metadata["architecture"].as_str(), Some("amd64" | "arm64"))
+        || config["vcpu_count"] != plan.run.vcpu_count
+        || config["mem_size_mib"] != plan.run.mem_size_mib
+        || config["virtual_time"]
+            != serde_json::to_value(&plan.run.virtual_time).map_err(RunError::Serialize)?
+        || (plan.run.entropy_device && metadata["entropy"]["seed"] != plan.run.seed)
+        || (!plan.run.entropy_device && !metadata["entropy"].is_null())
+    {
+        return Err(invalid(
+            "checkpoint machine, clock, or entropy configuration differs from the locked plan",
+        ));
+    }
+    Ok(metadata)
+}
+
+fn verify_checkpoint(base: &Path, plan: &RunPlan) -> Result<(), RunError> {
+    let Some(checkpoint) = &plan.checkpoint else {
+        return Ok(());
+    };
+    let directory = base.join("checkpoint");
+    if !fs::symlink_metadata(&directory)
+        .map_err(|source| RunError::Read {
+            path: directory.clone(),
+            source,
+        })?
+        .file_type()
+        .is_dir()
+    {
+        return Err(RunError::InvalidBundle {
+            path: directory,
+            reason: "checkpoint directory cannot be a symlink".into(),
+        });
+    }
+    for member in [
+        &checkpoint.metadata,
+        &checkpoint.vmstate,
+        &checkpoint.memory,
+        &checkpoint.prelude,
+    ] {
+        verify_artifact(base, member)?;
+    }
+    let metadata = checkpoint_metadata(base, plan)?;
+    for (name, member) in [
+        ("snapshot", &checkpoint.vmstate),
+        ("memory", &checkpoint.memory),
+    ] {
+        let path = base.join(&member.path);
+        let bytes = fs::metadata(&path)
+            .map_err(|source| RunError::Read {
+                path: path.clone(),
+                source,
+            })?
+            .len();
+        if metadata[name]["sha256"] != member.sha256
+            || metadata[name]["bytes"] != bytes
+            || (name == "memory" && bytes != u64::from(plan.run.mem_size_mib) * 1024 * 1024)
+        {
+            return Err(RunError::InvalidBundle {
+                path,
+                reason: "checkpoint member differs from metadata identity or configured RAM length"
+                    .into(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_execution_origin(
+    base: &Path,
+    plan: &RunPlan,
+    evidence: &crate::execution::Evidence,
+) -> Result<(), RunError> {
+    let valid = if let Some(checkpoint) = &plan.checkpoint {
+        verify_checkpoint(base, plan)?;
+        let metadata = checkpoint_metadata(base, plan)?;
+        let prefix: Vec<String> = serde_json::from_value(metadata["execution"]["trace"].clone())
+            .map_err(|source| RunError::ParsePlan {
+                path: base.join(&checkpoint.metadata.path),
+                source,
+            })?;
+        evidence.start.as_ref().is_some_and(|start| {
+            start.kind == "checkpoint"
+                && start.checkpoint_sha256 == checkpoint.metadata.sha256
+                && start.inherited_decisions == prefix.len() as u64
+        }) && evidence.machine_execution_trace.starts_with(&prefix)
+    } else {
+        evidence.start.is_none()
+    };
+    if !valid {
+        return Err(RunError::InvalidBundle {
+            path: base.join("execution.json"),
+            reason: "execution origin differs from its locked checkpoint or fresh-boot plan".into(),
+        });
     }
     Ok(())
 }
@@ -1201,11 +1535,22 @@ fn read_plan(path: &Path) -> Result<RunPlan, RunError> {
 }
 
 fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
-    if plan.format != "theseus-run-plan-v1" && plan.format != EXECUTION_REPLAY_FORMAT {
+    if plan.format != "theseus-run-plan-v1" && !captures_execution(plan) {
         return Err(RunError::InvalidBundle {
             path: path.to_path_buf(),
             reason: format!("unsupported plan format {}", plan.format),
         });
+    }
+    let ready = plan.run.replay_start == crate::manifest::ReplayStart::ReadyCheckpoint;
+    if (plan.format == CHECKPOINT_REPLAY_FORMAT) != ready
+        || ready != plan.checkpoint.is_some()
+        || (ready
+            && (plan.run.virtual_time.is_none()
+                || plan.events.is_empty()
+                || plan.explore.is_some()))
+    {
+        return Err(RunError::InvalidBundle { path: path.to_path_buf(),
+            reason: "checkpoint replay requires version 3, a locked checkpoint, virtual time, and ready-gated UART events".into() });
     }
     let mut artifacts = vec![&plan.runtime.firecracker, &plan.guest.kernel];
     if let Some(initramfs) = &plan.guest.initramfs {
@@ -1216,6 +1561,22 @@ fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
     }
     if let Some(adapter) = &plan.runtime.image_adapter {
         artifacts.push(adapter);
+    }
+    if let Some(checkpoint) = &plan.checkpoint {
+        for (member, name) in [
+            (&checkpoint.metadata, "metadata.json"),
+            (&checkpoint.vmstate, "vmstate"),
+            (&checkpoint.memory, "memory"),
+            (&checkpoint.prelude, "prelude.log"),
+        ] {
+            if member.path != format!("checkpoint/{name}") {
+                return Err(RunError::InvalidBundle {
+                    path: path.to_path_buf(),
+                    reason: "checkpoint members must use fixed bundle-local paths".into(),
+                });
+            }
+            artifacts.push(member);
+        }
     }
     for artifact in artifacts {
         if Path::new(&artifact.path).is_absolute() || artifact.path.contains("..") {
@@ -1572,6 +1933,108 @@ mem_size_mib = 128
         )
         .unwrap();
         directory
+    }
+
+    fn ready_checkpoint_fixture() -> tempfile::TempDir {
+        let directory = execution_api_fixture("checkpoint");
+        let manifest = directory.path().join("theseus.toml");
+        let text = fs::read_to_string(&manifest)
+            .unwrap()
+            .replace(
+                "seed = 42",
+                "seed = 42\nreplay_start = \"ready_checkpoint\"",
+            )
+            .replace("mem_size_mib = 128", "mem_size_mib = 1");
+        fs::write(
+            &manifest,
+            format!("{text}\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n"),
+        )
+        .unwrap();
+        directory
+    }
+
+    #[test]
+    fn ready_checkpoint_baseline_and_replay_restore_the_same_locked_prefix() {
+        let directory = ready_checkpoint_fixture();
+        let root = directory.path();
+        let bundle = root.join("bundle");
+        test(root.join("theseus.toml"), &bundle).unwrap();
+        let plan = read_plan(&bundle.join("replay-plan.json")).unwrap();
+        assert_eq!(plan.format, CHECKPOINT_REPLAY_FORMAT);
+        let original = crate::execution::Evidence::read(&bundle.join("execution.json"), 1).unwrap();
+        assert_eq!(original.start.as_ref().unwrap().inherited_decisions, 1);
+        assert_eq!(
+            fs::read_to_string(bundle.join("checkpoint/prelude.log")).unwrap(),
+            "THES:M:42\n"
+        );
+        assert_eq!(
+            fs::read_to_string(bundle.join("serial.log")).unwrap(),
+            "sensor reading: 21.5C\n"
+        );
+        fs::remove_dir_all(root.join("runtime")).unwrap();
+        fs::remove_dir_all(root.join("guest")).unwrap();
+        fs::remove_file(root.join("theseus.toml")).unwrap();
+        let logs = root.join("rerun");
+        replay_to(&bundle, &logs).unwrap();
+        assert_eq!(
+            original,
+            crate::execution::Evidence::read(&logs.join("execution.json"), 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn checkpoint_tampering_and_downgrades_are_rejected_before_runtime_launch() {
+        let directory = ready_checkpoint_fixture();
+        let root = directory.path();
+        let bundle = root.join("bundle");
+        test(root.join("theseus.toml"), &bundle).unwrap();
+        let plan_path = bundle.join("replay-plan.json");
+        let mut plan = read_plan(&plan_path).unwrap();
+        plan.format = EXECUTION_REPLAY_FORMAT.into();
+        assert!(validate_replay_plan(&plan_path, &plan).is_err());
+        plan.format = CHECKPOINT_REPLAY_FORMAT.into();
+        plan.checkpoint = None;
+        assert!(validate_replay_plan(&plan_path, &plan).is_err());
+        let memory = bundle.join("checkpoint/memory");
+        fs::write(&memory, b"tampered").unwrap();
+        let logs = root.join("rerun");
+        assert!(replay_to(&bundle, &logs)
+            .unwrap_err()
+            .to_string()
+            .contains("digest"));
+        assert!(!logs.exists());
+    }
+
+    #[test]
+    fn checkpoint_paths_cannot_escape_through_a_symlinked_parent() {
+        let directory = ready_checkpoint_fixture();
+        let root = directory.path();
+        let bundle = root.join("bundle");
+        test(root.join("theseus.toml"), &bundle).unwrap();
+        fs::rename(bundle.join("checkpoint"), root.join("outside")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), bundle.join("checkpoint")).unwrap();
+        let logs = root.join("rerun");
+        assert!(replay_to(&bundle, &logs).is_err());
+        assert!(!logs.exists());
+    }
+
+    #[test]
+    fn failed_checkpoint_capture_retains_a_paused_boot_cut_without_a_baseline() {
+        let directory = ready_checkpoint_fixture();
+        let root = directory.path();
+        let runtime = root.join("runtime/firecracker");
+        let script = fs::read_to_string(&runtime)
+            .unwrap()
+            .replace("MODE = \"checkpoint\"", "MODE = \"capture_error\"");
+        fs::write(&runtime, script).unwrap();
+        let bundle = root.join("bundle");
+        assert!(test(root.join("theseus.toml"), &bundle).is_err());
+        let cut = crate::execution::Evidence::read(&bundle.join("boot/execution.json"), 1).unwrap();
+        assert_eq!(cut.boundary, "pause");
+        assert!(!cut.machine_execution_trace.is_empty());
+        assert!(!bundle.join("execution.json").exists());
+        assert!(!bundle.join("checkpoint/metadata.json").exists());
+        assert!(replay_to(&bundle, root.join("rerun")).is_err());
     }
 
     #[test]

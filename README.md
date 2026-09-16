@@ -50,6 +50,9 @@ passing unit suite alone is not treated as runtime proof.
 - Single-service `test` bundles retain the complete machine stream. `replay`
   actively admits that stream through guest exit and retains new diagnostics
   with `--output`; it does not just rerun a seed and compare printed output.
+- Ready-checkpoint replay retains VM state, RAM, the execution prefix, and
+  pending userspace interrupts. Both the test and its replays restore that
+  same state; uncontrolled kernel boot is inherited, not replayed.
 - SHA-addressed Linux runtime images for amd64 and arm64, plus published CLI
   binaries for Linux amd64/arm64 and macOS arm64.
 

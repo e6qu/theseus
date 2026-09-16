@@ -9,7 +9,7 @@ TUTORIALS = ROOT / "docs" / "tutorials"
 HARNESS_TUTORIALS = {"01-replay-by-seed", "02-control-the-random"}
 
 directories = sorted(path for path in TUTORIALS.glob("[0-9][0-9]-*") if path.is_dir())
-assert len(directories) == 41, f"expected 41 tutorials, found {len(directories)}"
+assert len(directories) == 42, f"expected 42 tutorials, found {len(directories)}"
 
 for directory in directories:
     readme = directory / "README.md"
@@ -38,7 +38,7 @@ for directory in directories[13:]:
     text = (directory / "README.md").read_text()
     for heading in (
         "## Before you start",
-        "## 1. Build",
+        "## 1. Inspect" if directory.name == "42-replay-from-ready" else "## 1. Build",
         "## 2. Enter",
         "## 3. Prepare",
         "## 4. Run",

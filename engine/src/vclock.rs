@@ -8,11 +8,12 @@
 //! clock advances by exactly one `tick_ns`, regardless of how much host time
 //! or guest work the quantum contained. Time is therefore a pure function of
 //! the tick count, which is a pure function of the orchestrator's schedule —
-//! identical on every replay of the same seed.
+//! identical when the same tick/jump sequence is replayed. A seed alone does
+//! not control the exits or arbitrary guest instruction ordering.
 //!
 //! This module is deliberately free of KVM calls (pure, fully testable); the
 //! application of the virtual clock to the guest (kvmclock/TSC writes) lives
-//! in `arch::x86_64` and is exercised only on KVM hosts.
+//! in the architecture-specific VMM adapters and is exercised only on KVM hosts.
 
 use serde::{Deserialize, Serialize};
 

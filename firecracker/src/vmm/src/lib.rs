@@ -75,6 +75,8 @@ pub mod rate_limiter;
 pub mod acpi;
 /// Handles setup and initialization a `Vmm` object.
 pub mod builder;
+/// Retained paused checkpoints and their complete execution context.
+pub mod checkpoint;
 /// Theseus: in-memory timeline branching.
 /// Types for guest configuration.
 pub mod cpu_config;
@@ -326,6 +328,8 @@ pub struct Vmm {
     shutdown_exit_code: Option<FcExitCode>,
     execution_evidence_file: Option<std::fs::File>,
     execution_config: Option<execution::ExecutionConfig>,
+    // Output token-bucket state is not part of execution checkpoints.
+    serial_output_rate_limited: bool,
 
     /// VM object.
     pub vm: Vm,

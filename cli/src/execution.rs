@@ -29,6 +29,16 @@ pub(crate) struct Evidence {
     pub machine_execution_ledger: Ledger,
     pub machine_execution_trace: Vec<String>,
     pub replay_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<Start>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Start {
+    pub kind: String,
+    pub checkpoint_sha256: String,
+    pub inherited_decisions: u64,
 }
 
 impl Evidence {
@@ -64,6 +74,17 @@ impl Evidence {
 
     pub(crate) fn validate(&self, vcpu_count: u8) -> Result<(), String> {
         let trace = &self.machine_execution_trace;
+        if self.start.as_ref().is_some_and(|start| {
+            start.kind != "checkpoint"
+                || start.inherited_decisions > trace.len() as u64
+                || start.checkpoint_sha256.len() != 64
+                || !start
+                    .checkpoint_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }) {
+            return Err("invalid checkpoint execution origin".into());
+        }
         if self.format != "theseus-execution-v1"
             || !matches!(
                 self.boundary.as_str(),
@@ -116,6 +137,10 @@ impl Evidence {
             Some("the original execution already diverged from its replay protocol")
         } else if self.machine_execution_trace.is_empty() {
             Some("the original execution retained no machine decisions")
+        } else if self.start.as_ref().is_some_and(|start| {
+            start.inherited_decisions >= self.machine_execution_trace.len() as u64
+        }) {
+            Some("checkpoint evidence retained no resumed execution suffix")
         } else {
             None
         };
@@ -165,6 +190,7 @@ mod tests {
             machine_execution_ledger: ledger(trace.iter().map(String::as_str)),
             machine_execution_trace: trace,
             replay_error: None,
+            start: None,
         }
     }
 

@@ -153,8 +153,25 @@ pass. In-kernel timer control remains next after this release gate.
 Standalone RNG-backed boot replay also exposed variable guest queue addresses
 from uncontrolled kernel allocation. UART-only and health-check examples omit
 that unused device explicitly; do not generalize their evidence to arbitrary
-RNG-backed boot. Close this gap with controlled boot or a retained checkpoint
-boundary, not address normalization or relaxed trace comparison.
+RNG-backed boot. Ready-checkpoint replay now captures a paused UART/RNG guest
+with VM state, RAM, its inherited execution prefix, device/control state, and
+pending userspace interrupts. Version-3 bundles lock every member; the baseline
+and all replays restore that same state and actively check the resumed suffix.
+Tutorial 42 makes that distinction explicit. It retains Linux's random state
+in RAM and reads the standard devices directly. This is not controlled boot:
+retain the inherited prefix as such, never normalize queue addresses or relax
+trace comparison. Native source CI exercises both standard random devices,
+UART input, and three exact checkpoint replays on amd64 KVM; require
+the merged release's corresponding evidence before marking it product-ready.
+
+The released amd64 qualification for `c92f9e076f9b` still fails its fixed-plan
+replay before dependency startup. The full release portfolio is not
+demonstrated. Next, give topology/certification runs an explicit retained
+starting checkpoint with locked ancestry (or control their boot), and retain
+the first replay divergence even when startup fails. Standalone UART/RNG
+checkpoint evidence does not substitute for that topology proof; never silently
+drop boot decisions from a fresh-boot contract. Then complete the portfolio
+below before advancing to in-kernel timer control.
 
 1. Automatically execute the released amd64 runtime on native KVM after its
    release passes all consumer checks.

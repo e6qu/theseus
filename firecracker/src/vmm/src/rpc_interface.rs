@@ -64,6 +64,10 @@ pub enum VmmAction {
     ConfigureSerial(SerialConfig),
     /// Configure bounded execution evidence before a fresh boot.
     ConfigureExecution(crate::execution::ExecutionConfig),
+    /// Capture a paused VM and its complete Theseus runtime context.
+    CreateExecutionCheckpoint(crate::checkpoint::CreateCheckpointConfig),
+    /// Verify and load a retained execution checkpoint, without resuming it.
+    LoadExecutionCheckpoint(crate::checkpoint::LoadCheckpointConfig),
     /// Flush execution evidence after pausing the VM.
     FlushExecutionEvidence,
     /// Admit one exact UART input payload through the machine replay protocol.
@@ -462,6 +466,7 @@ impl<'a> PrebootApiController<'a> {
                 self.vm_resources.execution = Some(config);
                 Ok(VmmData::Empty)
             }
+            LoadExecutionCheckpoint(config) => self.load_execution_checkpoint(config),
             GetBalloonConfig => self.balloon_config(),
             GetFullVmConfig => {
                 warn!(
@@ -487,7 +492,7 @@ impl<'a> PrebootApiController<'a> {
             LoadSnapshot(config) => {
                 if self.vm_resources.execution.is_some() {
                     return Err(VmmActionError::InternalVmm(VmmError::ExecutionCoverage(
-                        "API execution capture supports fresh boot, not snapshot loading".into(),
+                        "raw snapshot loading lacks execution context; use /execution-checkpoint".into(),
                     )));
                 }
                 self.load_snapshot(&config).map_err(VmmActionError::LoadSnapshot)
@@ -516,6 +521,7 @@ impl<'a> PrebootApiController<'a> {
             SetMemoryHotplugDevice(config) => self.set_memory_hotplug_device(config),
             // Operations not allowed pre-boot.
             CreateSnapshot(_)
+            | CreateExecutionCheckpoint(_)
             | FlushExecutionEvidence
             | SendSerialInput(_)
             | FlushMetrics
@@ -703,6 +709,72 @@ impl<'a> PrebootApiController<'a> {
     }
 }
 
+impl PrebootApiController<'_> {
+    fn load_execution_checkpoint(
+        &mut self,
+        mut config: crate::checkpoint::LoadCheckpointConfig,
+    ) -> Result<VmmData, VmmActionError> {
+        use crate::vmm_config::snapshot::{MemBackendConfig, MemBackendType, SnapshotLoadHugePageConfig};
+        let invalid = |reason: String| VmmActionError::InternalVmm(VmmError::ExecutionCoverage(reason));
+        if self.boot_path || self.vm_resources.execution.is_some() || self.vm_resources.serial_rate_limiter_cfg.is_some() {
+            return Err(invalid("load an execution checkpoint into an unconfigured VM".into()));
+        }
+        // Validate all members and the inherited prefix before creating outputs
+        // or vCPU threads. That prefix is captured, never rerun as kernel boot.
+        let verified = config.verify().map_err(VmmActionError::InternalVmm)?;
+        let expected = config.execution.read_replay_trace().map_err(VmmActionError::InternalVmm)?;
+        match std::fs::symlink_metadata(&config.serial_out_path) {
+            Ok(metadata) if !metadata.file_type().is_file() || metadata.len() != 0 => {
+                return Err(invalid("checkpoint UART output must be new or an empty regular file".into()));
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(invalid(error.to_string())),
+            _ => {}
+        }
+        if expected.as_ref().is_some_and(|trace| !trace.starts_with(&verified.metadata.execution.trace)) {
+            return Err(invalid("replay trace does not begin with the retained checkpoint prefix".into()));
+        }
+        config.execution.start = Some(crate::execution::ExecutionStart {
+            kind: "checkpoint".into(), checkpoint_sha256: config.checkpoint_sha256,
+            inherited_decisions: verified.metadata.execution.trace.len() as u64,
+        });
+        let output = config.execution.create_evidence_file().map_err(VmmActionError::InternalVmm)?;
+        self.vm_resources.machine_config = verified.metadata.machine_config.clone();
+        self.vm_resources.serial_out_path = Some(config.serial_out_path);
+        if let Some(entropy) = verified.metadata.entropy.clone() {
+            // Seed host platform identity; restore retains the device RNG state.
+            self.vm_resources.build_entropy_device(entropy)?;
+        }
+        let params = LoadSnapshotParams {
+            snapshot_path: config.directory.join("vmstate"),
+            mem_backend: MemBackendConfig { backend_type: MemBackendType::File, backend_path: config.directory.join("memory") },
+            track_dirty_pages: false, resume_vm: false, network_overrides: vec![], vsock_override: None,
+            clock_realtime: false, huge_pages: SnapshotLoadHugePageConfig::Snapshot,
+        };
+        let vmm = restore_from_snapshot(&self.instance_info, self.event_manager,
+            self.seccomp_filters, &params, self.vm_resources).map_err(|error| {
+                self.fatal_error = Some(BuildMicrovmFromRequestsError::Restore);
+                invalid(error.to_string())
+            })?;
+        let install = (|| {
+            let mut vm = vmm.lock().expect("Poisoned lock");
+            vm.seed_execution_ledgers(&verified.ledgers)?;
+            vm.seed_machine_execution_state(verified.machine)?;
+            vm.restore_checkpoint_devices(&verified.metadata)?;
+            if let Some(trace) = expected { vm.enforce_machine_execution_trace(trace)?; }
+            vm.execution_evidence_file = Some(output);
+            vm.execution_config = Some(config.execution.clone());
+            Ok::<_, VmmError>(())
+        })();
+        if let Err(error) = install {
+            self.fatal_error = Some(BuildMicrovmFromRequestsError::Restore);
+            return Err(VmmActionError::InternalVmm(error));
+        }
+        self.vm_resources.execution = Some(config.execution);
+        self.built_vmm = Some(vmm);
+        Ok(VmmData::Empty)
+    }
+}
+
 /// Enables RPC interaction with a running Firecracker VMM.
 #[derive(Debug)]
 pub struct RuntimeApiController {
@@ -720,6 +792,9 @@ impl RuntimeApiController {
         match request {
             // Supported operations allowed post-boot.
             CreateSnapshot(snapshot_create_cfg) => self.create_snapshot(&snapshot_create_cfg),
+            CreateExecutionCheckpoint(config) => self.vmm.lock().expect("Poisoned lock")
+                .create_execution_checkpoint(&config).map(|()| VmmData::Empty)
+                .map_err(VmmActionError::InternalVmm),
             FlushMetrics => self.flush_metrics(),
             FlushExecutionEvidence => self.vmm.lock().expect("Poisoned lock")
                 .flush_execution_evidence().map(|()| VmmData::Empty)
@@ -873,6 +948,7 @@ impl RuntimeApiController {
             | ConfigureMetrics(_)
             | ConfigureSerial(_)
             | ConfigureExecution(_)
+            | LoadExecutionCheckpoint(_)
             | LoadSnapshot(_)
             | PutCpuConfiguration(_)
             | SetBalloonDevice(_)
