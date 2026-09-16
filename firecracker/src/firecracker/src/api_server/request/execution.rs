@@ -87,6 +87,8 @@ mod tests {
         }
         let body = format!(r#"{{"data_hex":"{}"}}"#, "00".repeat(16385));
         assert!(parse_put_serial_input(&Body::new(body)).is_err());
+        let body = format!(r#"{{"data_hex":"{}"}}"#, "00".repeat(16384));
+        assert!(parse_put_serial_input(&Body::new(body)).is_ok());
     }
 
     #[test]

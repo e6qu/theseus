@@ -37,6 +37,15 @@ impl Evidence {
             path: path.to_path_buf(),
             reason,
         };
+        let metadata = std::fs::symlink_metadata(path).map_err(|source| RunError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(invalid(
+                "execution evidence must be a regular bundle-local file, not a symlink".into(),
+            ));
+        }
         let mut bytes = Vec::new();
         File::open(path)
             .and_then(|file| file.take(128 * 1024 * 1024 + 1).read_to_end(&mut bytes))
