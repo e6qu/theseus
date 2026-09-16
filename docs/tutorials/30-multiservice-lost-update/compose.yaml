@@ -93,6 +93,7 @@ networks:
   backplane: {}
 
 x-theseus:
+  replay_start: ready_checkpoint
   campaign:
     driver: counter
     state: {phase: new, a: idle, b: idle}

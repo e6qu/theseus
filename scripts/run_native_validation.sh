@@ -20,6 +20,10 @@ cp -a "$root/docs/tutorials/11-certify-runtime/certificate" "$validation/fixed-p
 runtime() {
   tutorial=$1
   shift
+  if test -n "${THESEUS_SOURCE_RUNTIME:-}"; then
+    (cd "$tutorial"; PATH="$THESEUS_SOURCE_RUNTIME:$PATH" sh -ec "$*")
+    return
+  fi
   docker run --rm --privileged --platform "linux/$THESEUS_ARCH" \
     -v "$tutorial":/tutorial -w /tutorial "$THESEUS_IMAGE" sh -ec "$*"
 }
@@ -28,6 +32,12 @@ prepare_runtime() {
   tutorial=$1
   service=$2
   mkdir -p "$tutorial/$service/work/runtime" "$tutorial/$service/work/guest"
+  if test -n "${THESEUS_SOURCE_RUNTIME:-}"; then
+    cp "$THESEUS_SOURCE_RUNTIME/firecracker" "$tutorial/$service/work/runtime/firecracker"
+    cp "$THESEUS_SOURCE_RUNTIME/theseus-image" "$tutorial/$service/work/runtime/theseus-image"
+    cp "$THESEUS_SOURCE_RUNTIME/vmlinux" "$tutorial/$service/work/guest/vmlinux"
+    return
+  fi
   docker run --rm --platform "linux/$THESEUS_ARCH" \
     -v "$tutorial":/tutorial -w /tutorial "$THESEUS_IMAGE" sh -ec \
     "cp /usr/local/bin/firecracker '$service/work/runtime/firecracker';
@@ -193,6 +203,15 @@ cp "$execution/api/theseus.toml" \
 source_commit=$(git -C "$root" rev-parse HEAD)
 image_digest=$(docker image inspect "$THESEUS_IMAGE" --format '{{index .RepoDigests 0}}')
 kvm_api=$(python3 -c 'import fcntl, os; fd = os.open("/dev/kvm", os.O_RDWR); print(fcntl.ioctl(fd, 0xAE00, 0))')
+if test -n "${THESEUS_SOURCE_RUNTIME:-}"; then
+  # Source CI deliberately produces no release proof or publishable index.
+  # The image supplies compilers; the executed runtime is the PR's binaries.
+  python3 "$root/scripts/source_runtime_validation.py" \
+    --root "$validation" --runtime "$THESEUS_SOURCE_RUNTIME" \
+    --architecture "$THESEUS_ARCH" --source-commit "$source_commit" \
+    --compiler-image "$image_digest" --kvm-api-version "$kvm_api"
+  exit 0
+fi
 python3 "$root/scripts/runtime_validation_evidence.py" \
   --root "$validation" \
   --architecture "$THESEUS_ARCH" \

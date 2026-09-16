@@ -206,6 +206,37 @@ jobs:
           cargo test --manifest-path image-runner/Cargo.toml --locked
           cargo test --manifest-path explorer-runner/Cargo.toml --locked
 
+      - name: Qualify ordinary checkpoint-backed product workflows on native KVM
+        env:
+          THESEUS_ARCH: amd64
+          THESEUS_IMAGE: ghcr.io/e6qu/theseus:8c9b9f6c82e3-amd64
+        run: |
+          cargo build --manifest-path image-runner/Cargo.toml --locked
+          mkdir -p .native-evidence/amd64/source-runtime
+          runtime="$GITHUB_WORKSPACE/.native-evidence/amd64/source-runtime"
+          cp cli/target/debug/theseus "$runtime/theseus"
+          cp topology-runner/target/debug/theseus-topology "$runtime/theseus-topology"
+          cp image-runner/target/debug/theseus-image "$runtime/theseus-image"
+          cp firecracker/build/cargo_target/debug/firecracker "$runtime/firecracker"
+          cp docs/tutorials/04-read-serial/work/guest/vmlinux "$runtime/vmlinux"
+          export THESEUS_SOURCE_RUNTIME="$runtime"
+          export THESEUS_TAG=$(git rev-parse --short=12 HEAD)
+          docker pull "$THESEUS_IMAGE"
+          sh scripts/run_native_validation.sh
+          sh scripts/run_native_counterexample.sh
+
+      - name: Retain native product workflow diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-product-workflows
+          path: |
+            .native-evidence/amd64/validation/
+            docs/tutorials/30-multiservice-lost-update/campaign/
+            docs/tutorials/30-multiservice-lost-update/minimized/
+            docs/tutorials/30-multiservice-lost-update/rerun/
+          if-no-files-found: ignore
+
       - name: Check application instrumentation
         run: |
           sh scripts/tests/test_c_coverage.sh

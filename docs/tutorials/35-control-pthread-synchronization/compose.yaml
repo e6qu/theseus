@@ -10,6 +10,7 @@ networks:
   test: {}
 
 x-theseus:
+  replay_start: ready_checkpoint
   campaign:
     driver: workers
     max_runs: 32

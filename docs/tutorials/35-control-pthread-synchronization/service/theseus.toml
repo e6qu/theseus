@@ -13,6 +13,11 @@ seed = 42
 vcpu_count = 1
 mem_size_mib = 128
 timeout_secs = 30
+max_rounds = 10000000
+
+[run.virtual_time]
+tick_ns = 1000000
+exits_per_tick = 10
 
 [container_service.ready]
 url = "http://127.0.0.1:8080/health"

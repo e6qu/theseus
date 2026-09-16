@@ -44,6 +44,7 @@ use vmm::{
     EventManager, ExecutionLedger, ExecutionLedgerEvidence, FcExitCode, MachineExecutionState, Vmm,
 };
 
+mod checkpoint_cache;
 mod starting_state;
 
 const USAGE: &str = "Usage:
@@ -1011,6 +1012,9 @@ struct CampaignCheckpointEconomics {
     /// Always zero for in-memory branch checkpoints; retained so reports can
     /// prove no campaign snapshot files were materialized.
     snapshot_file_bytes: u64,
+    /// Deterministic LRU removals from the bounded prefix RAM cache.
+    #[serde(default)]
+    prefix_evictions: usize,
 }
 
 /// Global record that the checkpoint tree and the inputs to guidance were the
@@ -1850,6 +1854,8 @@ struct CampaignCheckpointTree {
     prefix_cow_restore_bytes: u64,
     retained_memory_bytes: u64,
     retained_private_dirty_pages: u64,
+    cache_policy: checkpoint_cache::Policy,
+    prefix_evictions: usize,
 }
 
 impl CampaignCheckpoint {
@@ -2591,6 +2597,8 @@ impl CampaignCheckpointTree {
             prefix_cow_restore_bytes: 0,
             retained_memory_bytes,
             retained_private_dirty_pages,
+            cache_policy: checkpoint_cache::Policy::new(checkpoint_cache::PREFIX_MEMORY_BUDGET),
+            prefix_evictions: 0,
         }
     }
 
@@ -2603,6 +2611,7 @@ impl CampaignCheckpointTree {
         campaign: &CampaignPlan,
         schedule: &CampaignSchedule,
         directory: &Path,
+        expected: Option<&BTreeMap<String, Vec<String>>>,
     ) -> Result<CampaignPrefixResult, String> {
         let mut prefix = Vec::new();
         let mut parent = CampaignPrefixCheckpoint {
@@ -2637,6 +2646,7 @@ impl CampaignCheckpointTree {
             let key = campaign_prefix_key(&prefix)?;
             if let Some(existing) = self.prefixes.get(&key) {
                 self.reuses += 1;
+                self.cache_policy.touch(&key);
                 parent = existing.clone();
                 continue;
             }
@@ -2645,15 +2655,13 @@ impl CampaignCheckpointTree {
                 &parent.checkpoint,
                 &prefix[prefix.len() - 1],
                 &directory.join("prefix-work").join(&key),
+                expected,
             )?;
             self.prefix_restores += 1;
             self.prefix_captures += 1;
             self.prefix_cow_restore_bytes = self
                 .prefix_cow_restore_bytes
                 .saturating_add(parent.checkpoint.memory_bytes());
-            self.retained_memory_bytes = self
-                .retained_memory_bytes
-                .saturating_add(checkpoint.memory_bytes());
             self.retained_private_dirty_pages = self
                 .retained_private_dirty_pages
                 .saturating_add(checkpoint.private_dirty_pages());
@@ -2670,7 +2678,18 @@ impl CampaignCheckpointTree {
                 barriers,
                 boundaries,
             };
-            self.prefixes.insert(key, parent.clone());
+            let bytes = parent.checkpoint.memory_bytes();
+            let (admitted, evicted) = self.cache_policy.admit(key.clone(), bytes);
+            for key in evicted {
+                if let Some(removed) = self.prefixes.remove(&key) {
+                    self.retained_memory_bytes -= removed.checkpoint.memory_bytes();
+                    self.prefix_evictions += 1;
+                }
+            }
+            if admitted {
+                self.retained_memory_bytes = self.retained_memory_bytes.saturating_add(bytes);
+                self.prefixes.insert(key, parent.clone());
+            }
         }
         Ok(CampaignPrefixResult::Ready(parent))
     }
@@ -2704,6 +2723,7 @@ impl CampaignCheckpointTree {
                 .saturating_add(leaf_cow_restore_bytes),
             private_dirty_pages: self.retained_private_dirty_pages,
             snapshot_file_bytes: 0,
+            prefix_evictions: self.prefix_evictions,
         }
     }
 }
@@ -2723,6 +2743,7 @@ fn checkpoint_campaign_operation(
     parent: &CampaignCheckpoint,
     event: &CampaignEvent,
     directory: &Path,
+    expected: Option<&BTreeMap<String, Vec<String>>>,
 ) -> Result<
     (
         CampaignCheckpoint,
@@ -2767,6 +2788,14 @@ fn checkpoint_campaign_operation(
                 .get(name)
                 .ok_or_else(|| format!("checkpoint is missing VM state for {name}"))?,
         )?;
+        if let Some(expected) = expected {
+            vm.enforce_machine_execution_trace(
+                expected
+                    .get(name)
+                    .ok_or_else(|| format!("missing replay stream for {name}"))?
+                    .clone(),
+            )?;
+        }
         services.insert(
             name.clone(),
             ServiceRuntime {
@@ -2812,6 +2841,7 @@ fn checkpoint_campaign_operation(
         &mut applied,
     );
     services.insert(event.service.clone(), target);
+    reject_active_replay_divergence(&services)?;
     let barrier = injection?;
     let checkpoint =
         capture_campaign_checkpoint(directory, topology, &mut services, &switches, round)?;
@@ -3062,24 +3092,21 @@ fn execute_plan(
             );
         }
         if minimize {
-            execute_campaign_minimized(topology, &output, Path::new(plan))
+            execute_campaign_minimized(topology, &output, Path::new(plan), retained_root)
         } else {
-            execute_campaign(topology, &output, recorded_campaign.as_ref())
+            execute_campaign(topology, &output, recorded_campaign.as_ref(), retained_root)
         }
     } else {
         if minimize {
             return Err("--minimize requires a campaign replay bundle".to_owned());
         }
         let root = if topology.replay_start == starting_state::ReplayStart::ReadyCheckpoint {
-            if let Some(root) = retained_root {
-                Some(root)
-            } else {
-                starting_state::boot_or_load(&mut topology, &output.join("checkpoint"), "")?;
-                Some(starting_state::load(
-                    &topology,
-                    topology.starting_checkpoint.as_ref().unwrap(),
-                )?)
-            }
+            Some(starting_state::boot_or_load(
+                &mut topology,
+                &output.join("checkpoint"),
+                "",
+                retained_root,
+            )?)
         } else {
             None
         };
@@ -3386,6 +3413,7 @@ fn execute_campaign(
     mut topology: TopologyPlan,
     output: &Path,
     recorded: Option<&RecordedCampaignResult>,
+    verified_root: Option<CampaignCheckpoint>,
 ) -> Result<(), String> {
     let campaign = topology
         .campaign
@@ -3410,8 +3438,12 @@ fn execute_campaign(
     if let Some(recorded) = recorded {
         verify_recorded_campaign_guidance(campaign.guidance, campaign.coverage, recorded)?;
     }
-    let checkpoint =
-        starting_state::boot_or_load(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
+    let checkpoint = starting_state::boot_or_load(
+        &mut topology,
+        &output.join("checkpoint"),
+        &campaign.driver,
+        verified_root,
+    )?;
     let instruction_symbolizer = CampaignInstructionSymbolizer::from_topology(&topology);
     let application_symbolizer = CampaignApplicationSymbolizer::from_topology(&topology);
     let base = serde_json::to_vec(&topology)
@@ -3480,9 +3512,15 @@ fn execute_campaign(
         // Guards inspect each exact restored parent checkpoint. A fault after
         // an earlier operation is visible to the next operation's guard, just
         // as it is to the guest; impossible prefixes never become leaves.
-        let prefix = match checkpoints
-            .checkpoint_for_guarded_schedule(&topology, &campaign, &schedule, output)?
-        {
+        let prefix = match checkpoints.checkpoint_for_guarded_schedule(
+            &topology,
+            &campaign,
+            &schedule,
+            output,
+            expected
+                .map(|run| &run.machine_execution_traces)
+                .filter(|traces| !traces.is_empty()),
+        )? {
             CampaignPrefixResult::Ready(prefix) => prefix,
             rejection => {
                 if expected.is_some() {
@@ -3548,9 +3586,9 @@ fn execute_campaign(
         let actions = campaign_actions(&run_dir)?;
         let program_counters = campaign_checkpoint_program_counters(&prefix.checkpoint);
         let execution_locations = campaign_checkpoint_execution_locations(&prefix.checkpoint);
-        let execution_ledgers = campaign_checkpoint_execution_ledgers(&prefix.checkpoint);
+        let execution_ledgers = campaign_result_ledgers(&run_dir, "execution_ledgers")?;
         let machine_execution_ledgers =
-            campaign_checkpoint_machine_execution_ledgers(&prefix.checkpoint);
+            campaign_result_ledgers(&run_dir, "machine_execution_ledger")?;
         let machine_execution_traces = campaign_machine_execution_traces(&run_dir)?;
         let instruction_locations = instruction_symbolizer.symbolize(&execution_locations);
         let timeline = campaign_operation_timeline(
@@ -3915,6 +3953,34 @@ fn campaign_actions(run: &Path) -> Result<Vec<AppliedCampaignAction>, String> {
         .map_err(|error| format!("cannot parse {}: {error}", result_path.display()))
 }
 
+fn campaign_result_ledgers<T: serde::de::DeserializeOwned>(
+    run: &Path,
+    field: &str,
+) -> Result<BTreeMap<String, T>, String> {
+    let mut values = BTreeMap::new();
+    for service in fs::read_dir(run.join("services")).map_err(|error| error.to_string())? {
+        let service = service.map_err(|error| error.to_string())?;
+        if !service
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
+            continue;
+        }
+        let path = service.path().join("result.json");
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?;
+        values.insert(
+            service.file_name().to_string_lossy().into_owned(),
+            serde_json::from_value(value[field].clone()).map_err(|error| {
+                format!("invalid complete {field} in {}: {error}", path.display())
+            })?,
+        );
+    }
+    Ok(values)
+}
+
 fn campaign_machine_execution_traces(run: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
     let mut traces = BTreeMap::new();
     for service in fs::read_dir(run.join("services")).map_err(|error| error.to_string())? {
@@ -3952,6 +4018,7 @@ fn execute_campaign_minimized(
     mut topology: TopologyPlan,
     output: &Path,
     source_plan: &Path,
+    verified_root: Option<CampaignCheckpoint>,
 ) -> Result<(), String> {
     let campaign = topology
         .campaign
@@ -3967,8 +4034,12 @@ fn execute_campaign_minimized(
     )
     .map_err(|error| format!("cannot parse campaign result: {error}"))?;
     verify_recorded_campaign_guidance(campaign.guidance, campaign.coverage, &recorded)?;
-    let checkpoint =
-        starting_state::boot_or_load(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
+    let checkpoint = starting_state::boot_or_load(
+        &mut topology,
+        &output.join("checkpoint"),
+        &campaign.driver,
+        verified_root,
+    )?;
     let base = serde_json::to_vec(&topology)
         .map_err(|error| format!("cannot encode campaign base plan: {error}"))?;
     let mut checkpoints = CampaignCheckpointTree::new(checkpoint);
@@ -4059,7 +4130,7 @@ fn execute_campaign_minimized(
         })?;
     schedule.faults = combine_faults(&optional_faults);
     let prefix = match checkpoints
-        .checkpoint_for_guarded_schedule(&topology, &campaign, &schedule, output)?
+        .checkpoint_for_guarded_schedule(&topology, &campaign, &schedule, output, None)?
     {
         CampaignPrefixResult::Ready(prefix) => prefix,
         CampaignPrefixResult::MarkerGuardRejected | CampaignPrefixResult::SerialGuardRejected => {
@@ -4209,7 +4280,7 @@ fn execute_campaign_minimization_attempt(
     directory: &Path,
 ) -> Result<bool, String> {
     let prefix = match checkpoints
-        .checkpoint_for_guarded_schedule(topology, campaign, schedule, output)?
+        .checkpoint_for_guarded_schedule(topology, campaign, schedule, output, None)?
     {
         CampaignPrefixResult::Ready(prefix) => prefix,
         CampaignPrefixResult::MarkerGuardRejected | CampaignPrefixResult::SerialGuardRejected => {
@@ -16304,6 +16375,8 @@ mod tests {
             prefix_cow_restore_bytes: 3_072,
             retained_memory_bytes: 8_192,
             retained_private_dirty_pages: 9,
+            cache_policy: checkpoint_cache::Policy::new(checkpoint_cache::PREFIX_MEMORY_BUDGET),
+            prefix_evictions: 0,
         };
 
         assert_eq!(
@@ -16321,6 +16394,7 @@ mod tests {
                 shared_cow_restore_bytes: 7_168,
                 private_dirty_pages: 9,
                 snapshot_file_bytes: 0,
+                prefix_evictions: 0,
             }
         );
     }
