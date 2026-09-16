@@ -23,36 +23,6 @@ jobs:
         working-directory: firecracker
         run: cargo check --workspace
 
-      - name: Check theseus crates
-        run: |
-          ./orchestrator/pivot/build.sh --target amd64
-          cargo check --manifest-path sdk/Cargo.toml
-          cargo check --manifest-path engine/Cargo.toml
-          cargo check --manifest-path orchestrator/Cargo.toml
-          cargo check --manifest-path orchestrator/pivot/Cargo.toml
-          cargo check --manifest-path cli/Cargo.toml --locked
-          cargo check --manifest-path topology-runner/Cargo.toml --locked
-          cargo check --manifest-path image-runner/Cargo.toml --locked
-          cargo check --manifest-path explorer-runner/Cargo.toml --locked
-
-      - name: Theseus crate tests
-        run: |
-          cargo test --manifest-path engine/Cargo.toml
-          cargo test --manifest-path orchestrator/Cargo.toml -- branch::tests orchestrator::tree
-          cargo test --manifest-path orchestrator/Cargo.toml -- oci::tests
-          cargo test --manifest-path orchestrator/pivot/Cargo.toml
-          cargo test --manifest-path cli/Cargo.toml --locked
-          cargo test --manifest-path topology-runner/Cargo.toml --locked
-          cargo test --manifest-path image-runner/Cargo.toml --locked
-          cargo test --manifest-path explorer-runner/Cargo.toml --locked
-
-      - name: Check application instrumentation
-        run: |
-          sh scripts/tests/test_c_coverage.sh
-          sh scripts/tests/test_c_schedule.sh
-          sh scripts/tests/test_llvm_coverage.sh
-          sh -n instrumentation/go/theseus-coverage-inspect
-
       - name: Deterministic unit suites
         working-directory: firecracker
         run: |
@@ -121,6 +91,36 @@ jobs:
           name: native-uart-replay
           path: docs/tutorials/04-read-serial/work/
           if-no-files-found: ignore
+
+      - name: Check theseus crates
+        run: |
+          ./orchestrator/pivot/build.sh --target amd64
+          cargo check --manifest-path sdk/Cargo.toml
+          cargo check --manifest-path engine/Cargo.toml
+          cargo check --manifest-path orchestrator/Cargo.toml
+          cargo check --manifest-path orchestrator/pivot/Cargo.toml
+          cargo check --manifest-path cli/Cargo.toml --locked
+          cargo check --manifest-path topology-runner/Cargo.toml --locked
+          cargo check --manifest-path image-runner/Cargo.toml --locked
+          cargo check --manifest-path explorer-runner/Cargo.toml --locked
+
+      - name: Theseus crate tests
+        run: |
+          cargo test --manifest-path engine/Cargo.toml
+          cargo test --manifest-path orchestrator/Cargo.toml -- branch::tests orchestrator::tree
+          cargo test --manifest-path orchestrator/Cargo.toml -- oci::tests
+          cargo test --manifest-path orchestrator/pivot/Cargo.toml
+          cargo test --manifest-path cli/Cargo.toml --locked
+          cargo test --manifest-path topology-runner/Cargo.toml --locked
+          cargo test --manifest-path image-runner/Cargo.toml --locked
+          cargo test --manifest-path explorer-runner/Cargo.toml --locked
+
+      - name: Check application instrumentation
+        run: |
+          sh scripts/tests/test_c_coverage.sh
+          sh scripts/tests/test_c_schedule.sh
+          sh scripts/tests/test_llvm_coverage.sh
+          sh -n instrumentation/go/theseus-coverage-inspect
 
       - name: Check reproducible release archives
         run: |
