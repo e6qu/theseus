@@ -1307,6 +1307,18 @@ fn configure_interface(interface: &NetworkInterface) -> Result<(), String> {
     result.map_err(|error| format!("{}: {error}", interface.name))
 }
 
+fn loopback_interface() -> NetworkInterface {
+    NetworkInterface {
+        name: "lo".to_owned(),
+        address: "127.0.0.1".to_owned(),
+        prefix_len: 8,
+    }
+}
+
+fn configure_loopback() -> Result<(), String> {
+    configure_interface(&loopback_interface())
+}
+
 fn configure_network(network: &ContainerNetwork) -> Result<(), String> {
     if let Some(hostname) = &network.hostname {
         let hostname =
@@ -1368,6 +1380,13 @@ fn main() {
                 .map(|service| &service.network)
                 .filter(|network| !network.is_empty())
         });
+    // The minimal guest has no distribution init system to raise `lo`.
+    // Container health checks commonly use 127.0.0.1 even when the service
+    // has no simulated Compose network, so initialize loopback unconditionally.
+    if let Err(error) = configure_loopback() {
+        eprintln!("THES:network:FAIL {error}");
+        power_off();
+    }
     if let Some(network) = network {
         if let Err(error) = configure_network(network) {
             eprintln!("THES:network:FAIL {error}");
@@ -1634,6 +1653,14 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_contract_uses_the_linux_local_network() {
+        let interface = loopback_interface();
+        assert_eq!(interface.name, "lo");
+        assert_eq!(ipv4(&interface.address).unwrap(), [127, 0, 0, 1]);
+        assert_eq!(interface.prefix_len, 8);
+    }
 
     #[test]
     fn decodes_service_lifecycle_actions() {
