@@ -44,9 +44,9 @@ passing unit suite alone is not treated as runtime proof.
   default mutexes and untimed condition variables update the runnable set.
 - Branch-aware per-vCPU ledgers plus one VM-wide ordered stream of handled KVM
   exits, emulated device effects, UART and control-channel input, and virtual
-  clock jumps. UART interrupt requests are injected as recorded vCPU turns.
-  Replay rejects a changed actor, input, interrupt, or exit and reports the
-  first divergent boundary.
+  clock jumps. UART, virtio MMIO, virtio MSI-X, ACPI notification, and keyboard
+  interrupts are injected as recorded vCPU turns. Replay rejects a changed
+  actor, input, interrupt, or exit and reports the first divergent boundary.
 - SHA-addressed Linux runtime images for amd64 and arm64, plus published CLI
   binaries for Linux amd64/arm64 and macOS arm64.
 
@@ -70,9 +70,10 @@ passing unit suite alone is not treated as runtime proof.
   cancellation, direct futex use, blocking I/O, and processes remain outside
   this profile.
 - The machine stream gates replayed vCPU turns and explicit host inputs, and
-  rejects divergence at hypervisor and device boundaries. It controls UART
-  interrupt injection, but does not yet choose instruction or thread order,
-  guest interrupt-service timing, or timer and non-UART interrupt delivery.
+  rejects divergence at hypervisor and device boundaries. It controls the
+  supported userspace device interrupt sources, but does not yet choose
+  instruction or thread order, guest interrupt-service timing, or in-kernel
+  timer delivery.
 - `compare` finds the first difference in two recorded histories. It does not
   perform counterfactual re-exploration or prove causality.
 - Capturing a branch copies guest RAM into a memfd. Restored children then use

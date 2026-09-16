@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering, fence};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
-use std::sync::{Arc, Barrier, Condvar, Mutex};
+use std::sync::{Arc, Barrier, Condvar, Mutex, TryLockError, Weak};
 use std::time::Duration;
 use std::{fmt, io, thread};
 
@@ -148,6 +148,7 @@ pub struct MachineExecutionController {
     state: Mutex<MachineExecutionControl>,
     pending_interrupts: Mutex<VecDeque<PendingInterrupt>>,
     deterministic_interrupts: AtomicBool,
+    vcpu_handles: Mutex<Weak<Mutex<Vec<VcpuHandle>>>>,
     turn_changed: Condvar,
 }
 
@@ -162,6 +163,7 @@ impl Default for MachineExecutionController {
             }),
             pending_interrupts: Mutex::new(VecDeque::new()),
             deterministic_interrupts: AtomicBool::new(false),
+            vcpu_handles: Mutex::new(Weak::new()),
             turn_changed: Condvar::new(),
         }
     }
@@ -171,6 +173,56 @@ impl Default for MachineExecutionController {
 struct PendingInterrupt {
     source: &'static str,
     gsi: u32,
+    coalesce: bool,
+}
+
+/// A device interrupt request routed through the deterministic machine stream.
+#[derive(Clone, Debug)]
+pub(crate) struct DeferredInterrupt {
+    controller: Weak<MachineExecutionController>,
+    source: &'static str,
+    gsi: u32,
+    coalesce: bool,
+}
+
+impl DeferredInterrupt {
+    pub(crate) fn level(
+        controller: &Arc<MachineExecutionController>,
+        source: &'static str,
+        gsi: u32,
+    ) -> Self {
+        Self {
+            controller: Arc::downgrade(controller),
+            source,
+            gsi,
+            coalesce: true,
+        }
+    }
+
+    pub(crate) fn edge(
+        controller: &Arc<MachineExecutionController>,
+        source: &'static str,
+        gsi: u32,
+    ) -> Self {
+        Self {
+            controller: Arc::downgrade(controller),
+            source,
+            gsi,
+            coalesce: false,
+        }
+    }
+
+    pub(crate) fn trigger(&self) -> io::Result<()> {
+        self.controller
+            .upgrade()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "interrupt controller was dropped",
+                )
+            })?
+            .request_interrupt(self.source, self.gsi, self.coalesce)
+    }
 }
 
 impl MachineExecutionController {
@@ -199,10 +251,18 @@ impl MachineExecutionController {
         state.execution = execution;
         state.expected = None;
         state.divergence = None;
-        *self
+        let mut live_interrupts = self
             .pending_interrupts
             .lock()
-            .expect("pending interrupt queue lock poisoned") = pending_interrupts;
+            .expect("pending interrupt queue lock poisoned");
+        let mut restored_interrupts = pending_interrupts;
+        for interrupt in live_interrupts.drain(..) {
+            if !interrupt.coalesce || !restored_interrupts.contains(&interrupt) {
+                restored_interrupts.push_back(interrupt);
+            }
+        }
+        *live_interrupts = restored_interrupts;
+        drop(live_interrupts);
         self.turn_changed.notify_all();
     }
 
@@ -210,23 +270,62 @@ impl MachineExecutionController {
         self.deterministic_interrupts.store(true, Ordering::Release);
     }
 
+    pub(crate) fn attach_vcpu_handles(&self, handles: Weak<Mutex<Vec<VcpuHandle>>>) {
+        *self
+            .vcpu_handles
+            .lock()
+            .expect("vCPU handle link lock poisoned") = handles;
+    }
+
     pub(crate) fn deterministic_interrupts_enabled(&self) -> bool {
         self.deterministic_interrupts.load(Ordering::Acquire)
     }
 
-    pub(crate) fn request_interrupt(&self, source: &'static str, gsi: u32) {
-        let interrupt = PendingInterrupt { source, gsi };
+    pub(crate) fn request_edge_interrupt(&self, source: &'static str, gsi: u32) -> io::Result<()> {
+        self.request_interrupt(source, gsi, false)
+    }
+
+    fn request_interrupt(&self, source: &'static str, gsi: u32, coalesce: bool) -> io::Result<()> {
+        let interrupt = PendingInterrupt {
+            source,
+            gsi,
+            coalesce,
+        };
         let mut pending = self
             .pending_interrupts
             .lock()
             .expect("pending interrupt queue lock poisoned");
-        // A UART IRQ remains asserted until the guest clears its source.
-        // Repeated triggers before injection are not distinct line transitions.
-        if !pending.contains(&interrupt) {
+        // Level sources remain asserted until the guest clears their status;
+        // repeated triggers before injection are not new line transitions.
+        if !coalesce || !pending.contains(&interrupt) {
             pending.push_back(interrupt);
         }
         drop(pending);
         self.turn_changed.notify_all();
+        self.kick_vcpus()
+    }
+
+    fn kick_vcpus(&self) -> io::Result<()> {
+        let Some(handles) = self
+            .vcpu_handles
+            .lock()
+            .expect("vCPU handle link lock poisoned")
+            .upgrade()
+        else {
+            return Ok(());
+        };
+        let mut handles = match handles.try_lock() {
+            Ok(handles) => handles,
+            Err(TryLockError::WouldBlock) => return Ok(()),
+            Err(TryLockError::Poisoned(_)) => {
+                return Err(io::Error::other("vCPU handle lock poisoned"));
+            }
+        };
+        handles.iter_mut().try_for_each(|handle| {
+            handle
+                .kick()
+                .map_err(|error| io::Error::from_raw_os_error(error.0.errno()))
+        })
     }
 
     #[cfg(test)]
@@ -483,14 +582,33 @@ fn machine_record_actor(record: &str) -> Option<MachineExecutionActor> {
         return valid_machine_host_effect(effect).then_some(MachineExecutionActor::Host);
     }
     let (vcpu, effect) = record.strip_prefix("vcpu:")?.split_once(':')?;
-    if effect.is_empty() {
+    if !valid_machine_vcpu_effect(effect) {
         return None;
     }
     let id = vcpu.parse::<u8>().ok()?;
     (vcpu == id.to_string()).then_some(MachineExecutionActor::Vcpu(id))
 }
 
+fn valid_machine_vcpu_effect(effect: &str) -> bool {
+    let Some(interrupt) = effect.strip_prefix("interrupt:") else {
+        return !effect.is_empty();
+    };
+    let Some((source, gsi_text)) = interrupt.split_once(':') else {
+        return false;
+    };
+    let Ok(gsi) = gsi_text.parse::<u32>() else {
+        return false;
+    };
+    matches!(
+        source,
+        "serial" | "virtio-mmio" | "virtio-msix" | "vmgenid" | "vmclock" | "i8042"
+    ) && gsi_text == gsi.to_string()
+}
+
 fn valid_machine_host_effect(effect: &str) -> bool {
+    if effect == "ctrl_alt_del" {
+        return true;
+    }
     if let Some(byte) = effect.strip_prefix("control_event:") {
         return valid_lowercase_hex(byte) && byte.len() == 2;
     }
@@ -1341,20 +1459,27 @@ mod execution_ledger_tests {
     fn pending_interrupts_are_coalesced_and_survive_branch_state_restore() {
         let source = MachineExecutionController::default();
         source.enable_deterministic_interrupts();
-        source.request_interrupt("serial", 4);
-        source.request_interrupt("serial", 4);
+        source.request_interrupt("serial", 4, true).unwrap();
+        source.request_interrupt("serial", 4, true).unwrap();
+        source.request_edge_interrupt("vmclock", 6).unwrap();
+        source.request_edge_interrupt("vmclock", 6).unwrap();
 
         let state = source.execution_state();
-        assert_eq!(state.pending_interrupts.len(), 1);
+        assert_eq!(state.pending_interrupts.len(), 3);
         assert_eq!(state.pending_interrupts[0].source, "serial");
         assert_eq!(state.pending_interrupts[0].gsi, 4);
+        assert_eq!(state.pending_interrupts[1].source, "vmclock");
+        assert_eq!(state.pending_interrupts[2].source, "vmclock");
 
         let restored = MachineExecutionController::default();
+        restored.request_edge_interrupt("vmgenid", 5).unwrap();
         restored.restore_execution_state(state);
         let restored_state = restored.execution_state();
-        assert_eq!(restored_state.pending_interrupts.len(), 1);
+        assert_eq!(restored_state.pending_interrupts.len(), 4);
         assert_eq!(restored_state.pending_interrupts[0].source, "serial");
         assert_eq!(restored_state.pending_interrupts[0].gsi, 4);
+        assert_eq!(restored_state.pending_interrupts[3].source, "vmgenid");
+        assert_eq!(restored_state.pending_interrupts[3].gsi, 5);
     }
 
     #[test]
@@ -1426,6 +1551,11 @@ mod execution_ledger_tests {
     fn active_replay_rejects_malformed_host_effects() {
         let controller = MachineExecutionController::default();
         assert!(controller.enforce(vec!["host:".to_owned()]).is_err());
+        assert!(
+            MachineExecutionController::default()
+                .enforce(vec!["host:ctrl_alt_del".to_owned()])
+                .is_ok()
+        );
         assert!(controller
             .enforce(vec!["host:serial_input:2:2a".to_owned()])
             .is_err());
@@ -1441,6 +1571,12 @@ mod execution_ledger_tests {
         assert!(controller.enforce(vec!["vcpu:0:".to_owned()]).is_err());
         assert!(controller
             .enforce(vec!["vcpu:00:mmio_read:0x0:1:00".to_owned()])
+            .is_err());
+        assert!(controller
+            .enforce(vec!["vcpu:0:interrupt:unknown:4".to_owned()])
+            .is_err());
+        assert!(controller
+            .enforce(vec!["vcpu:0:interrupt:serial:04".to_owned()])
             .is_err());
     }
 }

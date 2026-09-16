@@ -1061,6 +1061,9 @@ fn valid_json_execution_ledger(ledger: &serde_json::Value) -> bool {
 
 fn valid_machine_execution_record(record: &str) -> bool {
     if let Some(effect) = record.strip_prefix("host:") {
+        if effect == "ctrl_alt_del" {
+            return true;
+        }
         if let Some(byte) = effect.strip_prefix("control_event:") {
             return valid_lowercase_hex(byte) && byte.len() == 2;
         }
@@ -1088,8 +1091,24 @@ fn valid_machine_execution_record(record: &str) -> bool {
         .and_then(|record| record.split_once(':'))
         .is_some_and(|(vcpu, effect)| {
             vcpu.parse::<u8>()
-                .is_ok_and(|id| vcpu == id.to_string() && !effect.is_empty())
+                .is_ok_and(|id| vcpu == id.to_string() && valid_machine_vcpu_effect(effect))
         })
+}
+
+fn valid_machine_vcpu_effect(effect: &str) -> bool {
+    let Some(interrupt) = effect.strip_prefix("interrupt:") else {
+        return !effect.is_empty();
+    };
+    let Some((source, gsi_text)) = interrupt.split_once(':') else {
+        return false;
+    };
+    let Ok(gsi) = gsi_text.parse::<u32>() else {
+        return false;
+    };
+    matches!(
+        source,
+        "serial" | "virtio-mmio" | "virtio-msix" | "vmgenid" | "vmclock" | "i8042"
+    ) && gsi_text == gsi.to_string()
 }
 
 fn valid_lowercase_hex(value: &str) -> bool {
@@ -1294,11 +1313,13 @@ mod tests {
     #[test]
     fn rejects_machine_traces_with_missing_services_or_malformed_actors() {
         let result = |traces: serde_json::Value| {
+            let api_decisions = traces["api"].as_array().map_or(1, Vec::len);
+            let worker_decisions = traces["worker"].as_array().map_or(1, Vec::len);
             serde_json::to_vec(&serde_json::json!({
                 "runs": [{
                     "machine_execution_ledgers": {
-                        "api": {"decisions": 1},
-                        "worker": {"decisions": 1}
+                        "api": {"decisions": api_decisions},
+                        "worker": {"decisions": worker_decisions}
                     },
                     "machine_execution_traces": traces
                 }]
@@ -1323,6 +1344,10 @@ mod tests {
                 "api": ["host:unknown:payload"],
                 "worker": ["host:virtual_time_jump:1000"]
             }),
+            serde_json::json!({
+                "api": ["vcpu:0:interrupt:unknown:4"],
+                "worker": ["host:virtual_time_jump:1000"]
+            }),
         ] {
             assert!(
                 verify_campaign_machine_execution_traces(&result(traces), "strict execution")
@@ -1332,7 +1357,11 @@ mod tests {
 
         verify_campaign_machine_execution_traces(
             &result(serde_json::json!({
-                "api": ["host:serial_input:2:2a0a"],
+                "api": [
+                    "host:serial_input:2:2a0a",
+                    "host:ctrl_alt_del",
+                    "vcpu:0:interrupt:virtio-mmio:5"
+                ],
                 "worker": ["host:virtual_time_jump:1000"]
             })),
             "strict execution",

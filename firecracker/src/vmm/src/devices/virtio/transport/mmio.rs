@@ -7,7 +7,7 @@
 
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Barrier, Mutex, MutexGuard};
+use std::sync::{Arc, Barrier, Mutex, MutexGuard, OnceLock};
 
 use vmm_sys_util::eventfd::EventFd;
 
@@ -20,6 +20,7 @@ use crate::utils::byte_order;
 use crate::vstate::bus::BusDevice;
 use crate::vstate::interrupts::InterruptError;
 use crate::vstate::memory::{GuestAddress, GuestMemoryMmap};
+use crate::vstate::vcpu::{DeferredInterrupt, MachineExecutionController};
 
 // TODO crosvm uses 0 here, but IIRC virtio specified some other vendor id that should be used
 const VENDOR_ID: u32 = 0;
@@ -382,6 +383,7 @@ impl From<VirtioInterruptType> for IrqType {
 pub struct IrqTrigger {
     pub(crate) irq_status: Arc<AtomicU32>,
     pub(crate) irq_evt: EventFd,
+    deferred: OnceLock<DeferredInterrupt>,
 }
 
 impl Default for IrqTrigger {
@@ -448,7 +450,25 @@ impl IrqTrigger {
             irq_status: Arc::new(AtomicU32::new(0)),
             irq_evt: EventFd::new(libc::EFD_NONBLOCK)
                 .expect("Could not create EventFd for IrqTrigger"),
+            deferred: OnceLock::new(),
         }
+    }
+
+    /// Route future notifications through the deterministic machine stream.
+    pub(crate) fn defer_interrupt(
+        &self,
+        controller: Arc<MachineExecutionController>,
+        source: &'static str,
+        gsi: u32,
+    ) -> std::io::Result<()> {
+        self.deferred
+            .set(DeferredInterrupt::level(&controller, source, gsi))
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "interrupt already routed",
+                )
+            })
     }
 
     fn trigger_irq(&self, irq_type: IrqType) -> Result<(), InterruptError> {
@@ -457,6 +477,10 @@ impl IrqTrigger {
             IrqType::Vring => VIRTIO_MMIO_INT_VRING,
         };
         self.irq_status.fetch_or(irq, Ordering::SeqCst);
+
+        if let Some(deferred) = self.deferred.get() {
+            return deferred.trigger().map_err(InterruptError::Io);
+        }
 
         self.irq_evt.write(1).map_err(|err| {
             error!("Failed to send irq to the guest: {:?}", err);
@@ -1287,5 +1311,26 @@ pub(crate) mod tests {
         irq_trigger
             .trigger(VirtioInterruptType::Queue(0))
             .unwrap_err();
+    }
+
+    #[test]
+    fn execution_ledger_defers_virtio_mmio_interrupts() {
+        let controller = Arc::new(MachineExecutionController::default());
+        let irq_trigger = IrqTrigger::new();
+        irq_trigger
+            .defer_interrupt(Arc::clone(&controller), "virtio-mmio", 5)
+            .unwrap();
+
+        irq_trigger.trigger(VirtioInterruptType::Queue(0)).unwrap();
+
+        assert_eq!(
+            irq_trigger.irq_status.load(Ordering::SeqCst),
+            VIRTIO_MMIO_INT_VRING
+        );
+        assert_eq!(
+            controller.pending_interrupts_for_test(),
+            [("virtio-mmio", 5)]
+        );
+        assert!(irq_trigger.irq_evt.read().is_err());
     }
 }

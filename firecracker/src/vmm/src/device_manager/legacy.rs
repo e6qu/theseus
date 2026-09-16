@@ -68,7 +68,7 @@ impl PortIODeviceManager {
         let serial = self.stdio_serial.lock().expect("Poisoned lock");
         let interrupt = serial.serial.interrupt_evt();
         if let Some(controller) = vm.deterministic_interrupt_controller() {
-            interrupt.defer_interrupt(controller, "serial", Self::COM1_GSI)?;
+            interrupt.defer_level_interrupt(controller, "serial", Self::COM1_GSI)?;
             vm.register_irq_route(Self::COM1_GSI);
         } else {
             vm.register_irq(interrupt, Self::COM1_GSI).map_err(|e| {
@@ -77,11 +77,18 @@ impl PortIODeviceManager {
         }
         drop(serial);
 
-        vm.register_irq(
-            &self.i8042.lock().expect("Poisoned lock").kbd_interrupt_evt,
-            Self::KBD_EVT_GSI,
-        )
-        .map_err(|e| LegacyDeviceError::EventFd(std::io::Error::from_raw_os_error(e.errno())))?;
+        let i8042 = self.i8042.lock().expect("Poisoned lock");
+        if let Some(controller) = vm.deterministic_interrupt_controller() {
+            i8042
+                .kbd_interrupt_evt
+                .defer_edge_interrupt(controller, "i8042", Self::KBD_EVT_GSI)?;
+            vm.register_irq_route(Self::KBD_EVT_GSI);
+        } else {
+            vm.register_irq(&i8042.kbd_interrupt_evt, Self::KBD_EVT_GSI)
+                .map_err(|e| {
+                    LegacyDeviceError::EventFd(std::io::Error::from_raw_os_error(e.errno()))
+                })?;
+        }
 
         Ok(())
     }

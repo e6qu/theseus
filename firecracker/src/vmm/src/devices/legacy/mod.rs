@@ -13,14 +13,14 @@ pub mod serial;
 
 use std::io;
 use std::ops::Deref;
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, OnceLock};
 
 use serde::Serializer;
 use serde::ser::SerializeMap;
 use vm_superio::Trigger;
 use vmm_sys_util::eventfd::EventFd;
 
-use crate::vstate::vcpu::MachineExecutionController;
+use crate::vstate::vcpu::{DeferredInterrupt, MachineExecutionController};
 
 pub use self::i8042::{I8042Device, I8042Error as I8042DeviceError};
 #[cfg(target_arch = "aarch64")]
@@ -36,23 +36,12 @@ pub struct EventFdTrigger {
     deferred: OnceLock<DeferredInterrupt>,
 }
 
-#[derive(Clone, Debug)]
-struct DeferredInterrupt {
-    controller: Weak<MachineExecutionController>,
-    source: &'static str,
-    gsi: u32,
-}
-
 impl Trigger for EventFdTrigger {
     type E = io::Error;
 
     fn trigger(&self) -> io::Result<()> {
         if let Some(deferred) = self.deferred.get() {
-            let controller = deferred.controller.upgrade().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "interrupt controller was dropped")
-            })?;
-            controller.request_interrupt(deferred.source, deferred.gsi);
-            Ok(())
+            deferred.trigger()
         } else {
             self.write(1)
         }
@@ -88,19 +77,41 @@ impl EventFdTrigger {
     }
 
     /// Route future triggers through the deterministic machine scheduler.
-    pub(crate) fn defer_interrupt(
+    fn defer_interrupt(
+        &self,
+        controller: Arc<MachineExecutionController>,
+        source: &'static str,
+        gsi: u32,
+        coalesce: bool,
+    ) -> io::Result<()> {
+        let deferred = if coalesce {
+            DeferredInterrupt::level(&controller, source, gsi)
+        } else {
+            DeferredInterrupt::edge(&controller, source, gsi)
+        };
+        self.deferred
+            .set(deferred)
+            .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "interrupt already routed"))
+    }
+
+    /// Route a level-triggered interrupt through deterministic execution.
+    pub(crate) fn defer_level_interrupt(
         &self,
         controller: Arc<MachineExecutionController>,
         source: &'static str,
         gsi: u32,
     ) -> io::Result<()> {
-        self.deferred
-            .set(DeferredInterrupt {
-                controller: Arc::downgrade(&controller),
-                source,
-                gsi,
-            })
-            .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "interrupt already routed"))
+        self.defer_interrupt(controller, source, gsi, true)
+    }
+
+    /// Route an edge-triggered interrupt through deterministic execution.
+    pub(crate) fn defer_edge_interrupt(
+        &self,
+        controller: Arc<MachineExecutionController>,
+        source: &'static str,
+        gsi: u32,
+    ) -> io::Result<()> {
+        self.defer_interrupt(controller, source, gsi, false)
     }
 
     /// Get the associated event fd out of an `EventFdTrigger`.
@@ -139,7 +150,7 @@ mod tests {
         let controller = Arc::new(MachineExecutionController::default());
         let trigger = EventFdTrigger::new(EventFd::new(libc::EFD_NONBLOCK).unwrap());
         trigger
-            .defer_interrupt(Arc::clone(&controller), "serial", 4)
+            .defer_level_interrupt(Arc::clone(&controller), "serial", 4)
             .unwrap();
         let cloned = trigger.try_clone().unwrap();
 
@@ -149,6 +160,17 @@ mod tests {
         assert_eq!(
             controller.pending_interrupts_for_test(),
             [("serial", 4)]
+        );
+
+        let edge_controller = Arc::new(MachineExecutionController::default());
+        let edge = EventFdTrigger::new(EventFd::new(libc::EFD_NONBLOCK).unwrap());
+        edge.defer_edge_interrupt(Arc::clone(&edge_controller), "i8042", 1)
+            .unwrap();
+        edge.trigger().unwrap();
+        edge.trigger().unwrap();
+        assert_eq!(
+            edge_controller.pending_interrupts_for_test(),
+            [("i8042", 1), ("i8042", 1)]
         );
     }
 }

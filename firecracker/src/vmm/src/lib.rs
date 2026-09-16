@@ -739,11 +739,6 @@ impl Vmm {
             },
         )?;
 
-        if let Some(vm) = self.vm.as_kvm()
-            && vm.deterministic_interrupt_controller().is_some()
-        {
-            vm.kick_vcpus_for_interrupt_delivery()?;
-        }
         Ok(())
     }
 
@@ -979,15 +974,17 @@ impl Vmm {
     /// Injects CTRL+ALT+DEL keystroke combo in the i8042 device.
     #[cfg(target_arch = "x86_64")]
     pub fn send_ctrl_alt_del(&mut self) -> Result<(), VmmError> {
-        self.device_manager
-            .legacy_devices
-            .as_ref()
-            .ok_or(VmmError::NotSupported)?
-            .i8042
-            .lock()
-            .expect("i8042 lock was poisoned")
-            .trigger_ctrl_alt_del()
-            .map_err(VmmError::I8042Error)
+        self.apply_machine_host_effect("ctrl_alt_del".to_owned(), || {
+            self.device_manager
+                .legacy_devices
+                .as_ref()
+                .ok_or(VmmError::NotSupported)?
+                .i8042
+                .lock()
+                .expect("i8042 lock was poisoned")
+                .trigger_ctrl_alt_del()
+                .map_err(VmmError::I8042Error)
+        })
     }
 
     /// Saves the state of a paused Microvm.

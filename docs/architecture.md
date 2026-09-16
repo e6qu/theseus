@@ -65,7 +65,7 @@ door could leave `vmm` without creating a dependency cycle.
 | Execution locations | `orchestrator/coverage` | Guest-PC collection by single-step or deterministic exit sampling. |
 | Application coverage | `instrumentation/c`, `instrumentation/llvm`, `instrumentation/go` + `cli` + `topology-runner` | GCC C and Go blocks plus LLVM C/C++/Rust edges with build-scoped identities. The CLI instruments selected Cargo static Rust graphs and selected Go commands' imported main-module packages. Compose locks manifests and symbols; the runner validates and joins them into reports. |
 | Thread scheduling | `instrumentation/c` + `cli` + `topology-runner` | Bounded GCC C pthread interleavings with explicit, static, or feedback-driven choices plus replay-checked mutex and condition-variable transitions. |
-| Execution stream | `firecracker/vmm` + `topology-runner` + `cli` | Per-vCPU rolling identities plus one VM-wide total order for handled KVM exits, emulated device effects, UART/control input, virtual-clock jumps, and synchronous UART interrupt injection. Pending UART interrupts are inherited across branches and the order is actively enforced during replay. |
+| Execution stream | `firecracker/vmm` + `topology-runner` + `cli` | Per-vCPU rolling identities plus one VM-wide total order for handled KVM exits, emulated device effects, UART/control input, virtual-clock jumps, and synchronous userspace-device interrupt injection. Pending level and edge requests are inherited across branches and the order is actively enforced during replay. |
 
 ## Verification model
 

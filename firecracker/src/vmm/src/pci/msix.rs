@@ -175,14 +175,15 @@ impl MsixConfig {
         })
     }
 
-    /// Enable unmasked MSI-X vectors by registering IRQFDs with KVM.
+    /// Enable unmasked MSI-X vectors. Ordinary VMs register irqfds; deterministic
+    /// VMs inject enabled vectors through the machine stream.
     ///
     /// Must be called after the GSI routes have been set up (see [KvmVm::set_gsi_routes]).
     pub fn enable_unmasked_vectors(&self) -> Result<(), InterruptError> {
         if self.enabled && !self.masked {
             for (idx, table_entry) in self.table_entries.iter().enumerate() {
                 if !table_entry.masked() {
-                    self.vectors.vectors[idx].enable(&self.vectors.vm.common.fd)?;
+                    self.vectors.vectors[idx].enable(&self.vectors.vm)?;
                 }
             }
         }
@@ -223,11 +224,9 @@ impl MsixConfig {
             }
         }
 
-        // If the Function Mask bit was set, and has just been cleared, it's
-        // important to go through the entire PBA to check if there was any
-        // pending MSI-X message to inject, given that the vector is not
-        // masked.
-        if old_masked && !self.masked {
+        // When MSI-X becomes usable, inject messages retained while the
+        // function or individual vectors were disabled or masked.
+        if (!old_enabled && self.enabled) || (old_masked && !self.masked) {
             for (index, entry) in self.table_entries.clone().iter().enumerate() {
                 // Table indices are bounded by MAX_MSIX_VECTORS_PER_DEVICE (2048), fitting in u16.
                 #[allow(clippy::cast_possible_truncation)]

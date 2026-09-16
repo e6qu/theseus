@@ -4,7 +4,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use kvm_ioctls::VmFd;
 use vmm_sys_util::eventfd::EventFd;
 
 use crate::logger::{IncMetric, METRICS, error};
@@ -54,9 +53,11 @@ impl MsixVector {
 
 impl MsixVector {
     /// Enable vector
-    pub fn enable(&self, vmfd: &VmFd) -> Result<(), InterruptError> {
+    pub fn enable(&self, vm: &KvmVm) -> Result<(), InterruptError> {
         if !self.enabled.load(Ordering::Acquire) {
-            vmfd.register_irqfd(&self.event_fd, self.gsi)?;
+            if vm.deterministic_interrupt_controller().is_none() {
+                vm.common.fd.register_irqfd(&self.event_fd, self.gsi)?;
+            }
             self.enabled.store(true, Ordering::Release);
         }
 
@@ -64,9 +65,11 @@ impl MsixVector {
     }
 
     /// Disable vector
-    pub fn disable(&self, vmfd: &VmFd) -> Result<(), InterruptError> {
+    pub fn disable(&self, vm: &KvmVm) -> Result<(), InterruptError> {
         if self.enabled.load(Ordering::Acquire) {
-            vmfd.unregister_irqfd(&self.event_fd, self.gsi)?;
+            if vm.deterministic_interrupt_controller().is_none() {
+                vm.common.fd.unregister_irqfd(&self.event_fd, self.gsi)?;
+            }
             self.enabled.store(false, Ordering::Release);
         }
 
@@ -95,7 +98,7 @@ impl MsixVectorGroup {
     /// Disable the MSI-X vector group
     pub fn disable(&self) -> Result<(), InterruptError> {
         for route in &self.vectors {
-            route.disable(&self.vm.common.fd)?;
+            route.disable(&self.vm)?;
         }
 
         Ok(())
@@ -103,9 +106,15 @@ impl MsixVectorGroup {
 
     /// Trigger an interrupt for a vector in the group
     pub fn trigger(&self, index: usize) -> Result<(), InterruptError> {
-        self.notifier(index)
-            .ok_or(InterruptError::InvalidVectorIndex(index))?
-            .write(1)?;
+        let vector = self
+            .vectors
+            .get(index)
+            .ok_or(InterruptError::InvalidVectorIndex(index))?;
+        if let Some(controller) = self.vm.deterministic_interrupt_controller() {
+            controller.request_edge_interrupt("virtio-msix", vector.gsi)?;
+        } else {
+            vector.event_fd.write(1)?;
+        }
         METRICS.interrupts.triggers.inc();
         Ok(())
     }
@@ -174,7 +183,7 @@ impl MsixVectorGroup {
         for (idx, vector) in vectors.iter().enumerate() {
             let table_entry = &table_entries[idx];
             if table_entry.masked() {
-                vector.disable(&self.vm.common.fd)?;
+                vector.disable(&self.vm)?;
             }
             self.vm.register_msi(vector, table_entry, pci_sbdf)?;
         }
@@ -187,7 +196,7 @@ impl MsixVectorGroup {
         // which does not have commit a80ced6ea514 (KVM: SVM: fix panic on out-of-bounds guest IRQ).
         for (idx, vector) in vectors.iter().enumerate() {
             if !table_entries[idx].masked() {
-                vector.enable(&self.vm.common.fd)?;
+                vector.enable(&self.vm)?;
             }
         }
 
@@ -197,13 +206,11 @@ impl MsixVectorGroup {
 
 impl Drop for MsixVectorGroup {
     fn drop(&mut self) {
-        let vmfd = &self.vm.common.fd;
-
         {
             let mut interrupts = self.vm.common.interrupts.lock().expect("Poisoned lock");
             for vector in &self.vectors {
-                if let Err(e) = vector.disable(vmfd) {
-                    error!("Failed to unregister irqfd for GSI {}: {e}", vector.gsi);
+                if let Err(e) = vector.disable(&self.vm) {
+                    error!("Failed to disable interrupt vector GSI {}: {e}", vector.gsi);
                 }
                 interrupts.remove(&vector.gsi);
             }

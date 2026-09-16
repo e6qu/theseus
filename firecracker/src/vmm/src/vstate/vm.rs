@@ -80,7 +80,7 @@ pub struct VmCommon {
     /// Userfaultfd kept open for snapshot restore.
     pub uffd: Option<Uffd>,
     /// Handles to vCPU threads.
-    pub vcpus_handles: Mutex<Vec<VcpuHandle>>,
+    pub vcpus_handles: Arc<Mutex<Vec<VcpuHandle>>>,
     /// One total order for handled exits and their device effects across all
     /// vCPUs in this VM.
     pub machine_execution: Arc<MachineExecutionController>,
@@ -182,6 +182,10 @@ impl KvmVm {
 
         let vcpus_exit_evt = EventFd::new(libc::EFD_NONBLOCK).map_err(VmError::EventFd)?;
 
+        let vcpus_handles = Arc::new(Mutex::new(Vec::new()));
+        let machine_execution = Arc::new(MachineExecutionController::default());
+        machine_execution.attach_vcpu_handles(Arc::downgrade(&vcpus_handles));
+
         Ok(VmCommon {
             fd: Arc::new(fd),
             max_memslots: kvm.max_nr_memslots(),
@@ -192,8 +196,8 @@ impl KvmVm {
             mmio_bus: Arc::new(Bus::new()),
             kvm,
             uffd: None,
-            vcpus_handles: Mutex::new(Vec::new()),
-            machine_execution: Arc::new(MachineExecutionController::default()),
+            vcpus_handles,
+            machine_execution,
             vcpus_exit_evt,
         })
     }
@@ -238,15 +242,6 @@ impl KvmVm {
     /// Returns a locked reference to the vCPU handles.
     pub fn vcpus_handles(&self) -> MutexGuard<'_, Vec<VcpuHandle>> {
         self.common.vcpus_handles.lock().expect("Poisoned lock")
-    }
-
-    /// Wake vCPUs so a queued deterministic interrupt is delivered before
-    /// their next guest entry.
-    pub(crate) fn kick_vcpus_for_interrupt_delivery(&self) -> Result<(), crate::VmmError> {
-        self.vcpus_handles()
-            .iter_mut()
-            .try_for_each(VcpuHandle::kick)
-            .map_err(|_| crate::VmmError::VcpuMessage)
     }
 
     /// Route device interrupt requests through the machine execution stream.
@@ -989,7 +984,7 @@ pub(crate) mod tests {
     /// Enable all vectors MSI-X vector group
     pub fn enable_all_vectors(vector_group: &MsixVectorGroup) {
         for route in &vector_group.vectors {
-            route.enable(&vector_group.vm.common.fd).unwrap();
+            route.enable(&vector_group.vm).unwrap();
         }
     }
 
@@ -1030,6 +1025,25 @@ pub(crate) mod tests {
 
         // We can't trigger an invalid vector
         msix_group.trigger(4).unwrap_err();
+    }
+
+    #[test]
+    fn execution_ledger_defers_msi_vector_group_trigger() {
+        let vm = setup_vm_with_memory(mib_to_bytes(128));
+        vm.enable_deterministic_interrupts();
+        let controller = vm.deterministic_interrupt_controller().unwrap();
+        let vm = Arc::new(vm);
+        let msix_group = KvmVm::create_msix_group(vm, 1).unwrap();
+        let gsi = msix_group.vectors[0].gsi;
+
+        msix_group.trigger(0).unwrap();
+        msix_group.trigger(0).unwrap();
+
+        assert_eq!(
+            controller.pending_interrupts_for_test(),
+            [("virtio-msix", gsi), ("virtio-msix", gsi)]
+        );
+        assert!(msix_group.vectors[0].event_fd.read().is_err());
     }
 
     #[test]

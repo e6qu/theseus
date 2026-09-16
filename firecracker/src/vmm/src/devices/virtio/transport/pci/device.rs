@@ -827,9 +827,9 @@ impl VirtioPciDevice {
         ));
 
         // Dropping the previous virtio_interrupt and msix_config releases the
-        // last references to the old MsixVectorGroup, whose Drop unregisters
-        // the irqfds, removes the GSI routes from the routing table and frees
-        // the GSIs.
+        // last references to the old MsixVectorGroup, whose Drop disables the
+        // vectors, removes the GSI routes from the routing table and frees the
+        // GSIs.
         self.virtio_interrupt = Some(interrupt);
         self.msix_config = msix_config;
 
@@ -927,7 +927,7 @@ impl VirtioInterrupt for VirtioInterruptMsix {
         // device should not inject the interrupt.
         // Instead, the Pending Bit Array table is updated to reflect there
         // is a pending interrupt for this specific vector.
-        if config.masked || entry.masked() {
+        if !config.enabled || config.masked || entry.masked() {
             config.set_pba_bit(vector, false);
             return Ok(());
         }

@@ -17,6 +17,8 @@ pub enum ACPIDeviceError {
     VmClock(#[from] VmClockError),
     /// Could not register IRQ with KVM: {0}
     RegisterIrq(#[from] kvm_ioctls::Error),
+    /// Could not route an IRQ through deterministic execution: {0}
+    DeferInterrupt(std::io::Error),
     /// Resource allocator error: {0}
     ResourceAllocator(#[from] vm_allocator::Error),
 }
@@ -59,13 +61,31 @@ impl ACPIDeviceManager {
     }
 
     pub fn activate_vmgenid(&self, vm: &KvmVm) -> Result<(), ACPIDeviceError> {
-        vm.register_irq(&self.vmgenid().interrupt_evt, self.vmgenid().gsi)?;
+        let device = self.vmgenid();
+        if let Some(controller) = vm.deterministic_interrupt_controller() {
+            device
+                .interrupt_evt
+                .defer_edge_interrupt(controller, "vmgenid", device.gsi)
+                .map_err(ACPIDeviceError::DeferInterrupt)?;
+            vm.register_irq_route(device.gsi);
+        } else {
+            vm.register_irq(&device.interrupt_evt, device.gsi)?;
+        }
         self.vmgenid().activate(vm.guest_memory())?;
         Ok(())
     }
 
     pub fn activate_vmclock(&self, vm: &KvmVm) -> Result<(), ACPIDeviceError> {
-        vm.register_irq(&self.vmclock().interrupt_evt, self.vmclock().gsi)?;
+        let device = self.vmclock();
+        if let Some(controller) = vm.deterministic_interrupt_controller() {
+            device
+                .interrupt_evt
+                .defer_edge_interrupt(controller, "vmclock", device.gsi)
+                .map_err(ACPIDeviceError::DeferInterrupt)?;
+            vm.register_irq_route(device.gsi);
+        } else {
+            vm.register_irq(&device.interrupt_evt, device.gsi)?;
+        }
         self.vmclock().activate(vm.guest_memory())?;
         Ok(())
     }
