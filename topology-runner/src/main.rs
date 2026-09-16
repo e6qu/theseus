@@ -9899,6 +9899,15 @@ fn execute(
     expected_machine_execution_traces: Option<BTreeMap<String, Vec<String>>>,
     expected_lifecycle_rounds: Option<u64>,
 ) -> Result<(), String> {
+    // Checkpoint-backed campaign leaves skip the artifact-locking branch
+    // below, but they still need an output root before the replay plan can be
+    // made relative to it.  Create the root for both fresh and restored runs.
+    fs::create_dir_all(output).map_err(|error| {
+        format!(
+            "cannot create topology output directory {}: {error}",
+            output.display()
+        )
+    })?;
     configure_container_networks(&mut topology)?;
     if checkpoint.is_none() {
         if let Some(runner) = &mut topology.topology_runner {
