@@ -83,6 +83,8 @@ struct ComposeFile {
 #[serde(deny_unknown_fields)]
 struct ComposeTheseus {
     #[serde(default)]
+    replay_start: crate::manifest::ReplayStart,
+    #[serde(default)]
     campaign: Option<ComposeCampaign>,
 }
 
@@ -1159,6 +1161,7 @@ pub struct ComposePlan {
     pub campaign: Option<CampaignPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topology_runner: Option<ArtifactPlan>,
+    pub replay_start: crate::manifest::ReplayStart,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1885,6 +1888,21 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
 
     validate_dependency_graph(&services)?;
 
+    let replay_start = compose
+        .theseus
+        .as_ref()
+        .map_or(crate::manifest::ReplayStart::FreshBoot, |theseus| {
+            theseus.replay_start
+        });
+    if replay_start == crate::manifest::ReplayStart::ReadyCheckpoint
+        && services
+            .values()
+            .any(|service| service.run.run.virtual_time.is_none())
+    {
+        return Err(ComposeError::Invalid(
+            "ready_checkpoint requires virtual time on every service".to_owned(),
+        ));
+    }
     let campaign = campaign_plan(compose.theseus, &mut services)?;
     let networks = memberships
         .into_iter()
@@ -1898,6 +1916,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         networks,
         campaign,
         topology_runner: None,
+        replay_start,
     })
 }
 

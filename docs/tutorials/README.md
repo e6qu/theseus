@@ -31,7 +31,7 @@ deterministic-CRNG kernel module is shipped.
     three-service Compose campaign through UART operations and report an
     intentional runtime-property failure.
 11. [Certify a deterministic runtime](11-certify-runtime/) — run a fixed KVM
-    topology twice and save its machine-readable repeatability witness.
+    topology from one retained ready checkpoint twice and inspect its witness.
 12. [Investigate two campaign bundles](12-investigate-campaign/) — find the
     first recorded divergence and query retained evidence without a VM.
 13. [Read a public evaluation](13-public-evaluation/) — distinguish a locked

@@ -192,8 +192,8 @@ pub struct SimNet {
     pub duplicated: u64,
     /// Frames changed by deterministic one-bit corruption.
     pub corrupted: u64,
-    tx_hasher: Sha256,
-    rx_hasher: Sha256,
+    tx_hasher: FrameDigest,
+    rx_hasher: FrameDigest,
     trace: Arc<Mutex<Vec<SimNetFrame>>>,
     /// A shared deterministic L2 switch for a multi-guest topology. `None`
     /// retains the single-guest loopback backend used by the Firecracker API.
@@ -204,7 +204,7 @@ pub struct SimNet {
 /// In-process deterministic NIC state for a topology checkpoint. The shared
 /// switch is saved separately; trace sinks remain attached to the child
 /// timeline rather than being copied from its parent.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SimNetState {
     config: SimNetConfig,
     packet_drop_rules: Vec<SimNetPacketDropRule>,
@@ -219,12 +219,12 @@ pub struct SimNetState {
     dropped: u64,
     duplicated: u64,
     corrupted: u64,
-    tx_hasher: Sha256,
-    rx_hasher: Sha256,
+    tx_hasher: FrameDigest,
+    rx_hasher: FrameDigest,
 }
 
 /// A deterministic packet-loss rule for one Ethernet EtherType.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct SimNetPacketDropRule {
     selector: SimNetPacketSelector,
     drop_ppm: u32,
@@ -892,7 +892,37 @@ fn push_pending(queue: &mut VecDeque<PendingFrame>, frame: PendingFrame) {
 
 /// Hash a length-delimited frame so different frame boundaries cannot produce
 /// the same byte stream fingerprint.
-fn update_frame_digest(hasher: &mut Sha256, frame: &[u8]) {
+#[derive(Debug, Clone, Default, Serialize)]
+struct FrameDigest {
+    // Retain the framed hash input, rather than serializing SHA implementation
+    // internals. A checkpoint reconstructs precisely the same rolling digest.
+    bytes: Vec<u8>,
+    #[serde(skip)]
+    hasher: Sha256,
+}
+
+impl<'de> Deserialize<'de> for FrameDigest {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Stored { bytes: Vec<u8> }
+        let stored = Stored::deserialize(input)?;
+        let mut hasher = Sha256::new();
+        hasher.update(&stored.bytes);
+        Ok(Self { bytes: stored.bytes, hasher })
+    }
+}
+
+impl FrameDigest {
+    fn new() -> Self { Self::default() }
+    fn update(&mut self, bytes: impl AsRef<[u8]>) {
+        self.hasher.update(bytes.as_ref());
+        self.bytes.extend_from_slice(bytes.as_ref());
+    }
+    fn finalize(self) -> sha2::digest::Output<Sha256> { self.hasher.finalize() }
+}
+
+fn update_frame_digest(hasher: &mut FrameDigest, frame: &[u8]) {
     hasher.update(
         u64::try_from(frame.len())
             .expect("frame length fits in u64")
@@ -950,8 +980,8 @@ impl SimNet {
             dropped: 0,
             duplicated: 0,
             corrupted: 0,
-            tx_hasher: Sha256::new(),
-            rx_hasher: Sha256::new(),
+            tx_hasher: FrameDigest::new(),
+            rx_hasher: FrameDigest::new(),
             trace: Arc::new(Mutex::new(Vec::new())),
             switch: None,
             endpoint: None,
@@ -988,8 +1018,8 @@ impl SimNet {
             dropped: 0,
             duplicated: 0,
             corrupted: 0,
-            tx_hasher: Sha256::new(),
-            rx_hasher: Sha256::new(),
+            tx_hasher: FrameDigest::new(),
+            rx_hasher: FrameDigest::new(),
             trace,
             switch: Some(switch),
             endpoint: Some(endpoint),
@@ -1582,7 +1612,7 @@ mod tests {
             ..Default::default()
         });
         sim.write_frame(b"queued");
-        let checkpoint = sim.save_state();
+        let checkpoint: SimNetState = bitcode::deserialize(&bitcode::serialize(&sim.save_state()).unwrap()).unwrap();
         sim.advance_round();
         sim.advance_round();
         let mut buffer = [0; 16];
@@ -1594,6 +1624,7 @@ mod tests {
         sim.advance_round();
         assert_eq!(sim.read_frame(&mut buffer), Some(6));
         assert_eq!(&buffer[..6], b"queued");
+        assert_eq!(sim.stats().tx_sha256, sim.stats().rx_sha256);
     }
 
     #[test]
@@ -2039,7 +2070,7 @@ mod tests {
             .set_link_packet_drop_rule("api", "replica", 0x0800.into(), Some(1_000_000), 7)
             .unwrap();
         switch.deliver("api", false, 2, b"queued");
-        let checkpoint = switch.save_state();
+        let checkpoint: SimSwitchState = bitcode::deserialize(&bitcode::serialize(&switch.save_state()).unwrap()).unwrap();
         switch
             .set_link_packet_drop_rule("api", "replica", 0x0800.into(), None, 7)
             .unwrap();

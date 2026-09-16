@@ -68,11 +68,16 @@ pub struct CheckpointArtifact {
 /// PS/2 registers and logical FIFO; host eventfds are attached afresh.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct KeyboardState {
+pub struct KeyboardState {
+    /// Controller status register.
     pub status: u8,
+    /// Controller command byte.
     pub control: u8,
+    /// Output port register.
     pub outp: u8,
+    /// Pending command.
     pub cmd: u8,
+    /// Logical FIFO in guest read order.
     pub buffer: Vec<u8>,
 }
 
@@ -104,6 +109,17 @@ pub(crate) struct VerifiedCheckpoint {
     pub metadata: CheckpointMetadata,
     pub machine: MachineExecutionState,
     pub ledgers: Vec<ExecutionLedger>,
+}
+
+/// Transient emulated device state shared by API and topology checkpoints.
+/// Host eventfds and replay controllers are deliberately attached afresh.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionDeviceState {
+    /// Control FIFO and guest command history.
+    pub control: ControlState,
+    /// PS/2 registers/FIFO on amd64; absent on arm64.
+    pub keyboard: Option<KeyboardState>,
 }
 
 /// Hash a bounded, regular checkpoint member without loading RAM into memory.
@@ -223,13 +239,78 @@ impl LoadCheckpointConfig {
 }
 
 impl Vmm {
+    /// Capture transient devices after the standard snapshot has been saved.
+    pub fn execution_device_state(&self) -> Result<ExecutionDeviceState, VmmError> {
+        let control = self
+            .device_manager
+            .mmio_platform_devices
+            .theseus
+            .as_ref()
+            .ok_or_else(|| failure("missing control device"))?
+            .inner
+            .lock()
+            .expect("Poisoned lock")
+            .checkpoint_state();
+        #[cfg(target_arch = "x86_64")]
+        let keyboard = Some(
+            self.device_manager
+                .legacy_devices
+                .as_ref()
+                .ok_or_else(|| failure("missing keyboard device"))?
+                .i8042
+                .lock()
+                .expect("Poisoned lock")
+                .checkpoint_state(),
+        );
+        #[cfg(target_arch = "aarch64")]
+        let keyboard = None;
+        Ok(ExecutionDeviceState { control, keyboard })
+    }
+
+    /// Restore logical device state without replaying commands or notifications.
+    pub fn restore_execution_devices(
+        &mut self,
+        state: &ExecutionDeviceState,
+    ) -> Result<(), VmmError> {
+        if state.keyboard.is_some() != cfg!(target_arch = "x86_64")
+            || state
+                .keyboard
+                .as_ref()
+                .is_some_and(|keyboard| keyboard.buffer.len() > 16)
+            || state.control.host_events.len() > 1_048_576
+            || state.control.event_log.len() > 1_048_576
+        {
+            return Err(failure("invalid transient device state"));
+        }
+        self.device_manager
+            .mmio_platform_devices
+            .theseus
+            .as_ref()
+            .ok_or_else(|| failure("missing control device"))?
+            .inner
+            .lock()
+            .expect("Poisoned lock")
+            .restore_checkpoint_state(state.control.clone());
+        #[cfg(target_arch = "x86_64")]
+        self.device_manager
+            .legacy_devices
+            .as_ref()
+            .ok_or_else(|| failure("missing keyboard device"))?
+            .i8042
+            .lock()
+            .expect("Poisoned lock")
+            .restore_checkpoint_state(state.keyboard.as_ref().unwrap());
+        Ok(())
+    }
     /// Capture a paused API-driven UART/RNG guest into a new immutable directory.
     pub fn create_execution_checkpoint(
         &mut self,
         config: &CreateCheckpointConfig,
     ) -> Result<(), VmmError> {
         if self.serial_output_rate_limited {
-            return Err(failure("checkpoint capture does not retain UART rate-limiter state"));
+            return Err(failure(
+                "checkpoint capture does not retain UART rate-limiter state",
+            ));
         }
         if self.instance_info.state != crate::vmm_config::instance_info::VmState::Paused
             || self.shutdown_exit_code.is_some()

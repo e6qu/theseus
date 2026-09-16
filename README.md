@@ -53,6 +53,8 @@ passing unit suite alone is not treated as runtime proof.
 - Ready-checkpoint replay retains VM state, RAM, the execution prefix, and
   pending userspace interrupts. Both the test and its replays restore that
   same state; uncontrolled kernel boot is inherited, not replayed.
+  Compose can retain a whole-topology root, including simulated NIC/switch
+  queues and scheduler state, with `x-theseus.replay_start: ready_checkpoint`.
 - SHA-addressed Linux runtime images for amd64 and arm64, plus published CLI
   binaries for Linux amd64/arm64 and macOS arm64.
 

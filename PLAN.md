@@ -166,12 +166,21 @@ the merged release's corresponding evidence before marking it product-ready.
 
 The released amd64 qualification for `c92f9e076f9b` still fails its fixed-plan
 replay before dependency startup. The full release portfolio is not
-demonstrated. Next, give topology/certification runs an explicit retained
-starting checkpoint with locked ancestry (or control their boot), and retain
-the first replay divergence even when startup fails. Standalone UART/RNG
-checkpoint evidence does not substitute for that topology proof; never silently
-drop boot decisions from a fresh-boot contract. Then complete the portfolio
-below before advancing to in-kernel timer control.
+demonstrated. Whole-topology ready roots now retain VM state/RAM, simulated
+NIC/switch queues and seeded link state, scheduler cursors, UART ancestry,
+transient devices, pending interrupts, and full inherited execution prefixes.
+Fixed-plan and campaign replay can restore that locked root. Version-5
+certificates identify checkpoint ancestry and a nonempty actively replayed
+suffix; fresh-boot v4 remains a separate contract. Tutorial 11 uses this
+starting-state boundary and does not claim fresh-boot restart proof. Startup
+divergence retains its first error and partial machine stream instead of
+exhausting dependency rounds. Validate this source path on native KVM, then
+require its merged release's certificate and complete indexed portfolio.
+Standalone UART/RNG or checkpoint source evidence does not substitute for
+that release proof. Never silently drop boot decisions from a fresh-boot
+contract. Restart can introduce another uncontrolled boot and remains a
+separate qualification gap. Complete the portfolio below before advancing
+to in-kernel timer control.
 
 1. Automatically execute the released amd64 runtime on native KVM after its
    release passes all consumer checks.

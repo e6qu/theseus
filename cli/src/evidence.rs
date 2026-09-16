@@ -25,6 +25,7 @@ const CERTIFICATE_FORMAT_V1: &str = "theseus-runtime-certificate-v1";
 const CERTIFICATE_FORMAT_V2: &str = "theseus-runtime-certificate-v2";
 const CERTIFICATE_FORMAT_V3: &str = "theseus-runtime-certificate-v3";
 const CERTIFICATE_FORMAT_V4: &str = "theseus-runtime-certificate-v4";
+const CERTIFICATE_FORMAT_V5: &str = "theseus-runtime-certificate-v5";
 const PROPERTY: &str = "distributed_lost_update_is_unreachable";
 const REQUIRED_FAULTS: [&str; 2] = [
     "backplane:partition@setup",
@@ -84,6 +85,8 @@ struct RuntimeCertificate {
 
 #[derive(Deserialize)]
 struct CertificateServiceEvidence {
+    #[serde(default)]
+    execution_start: Option<serde_json::Value>,
     #[serde(default)]
     execution_ledgers: Vec<ExecutionLedgerEvidence>,
     #[serde(default)]
@@ -277,6 +280,7 @@ fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(
                 | CERTIFICATE_FORMAT_V2
                 | CERTIFICATE_FORMAT_V3
                 | CERTIFICATE_FORMAT_V4
+                | CERTIFICATE_FORMAT_V5
         ),
         "unsupported runtime certificate format",
     )?;
@@ -325,7 +329,7 @@ fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(
     }
     if matches!(
         certificate.format.as_str(),
-        CERTIFICATE_FORMAT_V3 | CERTIFICATE_FORMAT_V4
+        CERTIFICATE_FORMAT_V3 | CERTIFICATE_FORMAT_V4 | CERTIFICATE_FORMAT_V5
     ) {
         require(
             !certificate.services.is_empty()
@@ -340,7 +344,10 @@ fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(
             "runtime certificate has empty or malformed machine-wide execution evidence",
         )?;
     }
-    if certificate.format == CERTIFICATE_FORMAT_V4 {
+    if matches!(
+        certificate.format.as_str(),
+        CERTIFICATE_FORMAT_V4 | CERTIFICATE_FORMAT_V5
+    ) {
         require(
             certificate.services.values().all(|service| {
                 service
@@ -356,6 +363,43 @@ fn verify_certificate(path: &Path, bytes: &[u8], architecture: &str) -> Result<(
                     })
             }),
             "runtime certificate has missing or inconsistent active execution replay evidence",
+        )?;
+    }
+    if certificate.format == CERTIFICATE_FORMAT_V5 {
+        require(
+            plan["replay_start"] == "ready_checkpoint",
+            "checkpoint certificate lacks its explicit starting-state contract",
+        )?;
+        let checkpoint = &plan["starting_checkpoint"]["sha256"];
+        let identity = checkpoint.as_str().ok_or_else(|| {
+            EvidenceError("checkpoint certificate lacks its locked identity".to_owned())
+        })?;
+        require_sha256(identity, "topology checkpoint")?;
+        require(
+            certificate
+                .services
+                .keys()
+                .eq(plan["services"].as_object().unwrap().keys()),
+            "checkpoint certificate service set differs from its plan",
+        )?;
+        require(certificate.services.iter().all(|(name, service)| {
+            service.execution_start.as_ref().is_some_and(|start| {
+                start["kind"] == "topology_checkpoint" && start["checkpoint_sha256"] == identity
+                    && start["inherited_decisions"].as_u64().is_some_and(|count| {
+                        count > 0 && plan["checkpoint_prefixes"][name].as_u64() == Some(count)
+                            && service.machine_execution_trace_decisions.is_some_and(|total| count < total as u64)
+                    })
+            })
+        }), "checkpoint certificate lacks a bound inherited prefix and nonempty actively replayed suffix")?;
+    } else {
+        require(
+            plan["starting_checkpoint"].is_null()
+                && plan["replay_start"] != "ready_checkpoint"
+                && certificate
+                    .services
+                    .values()
+                    .all(|service| service.execution_start.is_none()),
+            "fresh-boot certificate cannot claim checkpoint ancestry",
         )?;
     }
     Ok(())
@@ -1487,6 +1531,49 @@ mod tests {
             verify_native_evidence(index).unwrap().architectures,
             vec!["amd64"]
         );
+    }
+
+    #[test]
+    fn checkpoint_certificate_binds_origin_and_rejects_downgrades() {
+        let temporary = tempfile::tempdir().unwrap();
+        write_architecture(temporary.path(), "amd64", "passed");
+        let path = temporary
+            .path()
+            .join(format!("theseus-{TAG}-runtime-certificate-amd64.json"));
+        let mut certificate: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let plan =
+            serde_json::json!({"format": "theseus-compose-plan-v1", "services": {"service": {}},
+            "replay_start": "ready_checkpoint", "starting_checkpoint": {"sha256": DIGEST},
+            "checkpoint_prefixes": {"service": 1}})
+            .to_string();
+        certificate["format"] = CERTIFICATE_FORMAT_V5.into();
+        certificate["source"] =
+            serde_json::json!({"plan_contents": plan, "plan_sha256": sha256(plan.as_bytes())});
+        certificate["services"]["service"]["machine_execution_trace_decisions"] = 2.into();
+        certificate["services"]["service"]["machine_execution_ledger"]["decisions"] = 2.into();
+        certificate["services"]["service"]["execution_start"] = serde_json::json!({
+            "kind": "topology_checkpoint", "checkpoint_sha256": DIGEST, "inherited_decisions": 1});
+        let verify = |value: &serde_json::Value| {
+            verify_certificate(&path, &serde_json::to_vec(value).unwrap(), "amd64")
+        };
+        verify(&certificate).unwrap();
+        let mut wrong = certificate.clone();
+        wrong["services"]["service"]["execution_start"]["checkpoint_sha256"] =
+            "b".repeat(64).into();
+        assert!(verify(&wrong).is_err());
+        wrong = certificate.clone();
+        wrong["services"]["service"]["execution_start"]["inherited_decisions"] = 2.into();
+        assert!(verify(&wrong).is_err());
+        wrong = certificate.clone();
+        wrong["services"]["service"]
+            .as_object_mut()
+            .unwrap()
+            .remove("execution_start");
+        assert!(verify(&wrong).is_err());
+        wrong = certificate.clone();
+        wrong["format"] = CERTIFICATE_FORMAT_V4.into();
+        assert!(verify(&wrong).is_err());
     }
 
     #[test]

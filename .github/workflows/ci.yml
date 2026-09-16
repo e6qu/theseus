@@ -115,6 +115,45 @@ jobs:
           fi
           test ! -e work/rejected-checkpoint
 
+      - name: Certify and replay a retained whole topology on native KVM
+        working-directory: docs/tutorials/11-certify-runtime
+        run: |
+          cargo build --manifest-path ../../../topology-runner/Cargo.toml --locked
+          cp ../../../topology-runner/target/debug/theseus-topology ../../../cli/target/debug/theseus-topology
+          mkdir -p service/runtime service/guest/root/bin
+          cp ../04-read-serial/work/runtime/firecracker service/runtime/firecracker
+          cp ../04-read-serial/work/guest/vmlinux service/guest/vmlinux
+          cp /bin/busybox service/guest/root/bin/busybox
+          for applet in mkdir mount reboot; do
+            ln -sf busybox "service/guest/root/bin/$applet"
+          done
+          cp service/init service/guest/root/init
+          chmod +x service/guest/root/init
+          (cd service/guest/root && find . -print | cpio -o -H newc --quiet | gzip > ../initramfs.cpio.gz)
+          ../../../cli/target/debug/theseus compose plan > plan.json
+          ../../../cli/target/debug/theseus-topology certify --plan plan.json --output certificate
+          for attempt in 1 2 3; do
+            ../../../cli/target/debug/theseus compose replay certificate/first --output "certificate/rerun-$attempt"
+            python3 -c 'import json,sys; a=json.load(open("certificate/first/services/service/result.json")); b=json.load(open(sys.argv[1])); assert b["status"]=="passed", b; assert a["machine_execution_trace"]==b["machine_execution_trace"]; assert a["execution_start"]==b["execution_start"]' "certificate/rerun-$attempt/services/service/result.json"
+          done
+          python3 -c 'import json; c=json.load(open("certificate/certificate.json")); assert c["format"]=="theseus-runtime-certificate-v5"; e=json.load(open("certificate/first/services/service/result.json")); n=e["execution_start"]["inherited_decisions"]; assert 0<n<len(e["machine_execution_trace"]); assert "host:serial_input:7:66696e6973680a" in e["machine_execution_trace"][n:]'
+          cp -a certificate/first certificate/tampered
+          python3 -c 'p="certificate/tampered/checkpoint/starting-state/service/memory"; f=open(p,"r+b"); b=f.read(1); f.seek(0); f.write(bytes([b[0]^1])); f.close()'
+          if ../../../cli/target/debug/theseus compose replay certificate/tampered --output certificate/rejected; then exit 1; fi
+          test ! -e certificate/rejected
+          cp -a certificate/first certificate/startup-divergence
+          python3 -c 'import json; p="certificate/startup-divergence/replay-plan.json"; v=json.load(open(p)); v["replay_start"]="fresh_boot"; v.pop("starting_checkpoint"); v.pop("checkpoint_prefixes"); open(p,"w").write(json.dumps(v)); p="certificate/startup-divergence/services/service/result.json"; v=json.load(open(p)); v.pop("execution_start"); v["machine_execution_trace"][0]="vcpu:0:pio_write:0x64:1:fe"; open(p,"w").write(json.dumps(v))'
+          if ../../../cli/target/debug/theseus compose replay certificate/startup-divergence --output certificate/startup-rejected; then exit 1; fi
+          python3 -c 'import json; e=json.load(open("certificate/startup-rejected/services/service/execution-error.json")); assert e["replay_error"] and e["boundary"]=="runtime_error"; assert "dependency startup" not in e["replay_error"]'
+
+      - name: Retain whole-topology replay diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-topology-checkpoint-replay
+          path: docs/tutorials/11-certify-runtime/certificate/
+          if-no-files-found: ignore
+
       - name: Retain ready-checkpoint replay diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

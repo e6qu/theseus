@@ -25,6 +25,11 @@ loopback = false
 id = "state"
 size_mib = 1
 
+[[events]]
+when = "ready"
+channel = "serial"
+data_hex = "66696e6973680a"
+
 [[checks]]
 name = "service completed"
 kind = "serial_contains"

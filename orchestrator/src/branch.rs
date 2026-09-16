@@ -71,6 +71,15 @@ pub struct BranchPoint {
 }
 
 impl BranchPoint {
+    /// Import a previously verified snapshot. Private child mappings preserve
+    /// the retained memory file; importing never mutates it or reseeds RAM.
+    pub fn import_snapshot(state_path: &Path, memory_path: &Path, base_seed: u64) -> Result<Self, BranchError> {
+        let state_bytes = std::fs::read(state_path)?;
+        deserialize_state(&state_bytes)?;
+        let memory = File::open(memory_path)?;
+        let mem_size = memory.metadata()?.len();
+        Ok(Self { state_bytes, memory, mem_size, base_seed, branch_count: 0 })
+    }
     /// Capture the current state of a microVM.
     ///
     /// **Precondition: all vCPUs must be paused.** Callers use the regular
