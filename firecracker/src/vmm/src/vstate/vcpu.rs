@@ -459,31 +459,42 @@ impl MachineExecutionController {
         vm_fd: &VmFd,
         ledger: &Arc<Mutex<ExecutionLedger>>,
     ) -> Result<bool, String> {
+        self.deliver_pending_interrupts_with(vcpu, ledger, |gsi| {
+            vm_fd
+                .set_irq_line(gsi, true)
+                .and_then(|()| vm_fd.set_irq_line(gsi, false))
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn deliver_pending_interrupts_with(
+        &self,
+        vcpu: u8,
+        ledger: &Arc<Mutex<ExecutionLedger>>,
+        mut inject: impl FnMut(u32) -> Result<(), String>,
+    ) -> Result<bool, String> {
         let mut delivered_any = false;
         loop {
-            let delivered = self.deliver_pending_interrupt_with(vcpu, ledger, |gsi| {
-                vm_fd
-                    .set_irq_line(gsi, true)
-                    .and_then(|()| vm_fd.set_irq_line(gsi, false))
-                    .map_err(|error| error.to_string())
-            })?;
+            let delivered =
+                self.deliver_pending_interrupt_with(vcpu, ledger, |gsi| inject(gsi))?;
             delivered_any |= delivered;
-            if !delivered || !self.replay_expects_interrupt(vcpu) {
+            if !delivered || !self.may_deliver_another_interrupt(vcpu) {
                 return Ok(delivered_any);
             }
         }
     }
 
-    fn replay_expects_interrupt(&self, vcpu: u8) -> bool {
+    fn may_deliver_another_interrupt(&self, vcpu: u8) -> bool {
         let state = self
             .state
             .lock()
             .expect("machine execution controller lock poisoned");
-        state
-            .expected
-            .as_ref()
-            .and_then(|expected| expected.get(state.position))
-            .is_some_and(|record| record.starts_with(&format!("vcpu:{vcpu}:interrupt:")))
+        match state.expected.as_ref() {
+            None => true,
+            Some(expected) => expected
+                .get(state.position)
+                .is_some_and(|record| record.starts_with(&format!("vcpu:{vcpu}:interrupt:"))),
+        }
     }
 
     fn deliver_pending_interrupt_with(
@@ -1743,7 +1754,7 @@ mod execution_ledger_tests {
         controller.request_edge_interrupt("vmclock", 7).unwrap();
         let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
         let mut delivered = Vec::new();
-        while controller.replay_expects_interrupt(0) {
+        while controller.may_deliver_another_interrupt(0) {
             assert!(
                 controller
                     .deliver_pending_interrupt_with(0, &ledger, |gsi| {
@@ -1762,6 +1773,35 @@ mod execution_ledger_tests {
             ]
         );
         assert_eq!(controller.replay_error(), Some("machine execution replay stopped at decision 2 of 3".into()));
+    }
+
+    #[test]
+    fn recording_drains_restored_device_interrupts_before_uart_input() {
+        let controller = MachineExecutionController::default();
+        controller.enable_deterministic_interrupts();
+        controller.request_edge_interrupt("vmclock", 8).unwrap();
+        controller.request_interrupt("serial", 4, true).unwrap();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let mut delivered = Vec::new();
+
+        assert!(
+            controller
+                .deliver_pending_interrupts_with(0, &ledger, |gsi| {
+                    delivered.push(gsi);
+                    Ok(())
+                })
+                .unwrap()
+        );
+
+        assert_eq!(delivered, [8, 4]);
+        assert_eq!(
+            controller.execution_state().trace(),
+            [
+                "vcpu:0:interrupt:vmclock:8",
+                "vcpu:0:interrupt:serial:4"
+            ]
+        );
+        assert!(controller.pending_interrupts_for_test().is_empty());
     }
 
     #[test]
