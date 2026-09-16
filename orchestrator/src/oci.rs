@@ -20,6 +20,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::sync::Arc;
 
 use serde::Deserialize;
 
@@ -326,8 +327,9 @@ struct ImageConfigInner {
     workdir: Option<String>,
 }
 
+#[derive(Clone)]
 enum Entry {
-    File(Vec<u8>, u32),
+    File(Arc<Vec<u8>>, u32),
     Symlink(String),
     Dir,
 }
@@ -495,7 +497,7 @@ pub fn flatten_with_contracts(
             for file in &volume.files {
                 files.insert(
                     file.target.clone(),
-                    Entry::File(file.data.clone(), 0o100644),
+                    Entry::File(Arc::new(file.data.clone()), 0o100644),
                 );
             }
         }
@@ -504,7 +506,7 @@ pub fn flatten_with_contracts(
         for config in configs {
             files.insert(
                 config.target.clone(),
-                Entry::File(config.data.clone(), 0o100444),
+                Entry::File(Arc::new(config.data.clone()), 0o100444),
             );
         }
     }
@@ -512,7 +514,7 @@ pub fn flatten_with_contracts(
         for secret in secrets {
             files.insert(
                 secret.target.clone(),
-                Entry::File(secret.data.clone(), 0o100400),
+                Entry::File(Arc::new(secret.data.clone()), 0o100400),
             );
         }
     }
@@ -533,6 +535,10 @@ pub fn flatten_with_contracts(
 
     let mut out = Vec::new();
     let mut ino: u64 = 1;
+
+    // These injected paths must not be overwritten by original image files.
+    files.remove("/init");
+    files.remove("/etc/theseus-init.json");
 
     // The kernel's initramfs unpacker does not create parent directories
     // implicitly: every directory in every path needs an explicit entry.
@@ -562,9 +568,28 @@ pub fn flatten_with_contracts(
         0o100644,
         init_spec.as_bytes(),
     );
+    let mut links = BTreeMap::<usize, (u64, u64, bool)>::new();
+    for entry in files.values() {
+        if let Entry::File(data, _) = entry {
+            links.entry(Arc::as_ptr(data) as usize).or_default().1 += 1;
+        }
+    }
     for (path, entry) in &files {
         match entry {
-            Entry::File(data, mode) => cpio_file(&mut out, &mut ino, path, *mode, data),
+            Entry::File(data, mode) => {
+                // Pointer identity groups hard links; inode numbering follows
+                // lexical pathname order, never allocator address order.
+                let (inode, count, written) = links.get_mut(&(Arc::as_ptr(data) as usize)).unwrap();
+                if !*written {
+                    ino += 1;
+                    *inode = ino;
+                }
+                let payload: &[u8] = if *written { &[] } else { data.as_slice() };
+                cpio_header_links(&mut out, *inode, path, *mode, payload.len() as u64, *count);
+                out.extend_from_slice(payload);
+                pad4(&mut out);
+                *written = true;
+            }
             Entry::Symlink(target) => cpio_symlink(&mut out, &mut ino, path, target),
             Entry::Dir => {}
         }
@@ -591,20 +616,15 @@ fn apply_environment(entries: &mut Vec<String>, overrides: &BTreeMap<String, Str
 
 fn apply_layer(layer: &[u8], files: &mut BTreeMap<String, Entry>) -> Result<(), OciError> {
     let mut archive = tar::Archive::new(layer);
+    let mut pending = Vec::<(String, String)>::new();
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let path = entry
-            .path()?
-            .to_str()
-            .ok_or_else(|| OciError::Tar("non-utf8 path".into()))?
-            .trim_start_matches("./")
-            .to_string();
-        let path = format!("/{path}");
+        let path = layer_path(&entry.path()?)?;
+        pending.retain(|(name, _)| name != &path);
         let base = path.rsplit('/').next().unwrap_or("");
 
         // Whiteouts.
-        if let Some(name) = base.strip_prefix(".wh..wh..opq") {
-            let _ = name;
+        if base == ".wh..wh..opq" {
             let dir = path.trim_end_matches("/.wh..wh..opq").to_string();
             files.retain(|k, _| !k.starts_with(&format!("{dir}/")));
             continue;
@@ -626,7 +646,24 @@ fn apply_layer(layer: &[u8], files: &mut BTreeMap<String, Entry>) -> Result<(), 
                 };
                 let mut data = Vec::new();
                 entry.read_to_end(&mut data)?;
-                files.insert(path, Entry::File(data, mode));
+                files.insert(path, Entry::File(Arc::new(data), mode));
+            }
+            tar::EntryType::Link => {
+                let target = layer_path(
+                    &header
+                        .link_name()?
+                        .ok_or_else(|| OciError::Tar("hard link has no target".into()))?,
+                )?;
+                if let Some(target_entry) = files.get(&target) {
+                    if !matches!(target_entry, Entry::File(_, _)) {
+                        return Err(OciError::Tar(
+                            "only regular-file hard links are supported".into(),
+                        ));
+                    }
+                    files.insert(path, target_entry.clone());
+                } else {
+                    pending.push((path, target));
+                }
             }
             tar::EntryType::Symlink => {
                 let target = header
@@ -638,10 +675,50 @@ fn apply_layer(layer: &[u8], files: &mut BTreeMap<String, Entry>) -> Result<(), 
             tar::EntryType::Directory => {
                 files.insert(path, Entry::Dir);
             }
-            _ => {} // Devices, fifos, hardlinks: skipped in v1.
+            _ => {} // Image devices and fifos are not materialized by this profile.
         }
     }
+    while !pending.is_empty() {
+        let before = pending.len();
+        let mut unresolved = Vec::new();
+        for (path, target) in pending {
+            match files.get(&target) {
+                Some(entry @ Entry::File(_, _)) => {
+                    files.insert(path, entry.clone());
+                }
+                Some(_) => {
+                    return Err(OciError::Tar(
+                        "only regular-file hard links are supported".into(),
+                    ))
+                }
+                None => unresolved.push((path, target)),
+            }
+        }
+        if unresolved.len() == before {
+            return Err(OciError::Tar(
+                "unresolved or cyclic image hard links".into(),
+            ));
+        }
+        pending = unresolved;
+    }
     Ok(())
+}
+
+fn layer_path(path: &std::path::Path) -> Result<String, OciError> {
+    let mut normalized = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(name) => normalized.push(name),
+            std::path::Component::CurDir | std::path::Component::RootDir => (),
+            _ => return Err(OciError::Tar("image path escapes its root".into())),
+        }
+    }
+    Ok(format!(
+        "/{}",
+        normalized
+            .to_str()
+            .ok_or_else(|| OciError::Tar("non-utf8 image path".into()))?
+    ))
 }
 
 fn pad4(out: &mut Vec<u8>) {
@@ -651,6 +728,17 @@ fn pad4(out: &mut Vec<u8>) {
 }
 
 fn cpio_header(out: &mut Vec<u8>, ino: u64, name: &str, mode: u32, filesize: u64) {
+    cpio_header_links(out, ino, name, mode, filesize, 1);
+}
+
+fn cpio_header_links(
+    out: &mut Vec<u8>,
+    ino: u64,
+    name: &str,
+    mode: u32,
+    filesize: u64,
+    nlink: u64,
+) {
     let namesize = (name.len() + 1) as u64;
     let header = format!(
         "070701{ino:08x}{mode:08x}{uid:08x}{gid:08x}{nlink:08x}{mtime:08x}{filesize:08x}{devmajor:08x}{devminor:08x}{rdevmajor:08x}{rdevminor:08x}{namesize:08x}{check:08x}",
@@ -658,7 +746,7 @@ fn cpio_header(out: &mut Vec<u8>, ino: u64, name: &str, mode: u32, filesize: u64
         mode = mode,
         uid = 1,
         gid = 1,
-        nlink = 1,
+        nlink = nlink,
         mtime = 0,
         filesize = filesize,
         devmajor = 0,
@@ -792,6 +880,123 @@ mod tests {
             ("manifest.json", missing)
         ]))
         .is_err());
+    }
+
+    fn linked_layer(forward: bool) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        let file = |builder: &mut tar::Builder<Vec<u8>>| {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(65536);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "bin/[", &vec![42; 65536][..])
+                .unwrap();
+        };
+        if !forward {
+            file(&mut builder);
+        }
+        for (name, target) in [("bin/busybox", "bin/["), ("bin/httpd", "bin/busybox")] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            header.set_mode(0o755);
+            header.set_entry_type(tar::EntryType::Link);
+            header.set_link_name(target).unwrap();
+            header.set_cksum();
+            builder.append_data(&mut header, name, &[][..]).unwrap();
+        }
+        if forward {
+            file(&mut builder);
+        }
+        builder.into_inner().unwrap()
+    }
+
+    #[test]
+    fn busybox_hard_links_share_inode_and_payload_in_cpio() {
+        for forward in [false, true] {
+            let manifest = br#"[{"Config":"config","Layers":["layer"]}]"#;
+            let config = br#"{"config":{"Cmd":["httpd"]}}"#;
+            let (cpio, _) = flatten(&tar_bytes(&[
+                ("manifest.json", manifest),
+                ("config", config),
+                ("layer", &linked_layer(forward)),
+            ]))
+            .unwrap();
+            let mut offset = 0;
+            let mut inode = None;
+            let mut aliases = 0;
+            let mut payloads = 0;
+            while &cpio[offset..offset + 6] == b"070701" {
+                let field = |start, end| {
+                    usize::from_str_radix(
+                        std::str::from_utf8(&cpio[offset + start..offset + end]).unwrap(),
+                        16,
+                    )
+                    .unwrap()
+                };
+                let ino = field(6, 14);
+                let mode = field(14, 22);
+                let count = field(38, 46);
+                let bytes = field(54, 62);
+                let namesize = field(94, 102);
+                let name =
+                    std::str::from_utf8(&cpio[offset + 110..offset + 110 + namesize - 1]).unwrap();
+                if name == "TRAILER!!!" {
+                    break;
+                }
+                if matches!(name, "/bin/[" | "/bin/busybox" | "/bin/httpd") {
+                    assert_eq!(mode, 0o100755);
+                    assert_eq!(count, 3);
+                    assert_eq!(*inode.get_or_insert(ino), ino);
+                    aliases += 1;
+                    if bytes > 0 {
+                        assert_eq!(bytes, 65536);
+                        payloads += 1;
+                    }
+                }
+                offset = (offset + 110 + namesize + 3) & !3;
+                offset = (offset + bytes + 3) & !3;
+            }
+            assert_eq!((aliases, payloads), (3, 1));
+        }
+    }
+
+    #[test]
+    fn hard_link_aliases_survive_target_whiteout_and_replacement() {
+        let mut files = BTreeMap::new();
+        apply_layer(&linked_layer(false), &mut files).unwrap();
+        apply_layer(
+            &tar_bytes(&[("bin/.wh.[", &[]), ("bin/[", b"new")]),
+            &mut files,
+        )
+        .unwrap();
+        let Entry::File(original, _) = &files["/bin/["] else {
+            panic!()
+        };
+        let Entry::File(alias, _) = &files["/bin/httpd"] else {
+            panic!()
+        };
+        assert_eq!(original.as_slice(), b"new");
+        assert_eq!(alias.len(), 65536);
+        assert!(!Arc::ptr_eq(original, alias));
+        assert!(layer_path(std::path::Path::new("../../outside")).is_err());
+    }
+
+    #[test]
+    fn image_files_cannot_replace_the_injected_pivot() {
+        let manifest = br#"[{"Config":"config","Layers":["layer"]}]"#;
+        let config = br#"{"config":{"Cmd":["sh"]}}"#;
+        let layer = tar_bytes(&[
+            ("init", b"OVERRIDE-PID1"),
+            ("etc/theseus-init.json", b"OVERRIDE-CONTRACT"),
+        ]);
+        let (cpio, _) = flatten(&tar_bytes(&[
+            ("manifest.json", manifest),
+            ("config", config),
+            ("layer", &layer),
+        ]))
+        .unwrap();
+        assert!(!String::from_utf8_lossy(&cpio).contains("OVERRIDE-"));
     }
 
     #[test]
