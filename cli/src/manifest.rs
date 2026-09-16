@@ -694,6 +694,11 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             "max_rounds must be greater than zero".to_owned(),
         ));
     }
+    if manifest.explore.is_some() && !manifest.run.entropy_device {
+        return Err(LoadError::InvalidRunConfig(
+            "exploration requires entropy_device = true for branch reseeding and probes".to_owned(),
+        ));
+    }
     if let Some(virtual_time) = &manifest.run.virtual_time {
         if virtual_time.tick_ns == 0 || virtual_time.exits_per_tick == 0 {
             return Err(LoadError::InvalidRunConfig(
@@ -1848,6 +1853,32 @@ size_mib = 0
         );
         let error = load_plan(directory.path().join("test/theseus.toml")).unwrap_err();
         assert!(error.to_string().contains("size_mib"));
+    }
+
+    #[test]
+    fn exploration_cannot_silently_restore_an_omitted_rng() {
+        let directory = fixture(
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+[guest]
+kernel = "guest/vmlinux"
+initramfs = "guest/initramfs.cpio"
+[run]
+seed = 42
+entropy_device = false
+vcpu_count = 1
+mem_size_mib = 128
+[explore]
+max_nodes = 7
+branches_per_node = 2
+max_depth = 2
+"#,
+        );
+        let error = load_plan(directory.path().join("test/theseus.toml")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("exploration requires entropy_device = true"));
     }
 
     #[test]

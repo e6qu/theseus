@@ -55,6 +55,8 @@ does not need the seeded virtio RNG; the choice is locked in its replay plan.
 Boot-time Linux allocation and hardware entropy can still change RNG queue
 addresses. Active replay rejects those changes; a seed alone does not control
 the kernel's boot behavior.
+Checkpoint exploration requires the seeded RNG for its branch probes and
+rejects `entropy_device = false` before boot.
 
 Use `replay --output` to retain diagnostics in a new named directory. It writes
 serial and Firecracker logs, fresh execution evidence, and `result.json` even
