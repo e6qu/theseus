@@ -634,7 +634,8 @@ mod tests {
         write_new(&directory.join("context.bin"), b"invalid context").unwrap();
         let manifest = Manifest {
             format: "theseus-topology-checkpoint-v1".to_owned(),
-            execution_prefixes: BTreeMap::new(),
+            execution_prefixes: [("api".to_owned(), vec!["host:serial_input:1:2a".to_owned()])]
+                .into(),
             architecture: runtime_architecture().unwrap().to_owned(),
             configuration_sha256: configuration(&topology).unwrap(),
             context: artifact(&directory.join("context.bin"), MAX_CONTEXT).unwrap(),
@@ -662,19 +663,13 @@ mod tests {
             path: locked.path.clone(),
             sha256: "c".repeat(64),
         };
-        assert!(load(&topology, &wrong)
-            .err()
-            .unwrap()
-            .contains("identity changed"));
-        assert!(load(&topology, &locked)
-            .err()
-            .unwrap()
-            .contains("invalid checkpoint context"));
+        let error = load(&topology, &wrong).err().unwrap();
+        assert!(error.contains("identity changed"), "{error}");
+        let error = load(&topology, &locked).err().unwrap();
+        assert!(error.contains("invalid checkpoint context"), "{error}");
         fs::write(directory.join("context.bin"), b"changed").unwrap();
-        assert!(load(&topology, &locked)
-            .err()
-            .unwrap()
-            .contains("member changed"));
+        let error = load(&topology, &locked).err().unwrap();
+        assert!(error.contains("member changed"), "{error}");
         fs::remove_dir_all(&directory).unwrap();
     }
 
