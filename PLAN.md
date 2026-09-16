@@ -48,8 +48,9 @@ Theseus currently has:
 - A Linux/KVM runtime built around Firecracker.
 - Container image conversion, image-backed services, topology execution, and a
   strict supported subset of Compose.
-- Seeded entropy, a matching kernel random-device module, simulated networking
-  and storage, exit-counted virtual time, and explicit fault operations.
+- Seeded entropy, an arm64 kernel random-device module, retained CRNG state,
+  simulated networking and storage, exit-counted virtual time, and explicit
+  fault operations.
 - Bounded campaigns, static and adaptive case selection, checkpoint-prefix
   reuse, minimization, locked replay, comparison, evaluation, and reports.
 - Serial and SDK evidence for always, sometimes, reachable, and unreachable
@@ -115,8 +116,9 @@ The baseline has important limits:
   Linux thread/process ordering, when the guest services an interrupt,
   in-kernel timer delivery, or when the guest consumes queued input.
 - Guest counters can advance within an exit-counted virtual-time quantum.
-- Stock-kernel `/dev/random` and `/dev/urandom` replay requires the matching
-  released kernel and Theseus random-device module.
+- Fresh-boot `/dev/random` and `/dev/urandom` seeding requires the matching
+  released arm64 kernel and Theseus random-device module. Ready-checkpoint
+  replay retains Linux's CRNG state instead; it does not prove repeatable boot.
 - Application coverage still requires an explicit build frontend and coverage
   catalog. Rust dynamic dependencies, Go external modules and CGO, Java,
   JavaScript, .NET, and transparent instrumentation of existing images remain

@@ -13,8 +13,9 @@ passing unit suite alone is not treated as runtime proof.
 ## What works today
 
 - Seeded virtio entropy and host-side random sources.
-- A Linux kernel module that installs the Theseus seed into the normal Linux
-  CRNG, allowing `/dev/random` and `/dev/urandom` tutorials to replay.
+- An arm64 kernel module that installs the Theseus seed into Linux's CRNG.
+  Ready checkpoints retain CRNG state for `/dev/random` and `/dev/urandom`
+  replay without a random-device module, including on amd64.
 - Exit-counted virtual-time quanta on amd64 and arm64.
 - Deterministic simulated network and memory-backed storage faults, including
   a topology-derived profile for service lifecycle and asymmetric links.
