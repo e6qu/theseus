@@ -31,7 +31,8 @@ export THESEUS_IMAGE=ghcr.io/e6qu/theseus:${THESEUS_TAG}-${THESEUS_ARCH}
 ```
 
 This directory is the complete tutorial input. The two `increment` files are
-the worker client and the deliberately unsafe counter endpoint. There is no
+the worker client and the deliberately unsafe counter endpoint. `probe.c`
+sends one UDP datagram and exits without waiting for a reply. There is no
 orchestration script and no repository checkout.
 
 ## 1. Build and inspect the services
@@ -42,6 +43,7 @@ Read the race and the worker's runtime checks:
 sed -n '1,100p' counter/increment
 sed -n '1,100p' worker/increment
 sed -n '1,100p' worker/check
+sed -n '1,120p' worker/probe.c
 ```
 
 Build and save both images for the native runtime architecture:
@@ -109,9 +111,9 @@ grep -R '"value":2' campaign/runs/*/services/counter/serial.log
 ```
 
 The command succeeds only when the named property has a retained failed
-verdict. The zero-I/O UDP probe emits a datagram without waiting for a reply.
-The action names, dropped-frame count, and recovery output show that the
-partition was exercised and healed before the two counter outcomes were
+verdict. The UDP probe performs one `sendto()` and exits without waiting for a
+reply. The action names, dropped-frame count, and recovery output show that
+the partition was exercised and healed before the two counter outcomes were
 explored.
 
 ## 5. Inspect, minimize, and replay
