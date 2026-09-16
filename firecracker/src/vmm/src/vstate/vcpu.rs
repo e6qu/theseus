@@ -447,7 +447,7 @@ impl MachineExecutionController {
                     // Requests use a separate queue lock: recheck it even on
                     // timeout, so a notification just before the wait cannot
                     // turn an already-queued completion into a divergence.
-                    if timeout.timed_out() && !self.shutdown_requested()
+                    if timeout.timed_out() && state.divergence.is_none() && !self.shutdown_requested()
                         && self.pending_interrupts.lock().expect("pending interrupt queue lock poisoned").is_empty()
                     {
                         let detail = format!(
