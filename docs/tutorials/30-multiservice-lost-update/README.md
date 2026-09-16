@@ -4,8 +4,8 @@ Run two ordinary worker images against one counter image. The workers use the
 simulated Compose network. Before exploring either counter outcome, the
 campaign establishes the network path, applies a required partition, sends a
 UDP probe that the simulated network records as dropped, heals the network,
-and verifies that HTTP works again. The workers then remain in flight at the
-same time. A sequential
+and sends a second probe. The following HTTP requests prove that the path
+recovered. The workers then remain in flight at the same time. A sequential
 schedule leaves the counter at two. An overlapping schedule lets both HTTP
 requests read zero before either writes, leaving the counter at one.
 
@@ -107,17 +107,17 @@ grep -n 'distributed_lost_update_is_unreachable' campaign/campaign-result.json
 grep -n 'backplane:partition@setup\|backplane:heal@probe_partition' \
   campaign/campaign-result.json
 grep -E '"dropped": [1-9][0-9]*' campaign/campaign-result.json
-grep -R '"network":"recovered"' campaign/runs/*/services/writer-a/serial.log
+grep -R '"network":"recovery_probe_sent"' campaign/runs/*/services/writer-a/serial.log
 grep -R '"value":1' campaign/runs/*/services/counter/serial.log
 grep -R '"value":2' campaign/runs/*/services/counter/serial.log
 ```
 
 The command succeeds only when the named property has a retained failed
-verdict. The setup request establishes the worker's neighbor entry before the
-partition. The UDP probe then performs one `sendto()` and exits without
-waiting for a reply. The action names, dropped-frame count, and recovery
-output show that the partition was exercised and healed before the two
-counter outcomes were explored.
+verdict. Each worker establishes its neighbor entry before announcing startup
+readiness. Each UDP probe performs one `sendto()` and exits without waiting for
+a reply. The action names, dropped-frame count, recovery probe, and successful
+counter requests show that the partition was exercised and healed before the
+two outcomes were explored.
 
 ## 5. Inspect, minimize, and replay
 
@@ -142,16 +142,16 @@ theseus compose verify minimized
 theseus compose verify rerun
 grep -n 'partition\|heal' rerun/topology-result.json
 grep -E '"dropped": [1-9][0-9]*' rerun/services/*/result.json
-grep -R '"network":"recovered"' rerun/services/writer-a/serial.log
+grep -R '"network":"recovery_probe_sent"' rerun/services/writer-a/serial.log
 grep -R '"value":1' rerun/services/counter/serial.log
 ```
 
 Required actions survive minimization, so this replay includes the partition,
-dropped UDP probe, recovery, successful HTTP probe, and lost update. The replay
-uses the minimized plan and artifacts. It does not rebuild either image or
-select a new operation schedule. Its artifact paths are relative to the locked
-bundle, so the complete `minimized` directory can be moved and replayed
-elsewhere.
+dropped UDP probe, recovery probe, successful HTTP requests, and lost update.
+The replay uses the minimized plan and artifacts. It does not rebuild either
+image or select a new operation schedule. Its artifact paths are relative to
+the locked bundle, so the complete `minimized` directory can be moved and
+replayed elsewhere.
 
 `compose verify` checks locked inputs, RAM, ancestry, logs, and full execution
 hashes without KVM. It does not certify native execution. Treat retained RAM

@@ -31,8 +31,8 @@ services:
     env_file: inputs/worker.env
     environment:
       WORKER_MODE: network
-    entrypoint: [/bin/httpd]
-    command: [-f, -p, '8080', -h, /www]
+    entrypoint: [/bin/sh, -c]
+    command: ["/bin/busybox wget -qO- http://counter:8080/health >/dev/null; exec /bin/httpd -f -p 8080 -h /www"]
     working_dir: /work
     user: "65534:65534"
     read_only: true
@@ -64,8 +64,8 @@ services:
     env_file: inputs/worker.env
     environment:
       WORKER_MODE: network
-    entrypoint: [/bin/httpd]
-    command: [-f, -p, '8080', -h, /www]
+    entrypoint: [/bin/sh, -c]
+    command: ["/bin/busybox wget -qO- http://counter:8080/health >/dev/null; exec /bin/httpd -f -p 8080 -h /www"]
     working_dir: /work
     user: "65534:65534"
     read_only: true
@@ -99,7 +99,7 @@ x-theseus:
     state: {phase: new, a: idle, b: idle}
     max_runs: 64
     max_faults_per_run: 2
-    max_operations_per_run: 12
+    max_operations_per_run: 11
     faults:
       - kind: partition
         required: true
@@ -110,23 +110,14 @@ x-theseus:
         network: backplane
         after: probe_partition
     operations:
-      - name: reset_counter
+      - name: setup
         service: counter
         max_uses: 1
         requires_state: {phase: new}
-        sets_state: {phase: reset}
-        shell:
-          phase: setup
-          command: [/bin/sh, -c, "rm -f /state/*; echo 0 > /state/counter; mkfifo /state/a.go /state/b.go"]
-
-      - name: setup
-        service: writer-a
-        max_uses: 1
-        requires_state: {phase: reset}
         sets_state: {phase: partitioned}
         shell:
           phase: setup
-          command: [/bin/sh, -c, "/bin/busybox wget -qO- http://counter:8080/health >/dev/null"]
+          command: [/bin/sh, -c, "rm -f /state/*; echo 0 > /state/counter; mkfifo /state/a.go /state/b.go"]
 
       - name: probe_partition
         service: writer-a
@@ -143,7 +134,7 @@ x-theseus:
         requires_state: {phase: partition_probed}
         sets_state: {phase: ready}
         shell:
-          command: [/bin/sh, -c, "/bin/busybox wget -qO- http://counter:8080/health >/dev/null; printf '{\"network\":\"recovered\"}\n'"]
+          command: [/bin/sh, -c, "/work/probe; printf '{\"network\":\"recovery_probe_sent\"}\n'"]
           output_json: true
 
       - name: launch_a
@@ -245,7 +236,7 @@ x-theseus:
         service: writer-a
         predicate:
           json:
-            fields: {/event: shell_operation, /name: verify_recovery, /output/network: recovered}
+            fields: {/event: shell_operation, /name: verify_recovery, /output/network: recovery_probe_sent}
       - name: sequential_result_is_reachable
         kind: reachable
         service: counter
