@@ -376,38 +376,66 @@ pub fn flatten_with_contracts(
 ) -> Result<(Vec<u8>, ImageSpec), OciError> {
     let mut archive = tar::Archive::new(image_tar);
 
-    let mut manifest: Vec<ManifestEntry> = Vec::new();
-    let mut config: Option<ImageConfig> = None;
-    let mut layer_tars: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    // Follow the manifest's exact Config/Layers references. Modern Docker
+    // exports may place both in extensionless blobs; unrelated index JSON
+    // must never replace the selected image's launch configuration.
+    let mut members = BTreeMap::<String, Vec<u8>>::new();
 
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let name = entry
-            .path()?
+        if entry.header().entry_type().is_dir() {
+            continue;
+        }
+        if !entry.header().entry_type().is_file() {
+            return Err(OciError::Tar(
+                "outer image archive members must be regular files".into(),
+            ));
+        }
+        let path = entry.path()?;
+        if path.components().any(|part| {
+            !matches!(
+                part,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        }) {
+            return Err(OciError::Tar("unsafe outer image archive path".into()));
+        }
+        let name = path
             .to_str()
             .ok_or_else(|| OciError::Tar("non-utf8 path".into()))?
+            .trim_start_matches("./")
             .to_string();
         let mut data = Vec::new();
         entry.read_to_end(&mut data)?;
-        if name == "manifest.json" {
-            manifest = serde_json::from_slice(&data)
-                .map_err(|e| OciError::Json(format!("manifest.json: {e}")))?;
-        } else if name.ends_with(".json") && !name.contains("manifest") {
-            // The image config JSON.
-            config = Some(
-                serde_json::from_slice(&data)
-                    .map_err(|e| OciError::Json(format!("config {name}: {e}")))?,
-            );
-        } else if name.ends_with(".tar") {
-            layer_tars.insert(name, data);
+        if members.insert(name, data).is_some() {
+            return Err(OciError::Tar("duplicate outer image archive member".into()));
         }
     }
 
+    let manifest: Vec<ManifestEntry> =
+        serde_json::from_slice(members.get("manifest.json").ok_or_else(|| {
+            OciError::Json(
+                "missing manifest.json; supply a single-image docker save archive".into(),
+            )
+        })?)
+        .map_err(|error| OciError::Json(format!("manifest.json: {error}")))?;
+    if manifest.len() != 1 {
+        return Err(OciError::Json(
+            "docker save archive must contain exactly one image".into(),
+        ));
+    }
     let manifest = manifest
         .into_iter()
         .next()
         .ok_or_else(|| OciError::Json("empty manifest.json".into()))?;
-    let config = config.ok_or_else(|| OciError::Json("no image config JSON".into()))?;
+    let config: ImageConfig =
+        serde_json::from_slice(members.get(&manifest.config).ok_or_else(|| {
+            OciError::Json(format!(
+                "missing referenced image config {}",
+                manifest.config
+            ))
+        })?)
+        .map_err(|error| OciError::Json(format!("config {}: {error}", manifest.config)))?;
 
     // Resolve the entrypoint using Compose's image-launch rules: a command
     // replaces the image Cmd while preserving its Entrypoint; a supplied
@@ -452,7 +480,7 @@ pub fn flatten_with_contracts(
     // Apply layers in order.
     let mut files: BTreeMap<String, Entry> = BTreeMap::new();
     for layer_name in &manifest.layers {
-        let layer = layer_tars
+        let layer = members
             .get(layer_name)
             .ok_or_else(|| OciError::Tar(format!("missing layer {layer_name}")))?;
         apply_layer(layer, &mut files)?;
@@ -725,6 +753,46 @@ mod tests {
             !text.contains("hello.txt"),
             "whiteout must remove the lower-layer file"
         );
+    }
+
+    #[test]
+    fn manifest_selects_extensionless_config_and_layers_not_index_json() {
+        let layer = tar_bytes(&[("www/health", b"ok\n")]);
+        let manifest = serde_json::json!([{"Config": "blobs/sha256/config", "Layers": ["blobs/sha256/layer"]}]).to_string();
+        let config = br#"{"config":{"Cmd":["httpd","-f","-p","8080"],"Env":["MODE=service"]}}"#;
+        for index_first in [false, true] {
+            let mut entries: Vec<(&str, &[u8])> = vec![
+                ("manifest.json", manifest.as_bytes()),
+                ("blobs/sha256/config", config),
+                ("blobs/sha256/layer", &layer),
+            ];
+            if index_first {
+                entries.insert(0, ("index.json", b"{\"schemaVersion\":2}"));
+            } else {
+                entries.push(("index.json", b"{\"schemaVersion\":2}"));
+            }
+            let (cpio, spec) = flatten(&tar_bytes(&entries)).unwrap();
+            assert_eq!(spec.argv, ["httpd", "-f", "-p", "8080"]);
+            assert_eq!(spec.env, ["MODE=service"]);
+            assert!(String::from_utf8_lossy(&cpio).contains("/www/health"));
+        }
+    }
+
+    #[test]
+    fn missing_referenced_config_and_ambiguous_images_are_rejected() {
+        let missing = br#"[{"Config":"missing","Layers":[]}]"#;
+        assert!(flatten(&tar_bytes(&[
+            ("manifest.json", missing),
+            ("other.json", br#"{"config":{"Cmd":["wrong"]}}"#)
+        ]))
+        .is_err());
+        let multiple = br#"[{"Config":"one","Layers":[]},{"Config":"two","Layers":[]}]"#;
+        assert!(flatten(&tar_bytes(&[("manifest.json", multiple)])).is_err());
+        assert!(flatten(&tar_bytes(&[
+            ("manifest.json", missing),
+            ("manifest.json", missing)
+        ]))
+        .is_err());
     }
 
     #[test]

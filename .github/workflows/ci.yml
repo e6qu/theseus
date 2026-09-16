@@ -235,6 +235,20 @@ jobs:
             docs/tutorials/30-multiservice-lost-update/campaign/
             docs/tutorials/30-multiservice-lost-update/minimized/
             docs/tutorials/30-multiservice-lost-update/rerun/
+            docs/tutorials/30-multiservice-lost-update/retained/
+          if-no-files-found: ignore
+
+      - name: Retain failed product inputs and execution diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-product-failure
+          path: |
+            docs/tutorials/14-container-image/work/replay/
+            docs/tutorials/14-container-image/work/rerun/
+            docs/tutorials/*/campaign/
+            docs/tutorials/*/minimized/
+            docs/tutorials/*/rerun/
           if-no-files-found: ignore
 
       - name: Check application instrumentation

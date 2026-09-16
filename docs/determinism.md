@@ -214,6 +214,8 @@ The operation-prefix cache uses a deterministic LRU policy with a 512 MiB
 materialized-RAM budget. Evicted prefixes can be reconstructed from retained
 ancestors. The immutable root, active working branches, binary context, and
 other host allocations are outside that budget; this is not a process-RSS cap.
+Reports distinguish prefix snapshot-file bytes from durable root exports and
+show prefix evictions explicitly.
 
 `starting_checkpoint` locks `metadata.json`; metadata locks every service's
 `vmstate` and `memory` plus the bounded binary `context.bin`. Context contains

@@ -1009,8 +1009,8 @@ struct CampaignCheckpointEconomics {
     /// KVM dirty-page footprint sampled at capture barriers. This is a stable
     /// logical write-set measure, not host RSS accounting.
     private_dirty_pages: u64,
-    /// Always zero for in-memory branch checkpoints; retained so reports can
-    /// prove no campaign snapshot files were materialized.
+    /// In-memory prefix snapshot bytes written to files (currently zero).
+    /// Excludes durable starting-root exports and locked runtime/guest inputs.
     snapshot_file_bytes: u64,
     /// Deterministic LRU removals from the bounded prefix RAM cache.
     #[serde(default)]
