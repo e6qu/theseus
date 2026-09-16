@@ -102,6 +102,18 @@ jobs:
             cmp work/replay/serial.log "work/rerun-$attempt/serial.log"
           done
           python3 -c 'import json; e = json.load(open("work/replay/execution.json")); p = json.load(open("work/replay/checkpoint/metadata.json"))["execution"]["trace"]; assert e["start"]["kind"] == "checkpoint"; assert e["start"]["inherited_decisions"] == len(p); assert e["machine_execution_trace"][:len(p)] == p; assert "host:serial_input:6:32312e35430a" in e["machine_execution_trace"][len(p):]; assert e["boundary"] == "guest_exit" and e["replay_error"] is None'
+          cp -a work/replay work/changed-input
+          python3 -c 'import json; f = "work/changed-input/replay-plan.json"; p = json.load(open(f)); p["events"][0]["data_hex"] = "39392e39430a"; open(f, "w").write(json.dumps(p))'
+          if ../../../cli/target/debug/theseus replay --output work/rejected-input work/changed-input; then
+            exit 1
+          fi
+          python3 -c 'import json; e = json.load(open("work/rejected-input/execution.json")); assert e["replay_error"]; assert "host:serial_input:6:39392e39430a" not in e["machine_execution_trace"]; assert b"99.9C" not in open("work/rejected-input/serial.log", "rb").read()'
+          cp -a work/replay work/tampered-checkpoint
+          python3 -c 'f = open("work/tampered-checkpoint/checkpoint/memory", "r+b"); first = f.read(1); f.seek(0); f.write(bytes([first[0] ^ 1])); f.close()'
+          if ../../../cli/target/debug/theseus replay --output work/rejected-checkpoint work/tampered-checkpoint; then
+            exit 1
+          fi
+          test ! -e work/rejected-checkpoint
 
       - name: Retain ready-checkpoint replay diagnostics
         if: always()
@@ -113,9 +125,8 @@ jobs:
 
       - name: Report native replay divergence
         if: failure()
-        working-directory: docs/tutorials/04-read-serial
         run: |
-          for evidence in work/*/execution.json; do
+          for evidence in docs/tutorials/{04-read-serial,42-replay-from-ready}/work/*/execution.json; do
             if test -f "$evidence"; then
               jq '{boundary, replay_error, ledger: .machine_execution_ledger}' "$evidence"
             fi

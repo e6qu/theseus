@@ -457,6 +457,12 @@ fn locked_artifact(
 }
 
 fn validate(plan: &RunPlan) -> Result<(), ExploreError> {
+    if plan.run.replay_start != crate::manifest::ReplayStart::FreshBoot || plan.checkpoint.is_some()
+    {
+        return Err(ExploreError::Invalid(
+            "exploration manages branch checkpoints; ready_checkpoint is for `theseus test`".into(),
+        ));
+    }
     if plan.explore.is_none() {
         return Err(ExploreError::Invalid(
             "manifest has no [explore] section".to_owned(),

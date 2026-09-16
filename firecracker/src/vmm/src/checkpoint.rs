@@ -228,11 +228,13 @@ impl Vmm {
         &mut self,
         config: &CreateCheckpointConfig,
     ) -> Result<(), VmmError> {
+        if self.serial_output_rate_limited {
+            return Err(failure("checkpoint capture does not retain UART rate-limiter state"));
+        }
         if self.instance_info.state != crate::vmm_config::instance_info::VmState::Paused
             || self.shutdown_exit_code.is_some()
             || self.execution_config.is_none()
             || self.machine_config.virtual_time.is_none()
-            || self.serial_output_rate_limited
             || self
                 .execution_config
                 .as_ref()

@@ -1826,6 +1826,13 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
             service: name.clone(),
             source: Box::new(source),
         })?;
+        if run.run.replay_start != crate::manifest::ReplayStart::FreshBoot
+            || run.checkpoint.is_some()
+        {
+            return Err(ComposeError::Invalid(format!(
+                "service {name:?}: ready_checkpoint is a single-service `theseus test` workflow; Compose manages topology checkpoints"
+            )));
+        }
         apply_resource_limits(
             &name,
             &mut run,
@@ -7285,6 +7292,25 @@ mod tests {
         }
         fs::write(directory.path().join("compose.yaml"), compose).unwrap();
         directory
+    }
+
+    #[test]
+    fn compose_rejects_a_single_service_ready_checkpoint_flag() {
+        let directory =
+            fixture("services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [test]\nnetworks:\n  test: {}\n");
+        let manifest = directory.path().join("api/theseus.toml");
+        let text = fs::read_to_string(&manifest)
+            .unwrap()
+            .replace("seed = 1", "seed = 1\nreplay_start = 'ready_checkpoint'");
+        fs::write(
+            &manifest,
+            format!("{text}\n[[events]]\nwhen = 'ready'\ndata = '41'\n"),
+        )
+        .unwrap();
+        assert!(load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap_err()
+            .to_string()
+            .contains("manages topology checkpoints"));
     }
 
     fn image_fixture(compose: &str, files: &[(&str, u32)]) -> tempfile::TempDir {

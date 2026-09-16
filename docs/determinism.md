@@ -144,7 +144,7 @@ Low-level API clients can `PUT /execution` before a fresh boot with
 `evidence_path` and an optional `replay_trace_path` (a JSON array). The output
 must not exist. `PUT /serial-input` accepts a bounded lowercase `data_hex`
 payload. `PATCH /execution` with `{}` flushes a paused VM; natural exit flushes
-automatically. This API capture configuration does not support snapshot load;
+automatically. Raw `/snapshot/load` cannot load execution capture context;
 in-process topology checkpoint replay retains its existing branch-owned state.
 
 ### Ready-checkpoint bundles
@@ -187,7 +187,8 @@ memory-hotplug, and rate-limited UART/RNG devices. It requires native Linux/KVM,
 a compatible CPU/runtime, and the same architecture; RAM can contain secrets.
 Kernel timers and arbitrary instruction order are still uncontrolled. A
 checkpoint improves the starting state, not those guarantees. Exploration
-keeps its existing branch-managed checkpoint workflow.
+keeps its existing branch-managed checkpoint workflow; Compose likewise manages
+whole-topology checkpoints and rejects this single-service flag.
 
 This controls concurrent emulated device effects, explicit host inputs, and
 supported userspace device interrupt injection at the KVM boundary. Theseus

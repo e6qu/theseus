@@ -117,7 +117,7 @@ impl Vmm {
         }
         if self.execution_evidence_file.is_none() {
             return Err(VmmError::ExecutionCoverage(
-                "execution capture was not configured before boot".into(),
+                "execution capture was not configured for this VM".into(),
             ));
         }
         let evidence = ExecutionEvidence {

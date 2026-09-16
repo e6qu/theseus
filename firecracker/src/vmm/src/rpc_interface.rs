@@ -492,7 +492,7 @@ impl<'a> PrebootApiController<'a> {
             LoadSnapshot(config) => {
                 if self.vm_resources.execution.is_some() {
                     return Err(VmmActionError::InternalVmm(VmmError::ExecutionCoverage(
-                        "API execution capture supports fresh boot, not snapshot loading".into(),
+                        "raw snapshot loading lacks execution context; use /execution-checkpoint".into(),
                     )));
                 }
                 self.load_snapshot(&config).map_err(VmmActionError::LoadSnapshot)

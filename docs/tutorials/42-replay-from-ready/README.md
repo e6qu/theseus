@@ -25,7 +25,8 @@ sed -n '1,100p' theseus.toml
 ```
 
 Keep `replay_start = "ready_checkpoint"`, virtual time, and the ready-gated UART
-event. The guest must wait for input after printing `THES:M:42`.
+event. The guest waits for Linux's random generator to initialize, prints
+`THES:M:42`, and waits for input.
 
 ## 2. Enter the published runtime
 

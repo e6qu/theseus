@@ -26,6 +26,8 @@ use crate::{load_plan, CheckKind, LoadError, RunPlan};
 
 const READY_MARKER: &[u8] = b"THES:M:42";
 const API_READY_TIMEOUT: Duration = Duration::from_secs(5);
+// State/RAM persistence and hashing are bounded operations, not API startup.
+const CHECKPOINT_API_TIMEOUT: Duration = Duration::from_secs(300);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const EXECUTION_REPLAY_FORMAT: &str = "theseus-replay-plan-v2";
 const CHECKPOINT_REPLAY_FORMAT: &str = "theseus-replay-plan-v3";
@@ -1209,7 +1211,11 @@ fn api_request(
         reason: source.to_string(),
     })?;
     stream
-        .set_read_timeout(Some(API_READY_TIMEOUT))
+        .set_read_timeout(Some(if endpoint == "/execution-checkpoint" {
+            CHECKPOINT_API_TIMEOUT
+        } else {
+            API_READY_TIMEOUT
+        }))
         .map_err(|source| RunError::Api {
             endpoint,
             reason: source.to_string(),
@@ -1308,6 +1314,22 @@ fn read_api_response(stream: UnixStream) -> std::io::Result<String> {
 
 fn verify_artifact(base: &Path, artifact: &crate::manifest::ArtifactPlan) -> Result<(), RunError> {
     let path = resolved_path(base, &artifact.path);
+    if !Path::new(&artifact.path).is_absolute() {
+        let canonical_base = fs::canonicalize(base).map_err(|source| RunError::Read {
+            path: base.into(),
+            source,
+        })?;
+        let canonical = fs::canonicalize(&path).map_err(|source| RunError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        if !canonical.starts_with(canonical_base) {
+            return Err(RunError::InvalidBundle {
+                path,
+                reason: "artifact resolves outside its bundle through a symlinked directory".into(),
+            });
+        }
+    }
     if digest_file(&path)? != artifact.sha256 {
         return Err(RunError::DigestMismatch { path });
     }
@@ -1977,6 +1999,19 @@ mem_size_mib = 128
             .unwrap_err()
             .to_string()
             .contains("digest"));
+        assert!(!logs.exists());
+    }
+
+    #[test]
+    fn checkpoint_paths_cannot_escape_through_a_symlinked_parent() {
+        let directory = ready_checkpoint_fixture();
+        let root = directory.path();
+        let bundle = root.join("bundle");
+        test(root.join("theseus.toml"), &bundle).unwrap();
+        fs::rename(bundle.join("checkpoint"), root.join("outside")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), bundle.join("checkpoint")).unwrap();
+        let logs = root.join("rerun");
+        assert!(replay_to(&bundle, &logs).is_err());
         assert!(!logs.exists());
     }
 
