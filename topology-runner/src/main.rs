@@ -11666,7 +11666,8 @@ fn apply_service_process_action(
         .len() as usize;
     let result = (|| {
         target.vm.push_serial_input(&bytes)?;
-        for step in 0..=CAMPAIGN_BARRIER_MAX_ROUNDS {
+        let max_rounds = campaign_barrier_round_limit(bytes.len());
+        for step in 0..=max_rounds {
             if fs::read(&serial).is_ok_and(|serial| {
                 serial[offset..]
                     .windows(checkpoint.len())
@@ -11679,7 +11680,7 @@ fn apply_service_process_action(
                     .then_some(())
                     .ok_or_else(|| format!("service {service_name:?} failed to {verb}"));
             }
-            if step == CAMPAIGN_BARRIER_MAX_ROUNDS || *round == u64::MAX {
+            if step == max_rounds || *round == u64::MAX {
                 break;
             }
             *round += 1;
@@ -11699,7 +11700,7 @@ fn apply_service_process_action(
             }
         }
         Err(format!(
-            "service {service_name:?} did not acknowledge {verb} within {CAMPAIGN_BARRIER_MAX_ROUNDS} topology rounds"
+            "service {service_name:?} did not acknowledge {verb} within {max_rounds} topology rounds"
         ))
     })();
     services.insert(service_name.to_owned(), target);
@@ -11820,7 +11821,19 @@ fn dependency_startup_order(topology: &TopologyPlan) -> Result<Vec<String>, Stri
     Ok(order)
 }
 
-const CAMPAIGN_BARRIER_MAX_ROUNDS: u64 = 512;
+const CAMPAIGN_BARRIER_MIN_ROUNDS: u64 = 512;
+const CAMPAIGN_BARRIER_MAX_ROUNDS: u64 = 4096;
+const CAMPAIGN_BARRIER_ROUNDS_PER_INPUT_BYTE: u64 = 4;
+
+fn campaign_barrier_round_limit(input_bytes: usize) -> u64 {
+    CAMPAIGN_BARRIER_MIN_ROUNDS
+        .saturating_add(
+            u64::try_from(input_bytes)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(CAMPAIGN_BARRIER_ROUNDS_PER_INPUT_BYTE),
+        )
+        .min(CAMPAIGN_BARRIER_MAX_ROUNDS)
+}
 
 /// Drive every service and simulated network once.  The target is held outside
 /// the service map while a prefix operation is injected, so keep it explicit.
@@ -11857,7 +11870,9 @@ fn wait_for_serial_after_rounds(
     switches: &BTreeMap<String, SharedSimSwitch>,
     round: &mut u64,
 ) -> Result<CampaignUartBarrier, String> {
-    for step in 0..=CAMPAIGN_BARRIER_MAX_ROUNDS {
+    let accepted_input = target.vm.serial_input_depth()?;
+    let max_rounds = campaign_barrier_round_limit(accepted_input);
+    for step in 0..=max_rounds {
         if let Ok(serial) = fs::read(serial_log) {
             let response = serial.get(input_offset..).unwrap_or_default();
             if let Some(marker_offset) = response
@@ -11874,7 +11889,7 @@ fn wait_for_serial_after_rounds(
                 });
             }
         }
-        if step == CAMPAIGN_BARRIER_MAX_ROUNDS || *round == u64::MAX {
+        if step == max_rounds || *round == u64::MAX {
             break;
         }
         *round += 1;
@@ -11885,7 +11900,7 @@ fn wait_for_serial_after_rounds(
     let trace = target.vm.machine_execution_trace()?;
     let trace_tail = trace.iter().rev().take(8).cloned().collect::<Vec<_>>();
     Err(format!(
-        "service did not announce {purpose} within {CAMPAIGN_BARRIER_MAX_ROUNDS} topology rounds after UART input ({unread} unread UART bytes; {uart}; VM exit={:?}; decisions={}; newest decisions={trace_tail:?}): {}",
+        "service did not announce {purpose} within {max_rounds} topology rounds after UART input ({unread} unread UART bytes; {uart}; VM exit={:?}; decisions={}; newest decisions={trace_tail:?}): {}",
         target.vm.exited(),
         trace.len(),
         serial_log.display()
@@ -16076,6 +16091,13 @@ mod tests {
             old.len(),
             b"THES:M:complete"
         ));
+    }
+
+    #[test]
+    fn campaign_uart_budget_scales_with_accepted_input_and_stays_bounded() {
+        assert_eq!(campaign_barrier_round_limit(0), 512);
+        assert_eq!(campaign_barrier_round_limit(214), 1368);
+        assert_eq!(campaign_barrier_round_limit(usize::MAX), 4096);
     }
 
     #[test]
