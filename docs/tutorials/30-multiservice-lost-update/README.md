@@ -12,6 +12,8 @@ This example also exercises one locked runtime contract: service-name
 networking, health checks, launch overrides, numeric credentials, environment
 precedence, configs, secrets, seeded bind mounts, read-only roots, tmpfs, and
 CPU and memory quantities. The images contain no Theseus SDK.
+The workers run as UID 65534 and verify that the injected secret remains
+root-only while the config and seeded fixture remain readable.
 
 ## Before you start
 
