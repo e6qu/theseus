@@ -90,7 +90,7 @@ jobs:
           if ! test -r /dev/kvm || ! test -w /dev/kvm; then
             sudo chmod 666 /dev/kvm
           fi
-          cargo build --manifest-path ../../../firecracker/Cargo.toml -p firecracker
+          (cd ../../../firecracker && cargo build -p firecracker)
           cargo build --manifest-path ../../../cli/Cargo.toml --locked
           release=$(mktemp -d)
           tag=7eee61be7fd8
@@ -100,7 +100,7 @@ jobs:
           (cd "$release" && sha256sum --check --ignore-missing SHA256SUMS)
           tar -xzf "$release/theseus-$tag-linux-amd64.tar.gz" -C "$release"
           mkdir -p work/runtime work/guest/root/bin
-          cp ../../../firecracker/target/debug/firecracker work/runtime/firecracker
+          cp ../../../firecracker/build/cargo_target/debug/firecracker work/runtime/firecracker
           cp "$release/theseus-$tag-linux-amd64/vmlinux" work/guest/vmlinux
           cp /bin/busybox work/guest/root/bin/busybox
           cp init work/guest/root/init
