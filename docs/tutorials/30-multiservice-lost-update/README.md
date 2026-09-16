@@ -109,9 +109,9 @@ grep -R '"value":2' campaign/runs/*/services/counter/serial.log
 ```
 
 The command succeeds only when the named property has a retained failed
-verdict. The action names, dropped-frame count, and recovery output show that
-the partition was exercised and healed before the two counter outcomes were
-explored.
+verdict. The probe bounds its final UDP read to one virtual second. The action
+names, dropped-frame count, and recovery output show that the partition was
+exercised and healed before the two counter outcomes were explored.
 
 ## 5. Inspect, minimize, and replay
 
