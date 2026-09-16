@@ -72,6 +72,7 @@ jobs:
           tar -xzf "$release/theseus-$tag-linux-amd64.tar.gz" -C "$release"
           mkdir -p work/runtime work/guest/root/bin
           cp ../../../firecracker/build/cargo_target/debug/firecracker work/runtime/firecracker
+          strip work/runtime/firecracker
           cp "$release/theseus-$tag-linux-amd64/vmlinux" work/guest/vmlinux
           cp /bin/busybox work/guest/root/bin/busybox
           cp init work/guest/root/init
@@ -120,6 +121,7 @@ jobs:
         run: |
           cargo build --manifest-path ../../../topology-runner/Cargo.toml --locked
           cp ../../../topology-runner/target/debug/theseus-topology ../../../cli/target/debug/theseus-topology
+          strip ../../../cli/target/debug/theseus-topology
           mkdir -p service/runtime service/guest/root/bin
           cp ../04-read-serial/work/runtime/firecracker service/runtime/firecracker
           cp ../04-read-serial/work/guest/vmlinux service/guest/vmlinux
@@ -219,6 +221,9 @@ jobs:
           cp image-runner/target/debug/theseus-image "$runtime/theseus-image"
           cp firecracker/build/cargo_target/debug/firecracker "$runtime/firecracker"
           cp docs/tutorials/04-read-serial/work/guest/vmlinux "$runtime/vmlinux"
+          # Hash and retain the binaries actually executed, without redundant
+          # debug sections multiplying every portable root's archive size.
+          strip "$runtime/theseus" "$runtime/theseus-topology" "$runtime/theseus-image" "$runtime/firecracker"
           export THESEUS_SOURCE_RUNTIME="$runtime"
           export THESEUS_TAG=$(git rev-parse --short=12 HEAD)
           docker pull "$THESEUS_IMAGE"

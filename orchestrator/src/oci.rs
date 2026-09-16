@@ -699,7 +699,6 @@ fn cpio_trailer(out: &mut Vec<u8>, ino: &mut u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn tar_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut builder = tar::Builder::new(Vec::new());
@@ -1102,7 +1101,6 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_boot_container_image() {
-        use std::io::Write;
         use std::process::Command;
 
         // 1. Build a tiny static payload that prints and powers off.
