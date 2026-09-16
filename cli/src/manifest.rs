@@ -700,7 +700,10 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
         if check.name.trim().is_empty() {
             return Err(LoadError::InvalidCheck("name must not be empty".to_owned()));
         }
-        if check.name == "guest_exit" || check.name == "completion" {
+        if matches!(
+            check.name.as_str(),
+            "guest_exit" | "completion" | "machine_execution" | "replay_machine_execution"
+        ) {
             return Err(LoadError::InvalidCheck(format!(
                 "name {:?} is reserved for a built-in check",
                 check.name
@@ -1298,6 +1301,9 @@ fn ensure_executable(_: &'static str, _: &Path) -> Result<(), LoadError> {
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() > 32768 || !value.is_ascii() {
+        return Err("input must be ASCII hex and at most 16384 bytes".to_owned());
+    }
     if value.is_empty() {
         return Err("at least one byte is required".to_owned());
     }

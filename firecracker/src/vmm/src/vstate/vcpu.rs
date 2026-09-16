@@ -148,6 +148,7 @@ pub struct MachineExecutionController {
     state: Mutex<MachineExecutionControl>,
     pending_interrupts: Mutex<VecDeque<PendingInterrupt>>,
     deterministic_interrupts: AtomicBool,
+    shutdown_requested: AtomicBool,
     interrupt_kickers: Mutex<Vec<Weak<Mutex<Option<VcpuInterruptKick>>>>>,
     turn_changed: Condvar,
 }
@@ -163,6 +164,7 @@ impl Default for MachineExecutionController {
             }),
             pending_interrupts: Mutex::new(VecDeque::new()),
             deterministic_interrupts: AtomicBool::new(false),
+            shutdown_requested: AtomicBool::new(false),
             interrupt_kickers: Mutex::new(Vec::new()),
             turn_changed: Condvar::new(),
         }
@@ -259,6 +261,27 @@ impl DeferredInterrupt {
 }
 
 impl MachineExecutionController {
+    /// Freeze device-effect admission after a guest terminal request.
+    pub(crate) fn request_shutdown(&self) {
+        if self.shutdown_requested.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.turn_changed.notify_all();
+        if let Err(error) = self.kick_vcpus() {
+            error!("Failed to kick vCPUs at guest shutdown: {error}");
+        }
+    }
+
+    pub(crate) fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested.load(Ordering::Acquire)
+    }
+
+    /// Stop admission only after the current serialized effect has committed.
+    pub(crate) fn freeze_admission(&self) {
+        let _state = self.state.lock().expect("machine execution controller lock poisoned");
+        self.request_shutdown();
+    }
+
     fn execution_state(&self) -> MachineExecutionState {
         let mut execution = self
             .state
@@ -380,6 +403,9 @@ impl MachineExecutionController {
             .lock()
             .expect("machine execution controller lock poisoned");
         let mut pending = loop {
+            if self.shutdown_requested() {
+                return Ok(false);
+            }
             if let Some(detail) = state.divergence.clone() {
                 return Err(detail);
             }
@@ -472,7 +498,7 @@ impl MachineExecutionController {
         Ok(true)
     }
 
-    fn enforce(&self, expected: Vec<String>) -> Result<(), String> {
+    pub(crate) fn validate_trace(expected: &[String]) -> Result<(), String> {
         if expected.len() > MACHINE_EXECUTION_TRACE_LIMIT {
             return Err(format!(
                 "machine execution trace has {} decisions; limit is {MACHINE_EXECUTION_TRACE_LIMIT}",
@@ -485,6 +511,11 @@ impl MachineExecutionController {
         {
             return Err("machine execution trace contains a malformed decision".to_owned());
         }
+        Ok(())
+    }
+
+    fn enforce(&self, expected: Vec<String>) -> Result<(), String> {
+        Self::validate_trace(&expected)?;
         let mut state = self
             .state
             .lock()
@@ -540,6 +571,9 @@ impl MachineExecutionController {
             .lock()
             .expect("machine execution controller lock poisoned");
         loop {
+            if self.shutdown_requested() {
+                return Err("machine execution rejected host input after guest shutdown".to_owned());
+            }
             if let Some(detail) = state.divergence.clone() {
                 return Err(detail);
             }
@@ -1229,16 +1263,17 @@ impl Vcpu {
     }
 
     // Transition to the exited state and finish on command.
-    // Note that this function isn't called when the guest asks for a CPU
-    // reset via the i8042 controller on x86.
     fn exit(&mut self, exit_code: FcExitCode) -> VcpuRunState {
+        self.machine_execution.freeze_admission();
+        self.response_sender
+            .send(VcpuResponse::Exited(exit_code))
+            .expect("vcpu channel unexpectedly closed");
+        // Publish the status before waking the event loop. Otherwise it can
+        // observe the eventfd but not the response and report a false success.
         if let Err(err) = self.exit_evt.write(1) {
             METRICS.vcpu.failures.inc();
             error!("Failed signaling vcpu exit event: {}", err);
         }
-        self.response_sender
-            .send(VcpuResponse::Exited(exit_code))
-            .expect("vcpu channel unexpectedly closed");
         // From this state we accept a final virtual-clock read or finish.
         loop {
             match self.event_receiver.recv() {
@@ -1257,6 +1292,9 @@ impl Vcpu {
     ///
     /// Returns error or enum specifying whether emulation was handled or interrupted.
     pub fn run_emulation(&mut self) -> Result<VcpuEmulation, VcpuError> {
+        if self.machine_execution.shutdown_requested() {
+            return Ok(VcpuEmulation::Stopped);
+        }
         // Theseus: anchor the guest clock before the first KVM_RUN. On
         // aarch64 the counter offset is only writable after vCPU init (which
         // happens at configure time), so this is the earliest safe point.
@@ -1326,7 +1364,13 @@ fn handle_kvm_exit_recorded(
         .state
         .lock()
         .expect("machine execution controller lock poisoned");
+    if machine_execution.shutdown_requested() {
+        return Ok(VcpuEmulation::Stopped);
+    }
     loop {
+        if machine_execution.shutdown_requested() {
+            return Ok(VcpuEmulation::Stopped);
+        }
         if let Some(detail) = machine.divergence.clone() {
             return Err(VcpuError::FaultyKvmExit(detail));
         }
@@ -1364,7 +1408,54 @@ fn handle_kvm_exit_recorded(
             return Err(VcpuError::FaultyKvmExit(detail));
         }
     }
-    let (outcome, decision) = match emulation_result {
+    if machine.execution.trace.len() == MACHINE_EXECUTION_TRACE_LIMIT {
+        let detail = format!(
+            "machine execution trace exceeded {MACHINE_EXECUTION_TRACE_LIMIT} decisions"
+        );
+        machine.divergence = Some(detail.clone());
+        machine_execution.turn_changed.notify_all();
+        return Err(VcpuError::FaultyKvmExit(detail));
+    }
+    // Writes have a complete payload before emulation; read requests have
+    // only an address and width. Reject both identities before touching a
+    // device. Read values are checked after the device supplies them.
+    let admission = match &emulation_result {
+        Ok(VcpuExit::MmioWrite(address, data)) => Some((
+            format!("vcpu:{vcpu}:mmio_write:{address:#x}:{}:{}", data.len(), hex_bytes(data)),
+            true,
+        )),
+        Ok(VcpuExit::MmioRead(address, data)) => Some((
+            format!("vcpu:{vcpu}:mmio_read:{address:#x}:{}:", data.len()),
+            false,
+        )),
+        #[cfg(target_arch = "x86_64")]
+        Ok(VcpuExit::IoOut(port, data)) => Some((
+            format!("vcpu:{vcpu}:pio_write:{port:#x}:{}:{}", data.len(), hex_bytes(data)),
+            true,
+        )),
+        #[cfg(target_arch = "x86_64")]
+        Ok(VcpuExit::IoIn(port, data)) => Some((
+            format!("vcpu:{vcpu}:pio_read:{port:#x}:{}:", data.len()),
+            false,
+        )),
+        Ok(exit) => Some((format!("vcpu:{vcpu}:kvm:{exit:?}"), true)),
+        Err(_) => None,
+    };
+    if let (Some(expected), Some((observed, exact))) = (&machine.expected, admission) {
+        let matches = expected.get(machine.position).is_some_and(|record| {
+            if exact { record == &observed } else { record.starts_with(&observed) }
+        });
+        if !matches {
+            let detail = format!(
+                "machine execution replay diverged before device access at decision {}: expected {:?}, observed {observed:?}",
+                machine.position, expected.get(machine.position)
+            );
+            machine.divergence = Some(detail.clone());
+            machine_execution.turn_changed.notify_all();
+            return Err(VcpuError::FaultyKvmExit(detail));
+        }
+    }
+    let (mut outcome, decision) = match emulation_result {
         Ok(VcpuExit::MmioRead(address, data)) => {
             let outcome = handle_kvm_exit(peripherals, Ok(VcpuExit::MmioRead(address, &mut *data)));
             let decision = format!("mmio_read:{address:#x}:{}:{}", data.len(), hex_bytes(data));
@@ -1396,22 +1487,17 @@ fn handle_kvm_exit_recorded(
             (handle_kvm_exit(peripherals, other), decision)
         }
     };
+    if matches!(&outcome, Ok(VcpuEmulation::Stopped)) {
+        machine_execution.request_shutdown();
+    } else if machine_execution.shutdown_requested()
+        && matches!(&outcome, Ok(VcpuEmulation::Handled))
+    {
+        outcome = Ok(VcpuEmulation::Stopped);
+    }
     if let (Ok(VcpuEmulation::Handled | VcpuEmulation::Stopped), Some(decision)) =
         (&outcome, decision)
     {
-        ledger
-            .lock()
-            .expect("execution ledger lock poisoned")
-            .record(decision.clone());
         let record = format!("vcpu:{vcpu}:{decision}");
-        if machine.execution.trace.len() == MACHINE_EXECUTION_TRACE_LIMIT {
-            let detail = format!(
-                "machine execution trace exceeded {MACHINE_EXECUTION_TRACE_LIMIT} decisions"
-            );
-            machine.divergence = Some(detail.clone());
-            machine_execution.turn_changed.notify_all();
-            return Err(VcpuError::FaultyKvmExit(detail));
-        }
         if let Some(expected) = machine.expected.as_ref() {
             if expected.get(machine.position) != Some(&record) {
                 let detail = format!(
@@ -1424,6 +1510,10 @@ fn handle_kvm_exit_recorded(
                 return Err(VcpuError::FaultyKvmExit(detail));
             }
         }
+        ledger
+            .lock()
+            .expect("execution ledger lock poisoned")
+            .record(decision);
         machine.execution.ledger.record(record.clone());
         machine.execution.trace.push(record);
         machine.position = machine.position.saturating_add(1);
@@ -1446,11 +1536,163 @@ pub(crate) fn hex_bytes(bytes: &[u8]) -> String {
 mod execution_ledger_tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
+    use kvm_ioctls::VcpuExit;
+    use crate::vstate::bus::{Bus, BusDevice};
 
     use super::{
         EXECUTION_DECISION_TAIL, ExecutionLedger, MachineExecutionController,
         MachineExecutionState,
+        Peripherals, VcpuEmulation, handle_kvm_exit_recorded,
     };
+
+    #[derive(Default)]
+    struct CountingDevice { reads: usize, writes: usize }
+
+    impl BusDevice for CountingDevice {
+        fn read(&mut self, _: u64, _: u64, data: &mut [u8]) {
+            self.reads += 1;
+            data.fill(42);
+        }
+        fn write(&mut self, _: u64, _: u64, _: &[u8]) -> Option<Arc<std::sync::Barrier>> {
+            self.writes += 1;
+            None
+        }
+    }
+
+    fn counting_device() -> (Peripherals, Arc<Mutex<CountingDevice>>) {
+        let device = Arc::new(Mutex::new(CountingDevice::default()));
+        let bus = Arc::new(Bus::new());
+        bus.insert(device.clone(), 0x10, 0x10).unwrap();
+        let mut peripherals = Peripherals::default();
+        peripherals.mmio_bus = Some(bus);
+        (peripherals, device)
+    }
+
+    #[test]
+    fn changed_write_is_rejected_before_any_device_effect() {
+        let (mut peripherals, device) = counting_device();
+        let controller = Arc::new(MachineExecutionController::default());
+        controller.enforce(vec!["vcpu:0:mmio_write:0x10:1:2a".into()]).unwrap();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let error = handle_kvm_exit_recorded(&mut peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &[43])), 0, &ledger, &controller).unwrap_err();
+        assert!(error.to_string().contains("before device access"));
+        assert_eq!(device.lock().unwrap().writes, 0);
+        assert_eq!(ledger.lock().unwrap().evidence().decisions, 0);
+        assert!(controller.execution_state().trace().is_empty());
+        assert!(controller.replay_error().unwrap().contains("decision 0"));
+    }
+
+    #[test]
+    fn changed_read_identity_does_not_consume_device_input() {
+        for (address, width) in [(0x11, 1), (0x10, 2)] {
+            let (mut peripherals, device) = counting_device();
+            let controller = Arc::new(MachineExecutionController::default());
+            controller.enforce(vec!["vcpu:0:mmio_read:0x10:1:2a".into()]).unwrap();
+            let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+            let mut data = vec![0xff; width];
+            assert!(handle_kvm_exit_recorded(&mut peripherals,
+                Ok(VcpuExit::MmioRead(address, &mut data)), 0, &ledger, &controller).is_err());
+            assert_eq!(device.lock().unwrap().reads, 0);
+            assert_eq!(data, vec![0xff; width]);
+        }
+    }
+
+    #[test]
+    fn changed_read_value_keeps_the_first_divergence_and_no_admitted_record() {
+        let (mut peripherals, device) = counting_device();
+        let controller = Arc::new(MachineExecutionController::default());
+        controller.enforce(vec!["vcpu:0:mmio_read:0x10:1:00".into()]).unwrap();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let mut data = [0xff];
+        let error = handle_kvm_exit_recorded(&mut peripherals,
+            Ok(VcpuExit::MmioRead(0x10, &mut data)), 0, &ledger, &controller).unwrap_err();
+        assert_eq!(device.lock().unwrap().reads, 1);
+        assert_eq!(data, [42]);
+        assert_eq!(ledger.lock().unwrap().evidence().decisions, 0);
+        let first = controller.replay_error().unwrap();
+        assert!(first.contains("observed"));
+        assert!(error.to_string().contains(&first));
+        assert!(handle_kvm_exit_recorded(&mut peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &[0])), 0, &ledger, &controller).is_err());
+        assert_eq!(controller.replay_error().as_deref(), Some(first.as_str()));
+        assert_eq!(device.lock().unwrap().writes, 0);
+    }
+
+    #[test]
+    fn full_trace_rejects_the_next_effect_before_emulation() {
+        let (mut peripherals, device) = counting_device();
+        let controller = Arc::new(MachineExecutionController::default());
+        controller.state.lock().unwrap().execution.trace = vec![String::new(); super::MACHINE_EXECUTION_TRACE_LIMIT];
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        assert!(handle_kvm_exit_recorded(&mut peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &[42])), 0, &ledger, &controller).is_err());
+        assert_eq!(device.lock().unwrap().writes, 0);
+        assert_eq!(ledger.lock().unwrap().evidence().decisions, 0);
+    }
+
+    #[test]
+    fn system_shutdown_is_one_terminal_turn_and_rejects_later_host_input() {
+        let controller = Arc::new(MachineExecutionController::default());
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let mut peripherals = Peripherals::default();
+        let exit = VcpuExit::SystemEvent(kvm_bindings::KVM_SYSTEM_EVENT_SHUTDOWN, &[]);
+        let expected = format!("vcpu:0:kvm:{exit:?}");
+        controller.enforce(vec![expected.clone()]).unwrap();
+        assert_eq!(handle_kvm_exit_recorded(&mut peripherals, Ok(exit), 0, &ledger, &controller).unwrap(), VcpuEmulation::Stopped);
+        assert!(controller.shutdown_requested());
+        assert_eq!(controller.execution_state().trace(), [expected]);
+        assert!(controller.apply_host_effect("control_event:90".into(), || -> Result<(), ()> { panic!("post-exit input admitted") }).is_err());
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn reset_device(controller: &Arc<MachineExecutionController>) -> (Peripherals, vmm_sys_util::eventfd::EventFd) {
+        let event = vmm_sys_util::eventfd::EventFd::new(libc::EFD_NONBLOCK).unwrap();
+        let device = crate::devices::legacy::I8042Device::new(event.try_clone().unwrap()).unwrap();
+        device.attach_reset_controller(controller);
+        let bus = Arc::new(Bus::new());
+        bus.insert(Arc::new(Mutex::new(device)), 0x60, 5).unwrap();
+        let mut peripherals = Peripherals::default();
+        peripherals.pio_bus = Some(bus);
+        (peripherals, event)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn i8042_reset_ends_the_trace_synchronously_without_shutdown_polling() {
+        let controller = Arc::new(MachineExecutionController::default());
+        let (mut peripherals, event) = reset_device(&controller);
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        controller.enforce(vec!["vcpu:0:pio_write:0x64:1:fe".into()]).unwrap();
+        assert_eq!(handle_kvm_exit_recorded(&mut peripherals,
+            Ok(VcpuExit::IoOut(0x64, &[0xfe])), 0, &ledger, &controller).unwrap(), VcpuEmulation::Stopped);
+        assert_eq!(event.read().unwrap_err().raw_os_error(), Some(libc::EAGAIN));
+        let terminal = controller.execution_state().ledger_evidence();
+        for id in [0, 1] {
+            let mut data = [0xff];
+            assert_eq!(handle_kvm_exit_recorded(&mut peripherals,
+                Ok(VcpuExit::IoIn(0x64, &mut data)), id, &ledger, &controller).unwrap(), VcpuEmulation::Stopped);
+            assert_eq!(data, [0xff]);
+        }
+        assert_eq!(terminal, controller.execution_state().ledger_evidence());
+        assert_eq!(ledger.lock().unwrap().evidence().decisions, 1);
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn mismatched_reset_never_stops_the_vm_or_signals_the_eventloop() {
+        let controller = Arc::new(MachineExecutionController::default());
+        let (mut peripherals, event) = reset_device(&controller);
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        controller.enforce(vec!["vcpu:0:pio_write:0x64:1:20".into()]).unwrap();
+        assert!(handle_kvm_exit_recorded(&mut peripherals,
+            Ok(VcpuExit::IoOut(0x64, &[0xfe])), 0, &ledger, &controller).is_err());
+        assert!(!controller.shutdown_requested());
+        assert_eq!(event.read().unwrap_err().raw_os_error(), Some(libc::EAGAIN));
+        assert_eq!(controller.execution_state().trace().len(), 0);
+    }
 
     #[test]
     fn hashes_ordered_length_framed_decisions() {

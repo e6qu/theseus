@@ -413,11 +413,20 @@ pub fn build_microvm_for_boot(
         boot_cmdline,
     )?;
 
+    let (execution_evidence_file, expected_execution) = match &vm_resources.execution {
+        Some(config) => {
+            let (file, expected) = config.prepare()?;
+            (Some(file), expected)
+        }
+        None => (None, None),
+    };
     let vmm = Vmm {
         instance_info: instance_info.clone(),
         machine_config: vm_resources.machine_config.clone(),
         boot_source_config: vm_resources.boot_source.config.clone(),
         shutdown_exit_code: None,
+        execution_evidence_file,
+        execution_config: vm_resources.execution.clone(),
         vm,
         device_manager,
     };
@@ -442,6 +451,9 @@ pub fn build_microvm_for_boot(
         )
         .map_err(VmmError::VcpuStart)?;
     vmm.lock().unwrap().instance_info.state = VmState::Paused;
+    if let Some(trace) = expected_execution {
+        vmm.lock().unwrap().enforce_machine_execution_trace(trace)?;
+    }
 
     #[cfg(feature = "gdb")]
     if let Some(gdb_socket_path) = &vm_resources.machine_config.gdb_socket_path {
@@ -638,6 +650,8 @@ pub fn build_microvm_from_snapshot(
         machine_config: vm_resources.machine_config.clone(),
         boot_source_config: vm_resources.boot_source.config.clone(),
         shutdown_exit_code: None,
+        execution_evidence_file: None,
+        execution_config: None,
         vm,
         device_manager,
     };
@@ -1000,6 +1014,8 @@ pub(crate) mod tests {
             machine_config: MachineConfig::default(),
             boot_source_config: BootSourceConfig::default(),
             shutdown_exit_code: None,
+            execution_evidence_file: None,
+            execution_config: None,
             vm: Vm::Kvm(Arc::new(vm)),
             device_manager: default_device_manager(),
         }
@@ -1018,6 +1034,8 @@ pub(crate) mod tests {
             machine_config: MachineConfig::default(),
             boot_source_config: BootSourceConfig::default(),
             shutdown_exit_code: None,
+            execution_evidence_file: None,
+            execution_config: None,
             vm: Vm::Kvm(vm),
             device_manager,
         }

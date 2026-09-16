@@ -11,6 +11,7 @@ theseus validate [theseus.toml]
 theseus test --dry-run [theseus.toml]
 theseus test [--output replay-dir] [theseus.toml]
 theseus replay replay-dir
+theseus replay --output diagnostics-dir replay-dir
 theseus explore [--output exploration-dir] [theseus.toml]
 theseus explore --replay exploration-dir [--output exploration-dir]
 theseus explore --replay exploration-dir --seed-path seed,... [--output exploration-dir]
@@ -39,6 +40,20 @@ Firecracker log, and result there. The default output is
 directory. `replay` uses only the copied artifacts and leaves its source bundle
 unchanged.
 
+New single-timeline bundles use `theseus-replay-plan-v2` and require
+`execution.json`: the complete ordered machine trace, local and VM-wide
+digests, terminal boundary, and any active replay error. Manifest UART events
+are admitted as recorded host decisions through the API. Replay installs that
+trace before boot and rejects changed device effects or a missing suffix; a
+matching printed value alone is insufficient. Older version-1 plans retain
+legacy input replay without claiming machine-stream enforcement.
+
+Use `replay --output` to retain diagnostics in a new named directory. It writes
+serial and Firecracker logs, fresh execution evidence, and `result.json` even
+when replay fails. It does not copy another executable bundle. The source
+bundle remains unchanged. Timeout cuts are paused and flushed before process
+termination; their host-timed boundary is diagnostic, not actively replayable.
+
 The CLI is released for Linux amd64/arm64 and macOS arm64. macOS supports
 validation and planning only: a Firecracker timeline needs Linux and KVM.
 
@@ -54,6 +69,9 @@ adds a machine-wide ledger, and version 4 requires the exact active-replay
 trace for every retained run and service. That trace may contain `vcpu:` exits
 and `host:` UART, control-channel, or clock-jump effects. The verifier keeps
 reading the earlier formats without treating their absent fields as evidence.
+Runtime-validation version 5 additionally requires standalone container-run
+and replay evidence, recomputes their machine and local digests from the full
+traces, and verifies the passing active-replay check through guest exit.
 
 ## Explore an SDK guest
 

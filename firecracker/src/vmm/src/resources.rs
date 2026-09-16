@@ -100,6 +100,7 @@ pub struct VmmConfig {
     #[serde(skip)]
     pub serial_config: Option<SerialConfig>,
     pub memory_hotplug: Option<MemoryHotplugConfig>,
+    pub execution: Option<crate::execution::ExecutionConfig>,
 }
 
 /// A data structure that encapsulates the device configurations
@@ -138,6 +139,8 @@ pub struct VmResources {
     pub serial_out_path: Option<PathBuf>,
     /// Optional rate limiter config for serial output.
     pub serial_rate_limiter_cfg: Option<TokenBucketConfig>,
+    /// Optional full machine-stream capture and active replay configuration.
+    pub execution: Option<crate::execution::ExecutionConfig>,
 }
 
 impl VmResources {
@@ -171,6 +174,7 @@ impl VmResources {
 
         let mut resources: Self = Self {
             mmds_size_limit,
+            execution: vmm_config.execution,
             ..Default::default()
         };
         if let Some(machine_config) = vmm_config.machine_config {
@@ -552,6 +556,7 @@ impl From<&VmResources> for VmmConfig {
             pmem_devices: resources.pmem.configs.clone(),
             // serial_config is marked serde(skip) so that it doesnt end up in snapshots.
             serial_config: None,
+            execution: resources.execution.clone(),
             memory_hotplug: resources.memory_hotplug.clone(),
         }
     }
@@ -666,6 +671,7 @@ mod tests {
             pci_enabled: false,
             serial_out_path: None,
             serial_rate_limiter_cfg: None,
+            execution: None,
             memory_hotplug: Default::default(),
         }
     }

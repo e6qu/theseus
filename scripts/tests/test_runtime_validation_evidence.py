@@ -18,6 +18,10 @@ REQUIRED = (
     "container/run/replay-plan.json",
     "container/run/result.json",
     "container/run/serial.log",
+    "container/run/execution.json",
+    "container/rerun/execution.json",
+    "container/rerun/result.json",
+    "container/rerun/serial.log",
     "container/replay.log",
     "container/source/Dockerfile",
     "container/source/theseus.toml",
@@ -103,7 +107,7 @@ def main() -> None:
             path.write_text(name + "\n")
         run(validation)
         evidence = json.loads((validation / "evidence.json").read_text())
-        assert evidence["format"] == "theseus-runtime-validation-v4"
+        assert evidence["format"] == "theseus-runtime-validation-v5"
         assert evidence["architecture"] == "amd64"
         assert evidence["source_commit"] == COMMIT
         assert evidence["scenarios"] == [

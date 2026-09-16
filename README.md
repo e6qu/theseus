@@ -47,6 +47,9 @@ passing unit suite alone is not treated as runtime proof.
   clock jumps. UART, virtio MMIO, virtio MSI-X, ACPI notification, and keyboard
   interrupts are injected as recorded vCPU turns. Replay rejects a changed
   actor, input, interrupt, or exit and reports the first divergent boundary.
+- Single-service `test` bundles retain the complete machine stream. `replay`
+  actively admits that stream through guest exit and retains new diagnostics
+  with `--output`; it does not just rerun a seed and compare printed output.
 - SHA-addressed Linux runtime images for amd64 and arm64, plus published CLI
   binaries for Linux amd64/arm64 and macOS arm64.
 
@@ -74,6 +77,10 @@ passing unit suite alone is not treated as runtime proof.
   supported userspace device interrupt sources, but does not yet choose
   instruction or thread order, guest interrupt-service timing, or in-kernel
   timer delivery.
+- Device-write payloads and read addresses/widths are checked before device
+  access. Read values can only be checked after the device supplies them;
+  replay stops on a mismatch but cannot undo that read. Host-timed cutoffs are
+  diagnostic pause boundaries, not deterministic guest exits.
 - `compare` finds the first difference in two recorded histories. It does not
   perform counterfactual re-exploration or prove causality.
 - Capturing a branch copies guest RAM into a memfd. Restored children then use

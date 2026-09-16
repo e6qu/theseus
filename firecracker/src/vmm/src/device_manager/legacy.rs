@@ -78,6 +78,7 @@ impl PortIODeviceManager {
         drop(serial);
 
         let i8042 = self.i8042.lock().expect("Poisoned lock");
+        i8042.attach_reset_controller(&vm.common.machine_execution);
         if let Some(controller) = vm.deterministic_interrupt_controller() {
             i8042
                 .kbd_interrupt_evt

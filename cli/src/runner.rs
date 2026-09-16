@@ -27,6 +27,7 @@ use crate::{load_plan, CheckKind, LoadError, RunPlan};
 const READY_MARKER: &[u8] = b"THES:M:42";
 const API_READY_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+const EXECUTION_REPLAY_FORMAT: &str = "theseus-replay-plan-v2";
 
 #[derive(Debug)]
 pub enum RunError {
@@ -86,11 +87,16 @@ pub enum RunError {
     ChecksFailed {
         names: Vec<String>,
     },
+    ReplayFailed {
+        logs: PathBuf,
+        reason: String,
+    },
 }
 
 impl fmt::Display for RunError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ReplayFailed { logs, reason } => write!(formatter, "replay failed: {reason}; evidence: {}", logs.display()),
             Self::Manifest(error) => error.fmt(formatter),
             Self::BundleExists(path) => write!(
                 formatter,
@@ -217,6 +223,8 @@ struct ResultRecord {
     status: &'static str,
     error: Option<String>,
     checks: Vec<CheckResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_evidence: Option<&'static str>,
 }
 
 /// Execute a manifest once and retain all inputs and outputs in `output`.
@@ -228,7 +236,7 @@ pub fn test(manifest: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<Test
     }
     let output = absolute_output(output.as_ref())?;
     let bundle = Bundle::create(&output, manifest, &plan)?;
-    let execution = match execute(&bundle.replay_plan, &bundle.root, &bundle.root) {
+    let execution = match execute(&bundle.replay_plan, &bundle.root, &bundle.root, None) {
         Ok(execution) => execution,
         Err(error) => {
             bundle.record_error(&error)?;
@@ -246,18 +254,72 @@ pub fn test(manifest: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<Test
 
 /// Re-run the exact copied artifacts in a bundle without modifying it.
 pub fn replay(bundle: impl AsRef<Path>) -> Result<ReplayResult, RunError> {
-    let bundle = fs::canonicalize(bundle.as_ref()).map_err(|source| RunError::Read {
-        path: bundle.as_ref().to_path_buf(),
+    replay_inner(bundle.as_ref(), None)
+}
+
+/// Replay into a new, user-selected diagnostics directory without modifying the bundle.
+pub fn replay_to(
+    bundle: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+) -> Result<ReplayResult, RunError> {
+    replay_inner(bundle.as_ref(), Some(output.as_ref()))
+}
+
+fn replay_inner(bundle: &Path, output: Option<&Path>) -> Result<ReplayResult, RunError> {
+    let bundle = fs::canonicalize(bundle).map_err(|source| RunError::Read {
+        path: bundle.to_path_buf(),
         source,
     })?;
     let plan_path = bundle.join("replay-plan.json");
     let plan = read_plan(&plan_path)?;
     validate_replay_plan(&plan_path, &plan)?;
-    let logs = temporary_replay_directory()?;
-    let execution = execute(&plan, &bundle, &logs)?;
+    let expected = if plan.format == EXECUTION_REPLAY_FORMAT {
+        let path = bundle.join("execution.json");
+        let evidence = crate::execution::Evidence::read(&path, plan.run.vcpu_count)?;
+        evidence.require_replayable(&path)?;
+        Some(evidence)
+    } else {
+        None
+    };
+    let logs = match output {
+        Some(path) => {
+            let path = absolute_output(path)?;
+            if path.exists() {
+                return Err(RunError::BundleExists(path));
+            }
+            fs::create_dir_all(&path).map_err(|source| RunError::Create {
+                path: path.clone(),
+                source,
+            })?;
+            path
+        }
+        None => temporary_replay_directory()?,
+    };
+    let output = Bundle {
+        root: logs.clone(),
+        replay_plan: plan.clone(),
+    };
+    let execution = match execute(&plan, &bundle, &logs, expected.as_ref()) {
+        Ok(execution) => execution,
+        Err(error) => {
+            output.record_error(&error)?;
+            return Err(RunError::ReplayFailed {
+                logs,
+                reason: error.to_string(),
+            });
+        }
+    };
+    output.record_execution(&execution)?;
     if !execution.passed() {
-        return Err(RunError::ChecksFailed {
-            names: execution.failed_names(),
+        return Err(RunError::ReplayFailed {
+            logs,
+            reason: execution
+                .checks
+                .iter()
+                .filter(|check| check.status == "failed")
+                .map(|check| format!("{}: {}", check.name, check.detail))
+                .collect::<Vec<_>>()
+                .join("; "),
         });
     }
     Ok(ReplayResult { logs })
@@ -306,6 +368,9 @@ impl Bundle {
         }
 
         let mut replay_plan = source_plan.clone();
+        // A versioned plan makes execution.json mandatory. Removing that file
+        // or result.json cannot silently select legacy seed-only replay.
+        replay_plan.format = EXECUTION_REPLAY_FORMAT.to_owned();
         replay_plan.manifest = "manifest.toml".to_owned();
         replay_plan.runtime.firecracker.path = "artifacts/firecracker".to_owned();
         if let Some(adapter) = &mut replay_plan.runtime.image_adapter {
@@ -336,6 +401,8 @@ impl Bundle {
             },
             error: None,
             checks: execution.checks.clone(),
+            execution_evidence: (self.replay_plan.format == EXECUTION_REPLAY_FORMAT)
+                .then_some("execution.json"),
         };
         write_json(&self.root.join("result.json"), &record)
     }
@@ -346,6 +413,8 @@ impl Bundle {
             status: "failed",
             error: Some(error.to_string()),
             checks: Vec::new(),
+            execution_evidence: (self.replay_plan.format == EXECUTION_REPLAY_FORMAT)
+                .then_some("execution.json"),
         };
         write_json(&self.root.join("result.json"), &record)
     }
@@ -355,6 +424,7 @@ fn execute(
     plan: &RunPlan,
     artifact_base: &Path,
     run_directory: &Path,
+    expected: Option<&crate::execution::Evidence>,
 ) -> Result<Execution, RunError> {
     if plan.network.loopback
         || plan.network.drop_ppm != 0
@@ -378,6 +448,14 @@ fn execute(
         source,
     })?;
     let initramfs = materialize_initramfs(plan, artifact_base, run_directory)?;
+    let capture = plan.format == EXECUTION_REPLAY_FORMAT;
+    let expected_trace = expected
+        .map(|evidence| {
+            let path = run_directory.join("expected-execution.json");
+            write_json(&path, &evidence.machine_execution_trace)?;
+            Ok::<_, RunError>(path)
+        })
+        .transpose()?;
     let socket = run_directory.join("firecracker.sock");
     let serial_log = run_directory.join("serial.log");
     let firecracker_log = run_directory.join("firecracker.log");
@@ -418,13 +496,54 @@ fn execute(
         &initramfs,
         &socket,
         &serial_log,
+        capture,
+        expected_trace.as_deref(),
     );
     if result.is_err() {
+        // Retain a stable diagnostic cut when boot succeeded but input or
+        // readiness failed. Failure to capture is never a successful replay.
+        if capture && child.try_wait().ok().flatten().is_none() {
+            let _ = pause_and_flush(&socket);
+        }
         let _ = child.kill();
         let _ = child.wait();
     }
     let _ = fs::remove_file(&socket);
-    result
+    let mut execution = result?;
+    if capture {
+        let evidence = crate::execution::Evidence::read(
+            &run_directory.join("execution.json"),
+            plan.run.vcpu_count,
+        )?;
+        execution.checks.push(match &evidence.replay_error {
+            Some(error) => failed("machine_execution", "machine_execution", error),
+            None => passed(
+                "machine_execution",
+                "machine_execution",
+                "complete machine stream and local ledgers retained",
+            ),
+        });
+        if let Some(expected) = expected {
+            let matches = expected == &evidence;
+            execution.checks.push(if matches {
+                passed(
+                    "replay_machine_execution",
+                    "machine_execution",
+                    "the exact ordered stream actively governed replay through guest exit",
+                )
+            } else {
+                failed(
+                    "replay_machine_execution",
+                    "machine_execution",
+                    evidence
+                        .replay_error
+                        .as_deref()
+                        .unwrap_or("machine stream, local ledger, or terminal boundary changed"),
+                )
+            });
+        }
+    }
+    Ok(execution)
 }
 
 fn materialize_initramfs(
@@ -495,6 +614,8 @@ fn configure_and_wait(
     initramfs: &Path,
     socket: &Path,
     serial_log: &Path,
+    capture: bool,
+    expected_trace: Option<&Path>,
 ) -> Result<Execution, RunError> {
     wait_for_socket(socket, child)?;
     let kernel = path_text(&resolved_path(artifact_base, &plan.guest.kernel.path))?;
@@ -526,6 +647,16 @@ fn configure_and_wait(
         json!({ "serial_out_path": serial_log_text }),
     )?;
     api_put(socket, "/entropy", json!({ "seed": plan.run.seed }))?;
+    if capture {
+        api_put(
+            socket,
+            "/execution",
+            json!({
+                "evidence_path": path_text(&serial_log.with_file_name("execution.json"))?,
+                "replay_trace_path": expected_trace.map(path_text).transpose()?,
+            }),
+        )?;
+    }
     api_put(
         socket,
         "/actions",
@@ -534,21 +665,39 @@ fn configure_and_wait(
 
     if !plan.events.is_empty() {
         wait_for_ready(serial_log.to_path_buf(), child, plan.run.timeout_secs)?;
-        let stdin = child.stdin.as_mut().ok_or(RunError::MissingStdin)?;
         for event in &plan.events {
-            stdin
-                .write_all(&decode_hex(&event.data_hex)?)
+            if capture {
+                // Keep each manifest payload one exact host-input decision.
+                api_put(
+                    socket,
+                    "/serial-input",
+                    json!({ "data_hex": event.data_hex.to_ascii_lowercase() }),
+                )?;
+            } else {
+                child
+                    .stdin
+                    .as_mut()
+                    .ok_or(RunError::MissingStdin)?
+                    .write_all(&decode_hex(&event.data_hex)?)
+                    .map_err(|source| RunError::Write {
+                        path: PathBuf::from("Firecracker serial input"),
+                        source,
+                    })?;
+            }
+        }
+        if !capture {
+            child
+                .stdin
+                .as_mut()
+                .ok_or(RunError::MissingStdin)?
+                .flush()
                 .map_err(|source| RunError::Write {
                     path: PathBuf::from("Firecracker serial input"),
                     source,
                 })?;
         }
-        stdin.flush().map_err(|source| RunError::Write {
-            path: PathBuf::from("Firecracker serial input"),
-            source,
-        })?;
     }
-    let terminal = wait_for_exit(child, plan.run.timeout_secs)?;
+    let terminal = wait_for_exit(child, plan.run.timeout_secs, capture.then_some(socket))?;
     evaluate_checks(plan, serial_log, terminal)
 }
 
@@ -609,7 +758,16 @@ enum Terminal {
     TimedOut,
 }
 
-fn wait_for_exit(child: &mut Child, timeout_secs: u64) -> Result<Terminal, RunError> {
+fn pause_and_flush(socket: &Path) -> Result<(), RunError> {
+    api_request(socket, "PATCH", "/vm", json!({ "state": "Paused" }))?;
+    api_request(socket, "PATCH", "/execution", json!({}))
+}
+
+fn wait_for_exit(
+    child: &mut Child,
+    timeout_secs: u64,
+    capture_socket: Option<&Path>,
+) -> Result<Terminal, RunError> {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait().map_err(|source| RunError::Read {
@@ -619,6 +777,18 @@ fn wait_for_exit(child: &mut Child, timeout_secs: u64) -> Result<Terminal, RunEr
             return Ok(Terminal::Exited(status));
         }
         thread::sleep(POLL_INTERVAL);
+    }
+    if let Some(socket) = capture_socket {
+        if let Err(error) = pause_and_flush(socket) {
+            // A guest can terminate while its timeout pause is in flight.
+            if let Some(status) = child.try_wait().map_err(|source| RunError::Read {
+                path: PathBuf::from("Firecracker process"),
+                source,
+            })? {
+                return Ok(Terminal::Exited(status));
+            }
+            return Err(error);
+        }
     }
     let _ = child.kill();
     let _ = child.wait();
@@ -869,6 +1039,15 @@ fn failed(name: &str, kind: &str, detail: impl Into<String>) -> CheckResult {
 }
 
 fn api_put(socket: &Path, endpoint: &'static str, body: Value) -> Result<(), RunError> {
+    api_request(socket, "PUT", endpoint, body)
+}
+
+fn api_request(
+    socket: &Path,
+    method: &str,
+    endpoint: &'static str,
+    body: Value,
+) -> Result<(), RunError> {
     let mut stream = UnixStream::connect(socket).map_err(|source| RunError::Api {
         endpoint,
         reason: source.to_string(),
@@ -887,7 +1066,7 @@ fn api_put(socket: &Path, endpoint: &'static str, body: Value) -> Result<(), Run
         })?;
     let body = serde_json::to_vec(&body).map_err(RunError::Serialize)?;
     let request = format!(
-        "PUT {endpoint} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "{method} {endpoint} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream
@@ -916,11 +1095,11 @@ fn api_put(socket: &Path, endpoint: &'static str, body: Value) -> Result<(), Run
     if !response.starts_with("HTTP/1.1 204") {
         return Err(RunError::Api {
             endpoint,
-            reason: response
-                .lines()
-                .next()
-                .unwrap_or("empty response")
-                .to_owned(),
+            reason: if response.is_empty() {
+                "empty response".into()
+            } else {
+                response
+            },
         });
     }
     Ok(())
@@ -971,7 +1150,7 @@ fn read_plan(path: &Path) -> Result<RunPlan, RunError> {
 }
 
 fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
-    if plan.format != "theseus-run-plan-v1" {
+    if plan.format != "theseus-run-plan-v1" && plan.format != EXECUTION_REPLAY_FORMAT {
         return Err(RunError::InvalidBundle {
             path: path.to_path_buf(),
             reason: format!("unsupported plan format {}", plan.format),
@@ -1167,6 +1346,8 @@ fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
         if check.name.trim().is_empty()
             || check.name == "guest_exit"
             || check.name == "completion"
+            || check.name == "machine_execution"
+            || check.name == "replay_machine_execution"
             || !check_names.insert(&check.name)
             || check.value.is_empty()
         {
@@ -1232,7 +1413,11 @@ fn path_text(path: &Path) -> Result<String, RunError> {
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, RunError> {
-    if value.is_empty() || !value.len().is_multiple_of(2) {
+    if value.is_empty()
+        || !value.len().is_multiple_of(2)
+        || !value.is_ascii()
+        || value.len() > 32768
+    {
         return Err(RunError::InvalidBundle {
             path: PathBuf::from("replay-plan.json"),
             reason: "event data must be non-empty, even-length hexadecimal".to_owned(),
@@ -1318,6 +1503,99 @@ mem_size_mib = 128
             b"firecracker"
         );
         validate_replay_plan(&output.join("replay-plan.json"), &bundle.replay_plan).unwrap();
+        assert_eq!(bundle.replay_plan.format, EXECUTION_REPLAY_FORMAT);
+    }
+
+    fn execution_api_fixture(mode: &str) -> tempfile::TempDir {
+        let directory = fixture();
+        let script = include_str!("../tests/fixtures/execution_api.py")
+            .replace("MODE = \"exit\"", &format!("MODE = {mode:?}"));
+        fs::write(directory.path().join("runtime/firecracker"), script).unwrap();
+        let manifest = directory.path().join("theseus.toml");
+        let text = fs::read_to_string(&manifest).unwrap();
+        fs::write(
+            &manifest,
+            format!(
+                "{text}\ntimeout_secs = 1\n\n[[events]]\nwhen = \"ready\"\ndata = \"32312e35430a\"\n"
+            ),
+        )
+        .unwrap();
+        directory
+    }
+
+    #[test]
+    fn api_bundle_replays_its_exact_stream_after_the_source_is_removed() {
+        let directory = execution_api_fixture("exit");
+        let root = directory.path();
+        let bundle = root.join("run");
+        test(root.join("theseus.toml"), &bundle).unwrap();
+        fs::remove_dir_all(root.join("runtime")).unwrap();
+        fs::remove_dir_all(root.join("guest")).unwrap();
+        fs::remove_file(root.join("theseus.toml")).unwrap();
+        let rerun = root.join("rerun");
+        replay_to(&bundle, &rerun).unwrap();
+        assert_eq!(
+            fs::read(bundle.join("execution.json")).unwrap(),
+            fs::read(rerun.join("execution.json")).unwrap()
+        );
+        let result: Value =
+            serde_json::from_slice(&fs::read(rerun.join("result.json")).unwrap()).unwrap();
+        assert_eq!(result["execution_evidence"], "execution.json");
+        assert!(result["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(
+                |check| check["name"] == "replay_machine_execution" && check["status"] == "passed"
+            ));
+        assert!(matches!(
+            replay_to(&bundle, &rerun),
+            Err(RunError::BundleExists(_))
+        ));
+        fs::remove_file(bundle.join("execution.json")).unwrap();
+        fs::remove_file(bundle.join("result.json")).unwrap();
+        let rejected = root.join("missing-evidence");
+        assert!(replay_to(&bundle, &rejected).is_err());
+        assert!(!rejected.exists());
+    }
+
+    #[test]
+    fn changed_uart_input_fails_before_delivery_and_retains_diagnostics() {
+        let directory = execution_api_fixture("exit");
+        let root = directory.path();
+        let bundle = root.join("run");
+        test(root.join("theseus.toml"), &bundle).unwrap();
+        let mut plan = read_plan(&bundle.join("replay-plan.json")).unwrap();
+        plan.events[0].data_hex = "32322e35430a".into();
+        write_json(&bundle.join("replay-plan.json"), &plan).unwrap();
+        let rerun = root.join("divergence");
+        let error = replay_to(&bundle, &rerun).unwrap_err();
+        assert!(error.to_string().contains("evidence:"));
+        let evidence = crate::execution::Evidence::read(&rerun.join("execution.json"), 1).unwrap();
+        assert!(evidence.machine_execution_trace.is_empty());
+        assert!(evidence.replay_error.unwrap().contains("decision 0"));
+        assert!(!fs::read_to_string(rerun.join("serial.log"))
+            .unwrap()
+            .contains("sensor reading:"));
+        let result: Value =
+            serde_json::from_slice(&fs::read(rerun.join("result.json")).unwrap()).unwrap();
+        assert_eq!(result["status"], "failed");
+    }
+
+    #[test]
+    fn timeout_retains_a_paused_cut_and_never_claims_active_replay() {
+        let directory = execution_api_fixture("pause");
+        let root = directory.path();
+        let bundle = root.join("run");
+        assert!(test(root.join("theseus.toml"), &bundle).is_err());
+        let evidence = crate::execution::Evidence::read(&bundle.join("execution.json"), 1).unwrap();
+        assert_eq!(evidence.boundary, "pause");
+        let rerun = root.join("rejected");
+        assert!(replay_to(&bundle, &rerun)
+            .unwrap_err()
+            .to_string()
+            .contains("host-timed pause"));
+        assert!(!rerun.exists());
     }
 
     #[test]

@@ -43,12 +43,15 @@ runtime "$container" '
   theseus test --dry-run > plan.json
   theseus test --output work/replay theseus.toml
   grep -a "^THES:HTTP:operation:read_health:PASS$" work/replay/serial.log
-  theseus replay work/replay > replay.log
+  theseus replay --output work/rerun work/replay > replay.log
   grep -F "replay passed" replay.log
+  cmp work/replay/execution.json work/rerun/execution.json
+  grep -A4 "replay_machine_execution" work/rerun/result.json | grep "passed"
 '
 mkdir -p "$validation/container"
 cp "$container/plan.json" "$container/replay.log" "$validation/container/"
 cp -a "$container/work/replay" "$validation/container/run"
+cp -a "$container/work/rerun" "$validation/container/rerun"
 mkdir -p "$validation/container/source"
 cp "$container/Dockerfile" "$container/theseus.toml" "$validation/container/source/"
 

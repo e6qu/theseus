@@ -10,9 +10,10 @@ use theseus_cli::{
     explore, explore_compose, explore_compose_expect_counterexample, go_coverage,
     load_compose_plan, load_plan, minimize_compose_campaign,
     minimize_compose_campaign_expect_counterexample, minimize_exploration_path, query_campaigns,
-    replay, replay_compose, replay_exploration, replay_exploration_path, report, report_file,
-    report_text, snapshot_exploration_path, test, test_compose, verify_native_evidence,
-    write_evaluation_lock, ReportFormat, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE,
+    replay, replay_compose, replay_exploration, replay_exploration_path, replay_to, report,
+    report_file, report_text, snapshot_exploration_path, test, test_compose,
+    verify_native_evidence, write_evaluation_lock, ReportFormat, CARGO_COVERAGE_USAGE,
+    GO_COVERAGE_USAGE,
 };
 
 const USAGE: &str = "Usage:
@@ -20,6 +21,7 @@ const USAGE: &str = "Usage:
   theseus test --dry-run [theseus.toml]
   theseus test [--output replay-dir] [theseus.toml]
   theseus replay replay-dir
+  theseus replay --output diagnostics-dir replay-dir
   theseus explore [--output exploration-dir] [theseus.toml]
   theseus explore --replay exploration-dir [--seed-path seed,...] [--output exploration-dir]
   theseus explore --minimize exploration-dir --seed-path seed,... [--output exploration-dir]
@@ -130,6 +132,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
         [command, bundle] if command == "replay" => {
             let result = replay(bundle).map_err(|error| error.to_string())?;
+            println!("replay passed; logs: {}", result.logs.display());
+            Ok(())
+        }
+        [command, flag, output, bundle] if command == "replay" && flag == "--output" => {
+            let result = replay_to(bundle, output).map_err(|error| error.to_string())?;
             println!("replay passed; logs: {}", result.logs.display());
             Ok(())
         }

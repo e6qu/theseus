@@ -65,12 +65,14 @@ door could leave `vmm` without creating a dependency cycle.
 | Execution locations | `orchestrator/coverage` | Guest-PC collection by single-step or deterministic exit sampling. |
 | Application coverage | `instrumentation/c`, `instrumentation/llvm`, `instrumentation/go` + `cli` + `topology-runner` | GCC C and Go blocks plus LLVM C/C++/Rust edges with build-scoped identities. The CLI instruments selected Cargo static Rust graphs and selected Go commands' imported main-module packages. Compose locks manifests and symbols; the runner validates and joins them into reports. |
 | Thread scheduling | `instrumentation/c` + `cli` + `topology-runner` | Bounded GCC C pthread interleavings with explicit, static, or feedback-driven choices plus replay-checked mutex and condition-variable transitions. |
-| Execution stream | `firecracker/vmm` + `topology-runner` + `cli` | Per-vCPU rolling identities plus one VM-wide total order for handled KVM exits, emulated device effects, UART/control input, virtual-clock jumps, and synchronous userspace-device interrupt injection. Pending level and edge requests are inherited across branches and the order is actively enforced during replay. |
+| Execution stream | `firecracker/vmm` + `topology-runner` + `cli` | Per-vCPU rolling identities plus one VM-wide total order for handled KVM exits, emulated device effects, UART/control input, virtual-clock jumps, and synchronous userspace-device interrupt injection. Branches inherit pending requests. Topology and new single-service replay actively enforce the order through recorded guest exit. Writes and read identities are checked before access; read values are checked afterward. |
 
 ## Verification model
 
-Pull-request CI compiles the workspace and runs environment-independent tests
-on an amd64 GitHub runner. KVM behavior needs separate native execution. Each
+Pull-request CI compiles the workspace, runs environment-independent tests,
+and exercises single-service UART/reset replay on native amd64 KVM with the
+source runtime and a published kernel. That regression is not certification
+of released artifacts. Each
 successful release starts its amd64 certification on a native hosted runner;
 arm64 certification targets a labelled self-hosted KVM runner. The workflow
 verifies signed-release provenance, exact archive inventories, and the

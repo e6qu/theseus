@@ -62,6 +62,12 @@ pub enum VmmAction {
     ConfigureMetrics(MetricsConfig),
     /// Configure the serial device. This action can only be called before the microVM has booted.
     ConfigureSerial(SerialConfig),
+    /// Configure bounded execution evidence before a fresh boot.
+    ConfigureExecution(crate::execution::ExecutionConfig),
+    /// Flush execution evidence after pausing the VM.
+    FlushExecutionEvidence,
+    /// Admit one exact UART input payload through the machine replay protocol.
+    SendSerialInput(Vec<u8>),
     /// Create a snapshot using as input the `CreateSnapshotParams`. This action can only be called
     /// after the microVM has booted and only when the microVM is in `Paused` state.
     CreateSnapshot(CreateSnapshotParams),
@@ -452,6 +458,10 @@ impl<'a> PrebootApiController<'a> {
                 self.vm_resources.serial_rate_limiter_cfg = serial_cfg.rate_limiter;
                 Ok(VmmData::Empty)
             }
+            ConfigureExecution(config) => {
+                self.vm_resources.execution = Some(config);
+                Ok(VmmData::Empty)
+            }
             GetBalloonConfig => self.balloon_config(),
             GetFullVmConfig => {
                 warn!(
@@ -474,9 +484,14 @@ impl<'a> PrebootApiController<'a> {
             InsertBlockDevice(config) => self.insert_block_device(config),
             InsertPmemDevice(config) => self.insert_pmem_device(config),
             InsertNetworkDevice(config) => self.insert_net_device(config),
-            LoadSnapshot(config) => self
-                .load_snapshot(&config)
-                .map_err(VmmActionError::LoadSnapshot),
+            LoadSnapshot(config) => {
+                if self.vm_resources.execution.is_some() {
+                    return Err(VmmActionError::InternalVmm(VmmError::ExecutionCoverage(
+                        "API execution capture supports fresh boot, not snapshot loading".into(),
+                    )));
+                }
+                self.load_snapshot(&config).map_err(VmmActionError::LoadSnapshot)
+            }
             PatchMMDS(value) => mmds_patch_data(
                 self.vm_resources
                     .locked_mmds_or_default()
@@ -501,6 +516,8 @@ impl<'a> PrebootApiController<'a> {
             SetMemoryHotplugDevice(config) => self.set_memory_hotplug_device(config),
             // Operations not allowed pre-boot.
             CreateSnapshot(_)
+            | FlushExecutionEvidence
+            | SendSerialInput(_)
             | FlushMetrics
             | Pause
             | Resume
@@ -704,6 +721,12 @@ impl RuntimeApiController {
             // Supported operations allowed post-boot.
             CreateSnapshot(snapshot_create_cfg) => self.create_snapshot(&snapshot_create_cfg),
             FlushMetrics => self.flush_metrics(),
+            FlushExecutionEvidence => self.vmm.lock().expect("Poisoned lock")
+                .flush_execution_evidence().map(|()| VmmData::Empty)
+                .map_err(VmmActionError::InternalVmm),
+            SendSerialInput(data) => self.vmm.lock().expect("Poisoned lock")
+                .push_serial_input(&data).map(|()| VmmData::Empty)
+                .map_err(VmmActionError::InternalVmm),
             GetBalloonConfig => self
                 .vmm
                 .lock()
@@ -849,6 +872,7 @@ impl RuntimeApiController {
             | ConfigureLogger(_)
             | ConfigureMetrics(_)
             | ConfigureSerial(_)
+            | ConfigureExecution(_)
             | LoadSnapshot(_)
             | PutCpuConfiguration(_)
             | SetBalloonDevice(_)

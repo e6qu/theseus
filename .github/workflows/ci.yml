@@ -14,7 +14,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang golang-go libclang-dev libclang-rt-dev libseccomp-dev llvm musl-tools
+          sudo apt-get install -y -qq busybox-static clang cpio golang-go libclang-dev libclang-rt-dev libseccomp-dev llvm musl-tools
 
       - name: Install Rust (pinned toolchain)
         uses: dtolnay/rust-toolchain@86e7197484018ef6aaa9255d186f6ce1754276dd
@@ -71,16 +71,56 @@ jobs:
             rate_limiter::tests
           cargo test -p vmm --lib simulated_storage -- --test-threads=1
           cargo test -p vmm --lib unactivated_simulated -- --test-threads=1
+          cargo test -p firecracker -- api_server::request::execution
 
       - name: Check self-contained tutorials
         run: |
           sh -n docs/tutorials/01-replay-by-seed/run.sh
           sh -n docs/tutorials/02-control-the-random/run.sh
-          sh -n docs/tutorials/04-read-serial/run.sh
+          sh -n docs/tutorials/04-read-serial/init
           python3 scripts/tests/test_tutorial_readmes.py
           python3 scripts/tests/test_documentation_claims.py
           python3 scripts/tests/test_documentation_links.py
           ! rg -n '/dev/hwrng|(^|[[:space:]])/theseus/|\.\./\.\./\.\.' docs/tutorials
+
+      - name: Replay UART input and guest reset on native KVM
+        working-directory: docs/tutorials/04-read-serial
+        run: |
+          test -c /dev/kvm
+          if ! test -r /dev/kvm || ! test -w /dev/kvm; then
+            sudo chmod 666 /dev/kvm
+          fi
+          cargo build --manifest-path ../../../firecracker/Cargo.toml -p firecracker
+          cargo build --manifest-path ../../../cli/Cargo.toml --locked
+          release=$(mktemp -d)
+          tag=7eee61be7fd8
+          url="https://github.com/e6qu/theseus/releases/download/$tag"
+          curl -fsSL "$url/theseus-$tag-linux-amd64.tar.gz" -o "$release/theseus-$tag-linux-amd64.tar.gz"
+          curl -fsSL "$url/SHA256SUMS" -o "$release/SHA256SUMS"
+          (cd "$release" && sha256sum --check --ignore-missing SHA256SUMS)
+          tar -xzf "$release/theseus-$tag-linux-amd64.tar.gz" -C "$release"
+          mkdir -p work/runtime work/guest/root/bin
+          cp ../../../firecracker/target/debug/firecracker work/runtime/firecracker
+          cp "$release/theseus-$tag-linux-amd64/vmlinux" work/guest/vmlinux
+          cp /bin/busybox work/guest/root/bin/busybox
+          cp init work/guest/root/init
+          chmod +x work/guest/root/init
+          (cd work/guest/root && find . -print | cpio -o -H newc --quiet | gzip > ../initramfs.cpio.gz)
+          ../../../cli/target/debug/theseus test --output work/replay theseus.toml
+          grep -a '^sensor reading: 21.5C$' work/replay/serial.log
+          for attempt in 1 2 3; do
+            ../../../cli/target/debug/theseus replay --output "work/rerun-$attempt" work/replay
+            cmp work/replay/execution.json "work/rerun-$attempt/execution.json"
+          done
+          python3 -c 'import json; e = json.load(open("work/replay/execution.json")); t = e["machine_execution_trace"]; assert "host:serial_input:6:32312e35430a" in t; assert t[-1] == "vcpu:0:pio_write:0x64:1:fe", t[-10:]'
+
+      - name: Retain native replay diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-uart-replay
+          path: docs/tutorials/04-read-serial/work/
+          if-no-files-found: ignore
 
       - name: Check reproducible release archives
         run: |

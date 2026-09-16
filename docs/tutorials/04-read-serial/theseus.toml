@@ -1,0 +1,27 @@
+version = 1
+
+[runtime]
+firecracker = "work/runtime/firecracker"
+
+[guest]
+kernel = "work/guest/vmlinux"
+initramfs = "work/guest/initramfs.cpio.gz"
+
+[run]
+seed = 42
+vcpu_count = 1
+mem_size_mib = 128
+timeout_secs = 10
+
+[run.virtual_time]
+tick_ns = 1000000
+exits_per_tick = 10
+
+[[events]]
+when = "ready"
+data = "32312e35430a" # 21.5C followed by newline
+
+[[checks]]
+name = "sensor reading"
+kind = "serial_contains"
+value = "sensor reading: 21.5C"

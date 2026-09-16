@@ -7,7 +7,7 @@
 
 use std::io;
 use std::num::Wrapping;
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, OnceLock, Weak};
 
 use serde::Serialize;
 use vm_superio::Trigger;
@@ -16,6 +16,7 @@ use vmm_sys_util::eventfd::EventFd;
 use super::EventFdTrigger;
 use crate::logger::{IncMetric, SharedIncMetric, error, warn};
 use crate::vstate::bus::BusDevice;
+use crate::vstate::vcpu::MachineExecutionController;
 
 /// Errors thrown by the i8042 device.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
@@ -95,8 +96,9 @@ const BUF_SIZE: usize = 16;
 /// A i8042 PS/2 controller that emulates just enough to shutdown the machine.
 #[derive(Debug)]
 pub struct I8042Device {
-    /// CPU reset eventfd. We will set this event when the guest issues CMD_RESET_CPU.
+    /// Standalone-device fallback; attached VMs stop on their recorded vCPU turn.
     reset_evt: EventFd,
+    reset_controller: OnceLock<Weak<MachineExecutionController>>,
 
     /// Keyboard interrupt event (IRQ 1).
     pub kbd_interrupt_evt: EventFdTrigger,
@@ -120,10 +122,19 @@ pub struct I8042Device {
 }
 
 impl I8042Device {
-    /// Constructs an i8042 device that will signal the given event when the guest requests it.
+    /// Complete reset synchronously on the vCPU's machine-stream turn.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn attach_reset_controller(&self, controller: &Arc<MachineExecutionController>) {
+        self.reset_controller
+            .set(Arc::downgrade(controller))
+            .expect("i8042 reset controller already installed");
+    }
+
+    /// Constructs an i8042 device with an eventfd fallback until attached to a VM.
     pub fn new(reset_evt: EventFd) -> Result<I8042Device, std::io::Error> {
         Ok(I8042Device {
             reset_evt,
+            reset_controller: OnceLock::new(),
             kbd_interrupt_evt: EventFdTrigger::new(EventFd::new(libc::EFD_NONBLOCK)?),
             control: CB_POST_OK | CB_KBD_INT,
             cmd: 0,
@@ -258,10 +269,12 @@ impl BusDevice for I8042Device {
 
         match offset {
             OFS_STATUS if data[0] == CMD_RESET_CPU => {
-                // The guest wants to assert the CPU reset line. We handle that by triggering
-                // our exit event fd. Meaning Firecracker will be exiting as soon as the VMM
-                // thread wakes up to handle this event.
-                if let Err(err) = self.reset_evt.write(1) {
+                // Attached VMs stop at this device-effect boundary. The vCPU
+                // records the reset write before notifying the event loop;
+                // it must not resume the guest and admit more polling exits.
+                if let Some(controller) = self.reset_controller.get().and_then(Weak::upgrade) {
+                    controller.request_shutdown();
+                } else if let Err(err) = self.reset_evt.write(1) {
                     error!("Failed to trigger i8042 reset event: {:?}", err);
                     METRICS.error_count.inc();
                 }

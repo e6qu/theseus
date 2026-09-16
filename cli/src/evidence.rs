@@ -20,6 +20,7 @@ const VALIDATION_FORMAT_V1: &str = "theseus-runtime-validation-v1";
 const VALIDATION_FORMAT_V2: &str = "theseus-runtime-validation-v2";
 const VALIDATION_FORMAT_V3: &str = "theseus-runtime-validation-v3";
 const VALIDATION_FORMAT_V4: &str = "theseus-runtime-validation-v4";
+const VALIDATION_FORMAT_V5: &str = "theseus-runtime-validation-v5";
 const CERTIFICATE_FORMAT_V1: &str = "theseus-runtime-certificate-v1";
 const CERTIFICATE_FORMAT_V2: &str = "theseus-runtime-certificate-v2";
 const CERTIFICATE_FORMAT_V3: &str = "theseus-runtime-certificate-v3";
@@ -653,6 +654,12 @@ fn verify_runtime_validation(
         "strict-execution/source/compose.yaml",
         "strict-execution/source/api/theseus.toml",
     ]);
+    let api_required = BTreeSet::from([
+        "container/run/execution.json",
+        "container/rerun/execution.json",
+        "container/rerun/result.json",
+        "container/rerun/serial.log",
+    ]);
     let file = fs::File::open(path)
         .map_err(|error| EvidenceError(format!("cannot read {}: {error}", path.display())))?;
     let mut archive = Archive::new(GzDecoder::new(file));
@@ -684,7 +691,10 @@ fn verify_runtime_validation(
             .to_owned();
         let mut bytes = Vec::new();
         let mut hasher = Sha256::new();
-        if required.contains(name.as_str()) || strict_required.contains(name.as_str()) {
+        if required.contains(name.as_str())
+            || strict_required.contains(name.as_str())
+            || api_required.contains(name.as_str())
+        {
             entry.read_to_end(&mut bytes).map_err(|error| {
                 EvidenceError(format!("cannot read archive member {name}: {error}"))
             })?;
@@ -722,6 +732,7 @@ fn verify_runtime_validation(
                 | VALIDATION_FORMAT_V2
                 | VALIDATION_FORMAT_V3
                 | VALIDATION_FORMAT_V4
+                | VALIDATION_FORMAT_V5
         ),
         "unsupported runtime validation format",
     )?;
@@ -815,6 +826,60 @@ fn verify_runtime_validation(
         String::from_utf8_lossy(&retained["container/replay.log"]).contains("replay passed"),
         "container scenario did not retain a successful replay",
     )?;
+    let replay_plan: serde_json::Value = parse_json_bytes(
+        &retained["container/run/replay-plan.json"],
+        "container replay plan",
+    )?;
+    if proof.format == VALIDATION_FORMAT_V5
+        || replay_plan["format"] == "theseus-replay-plan-v2"
+        || container["execution_evidence"] == "execution.json"
+    {
+        require(
+            api_required.iter().all(|name| retained.contains_key(*name)),
+            "runtime validation is missing API machine-stream replay evidence",
+        )?;
+        require(
+            replay_plan["format"] == "theseus-replay-plan-v2"
+                && container["execution_evidence"] == "execution.json",
+            "container run did not require machine-stream capture",
+        )?;
+        let vcpu_count = replay_plan["run"]["vcpu_count"]
+            .as_u64()
+            .and_then(|count| u8::try_from(count).ok())
+            .ok_or_else(|| EvidenceError("container replay plan has no valid vCPU count".into()))?;
+        let original: crate::execution::Evidence = parse_json_bytes(
+            &retained["container/run/execution.json"],
+            "container execution",
+        )?;
+        let replay: crate::execution::Evidence = parse_json_bytes(
+            &retained["container/rerun/execution.json"],
+            "container replay execution",
+        )?;
+        original.validate(vcpu_count).map_err(EvidenceError)?;
+        replay.validate(vcpu_count).map_err(EvidenceError)?;
+        require(original.boundary == "guest_exit" && original.replay_error.is_none()
+            && !original.machine_execution_trace.is_empty() && original == replay,
+            "container API replay did not reproduce the exact admitted machine stream through guest exit")?;
+        let result: serde_json::Value = parse_json_bytes(
+            &retained["container/rerun/result.json"],
+            "container replay result",
+        )?;
+        require(
+            result["status"] == "passed"
+                && result["execution_evidence"] == "execution.json"
+                && result["checks"].as_array().is_some_and(|checks| {
+                    checks.iter().any(|check| {
+                        check["name"] == "replay_machine_execution" && check["status"] == "passed"
+                    })
+                }),
+            "container API replay has no passing active-replay check",
+        )?;
+        require(
+            String::from_utf8_lossy(&retained["container/rerun/serial.log"])
+                .contains("THES:HTTP:operation:read_health:PASS"),
+            "container API replay has no successful health operation",
+        )?;
+    }
     verify_validation_campaign(
         &retained["coverage/campaign/campaign-result.json"],
         "coverage",
@@ -900,14 +965,17 @@ fn verify_runtime_validation(
         )?;
         if matches!(
             proof.format.as_str(),
-            VALIDATION_FORMAT_V3 | VALIDATION_FORMAT_V4
+            VALIDATION_FORMAT_V3 | VALIDATION_FORMAT_V4 | VALIDATION_FORMAT_V5
         ) {
             verify_campaign_machine_execution_ledgers(
                 &retained["strict-execution/campaign/campaign-result.json"],
                 "strict execution",
             )?;
         }
-        if proof.format == VALIDATION_FORMAT_V4 {
+        if matches!(
+            proof.format.as_str(),
+            VALIDATION_FORMAT_V4 | VALIDATION_FORMAT_V5
+        ) {
             verify_campaign_machine_execution_traces(
                 &retained["strict-execution/campaign/campaign-result.json"],
                 "strict execution",
@@ -925,14 +993,17 @@ fn verify_runtime_validation(
         )?;
         if matches!(
             proof.format.as_str(),
-            VALIDATION_FORMAT_V3 | VALIDATION_FORMAT_V4
+            VALIDATION_FORMAT_V3 | VALIDATION_FORMAT_V4 | VALIDATION_FORMAT_V5
         ) {
             verify_campaign_machine_execution_ledgers(
                 &retained["strict-execution/rerun/campaign-result.json"],
                 "strict execution replay",
             )?;
         }
-        if proof.format == VALIDATION_FORMAT_V4 {
+        if matches!(
+            proof.format.as_str(),
+            VALIDATION_FORMAT_V4 | VALIDATION_FORMAT_V5
+        ) {
             verify_campaign_machine_execution_traces(
                 &retained["strict-execution/rerun/campaign-result.json"],
                 "strict execution replay",
@@ -1059,7 +1130,7 @@ fn valid_json_execution_ledger(ledger: &serde_json::Value) -> bool {
             .is_some_and(|tail| !tail.is_empty())
 }
 
-fn valid_machine_execution_record(record: &str) -> bool {
+pub(crate) fn valid_machine_execution_record(record: &str) -> bool {
     if let Some(effect) = record.strip_prefix("host:") {
         if effect == "ctrl_alt_del" {
             return true;
@@ -1308,6 +1379,55 @@ mod tests {
                 .to_string()
                 .contains("no valid ordered KVM execution ledger")
         );
+    }
+
+    #[test]
+    fn v5_rejects_missing_changed_paused_or_unchecked_api_replay_even_after_resealing() {
+        for mutation in ["missing", "digest", "pause", "check"] {
+            let temporary = tempfile::tempdir().unwrap();
+            let directory = temporary.path();
+            write_architecture(directory, "amd64", "passed");
+            let root = directory.join("validation-amd64/validation");
+            if mutation == "missing" {
+                fs::remove_file(root.join("container/rerun/execution.json")).unwrap();
+            } else {
+                let name = if mutation == "check" {
+                    "container/rerun/result.json"
+                } else {
+                    "container/rerun/execution.json"
+                };
+                let path = root.join(name);
+                let mut value: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                match mutation {
+                    "digest" => {
+                        value["machine_execution_ledger"]["sha256"] =
+                            serde_json::json!("0".repeat(64))
+                    }
+                    "pause" => value["boundary"] = serde_json::json!("pause"),
+                    "check" => value["checks"][0]["status"] = serde_json::json!("failed"),
+                    _ => unreachable!(),
+                }
+                fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+            }
+            let mut proof: serde_json::Value =
+                serde_json::from_slice(&fs::read(root.join("evidence.json")).unwrap()).unwrap();
+            let mut inventory = BTreeMap::new();
+            inventory_tree(&root, &root, &mut inventory);
+            inventory.remove("evidence.json");
+            proof["files"] = serde_json::to_value(inventory).unwrap();
+            fs::write(
+                root.join("evidence.json"),
+                serde_json::to_vec(&proof).unwrap(),
+            )
+            .unwrap();
+            archive_validation(directory, "amd64", &root);
+            let index = write_index(directory, false);
+            assert!(
+                verify_native_evidence(index).is_err(),
+                "mutation {mutation} accepted"
+            );
+        }
     }
 
     #[test]
@@ -1675,12 +1795,49 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, bytes).unwrap();
         }
+        if !legacy {
+            let ledger = |record: &str| {
+                let mut digest = Sha256::new();
+                digest.update((record.len() as u64).to_le_bytes());
+                digest.update(record.as_bytes());
+                serde_json::json!({"decisions": 1, "sha256": format!("{:x}", digest.finalize()), "tail": [record]})
+            };
+            let execution = serde_json::json!({
+                "format": "theseus-execution-v1", "boundary": "guest_exit", "replay_error": null,
+                "execution_ledgers": [ledger("pio_write:0x64:1:fe")],
+                "machine_execution_ledger": ledger("vcpu:0:pio_write:0x64:1:fe"),
+                "machine_execution_trace": ["vcpu:0:pio_write:0x64:1:fe"],
+            });
+            fs::create_dir_all(root.join("container/rerun")).unwrap();
+            for name in [
+                "container/run/execution.json",
+                "container/rerun/execution.json",
+            ] {
+                fs::write(root.join(name), serde_json::to_vec(&execution).unwrap()).unwrap();
+            }
+            fs::write(
+                root.join("container/run/replay-plan.json"),
+                br#"{"format":"theseus-replay-plan-v2","run":{"vcpu_count":1}}"#,
+            )
+            .unwrap();
+            fs::write(
+                root.join("container/run/result.json"),
+                br#"{"status":"passed","execution_evidence":"execution.json"}"#,
+            )
+            .unwrap();
+            fs::write(root.join("container/rerun/result.json"), br#"{"status":"passed","execution_evidence":"execution.json","checks":[{"name":"replay_machine_execution","status":"passed"}]}"#).unwrap();
+            fs::write(
+                root.join("container/rerun/serial.log"),
+                b"THES:HTTP:operation:read_health:PASS\n",
+            )
+            .unwrap();
+        }
         let mut inventory = BTreeMap::new();
         inventory_tree(&root, &root, &mut inventory);
         fs::write(
             root.join("evidence.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
-                "format": if legacy { VALIDATION_FORMAT_V1 } else { VALIDATION_FORMAT_V4 },
+                "format": if legacy { VALIDATION_FORMAT_V1 } else { VALIDATION_FORMAT_V5 },
                 "architecture": architecture,
                 "source_commit": COMMIT,
                 "runtime": {
@@ -1698,6 +1855,10 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+        archive_validation(directory, architecture, &root);
+    }
+
+    fn archive_validation(directory: &Path, architecture: &str, root: &Path) {
         let archive_name = format!("theseus-{TAG}-runtime-validation-{architecture}.tar.gz");
         let archive = fs::File::create(directory.join(archive_name)).unwrap();
         let encoder = GzEncoder::new(archive, Compression::default());

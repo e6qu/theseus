@@ -84,6 +84,12 @@ Theseus currently has:
   ACPI notification, and keyboard requests. Locked replay uses it as an
   admission protocol: the next host or vCPU actor and its exact payload must
   match before the effect is admitted.
+- Version-2 single-service replay plans require complete machine-stream
+  evidence and install it before boot. UART events use recorded API input;
+  replay retains named diagnostics and rejects missing or inconsistent evidence.
+  Host-timed pauses and runtime errors are not claimed as replayable guest exits.
+  Attached i8042 and system-event resets terminate on their recorded turn,
+  rather than extending the stream until asynchronous event-loop shutdown.
 - A Test Composer-shaped lifecycle for ordinary Compose operations, including
   setup alternatives, overlapping named processes, exclusive and singleton
   drivers, anytime observations, and terminal eventual/final checks.
@@ -138,6 +144,13 @@ architecture images, multi-architecture manifest, kernel, modules,
 instrumentation tools, SBOMs, build inputs, and attestations. Close the
 remaining evidence gap before adding another isolated runtime feature.
 
+Native certification exposed variable i8042 polling after a guest reset even
+when serial output and virtual time matched. The terminal admission fix and
+standalone machine-stream replay close that source-level gap; source PR CI
+exercises the UART/reset path on amd64 KVM. Do not mark the release portfolio
+demonstrated until the merged SHA's full certification and indexed evidence
+pass. In-kernel timer control remains next after this release gate.
+
 1. Automatically execute the released amd64 runtime on native KVM after its
    release passes all consumer checks.
 2. Certify fixed-plan replay and retain the distributed partition, recovery,
@@ -148,6 +161,8 @@ remaining evidence gap before adding another isolated runtime feature.
 4. Retain exact plans, locked workloads, complete result inventories, serial
    logs, reports, minimizations, replay results, host facts, runtime identities,
    and a cryptographic inventory for every validation file.
+   Version-5 validation must include exact standalone container run/replay
+   evidence and a retained passing active-replay check, not only replay stdout.
 5. Make the released CLI reject incomplete, renamed, unsafe, mismatched, or
    semantically empty evidence while reporting the exact certified
    architecture set. Exercise its offline report, comparison, evaluation,
@@ -184,7 +199,9 @@ checkpoints, wake a running vCPU, and inject each UART, virtio MMIO, virtio
 MSI-X, ACPI notification, or keyboard request through KVM as an exact recorded
 vCPU turn. CTRL+ALT+DEL is also an exact host-input decision. Replay gates the
 next vCPU or host actor and rejects a changed payload, interrupt, checkpoint
-prefix, missing suffix, or extra effect before delivery.
+prefix, missing suffix, or extra effect. Writes and read identities are gated
+before device access; read values are necessarily checked afterward. Guest
+reset is a terminal admission turn, not an asynchronous host-timed cutoff.
 
 The next slice must control in-kernel timer delivery, then runnable guest
 entities, virtual-clock reads, and guest-side input consumption between KVM
