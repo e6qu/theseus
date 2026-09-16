@@ -27,10 +27,11 @@ pub(crate) fn parse_put_execution(body: &Body) -> Result<ParsedRequest, RequestE
 }
 
 pub(crate) fn parse_patch_execution(body: &Body) -> Result<ParsedRequest, RequestError> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Flush {}
-    serde_json::from_slice::<Flush>(body.raw())?;
+    let value: serde_json::Value = serde_json::from_slice(body.raw())?;
+    if !value.as_object().is_some_and(|object| object.is_empty()) {
+        return Err(RequestError::Generic(StatusCode::BadRequest,
+            "execution flush requires an empty JSON object".into()));
+    }
     Ok(ParsedRequest::new_sync(VmmAction::FlushExecutionEvidence))
 }
 
