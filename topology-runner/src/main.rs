@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::net::Ipv4Addr;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -33,6 +34,7 @@ use vmm::persist::{restore_from_microvm_state, VmInfo};
 use vmm::rate_limiter::RateLimiter;
 use vmm::resources::VmResources;
 use vmm::seccomp::get_empty_filters;
+use vmm::utils::net::mac::MacAddr;
 use vmm::vmm_config::boot_source::BootSourceConfig;
 use vmm::vmm_config::entropy::EntropyDeviceConfig;
 use vmm::vmm_config::instance_info::InstanceInfo;
@@ -12081,7 +12083,7 @@ fn build_service(
         resources.block.add_virtio_device(block.clone());
         simulated_storage.push(storage.id.clone());
     }
-    for network in &service.networks {
+    for (interface_index, network) in service.networks.iter().enumerate() {
         let switch = switches
             .get(network)
             .ok_or_else(|| format!("service {name}: unknown network {network}"))?
@@ -12106,7 +12108,7 @@ fn build_service(
                 },
                 switch,
                 endpoint.clone(),
-                None,
+                container_guest_mac(service, interface_index)?,
                 RateLimiter::default(),
                 RateLimiter::default(),
                 None,
@@ -12132,6 +12134,36 @@ fn build_service(
         networks: simulated_networks,
         network_endpoints,
     })
+}
+
+/// Container guests commonly use the same deterministic entropy seed. Letting
+/// Linux synthesize a NIC address would therefore give peers the same MAC and
+/// prevent ARP from establishing an ordinary service-to-service path. Derive
+/// a stable locally administered address from the already locked IPv4 address.
+fn container_guest_mac(
+    service: &ServicePlan,
+    interface_index: usize,
+) -> Result<Option<MacAddr>, String> {
+    let Some(network) = &service.run.container_network else {
+        return Ok(None);
+    };
+    let interface = network
+        .interfaces
+        .get(interface_index)
+        .ok_or_else(|| format!("container network is missing interface index {interface_index}"))?;
+    let octets = interface
+        .address
+        .parse::<Ipv4Addr>()
+        .map_err(|error| {
+            format!(
+                "invalid container IPv4 address {:?}: {error}",
+                interface.address
+            )
+        })?
+        .octets();
+    Ok(Some(MacAddr::from([
+        0x02, 0x00, octets[0], octets[1], octets[2], octets[3],
+    ])))
 }
 
 fn restore_service(
@@ -13045,6 +13077,13 @@ mod tests {
             .unwrap();
         assert_eq!(api.interfaces[0].name, "eth0");
         assert_eq!(api.interfaces[0].address, "10.1.0.10");
+        assert_eq!(
+            container_guest_mac(&topology.services["api"], 0)
+                .unwrap()
+                .unwrap()
+                .to_string(),
+            "02:00:0a:01:00:0a"
+        );
         assert_eq!(api.hosts["worker"], "10.1.0.99");
         assert_eq!(api.hosts["cache.local"], "10.9.0.7");
         assert_eq!(api.hostname.as_deref(), Some("api.local"));
@@ -13055,6 +13094,10 @@ mod tests {
             .unwrap();
         assert_eq!(worker.interfaces[0].address, "10.1.0.11");
         assert_eq!(worker.interfaces[1].address, "10.2.0.10");
+        assert_ne!(
+            container_guest_mac(&topology.services["api"], 0).unwrap(),
+            container_guest_mac(&topology.services["worker"], 0).unwrap()
+        );
         assert_eq!(worker.hosts["api"], "10.1.0.10");
         assert_eq!(
             dependency_startup_order(&topology).unwrap(),
