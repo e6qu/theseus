@@ -11821,12 +11821,17 @@ fn dependency_startup_order(topology: &TopologyPlan) -> Result<Vec<String>, Stri
     Ok(order)
 }
 
-const CAMPAIGN_BARRIER_MIN_ROUNDS: u64 = 512;
-const CAMPAIGN_BARRIER_MAX_ROUNDS: u64 = 4096;
-const CAMPAIGN_BARRIER_ROUNDS_PER_INPUT_BYTE: u64 = 4;
+// A barrier covers two independent kinds of guest work: delivering the command
+// through the UART and running the operation that produces the checkpoint.  In
+// particular, an image-backed shell operation can consume the complete serial
+// input before it starts fork/exec and filesystem I/O.  Keep a substantial
+// fixed execution allowance in addition to the input-sized delivery allowance.
+const CAMPAIGN_BARRIER_BASE_ROUNDS: u64 = 2048;
+const CAMPAIGN_BARRIER_MAX_ROUNDS: u64 = 8192;
+const CAMPAIGN_BARRIER_ROUNDS_PER_INPUT_BYTE: u64 = 16;
 
 fn campaign_barrier_round_limit(input_bytes: usize) -> u64 {
-    CAMPAIGN_BARRIER_MIN_ROUNDS
+    CAMPAIGN_BARRIER_BASE_ROUNDS
         .saturating_add(
             u64::try_from(input_bytes)
                 .unwrap_or(u64::MAX)
@@ -16094,10 +16099,10 @@ mod tests {
     }
 
     #[test]
-    fn campaign_uart_budget_scales_with_accepted_input_and_stays_bounded() {
-        assert_eq!(campaign_barrier_round_limit(0), 512);
-        assert_eq!(campaign_barrier_round_limit(214), 1368);
-        assert_eq!(campaign_barrier_round_limit(usize::MAX), 4096);
+    fn campaign_uart_budget_reserves_operation_work_and_stays_bounded() {
+        assert_eq!(campaign_barrier_round_limit(0), 2048);
+        assert_eq!(campaign_barrier_round_limit(214), 5472);
+        assert_eq!(campaign_barrier_round_limit(usize::MAX), 8192);
     }
 
     #[test]
