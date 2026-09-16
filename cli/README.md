@@ -47,6 +47,9 @@ are admitted as recorded host decisions through the API. Replay installs that
 trace before boot and rejects changed device effects or a missing suffix; a
 matching printed value alone is insufficient. Older version-1 plans retain
 legacy input replay without claiming machine-stream enforcement.
+Version-2 plans boot with `quiet loglevel=0`, as topology runs do: kernel
+diagnostics can contain uncontrolled host-clock values. All device decisions
+made under that boot policy are still checked.
 
 Use `replay --output` to retain diagnostics in a new named directory. It writes
 serial and Firecracker logs, fresh execution evidence, and `result.json` even

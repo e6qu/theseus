@@ -73,7 +73,9 @@ while True:
         body = json.loads(body)
         done = False
         status = "204 No Content"
-        if endpoint == "/serial":
+        if endpoint == "/boot-source":
+            assert body["boot_args"] == "console=ttyS0 reboot=k panic=-1 quiet loglevel=0"
+        elif endpoint == "/serial":
             serial = Path(body["serial_out_path"])
         elif endpoint == "/execution" and method == "PUT":
             output = Path(body["evidence_path"])

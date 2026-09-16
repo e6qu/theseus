@@ -28,6 +28,10 @@ const READY_MARKER: &[u8] = b"THES:M:42";
 const API_READY_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const EXECUTION_REPLAY_FORMAT: &str = "theseus-replay-plan-v2";
+// Match the topology runner: host-clock-dependent kernel diagnostics are not
+// application evidence. This is the boot policy of version-2 replay plans;
+// legacy plans keep their original command line.
+const EXECUTION_BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=-1 quiet loglevel=0";
 
 #[derive(Debug)]
 pub enum RunError {
@@ -627,7 +631,7 @@ fn configure_and_wait(
         json!({
             "kernel_image_path": kernel,
             "initrd_path": initramfs,
-            "boot_args": "console=ttyS0 reboot=k panic=-1",
+            "boot_args": if capture { EXECUTION_BOOT_ARGS } else { "console=ttyS0 reboot=k panic=-1" },
         }),
     )?;
     let mut machine = json!({

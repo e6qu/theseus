@@ -115,6 +115,9 @@ machine ledger, observed boundary, and first active replay error. `[[events]]`
 become exact `host:serial_input` decisions after the ready marker, not bytes
 written to an unrecorded stdin pipe. Each event is at most 16,384 bytes,
 fitting the default HTTP API limit after hexadecimal encoding.
+Version-2 plans use the topology runner's `quiet loglevel=0` boot policy to
+suppress host-clock-dependent kernel diagnostics. This does not control those
+clocks or filter decisions out of the captured stream.
 
 `theseus replay --output diagnostics bundle` installs the recorded stream
 before the first guest run. It checks the complete stream, local ledgers, and

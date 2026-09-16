@@ -70,6 +70,8 @@ Expect a passed replay check. Replay uses the copied runtime, kernel, and guest
 from `work/replay`; it does not read the original manifest or guest files.
 A changed stream fails and leaves diagnostic evidence in `work/rerun`.
 Kernel timers and guest instruction ordering remain outside Theseus's control.
+The runner suppresses kernel boot diagnostics, which can include uncontrolled
+host-clock values; it still checks every retained device decision.
 
 ## 6. Clean up (optional)
 
