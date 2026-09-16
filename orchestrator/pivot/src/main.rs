@@ -299,21 +299,41 @@ fn apply_filesystem_contract(spec: &InitSpec) -> Result<(), String> {
             ));
         }
     }
-    if spec.read_only
-        && unsafe {
+    if spec.read_only {
+        let root = b"/\0".as_ptr().cast();
+        // Linux rootfs cannot be remounted read-only directly. Establish a
+        // bind mount first, then make that mount read-only. Existing tmpfs
+        // children remain separate writable mounts, matching Compose.
+        if unsafe {
             libc::mount(
+                root,
+                root,
                 std::ptr::null(),
-                b"/\0".as_ptr().cast(),
-                std::ptr::null(),
-                libc::MS_REMOUNT | libc::MS_RDONLY,
+                libc::MS_BIND | libc::MS_REC,
                 std::ptr::null(),
             )
         } != 0
-    {
-        return Err(format!(
-            "remount root read-only: {}",
-            std::io::Error::last_os_error()
-        ));
+        {
+            return Err(format!(
+                "bind root for read-only remount: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if unsafe {
+            libc::mount(
+                std::ptr::null(),
+                root,
+                std::ptr::null(),
+                libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY,
+                std::ptr::null(),
+            )
+        } != 0
+        {
+            return Err(format!(
+                "remount bound root read-only: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
     }
     Ok(())
 }
@@ -1215,8 +1235,11 @@ fn wait_for_service_contract(
 }
 
 fn power_off() -> ! {
+    // This kernel's forced-reboot path produces the deterministic reset exit
+    // consumed by Firecracker. POWER_OFF can wait forever when the minimal
+    // guest has no ACPI power-off handler.
     unsafe {
-        libc::reboot(libc::LINUX_REBOOT_CMD_POWER_OFF);
+        libc::reboot(libc::LINUX_REBOOT_CMD_RESTART);
     }
     std::process::exit(0);
 }
