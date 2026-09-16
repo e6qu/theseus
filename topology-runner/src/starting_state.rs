@@ -863,4 +863,50 @@ mod tests {
         assert_eq!(&bytes[..6], b"queued");
         assert_eq!(nic.stats().tx_sha256, nic.stats().rx_sha256);
     }
+
+    #[test]
+    fn exported_inputs_survive_source_removal_without_changing_configuration() {
+        let directory = std::env::temp_dir().join(format!(
+            "theseus-export-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = directory.join("source");
+        let exported = directory.join("exported");
+        fs::create_dir_all(&source).unwrap();
+        let mut topology = topology();
+        let run = &mut topology.services.get_mut("api").unwrap().run;
+        for (name, locked) in [
+            ("firecracker", &mut run.runtime.firecracker),
+            ("kernel", &mut run.guest.kernel),
+            ("initrd", run.guest.initramfs.as_mut().unwrap()),
+        ] {
+            let path = source.join(name);
+            fs::write(&path, name.as_bytes()).unwrap();
+            locked.path = path.display().to_string();
+            locked.sha256 = artifact(&path, MAX_MEMORY).unwrap().sha256;
+        }
+        let identity = configuration(&topology).unwrap();
+        localize_artifacts(&mut topology, &exported).unwrap();
+        assert_eq!(configuration(&topology).unwrap(), identity);
+        fs::remove_dir_all(&source).unwrap();
+        let run = &topology.services["api"].run;
+        for locked in [
+            &run.runtime.firecracker,
+            &run.guest.kernel,
+            run.guest.initramfs.as_ref().unwrap(),
+        ] {
+            assert!(Path::new(&locked.path).starts_with(&exported));
+            assert_eq!(
+                artifact(Path::new(&locked.path), MAX_MEMORY)
+                    .unwrap()
+                    .sha256,
+                locked.sha256
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
 }

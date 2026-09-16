@@ -2645,6 +2645,9 @@ impl CampaignCheckpointTree {
             prefix.push(event);
             let key = campaign_prefix_key(&prefix)?;
             if let Some(existing) = self.prefixes.get(&key) {
+                if let Some(expected) = expected {
+                    starting_state::check_prefix(&existing.checkpoint, expected)?;
+                }
                 self.reuses += 1;
                 self.cache_policy.touch(&key);
                 parent = existing.clone();

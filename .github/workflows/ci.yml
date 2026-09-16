@@ -254,5 +254,6 @@ jobs:
           python3 scripts/tests/test_native_certification_workflow.py
           python3 scripts/tests/test_native_runtime_evidence.py
           python3 scripts/tests/test_runtime_validation_evidence.py
+          python3 scripts/tests/test_source_runtime_validation.py
           sh -n scripts/run_native_validation.sh
           python3 scripts/tests/test_release_smoke_workflow.py

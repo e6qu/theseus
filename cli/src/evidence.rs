@@ -466,11 +466,24 @@ fn verify_counterexample(
             .to_owned();
         let mut hasher = Sha256::new();
         let mut bytes = Vec::new();
-        if required.contains(name.as_str()) {
+        if required.contains(name.as_str()) || checkpoint_bundle_json(&name) {
+            require(
+                entry.header().size().unwrap_or(u64::MAX) <= 128 * 1024 * 1024,
+                "retained counterexample JSON exceeds 128 MiB",
+            )?;
             entry.read_to_end(&mut bytes).map_err(|error| {
                 EvidenceError(format!("cannot read archive member {name}: {error}"))
             })?;
             hasher.update(&bytes);
+            require(
+                retained
+                    .values()
+                    .map(Vec::len)
+                    .sum::<usize>()
+                    .saturating_add(bytes.len())
+                    <= 512 * 1024 * 1024,
+                "retained counterexample JSON exceeds 512 MiB total",
+            )?;
             retained.insert(name.clone(), bytes);
         } else {
             std::io::copy(&mut entry, &mut hasher).map_err(|error| {
@@ -548,6 +561,8 @@ fn verify_counterexample(
     )?;
     verify_campaign(&retained["evidence/campaign-result.json"])?;
     verify_minimization(&retained["minimization.json"])?;
+    verify_archived_checkpoint_if_present("", &files, &retained, architecture)?;
+    verify_archived_checkpoint_if_present("evidence/replay", &files, &retained, architecture)?;
     verify_replay(&retained)
 }
 
@@ -738,6 +753,72 @@ fn verify_replay(retained: &BTreeMap<String, Vec<u8>>) -> Result<(), EvidenceErr
     )
 }
 
+fn checkpoint_bundle_json(name: &str) -> bool {
+    matches!(
+        Path::new(name).file_name().and_then(|name| name.to_str()),
+        Some("replay-plan.json" | "metadata.json" | "result.json" | "campaign-result.json")
+    )
+}
+
+fn verify_archived_checkpoint_if_present(
+    scope: &str,
+    files: &BTreeMap<String, ProofFile>,
+    retained: &BTreeMap<String, Vec<u8>>,
+    architecture: &str,
+) -> Result<(), EvidenceError> {
+    let plan_path = Path::new(scope).join("replay-plan.json");
+    let Some(bytes) = retained.get(
+        plan_path
+            .to_str()
+            .ok_or_else(|| EvidenceError("invalid bundle scope".into()))?,
+    ) else {
+        let campaign_path = Path::new(scope).join("campaign-result.json");
+        require(
+            !retained
+                .get(campaign_path.to_str().unwrap())
+                .is_some_and(|bytes| {
+                    serde_json::from_slice::<serde_json::Value>(bytes)
+                        .is_ok_and(|campaign| !campaign["starting_checkpoint_sha256"].is_null())
+                }),
+            "checkpoint campaign is missing its archived replay plan",
+        )?;
+        return Ok(()); // Legacy evidence did not carry portable starting roots.
+    };
+    let plan: serde_json::Value = parse_json_bytes(bytes, "archived checkpoint replay plan")?;
+    if plan["replay_start"] != "ready_checkpoint" && plan["starting_checkpoint"].is_null() {
+        let campaign_path = Path::new(scope).join("campaign-result.json");
+        require(
+            !retained
+                .get(campaign_path.to_str().unwrap())
+                .is_some_and(|bytes| {
+                    serde_json::from_slice::<serde_json::Value>(bytes)
+                        .is_ok_and(|campaign| !campaign["starting_checkpoint_sha256"].is_null())
+                }),
+            "checkpoint campaign cannot be downgraded to fresh boot",
+        )?;
+        require(
+            !retained.iter().any(|(name, bytes)| {
+                Path::new(name).starts_with(Path::new(scope).join("services"))
+                    && name.ends_with("/result.json")
+                    && serde_json::from_slice::<serde_json::Value>(bytes)
+                        .is_ok_and(|result| !result["execution_start"].is_null())
+            }),
+            "checkpoint evidence cannot be downgraded to fresh boot",
+        )?;
+        return Ok(());
+    }
+    let inventory = files
+        .iter()
+        .map(|(name, file)| (name.clone(), (file.sha256.clone(), file.bytes)))
+        .collect();
+    let summary = crate::topology_evidence::verify_archived_bundle(scope, &inventory, retained)
+        .map_err(EvidenceError)?;
+    require(
+        summary.architecture == architecture,
+        "archived topology checkpoint architecture differs from its index",
+    )
+}
+
 fn verify_runtime_validation(
     path: &Path,
     architecture: &str,
@@ -845,6 +926,7 @@ fn verify_runtime_validation(
             || api_required.contains(name.as_str())
             || name == "container/run/checkpoint/metadata.json"
             || (name.starts_with("fixed-plan/") && name.ends_with(".json"))
+            || checkpoint_bundle_json(&name)
         {
             require(
                 entry.header().size().unwrap_or(u64::MAX) <= 128 * 1024 * 1024,
@@ -854,6 +936,15 @@ fn verify_runtime_validation(
                 EvidenceError(format!("cannot read archive member {name}: {error}"))
             })?;
             hasher.update(&bytes);
+            require(
+                retained
+                    .values()
+                    .map(Vec::len)
+                    .sum::<usize>()
+                    .saturating_add(bytes.len())
+                    <= 512 * 1024 * 1024,
+                "retained validation JSON exceeds 512 MiB total",
+            )?;
             retained.insert(name.clone(), bytes);
         } else {
             std::io::copy(&mut entry, &mut hasher).map_err(|error| {
@@ -884,6 +975,19 @@ fn verify_runtime_validation(
         parse_json_bytes(certificate_bytes, "runtime certificate")?;
     if certificate["format"] == CERTIFICATE_FORMAT_V5 {
         verify_fixed_plan(&files, &retained, architecture, certificate_bytes)?;
+    }
+    for scope in [
+        "coverage/campaign",
+        "coverage/rerun",
+        "schedule-search/campaign",
+        "schedule-search/minimized",
+        "schedule-search/rerun",
+        "pthread-sync/campaign",
+        "pthread-sync/rerun",
+        "strict-execution/campaign",
+        "strict-execution/rerun",
+    ] {
+        verify_archived_checkpoint_if_present(scope, &files, &retained, architecture)?;
     }
     require(
         matches!(

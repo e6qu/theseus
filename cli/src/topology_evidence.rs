@@ -22,9 +22,18 @@ pub struct TopologyBundleSummary {
     pub native_execution_verified: bool,
 }
 
-struct Bundle(PathBuf);
+struct Archive<'a> {
+    scope: &'a Path,
+    files: &'a BTreeMap<String, (String, u64)>,
+    retained: &'a BTreeMap<String, Vec<u8>>,
+}
 
-impl Bundle {
+struct Bundle<'a> {
+    directory: PathBuf,
+    archive: Option<Archive<'a>>,
+}
+
+impl Bundle<'_> {
     fn path(&self, base: &Path, relative: &str) -> Result<PathBuf, String> {
         if relative.contains('\\') || relative.contains('\0') {
             return Err("unsafe bundle path".into());
@@ -38,7 +47,19 @@ impl Bundle {
                 _ => return Err("artifact escapes the retained bundle".into()),
             }
         }
-        let mut checked = self.0.clone();
+        if let Some(archive) = &self.archive {
+            if !path.starts_with(archive.scope) {
+                return Err("artifact escapes its archived replay bundle".into());
+            }
+            if !archive.files.contains_key(text_path(&path)?) {
+                return Err(format!(
+                    "missing archived bundle artifact: {}",
+                    path.display()
+                ));
+            }
+            return Ok(path);
+        }
+        let mut checked = self.directory.clone();
         for component in path.components() {
             checked.push(component);
             let metadata = fs::symlink_metadata(&checked).map_err(|error| error.to_string())?;
@@ -57,8 +78,17 @@ impl Bundle {
 
     fn json(&self, path: &Path) -> Result<Value, String> {
         let checked = self.path(Path::new(""), text_path(path)?)?;
+        if let Some(archive) = &self.archive {
+            return serde_json::from_slice(
+                archive
+                    .retained
+                    .get(text_path(&checked)?)
+                    .ok_or("missing archived bundle JSON")?,
+            )
+            .map_err(|error| error.to_string());
+        }
         let mut bytes = Vec::new();
-        fs::File::open(self.0.join(checked))
+        fs::File::open(self.directory.join(checked))
             .and_then(|file| file.take(128 * 1024 * 1024 + 1).read_to_end(&mut bytes))
             .map_err(|error| error.to_string())?;
         if bytes.len() > 128 * 1024 * 1024 {
@@ -69,7 +99,15 @@ impl Bundle {
 
     fn digest(&self, path: &Path) -> Result<(String, u64), String> {
         let checked = self.path(Path::new(""), text_path(path)?)?;
-        let mut file = fs::File::open(self.0.join(checked)).map_err(|error| error.to_string())?;
+        if let Some(archive) = &self.archive {
+            return archive
+                .files
+                .get(text_path(&checked)?)
+                .cloned()
+                .ok_or("missing archive inventory entry".into());
+        }
+        let mut file =
+            fs::File::open(self.directory.join(checked)).map_err(|error| error.to_string())?;
         let mut hash = Sha256::new();
         let mut bytes = 0;
         let mut buffer = [0; 65536];
@@ -136,10 +174,19 @@ impl Bundle {
     }
 
     fn root(&self, base: &Path, plan: &Value) -> Result<(String, Value), String> {
+        if !matches!(
+            plan["format"].as_str(),
+            Some("theseus-compose-plan-v1" | "theseus-compose-replay-plan-v1")
+        ) {
+            return Err("unsupported topology replay plan format".into());
+        }
         if plan["replay_start"] != "ready_checkpoint" {
             return Err("compose verify requires a retained ready-checkpoint bundle".into());
         }
         self.artifacts(base, plan)?;
+        if plan["topology_runner"]["sha256"].as_str().is_none() {
+            return Err("missing locked topology runtime".into());
+        }
         let path = self.artifact(base, &plan["starting_checkpoint"])?;
         if path.file_name().and_then(|name| name.to_str()) != Some("metadata.json") {
             return Err("checkpoint manifest must be metadata.json".into());
@@ -171,6 +218,13 @@ impl Bundle {
         )?;
         for (name, service) in services {
             safe_name(name)?;
+            if !["tick_ns", "exits_per_tick"].iter().all(|field| {
+                service["run"]["run"]["virtual_time"][field]
+                    .as_u64()
+                    .is_some_and(|value| value > 0)
+            }) {
+                return Err("ready checkpoint requires a locked virtual-time profile".into());
+            }
             let member_base = parent.join(name);
             self.member(
                 &member_base,
@@ -254,6 +308,12 @@ impl Bundle {
                 .filter(|n| (1..=32).contains(n))
                 .ok_or("invalid vCPU count")?;
             evidence.validate(cpus as u8)?;
+            let uart = result["serial_sha256"]
+                .as_array()
+                .ok_or("missing UART hashes")?;
+            if uart.is_empty() || uart.len() > 2 {
+                return Err("invalid UART hash count".into());
+            }
             for (index, expected) in result["serial_sha256"]
                 .as_array()
                 .ok_or("missing UART hashes")?
@@ -354,13 +414,48 @@ pub fn verify_topology_bundle(path: impl AsRef<Path>) -> Result<TopologyBundleSu
     {
         return Err("bundle root must be a directory, not a symlink".into());
     }
-    let bundle = Bundle(path.to_path_buf());
-    let base = Path::new("");
-    let plan = bundle.json(Path::new("replay-plan.json"))?;
+    let bundle = Bundle {
+        directory: path.to_path_buf(),
+        archive: None,
+    };
+    verify_contents(
+        &bundle,
+        Path::new(""),
+        path.join("campaign-result.json").exists(),
+    )
+}
+
+/// The caller has already hashed the archive and rejected duplicate/unsafe entries.
+pub(crate) fn verify_archived_bundle(
+    scope: &str,
+    files: &BTreeMap<String, (String, u64)>,
+    retained: &BTreeMap<String, Vec<u8>>,
+) -> Result<TopologyBundleSummary, String> {
+    let base = Path::new(scope);
+    let bundle = Bundle {
+        directory: PathBuf::new(),
+        archive: Some(Archive {
+            scope: base,
+            files,
+            retained,
+        }),
+    };
+    verify_contents(
+        &bundle,
+        base,
+        files.contains_key(text_path(&base.join("campaign-result.json"))?),
+    )
+}
+
+fn verify_contents(
+    bundle: &Bundle<'_>,
+    base: &Path,
+    campaign_exists: bool,
+) -> Result<TopologyBundleSummary, String> {
+    let plan = bundle.json(&base.join("replay-plan.json"))?;
     let (sha, metadata) = bundle.root(base, &plan)?;
-    let campaign_path = path.join("campaign-result.json");
-    let runs = if campaign_path.exists() {
-        let campaign = bundle.json(Path::new("campaign-result.json"))?;
+    let runs = if campaign_exists {
+        let campaign = bundle.json(&base.join("campaign-result.json"))?;
         if campaign["starting_checkpoint_sha256"] != sha {
             return Err("campaign root identity differs".into());
         }
@@ -372,7 +467,7 @@ pub fn verify_topology_bundle(path: impl AsRef<Path>) -> Result<TopologyBundleSu
             if run["index"].as_u64() != Some(index as u64) {
                 return Err("campaign run indices differ".into());
             }
-            let directory = PathBuf::from(format!("runs/{index:03}"));
+            let directory = base.join(format!("runs/{index:03}"));
             let run_plan = bundle.json(&directory.join("replay-plan.json"))?;
             let (run_sha, run_metadata) = bundle.root(&directory, &run_plan)?;
             if run_sha != sha {
@@ -423,10 +518,10 @@ mod tests {
         let context = write(root, "checkpoint/context.bin", b"opaque context");
         let state = write(root, "checkpoint/service/vmstate", b"opaque KVM state");
         let memory = write(root, "checkpoint/service/memory", &vec![0; 1024 * 1024]);
-        let mut plan = json!({"replay_start": "ready_checkpoint", "networks": {}, "topology_runner": input,
+        let mut plan = json!({"format": "theseus-compose-replay-plan-v1", "replay_start": "ready_checkpoint", "networks": {}, "topology_runner": input,
             "services": {"service": {"networks": [], "run": {"format": "theseus-run-plan-v1",
                 "manifest": "original.toml", "events": [], "checks": [],
-                "run": {"mem_size_mib": 1, "vcpu_count": 1}}}}, "checkpoint_prefixes": {"service": 1}});
+                "run": {"mem_size_mib": 1, "vcpu_count": 1, "virtual_time": {"tick_ns": 1000, "exits_per_tick": 10}}}}}, "checkpoint_prefixes": {"service": 1}});
         let metadata = json!({"format": "theseus-topology-checkpoint-v1", "architecture": "amd64",
             "configuration_sha256": configuration(&plan).unwrap(), "context": context,
             "services": {"service": {"vmstate": state, "memory": memory}}, "execution_prefixes": {"service": prefix}});
@@ -523,7 +618,10 @@ mod tests {
     #[test]
     fn child_paths_may_share_a_root_but_not_escape_the_campaign() {
         let fixture = fixture();
-        let bundle = Bundle(fixture.path().into());
+        let bundle = Bundle {
+            directory: fixture.path().into(),
+            archive: None,
+        };
         assert_eq!(
             bundle
                 .path(Path::new("runs/000"), "../../checkpoint/metadata.json")
@@ -533,5 +631,105 @@ mod tests {
         assert!(bundle
             .path(Path::new("runs/000"), "../../../checkpoint/metadata.json")
             .is_err());
+    }
+
+    #[test]
+    fn campaign_aggregates_must_bind_complete_child_evidence() {
+        let fixture = fixture();
+        let root = fixture.path();
+        let mut plan: Value =
+            serde_json::from_slice(&fs::read(root.join("replay-plan.json")).unwrap()).unwrap();
+        let result: Value =
+            serde_json::from_slice(&fs::read(root.join("services/service/result.json")).unwrap())
+                .unwrap();
+        plan["topology_runner"]["path"] = json!("../../artifacts/runner");
+        plan["starting_checkpoint"]["path"] = json!("../../checkpoint/metadata.json");
+        write(
+            root,
+            "runs/000/replay-plan.json",
+            &serde_json::to_vec(&plan).unwrap(),
+        );
+        write(
+            root,
+            "runs/000/services/service/result.json",
+            &serde_json::to_vec(&result).unwrap(),
+        );
+        write(root, "runs/000/services/service/serial.log", b"ready\n42\n");
+        let mut campaign = json!({"starting_checkpoint_sha256": plan["starting_checkpoint"]["sha256"], "runs": [{
+            "index": 0, "execution_ledgers": {"service": result["execution_ledgers"]},
+            "machine_execution_ledgers": {"service": result["machine_execution_ledger"]},
+            "machine_execution_traces": {"service": result["machine_execution_trace"]}}]});
+        write(
+            root,
+            "campaign-result.json",
+            &serde_json::to_vec(&campaign).unwrap(),
+        );
+        assert_eq!(verify_topology_bundle(root).unwrap().runs, 1);
+        campaign["runs"][0]["machine_execution_ledgers"]["service"] =
+            ledger(&["vcpu:0:mmio_write:0x10:1:2a"]);
+        write(
+            root,
+            "campaign-result.json",
+            &serde_json::to_vec(&campaign).unwrap(),
+        );
+        assert!(verify_topology_bundle(root)
+            .unwrap_err()
+            .contains("complete service stream"));
+        campaign["runs"][0]["machine_execution_ledgers"]["service"] =
+            result["machine_execution_ledger"].clone();
+        campaign["runs"][0]["index"] = json!(1);
+        write(
+            root,
+            "campaign-result.json",
+            &serde_json::to_vec(&campaign).unwrap(),
+        );
+        assert!(verify_topology_bundle(root)
+            .unwrap_err()
+            .contains("indices"));
+    }
+
+    #[test]
+    fn archived_roots_are_checked_without_extracting_ram() {
+        fn inventory(
+            root: &Path,
+            directory: &Path,
+            files: &mut BTreeMap<String, (String, u64)>,
+            retained: &mut BTreeMap<String, Vec<u8>>,
+        ) {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    inventory(root, &path, files, retained);
+                    continue;
+                }
+                let bytes = fs::read(&path).unwrap();
+                let name = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_owned();
+                files.insert(
+                    name.clone(),
+                    (format!("{:x}", Sha256::digest(&bytes)), bytes.len() as u64),
+                );
+                if name.ends_with(".json") {
+                    retained.insert(name, bytes);
+                }
+            }
+        }
+        let fixture = fixture();
+        let mut files = BTreeMap::new();
+        let mut retained = BTreeMap::new();
+        inventory(fixture.path(), fixture.path(), &mut files, &mut retained);
+        assert!(verify_archived_bundle("", &files, &retained).is_ok());
+        files.get_mut("checkpoint/service/memory").unwrap().0 = "0".repeat(64);
+        assert!(verify_archived_bundle("", &files, &retained)
+            .unwrap_err()
+            .contains("member differs"));
+        files.remove("checkpoint/service/memory");
+        assert!(verify_archived_bundle("", &files, &retained)
+            .unwrap_err()
+            .contains("missing archived"));
     }
 }
