@@ -25,6 +25,10 @@ REQUIRED = (
     "container/run/replay-plan.json",
     "container/run/result.json",
     "container/run/serial.log",
+    "container/run/execution.json",
+    "container/rerun/execution.json",
+    "container/rerun/result.json",
+    "container/rerun/serial.log",
     "container/replay.log",
     "container/source/Dockerfile",
     "container/source/theseus.toml",
@@ -115,7 +119,7 @@ def seal(args: argparse.Namespace) -> None:
     proof.write_text(
         json.dumps(
             {
-                "format": "theseus-runtime-validation-v4",
+                "format": "theseus-runtime-validation-v5",
                 "architecture": args.architecture,
                 "source_commit": args.source_commit,
                 "runtime": {"image": args.runtime_image, "tag": args.runtime_tag},

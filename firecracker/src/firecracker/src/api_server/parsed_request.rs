@@ -34,6 +34,7 @@ use crate::api_server::request::hotplug::memory::{
 };
 use crate::api_server::request::hotplug::parse_unplug_device;
 use crate::api_server::request::serial::parse_put_serial;
+use crate::api_server::request::execution::{parse_put_execution, parse_patch_execution, parse_put_serial_input};
 
 #[derive(Debug)]
 pub(crate) enum RequestAction {
@@ -102,6 +103,8 @@ impl TryFrom<&Request> for ParsedRequest {
             (Method::Put, "pmem", Some(body)) => parse_put_pmem(body, path_tokens.next()),
             (Method::Put, "logger", Some(body)) => parse_put_logger(body),
             (Method::Put, "serial", Some(body)) => parse_put_serial(body),
+            (Method::Put, "execution", Some(body)) if path_tokens.next().is_none() => parse_put_execution(body),
+            (Method::Put, "serial-input", Some(body)) if path_tokens.next().is_none() => parse_put_serial_input(body),
             (Method::Put, "machine-config", Some(body)) => parse_put_machine_config(body),
             (Method::Put, "metrics", Some(body)) => parse_put_metrics(body),
             (Method::Put, "mmds", Some(body)) => parse_put_mmds(body, path_tokens.next()),
@@ -124,6 +127,7 @@ impl TryFrom<&Request> for ParsedRequest {
             }
             (Method::Patch, "pmem", Some(body)) => parse_patch_pmem(body, path_tokens.next()),
             (Method::Patch, "vm", Some(body)) => parse_patch_vm_state(body),
+            (Method::Patch, "execution", Some(body)) if path_tokens.next().is_none() => parse_patch_execution(body),
             (Method::Patch, "hotplug", Some(body)) if path_tokens.next() == Some("memory") => {
                 parse_patch_memory_hotplug(body)
             }

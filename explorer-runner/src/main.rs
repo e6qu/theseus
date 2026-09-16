@@ -623,6 +623,11 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 fn resources_from_plan(plan: &RunPlan, serial_log: Option<PathBuf>) -> Result<VmResources, String> {
+    if !plan.run.entropy_device {
+        return Err(
+            "exploration requires entropy_device = true for branch reseeding and probes".to_owned(),
+        );
+    }
     let initramfs = plan
         .guest
         .initramfs

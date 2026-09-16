@@ -139,6 +139,8 @@ struct Guest {
 #[serde(deny_unknown_fields)]
 struct Run {
     seed: u64,
+    #[serde(default = "default_entropy_device")]
+    entropy_device: bool,
     vcpu_count: u8,
     mem_size_mib: u32,
     #[serde(default = "default_timeout_secs")]
@@ -441,6 +443,12 @@ pub struct GuestPlan {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RunPlanConfig {
     pub seed: u64,
+    /// Attach the seeded virtio RNG. UART-only guests can omit this device.
+    #[serde(
+        default = "default_entropy_device",
+        skip_serializing_if = "is_default_entropy_device"
+    )]
+    pub entropy_device: bool,
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
     pub timeout_secs: u64,
@@ -686,6 +694,11 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             "max_rounds must be greater than zero".to_owned(),
         ));
     }
+    if manifest.explore.is_some() && !manifest.run.entropy_device {
+        return Err(LoadError::InvalidRunConfig(
+            "exploration requires entropy_device = true for branch reseeding and probes".to_owned(),
+        ));
+    }
     if let Some(virtual_time) = &manifest.run.virtual_time {
         if virtual_time.tick_ns == 0 || virtual_time.exits_per_tick == 0 {
             return Err(LoadError::InvalidRunConfig(
@@ -700,7 +713,10 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
         if check.name.trim().is_empty() {
             return Err(LoadError::InvalidCheck("name must not be empty".to_owned()));
         }
-        if check.name == "guest_exit" || check.name == "completion" {
+        if matches!(
+            check.name.as_str(),
+            "guest_exit" | "completion" | "machine_execution" | "replay_machine_execution"
+        ) {
             return Err(LoadError::InvalidCheck(format!(
                 "name {:?} is reserved for a built-in check",
                 check.name
@@ -801,6 +817,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
         },
         run: RunPlanConfig {
             seed: manifest.run.seed,
+            entropy_device: manifest.run.entropy_device,
             vcpu_count: manifest.run.vcpu_count,
             mem_size_mib: manifest.run.mem_size_mib,
             timeout_secs: manifest.run.timeout_secs,
@@ -1194,6 +1211,14 @@ fn storage_plan(storage: Vec<Storage>, run_seed: u64) -> Result<Vec<StoragePlan>
         .collect()
 }
 
+fn default_entropy_device() -> bool {
+    true
+}
+
+fn is_default_entropy_device(value: &bool) -> bool {
+    *value
+}
+
 fn default_timeout_secs() -> u64 {
     30
 }
@@ -1298,6 +1323,9 @@ fn ensure_executable(_: &'static str, _: &Path) -> Result<(), LoadError> {
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() > 32768 || !value.is_ascii() {
+        return Err("input must be ASCII hex and at most 16384 bytes".to_owned());
+    }
     if value.is_empty() {
         return Err("at least one byte is required".to_owned());
     }
@@ -1825,6 +1853,32 @@ size_mib = 0
         );
         let error = load_plan(directory.path().join("test/theseus.toml")).unwrap_err();
         assert!(error.to_string().contains("size_mib"));
+    }
+
+    #[test]
+    fn exploration_cannot_silently_restore_an_omitted_rng() {
+        let directory = fixture(
+            r#"version = 1
+[runtime]
+firecracker = "runtime/firecracker"
+[guest]
+kernel = "guest/vmlinux"
+initramfs = "guest/initramfs.cpio"
+[run]
+seed = 42
+entropy_device = false
+vcpu_count = 1
+mem_size_mib = 128
+[explore]
+max_nodes = 7
+branches_per_node = 2
+max_depth = 2
+"#,
+        );
+        let error = load_plan(directory.path().join("test/theseus.toml")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("exploration requires entropy_device = true"));
     }
 
     #[test]

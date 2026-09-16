@@ -64,24 +64,31 @@ cp /opt/theseus/vmlinux work/guest/vmlinux
 
 These copies become inputs to the service manifests. Planning hashes them;
 replay does not silently select newer binaries from the container.
+The manifest sets `entropy_device = false`: this health-check service does
+not need the seeded virtio RNG.
 
 ## 4. Run, inspect, and replay
 
 ```sh
 theseus test --output work/replay theseus.toml
 grep -a '^THES:HTTP:operation:read_health:PASS$' work/replay/serial.log
-theseus replay work/replay
+theseus replay --output work/rerun work/replay
+cmp work/replay/execution.json work/rerun/execution.json
 echo 'PASS: Theseus checked and replayed an unmodified container service'
 ```
 
 Each `grep` is an observation to review. It exits successfully only when
 the recorded bundle contains the behavior named by that command. The replay
 command consumes the recorded bundle rather than selecting new artifacts.
+For releases with machine-stream capture, replay must admit the exact ordered
+device/input stream through guest exit, not just produce the same health line.
+Uncontrolled kernel timing can still cause replay to fail; inspect the retained
+diagnostics instead of treating a rerun of the seed as deterministic replay.
 
 ## 5. Inspect the retained evidence
 
 ```sh
-find work/replay -name 'replay-plan.json' -o -name 'result.json' -o -name 'serial.log'
+find work/replay work/rerun -name 'replay-plan.json' -o -name 'result.json' -o -name 'serial.log' -o -name 'execution.json'
 exit
 ```
 

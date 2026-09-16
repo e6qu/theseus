@@ -11,6 +11,7 @@ mod compare;
 mod compose;
 mod evaluation;
 mod evidence;
+mod execution;
 mod explore;
 mod go_coverage;
 mod manifest;
@@ -43,4 +44,4 @@ pub use manifest::{
     ReplayFingerprint, ReplayTreeNode, RunPlan,
 };
 pub use report::{report, report_file, report_text, ReportError, ReportFormat};
-pub use runner::{replay, test, ReplayResult, RunError, TestResult};
+pub use runner::{replay, replay_to, test, ReplayResult, RunError, TestResult};

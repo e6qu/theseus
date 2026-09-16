@@ -89,14 +89,63 @@ before guest entry and records `vcpu:<id>:interrupt:<source>:<gsi>` in the same
 machine stream. Sources cover UART, virtio MMIO, virtio MSI-X, VM generation
 and clock notifications, and the i8042 keyboard. Checkpoints retain undelivered
 requests, including notifications created while restoring a VM, and replay
-requires the same vCPU delivery turns. Vhost-user and other direct notifier
+requires the same vCPU delivery turns. If a recorded device completion has not
+yet reached the host queue, the vCPU waits at that turn without running more
+guest code. The wait is bounded; absent or mismatched requests fail replay.
+Vhost-user and other direct notifier
 paths remain outside the deterministic profile.
 
 The VM-wide gate retains the bounded exact trace as well as the rolling digest.
 Checkpoints clone both forms into each child. Locked replay admits only the
-actor named by the next record and requires its complete exit or input payload
-to match. A wrong prefix, actor, input, payload, missing suffix, or extra event
-fails replay.
+actor named by the next record. It checks complete writes, read addresses and
+widths, terminal exits, and explicit inputs before applying their effects.
+Read values are checked after device access; a mismatch stops replay but does
+not roll back a consumed device value. A wrong prefix, actor, input, payload,
+missing suffix, or extra event fails replay. Trace exhaustion also rejects the
+next access before device emulation.
+
+An attached x86 i8042 reset request ends the stream on its own recorded write.
+It does not keep polling until the event loop notices an asynchronous reset
+event. System reset/shutdown exits use the same terminal gate on both
+architectures. Other vCPUs stop admitting effects, pending replay actors are
+woken, and exit status is published before event-loop notification.
+
+### Single-service bundles
+
+New `theseus test` bundles use `theseus-replay-plan-v2` and require
+`execution.json`. This file contains the full machine trace, per-vCPU ledgers,
+machine ledger, observed boundary, and first active replay error. `[[events]]`
+become exact `host:serial_input` decisions after the ready marker, not bytes
+written to an unrecorded stdin pipe. Each event is at most 16,384 bytes,
+fitting the default HTTP API limit after hexadecimal encoding.
+Version-2 plans use the topology runner's `quiet loglevel=0` boot policy to
+suppress host-clock-dependent kernel diagnostics. This does not control those
+clocks or filter decisions out of the captured stream.
+`run.entropy_device = false` omits the seeded virtio RNG for guests that do
+not use it. Otherwise, kernel boot allocation can change its queue addresses
+before the application starts. Replay rejects that divergence; neither the
+device seed nor quiet boot makes arbitrary kernel boot deterministic.
+
+`theseus replay --output diagnostics bundle` installs the recorded stream
+before the first guest run. It checks the complete stream, local ledgers, and
+terminal boundary as well as application checks. Missing or inconsistent
+execution evidence is an error; deleting `result.json` cannot downgrade the
+versioned replay plan. Older `theseus-run-plan-v1` bundles retain their legacy
+seed/input replay behavior and do not establish machine-stream enforcement.
+
+A host timeout pauses the VM and flushes a diagnostic cut before killing it.
+Its boundary is `pause`, not `guest_exit`, and active replay rejects that cut:
+the host deadline did not define a deterministic terminal decision. Runtime
+errors are retained as `runtime_error` boundaries and are not replayable guest
+exits either. Capturing a stream is not proof that uncontrolled execution will
+reproduce it; a changed stream must fail.
+
+Low-level API clients can `PUT /execution` before a fresh boot with
+`evidence_path` and an optional `replay_trace_path` (a JSON array). The output
+must not exist. `PUT /serial-input` accepts a bounded lowercase `data_hex`
+payload. `PATCH /execution` with `{}` flushes a paused VM; natural exit flushes
+automatically. This API capture configuration does not support snapshot load;
+in-process topology checkpoint replay retains its existing branch-owned state.
 
 This controls concurrent emulated device effects, explicit host inputs, and
 supported userspace device interrupt injection at the KVM boundary. Theseus

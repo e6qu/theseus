@@ -86,6 +86,8 @@ pub use device_manager::VirtioDevicesState;
 /// Emulates virtual and hardware devices.
 #[allow(missing_docs)]
 pub mod devices;
+/// Portable machine-stream capture for API-driven execution and replay.
+pub mod execution;
 /// minimalist HTTP/TCP/IPv4 stack named DUMBO
 pub mod dumbo;
 /// Support for GDB debugging the guest
@@ -322,6 +324,8 @@ pub struct Vmm {
     pub machine_config: MachineConfig,
     boot_source_config: BootSourceConfig,
     shutdown_exit_code: Option<FcExitCode>,
+    execution_evidence_file: Option<std::fs::File>,
+    execution_config: Option<execution::ExecutionConfig>,
 
     /// VM object.
     pub vm: Vm,
@@ -883,6 +887,7 @@ impl Vmm {
             pmem_devices: pmem,
             // serial_config is marked serde(skip) so that it doesnt end up in snapshots
             serial_config: None,
+            execution: self.execution_config.clone(),
             memory_hotplug,
         }
     }
@@ -1185,6 +1190,17 @@ impl Vmm {
 
         // Break the main event loop, propagating the Vmm exit-code.
         self.shutdown_exit_code = Some(exit_code);
+        if let Some(vm) = self.vm.as_kvm() {
+            vm.common.machine_execution.freeze_admission();
+        }
+        if self.execution_evidence_file.is_some() {
+            if let Err(error) = self.flush_execution_evidence() {
+                error!("Failed to retain execution evidence: {error}");
+                self.shutdown_exit_code = Some(FcExitCode::GenericError);
+            } else if self.machine_execution_replay_error().ok().flatten().is_some() {
+                self.shutdown_exit_code = Some(FcExitCode::GenericError);
+            }
+        }
     }
 
     /// Gets a reference to kvm-ioctls KvmVm

@@ -85,6 +85,11 @@ an inventoried validation archive. The released CLI also
 renders the report, compares the coverage campaign with its replay, captures
 an offline evaluation, evaluates its lock, minimizes the schedule failure, and
 replays every retained path.
+Runtime-validation version 5 also retains the single-container run and its
+named replay diagnostics. Offline verification recomputes both sets of digests
+from their complete traces and requires an identical guest-exit boundary and
+a passing `replay_machine_execution` check; a line saying “replay passed” is
+not sufficient evidence.
 
 The final hosted job validates the certificate, counterexample, and validation
 archive with the released CLI before it attests and uploads them. The index can
@@ -99,6 +104,12 @@ KVM-exit evidence, version 3 adds a machine-wide stream, and version 4 requires
 the complete bounded stream used to gate active replay. The stream orders
 `vcpu:` exits, synchronous userspace-device interrupt injection, and explicit
 `host:` UART, control-channel, CTRL+ALT+DEL, and clock-jump effects.
+
+PR CI separately runs Tutorial 4 on native amd64 KVM with the proposed source
+runtime and an existing SHA release's kernel. It checks UART input and repeats
+exact replay through the recorded i8042 reset three times, retaining logs on
+failure. This is a source regression, not certification of a published runtime
+or native arm64 execution.
 
 ## Publish a failure from CI
 

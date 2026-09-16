@@ -10100,7 +10100,8 @@ fn execute(
                 },
             });
             if !matches && error.is_none() {
-                error = Some("ordered KVM execution replay diverged".to_owned());
+                error = Some(machine_execution_replay_error.clone().unwrap_or_else(||
+                    "ordered KVM execution replay diverged".to_owned()));
             }
         }
         if let Some(expected) = &expected_machine_execution_ledgers {
@@ -10120,7 +10121,8 @@ fn execute(
                 },
             });
             if !matches && error.is_none() {
-                error = Some("machine-wide execution replay diverged".to_owned());
+                error = Some(machine_execution_replay_error.clone().unwrap_or_else(||
+                    "machine-wide execution replay diverged".to_owned()));
             }
         }
         if let Some(expected) = &expected_machine_execution_traces {
@@ -10141,7 +10143,8 @@ fn execute(
                 },
             });
             if !matches && error.is_none() {
-                error = Some("active machine execution replay diverged".to_owned());
+                error = Some(machine_execution_replay_error.clone().unwrap_or_else(||
+                    "active machine execution replay diverged".to_owned()));
             }
         }
         let status = if checks.iter().all(|check| check.status == "passed") {
