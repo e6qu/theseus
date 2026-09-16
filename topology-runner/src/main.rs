@@ -11872,8 +11872,9 @@ fn wait_for_serial_after_rounds(
         *round += 1;
         advance_campaign_operation_round(target, services, switches)?;
     }
+    let unread = target.vm.serial_input_depth()?;
     Err(format!(
-        "service did not announce {purpose} within {CAMPAIGN_BARRIER_MAX_ROUNDS} topology rounds after UART input: {}",
+        "service did not announce {purpose} within {CAMPAIGN_BARRIER_MAX_ROUNDS} topology rounds after UART input ({unread} unread UART bytes): {}",
         serial_log.display()
     ))
 }

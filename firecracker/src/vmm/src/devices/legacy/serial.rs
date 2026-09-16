@@ -74,6 +74,12 @@ pub trait RawIOHandler {
     fn raw_input(&mut self, _data: &[u8]) -> Result<(), RawIOError>;
 }
 
+// The device advertises 16550A FIFO semantics to the guest. Keep each refill
+// within that UART's 16-byte receive window even though vm-superio retains a
+// larger internal buffer; Linux may bound one interrupt service pass by the
+// advertised FIFO size.
+const UART_FIFO_REFILL_BYTES: usize = 16;
+
 impl<EV: SerialEvents + Debug, W: Write + Debug> RawIOHandler for Serial<EventFdTrigger, EV, W> {
     fn raw_input(&mut self, data: &[u8]) -> Result<(), RawIOError> {
         // Fail fast if the serial is serviced with more data than it can buffer.
@@ -206,7 +212,11 @@ impl<I: Read + AsRawFd + Send + Debug> SerialWrapper<EventFdTrigger, SerialEvent
     }
 
     fn flush_pending_input(&mut self) -> Result<(), RawIOError> {
-        let count = self.serial.fifo_capacity().min(self.pending_input.len());
+        let count = self
+            .serial
+            .fifo_capacity()
+            .min(UART_FIFO_REFILL_BYTES)
+            .min(self.pending_input.len());
         if count == 0 {
             return Ok(());
         }
@@ -541,15 +551,22 @@ mod tests {
         let mut serial = SerialDevice::new(None, test_serial_out_sink(), None).unwrap();
         let input = (0..=127).collect::<Vec<u8>>();
 
+        serial.serial.write(1, 1).unwrap();
         serial.enqueue_raw_input(&input).unwrap();
-        assert_eq!(serial.serial.state().in_buffer.len(), 64);
-        assert_eq!(serial.pending_input.len(), 64);
+        assert_eq!(serial.serial.state().in_buffer.len(), UART_FIFO_REFILL_BYTES);
+        assert_eq!(serial.pending_input.len(), input.len() - UART_FIFO_REFILL_BYTES);
+        assert_eq!(serial.serial.interrupt_evt().read().unwrap(), 1);
 
         let mut actual = Vec::with_capacity(input.len());
-        for _ in &input {
-            let mut byte = [0u8; 1];
-            serial.read(0, 0, &mut byte);
-            actual.push(byte[0]);
+        for (index, expected) in input.chunks(UART_FIFO_REFILL_BYTES).enumerate() {
+            for _ in expected {
+                let mut byte = [0u8; 1];
+                serial.read(0, 0, &mut byte);
+                actual.push(byte[0]);
+            }
+            if index + 1 < input.len() / UART_FIFO_REFILL_BYTES {
+                assert_eq!(serial.serial.interrupt_evt().read().unwrap(), 1);
+            }
         }
         assert_eq!(actual, input);
         assert!(serial.serial.state().in_buffer.is_empty());

@@ -861,10 +861,10 @@ pub(crate) mod tests {
         )
         .unwrap();
         let restored = restored.lock().unwrap();
-        assert_eq!(restored.serial.state().in_buffer, input[..64]);
+        assert_eq!(restored.serial.state().in_buffer, input[..16]);
         assert_eq!(
             restored.pending_input.iter().copied().collect::<Vec<_>>(),
-            input[64..]
+            input[16..]
         );
     }
 
