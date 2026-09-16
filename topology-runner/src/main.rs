@@ -2417,6 +2417,14 @@ impl ServiceVm {
             .map_err(|error| error.to_string())
     }
 
+    fn machine_execution_replay_divergence(&self) -> Result<Option<String>, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .machine_execution_replay_divergence()
+            .map_err(|error| error.to_string())
+    }
+
     fn validate_execution_locations(&self) -> Result<(), String> {
         self.vmm
             .lock()
@@ -10612,7 +10620,7 @@ fn reject_active_replay_divergence(
     services: &BTreeMap<String, ServiceRuntime>,
 ) -> Result<(), String> {
     for (name, service) in services {
-        if let Some(error) = service.vm.machine_execution_replay_error()? {
+        if let Some(error) = service.vm.machine_execution_replay_divergence()? {
             for paused in services.values() {
                 let _ = paused.vm.pause();
             }
