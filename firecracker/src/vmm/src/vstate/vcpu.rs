@@ -1647,22 +1647,28 @@ mod execution_ledger_tests {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn reset_device(controller: &Arc<MachineExecutionController>) -> (Peripherals, vmm_sys_util::eventfd::EventFd) {
+    fn reset_device(controller: &Arc<MachineExecutionController>) -> (
+        Peripherals,
+        vmm_sys_util::eventfd::EventFd,
+        Arc<Mutex<crate::devices::legacy::I8042Device>>,
+    ) {
         let event = vmm_sys_util::eventfd::EventFd::new(libc::EFD_NONBLOCK).unwrap();
         let device = crate::devices::legacy::I8042Device::new(event.try_clone().unwrap()).unwrap();
         device.attach_reset_controller(controller);
+        // Bus routes hold weak links; retain the device as a real manager does.
+        let device = Arc::new(Mutex::new(device));
         let bus = Arc::new(Bus::new());
-        bus.insert(Arc::new(Mutex::new(device)), 0x60, 5).unwrap();
+        bus.insert(device.clone(), 0x60, 5).unwrap();
         let mut peripherals = Peripherals::default();
         peripherals.pio_bus = Some(bus);
-        (peripherals, event)
+        (peripherals, event, device)
     }
 
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn i8042_reset_ends_the_trace_synchronously_without_shutdown_polling() {
         let controller = Arc::new(MachineExecutionController::default());
-        let (mut peripherals, event) = reset_device(&controller);
+        let (mut peripherals, event, _device) = reset_device(&controller);
         let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
         controller.enforce(vec!["vcpu:0:pio_write:0x64:1:fe".into()]).unwrap();
         assert_eq!(handle_kvm_exit_recorded(&mut peripherals,
@@ -1684,7 +1690,7 @@ mod execution_ledger_tests {
     #[test]
     fn mismatched_reset_never_stops_the_vm_or_signals_the_eventloop() {
         let controller = Arc::new(MachineExecutionController::default());
-        let (mut peripherals, event) = reset_device(&controller);
+        let (mut peripherals, event, _device) = reset_device(&controller);
         let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
         controller.enforce(vec!["vcpu:0:pio_write:0x64:1:20".into()]).unwrap();
         assert!(handle_kvm_exit_recorded(&mut peripherals,

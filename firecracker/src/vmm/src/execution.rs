@@ -4,7 +4,7 @@
 //! Portable, bounded machine-stream evidence for API-driven VMs.
 
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -117,11 +117,14 @@ impl Vmm {
             .map_err(|error| {
                 VmmError::ExecutionCoverage(format!("rewind execution evidence: {error}"))
             })?;
-        serde_json::to_writer(&mut *file, &evidence).map_err(|error| {
+        // Serialize a large retained stream in buffered writes after admission
+        // has stopped, rather than issuing a syscall for each JSON token.
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer(&mut writer, &evidence).map_err(|error| {
             VmmError::ExecutionCoverage(format!("serialize execution evidence: {error}"))
         })?;
-        file.write_all(b"\n")
-            .and_then(|()| file.flush())
+        writer.write_all(b"\n")
+            .and_then(|()| writer.flush())
             .map_err(|error| {
                 VmmError::ExecutionCoverage(format!("write execution evidence: {error}"))
             })
