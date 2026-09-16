@@ -2,9 +2,10 @@
 
 Run two ordinary worker images against one counter image. The workers use the
 simulated Compose network. Before exploring either counter outcome, the
-campaign applies a required partition, sends a UDP probe that the simulated
-network records as dropped, heals the network, and verifies that HTTP works
-again. The workers then remain in flight at the same time. A sequential
+campaign establishes the network path, applies a required partition, sends a
+UDP probe that the simulated network records as dropped, heals the network,
+and verifies that HTTP works again. The workers then remain in flight at the
+same time. A sequential
 schedule leaves the counter at two. An overlapping schedule lets both HTTP
 requests read zero before either writes, leaving the counter at one.
 
@@ -31,9 +32,10 @@ export THESEUS_IMAGE=ghcr.io/e6qu/theseus:${THESEUS_TAG}-${THESEUS_ARCH}
 ```
 
 This directory is the complete tutorial input. The two `increment` files are
-the worker client and the deliberately unsafe counter endpoint. `probe.c`
-sends one UDP datagram and exits without waiting for a reply. There is no
-orchestration script and no repository checkout.
+the worker client and the deliberately unsafe counter endpoint. The endpoint
+uses named pipes to pause each request without timers. `probe.c` sends one UDP
+datagram and exits without waiting for a reply. There is no orchestration
+script and no repository checkout.
 
 ## 1. Build and inspect the services
 
@@ -111,10 +113,11 @@ grep -R '"value":2' campaign/runs/*/services/counter/serial.log
 ```
 
 The command succeeds only when the named property has a retained failed
-verdict. The UDP probe performs one `sendto()` and exits without waiting for a
-reply. The action names, dropped-frame count, and recovery output show that
-the partition was exercised and healed before the two counter outcomes were
-explored.
+verdict. The setup request establishes the worker's neighbor entry before the
+partition. The UDP probe then performs one `sendto()` and exits without
+waiting for a reply. The action names, dropped-frame count, and recovery
+output show that the partition was exercised and healed before the two
+counter outcomes were explored.
 
 ## 5. Inspect, minimize, and replay
 

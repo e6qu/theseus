@@ -99,7 +99,7 @@ x-theseus:
     state: {phase: new, a: idle, b: idle}
     max_runs: 64
     max_faults_per_run: 2
-    max_operations_per_run: 11
+    max_operations_per_run: 12
     faults:
       - kind: partition
         required: true
@@ -110,14 +110,23 @@ x-theseus:
         network: backplane
         after: probe_partition
     operations:
-      - name: setup
+      - name: reset_counter
         service: counter
         max_uses: 1
         requires_state: {phase: new}
+        sets_state: {phase: reset}
+        shell:
+          phase: setup
+          command: [/bin/sh, -c, "rm -f /state/*; echo 0 > /state/counter; mkfifo /state/a.go /state/b.go"]
+
+      - name: setup
+        service: writer-a
+        max_uses: 1
+        requires_state: {phase: reset}
         sets_state: {phase: partitioned}
         shell:
           phase: setup
-          command: [/bin/sh, -c, "rm -f /state/*; echo 0 > /state/counter"]
+          command: [/bin/sh, -c, "/bin/busybox wget -qO- http://counter:8080/health >/dev/null"]
 
       - name: probe_partition
         service: writer-a
@@ -153,7 +162,7 @@ x-theseus:
         requires_state: {a: running, b: idle}
         sets_state: {a: released}
         shell:
-          command: [/bin/sh, -c, "while [ ! -e /state/a.ready ]; do sleep 0.01; done; touch /state/a.go"]
+          command: [/bin/sh, -c, "printf 'go\n' > /state/a.go"]
 
       - name: complete_a
         service: writer-a
@@ -181,7 +190,7 @@ x-theseus:
         requires_state: {a: done, b: running}
         sets_state: {b: released}
         shell:
-          command: [/bin/sh, -c, "while [ ! -e /state/b.ready ]; do sleep 0.01; done; touch /state/b.go"]
+          command: [/bin/sh, -c, "printf 'go\n' > /state/b.go"]
 
       - name: launch_b_overlapped
         service: writer-b
@@ -199,7 +208,7 @@ x-theseus:
         requires_state: {a: running, b: running}
         sets_state: {a: released, b: released}
         shell:
-          command: [/bin/sh, -c, "while [ ! -e /state/a.ready ] || [ ! -e /state/b.ready ]; do sleep 0.01; done; touch /state/a.go /state/b.go"]
+          command: [/bin/sh, -c, "printf 'go\n' > /state/a.go; printf 'go\n' > /state/b.go"]
 
       - name: complete_b
         service: writer-b
@@ -228,7 +237,7 @@ x-theseus:
         sets_state: {phase: recovered}
         shell:
           phase: recovery
-          command: [/bin/sh, -c, "rm -f /state/*.ready /state/*.go"]
+          command: [/bin/sh, -c, "rm -f /state/*.go; mkfifo /state/a.go /state/b.go"]
 
     properties:
       - name: network_recovery_is_reachable
