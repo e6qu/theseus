@@ -537,8 +537,11 @@ pub fn flatten_with_contracts(
     let mut ino: u64 = 1;
 
     // These injected paths must not be overwritten by original image files.
-    files.remove("/init");
-    files.remove("/etc/theseus-init.json");
+    files.retain(|path, _| {
+        !["/init", "/etc/theseus-init.json"]
+            .iter()
+            .any(|reserved| path == reserved || path.starts_with(&format!("{reserved}/")))
+    });
 
     // The kernel's initramfs unpacker does not create parent directories
     // implicitly: every directory in every path needs an explicit entry.
@@ -744,8 +747,8 @@ fn cpio_header_links(
         "070701{ino:08x}{mode:08x}{uid:08x}{gid:08x}{nlink:08x}{mtime:08x}{filesize:08x}{devmajor:08x}{devminor:08x}{rdevmajor:08x}{rdevminor:08x}{namesize:08x}{check:08x}",
         ino = ino,
         mode = mode,
-        uid = 1,
-        gid = 1,
+        uid = 0,
+        gid = 0,
         nlink = nlink,
         mtime = 0,
         filesize = filesize,
@@ -988,6 +991,7 @@ mod tests {
         let config = br#"{"config":{"Cmd":["sh"]}}"#;
         let layer = tar_bytes(&[
             ("init", b"OVERRIDE-PID1"),
+            ("init/child", b"OVERRIDE-DIRECTORY"),
             ("etc/theseus-init.json", b"OVERRIDE-CONTRACT"),
         ]);
         let (cpio, _) = flatten(&tar_bytes(&[
@@ -997,6 +1001,20 @@ mod tests {
         ]))
         .unwrap();
         assert!(!String::from_utf8_lossy(&cpio).contains("OVERRIDE-"));
+    }
+
+    #[test]
+    fn injected_root_only_files_are_owned_by_root() {
+        let mut out = Vec::new();
+        let mut ino = 0;
+        cpio_file(
+            &mut out,
+            &mut ino,
+            "/run/secrets/token",
+            0o100400,
+            b"secret",
+        );
+        assert_eq!(&out[22..38], b"0000000000000000");
     }
 
     #[test]
