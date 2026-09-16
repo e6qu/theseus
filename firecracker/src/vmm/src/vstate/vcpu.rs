@@ -10,7 +10,7 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering, fence};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::sync::{Arc, Barrier, Condvar, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{fmt, io, thread};
 
 use kvm_bindings::{KVM_SYSTEM_EVENT_RESET, KVM_SYSTEM_EVENT_SHUTDOWN};
@@ -395,9 +395,23 @@ impl MachineExecutionController {
         vm_fd: &VmFd,
         ledger: &Arc<Mutex<ExecutionLedger>>,
     ) -> Result<bool, String> {
+        self.deliver_pending_interrupt_with(vcpu, ledger, |gsi| {
+            vm_fd.set_irq_line(gsi, true)
+                .and_then(|()| vm_fd.set_irq_line(gsi, false))
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn deliver_pending_interrupt_with(
+        &self,
+        vcpu: u8,
+        ledger: &Arc<Mutex<ExecutionLedger>>,
+        inject: impl FnOnce(u32) -> Result<(), String>,
+    ) -> Result<bool, String> {
         if !self.deterministic_interrupts_enabled() {
             return Ok(false);
         }
+        let mut interrupt_wait_started = None;
         let mut state = self
             .state
             .lock()
@@ -420,13 +434,31 @@ impl MachineExecutionController {
                     .and_then(|expected| expected.get(state.position))
                     .is_some_and(|record| record.starts_with(&format!("vcpu:{vcpu}:interrupt:")))
                 {
-                    let detail = format!(
-                        "machine execution replay expected an interrupt at decision {}, but no interrupt was pending",
-                        state.position
-                    );
-                    state.divergence = Some(detail.clone());
-                    self.turn_changed.notify_all();
-                    return Err(detail);
+                    // The recorded device completion can arrive on the host
+                    // event loop after this vCPU reaches its injection turn.
+                    // Wait for that producer without running more guest code.
+                    drop(pending);
+                    let started = interrupt_wait_started.get_or_insert_with(Instant::now);
+                    let remaining = MACHINE_EXECUTION_TURN_TIMEOUT.saturating_sub(started.elapsed());
+                    let (next, timeout) = self.turn_changed
+                        .wait_timeout(state, remaining)
+                        .expect("machine execution controller lock poisoned while waiting for interrupt request");
+                    state = next;
+                    // Requests use a separate queue lock: recheck it even on
+                    // timeout, so a notification just before the wait cannot
+                    // turn an already-queued completion into a divergence.
+                    if timeout.timed_out() && !self.shutdown_requested()
+                        && self.pending_interrupts.lock().expect("pending interrupt queue lock poisoned").is_empty()
+                    {
+                        let detail = format!(
+                            "machine execution replay expected an interrupt at decision {}, but no interrupt became pending",
+                            state.position
+                        );
+                        state.divergence = Some(detail.clone());
+                        self.turn_changed.notify_all();
+                        return Err(detail);
+                    }
+                    continue;
                 }
                 return Ok(false);
             };
@@ -481,9 +513,7 @@ impl MachineExecutionController {
             self.turn_changed.notify_all();
             return Err(detail);
         }
-        vm_fd
-            .set_irq_line(interrupt.gsi, true)
-            .and_then(|()| vm_fd.set_irq_line(interrupt.gsi, false))
+        inject(interrupt.gsi)
             .map_err(|error| format!("failed to deliver {decision}: {error}"))?;
         pending.pop_front();
         drop(pending);
@@ -1547,6 +1577,67 @@ mod execution_ledger_tests {
 
     #[derive(Default)]
     struct CountingDevice { reads: usize, writes: usize }
+
+    #[test]
+    fn recorded_interrupt_waits_for_async_completion_before_injection() {
+        let controller = Arc::new(MachineExecutionController::default());
+        controller.enable_deterministic_interrupts();
+        controller.enforce(vec!["vcpu:0:interrupt:virtio-mmio:5".into()]).unwrap();
+        let producer = controller.clone();
+        let producer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            producer.request_edge_interrupt("virtio-mmio", 5).unwrap();
+        });
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        assert!(controller.deliver_pending_interrupt_with(0, &ledger, |gsi| {
+            assert_eq!(gsi, 5);
+            Ok(())
+        }).unwrap());
+        producer.join().unwrap();
+        assert_eq!(controller.execution_state().trace(), ["vcpu:0:interrupt:virtio-mmio:5"]);
+        assert_eq!(ledger.lock().unwrap().evidence().decisions, 1);
+        assert!(controller.pending_interrupts_for_test().is_empty());
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
+    fn missing_or_changed_interrupt_never_injects_or_records_a_decision() {
+        for pending in [None, Some(("serial", 4))] {
+            let controller = Arc::new(MachineExecutionController::default());
+            controller.enable_deterministic_interrupts();
+            controller.enforce(vec!["vcpu:0:interrupt:virtio-mmio:5".into()]).unwrap();
+            if let Some((source, gsi)) = pending {
+                controller.request_edge_interrupt(source, gsi).unwrap();
+            }
+            let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+            let error = controller.deliver_pending_interrupt_with(0, &ledger, |_| {
+                panic!("unrecorded interrupt injected")
+            }).unwrap_err();
+            assert!(error.contains("decision 0"));
+            assert_eq!(controller.execution_state().trace().len(), 0);
+            assert_eq!(ledger.lock().unwrap().evidence().decisions, 0);
+            assert_eq!(controller.replay_error(), Some(error));
+        }
+    }
+
+    #[test]
+    fn terminal_request_wakes_a_vcpu_waiting_for_recorded_interrupt() {
+        let controller = Arc::new(MachineExecutionController::default());
+        controller.enable_deterministic_interrupts();
+        controller.enforce(vec!["vcpu:0:interrupt:virtio-mmio:5".into()]).unwrap();
+        let stop = controller.clone();
+        let stop = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            stop.request_shutdown();
+        });
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        assert!(!controller.deliver_pending_interrupt_with(0, &ledger, |_| {
+            panic!("post-terminal interrupt injected")
+        }).unwrap());
+        stop.join().unwrap();
+        assert_eq!(controller.execution_state().trace().len(), 0);
+        assert_eq!(ledger.lock().unwrap().evidence().decisions, 0);
+    }
 
     impl BusDevice for CountingDevice {
         fn read(&mut self, _: u64, _: u64, data: &mut [u8]) {

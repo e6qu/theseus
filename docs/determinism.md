@@ -89,7 +89,10 @@ before guest entry and records `vcpu:<id>:interrupt:<source>:<gsi>` in the same
 machine stream. Sources cover UART, virtio MMIO, virtio MSI-X, VM generation
 and clock notifications, and the i8042 keyboard. Checkpoints retain undelivered
 requests, including notifications created while restoring a VM, and replay
-requires the same vCPU delivery turns. Vhost-user and other direct notifier
+requires the same vCPU delivery turns. If a recorded device completion has not
+yet reached the host queue, the vCPU waits at that turn without running more
+guest code. The wait is bounded; absent or mismatched requests fail replay.
+Vhost-user and other direct notifier
 paths remain outside the deterministic profile.
 
 The VM-wide gate retains the bounded exact trace as well as the rolling digest.
