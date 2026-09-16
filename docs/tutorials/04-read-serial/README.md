@@ -24,6 +24,7 @@ sed -n '1,100p' theseus.toml
 
 The guest disables echo and output newline conversion, announces readiness, reads one line, prints it,
 and requests reboot. The manifest supplies `21.5C` followed by a newline.
+It omits the unused virtio RNG device with `entropy_device = false`.
 
 ## 2. Enter the published runtime
 

@@ -139,6 +139,8 @@ struct Guest {
 #[serde(deny_unknown_fields)]
 struct Run {
     seed: u64,
+    #[serde(default = "default_entropy_device")]
+    entropy_device: bool,
     vcpu_count: u8,
     mem_size_mib: u32,
     #[serde(default = "default_timeout_secs")]
@@ -441,6 +443,12 @@ pub struct GuestPlan {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RunPlanConfig {
     pub seed: u64,
+    /// Attach the seeded virtio RNG. UART-only guests can omit this device.
+    #[serde(
+        default = "default_entropy_device",
+        skip_serializing_if = "is_default_entropy_device"
+    )]
+    pub entropy_device: bool,
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
     pub timeout_secs: u64,
@@ -804,6 +812,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
         },
         run: RunPlanConfig {
             seed: manifest.run.seed,
+            entropy_device: manifest.run.entropy_device,
             vcpu_count: manifest.run.vcpu_count,
             mem_size_mib: manifest.run.mem_size_mib,
             timeout_secs: manifest.run.timeout_secs,
@@ -1195,6 +1204,14 @@ fn storage_plan(storage: Vec<Storage>, run_seed: u64) -> Result<Vec<StoragePlan>
             })
         })
         .collect()
+}
+
+fn default_entropy_device() -> bool {
+    true
+}
+
+fn is_default_entropy_device(value: &bool) -> bool {
+    *value
 }
 
 fn default_timeout_secs() -> u64 {

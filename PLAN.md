@@ -150,6 +150,11 @@ standalone machine-stream replay close that source-level gap; source PR CI
 exercises the UART/reset path on amd64 KVM. Do not mark the release portfolio
 demonstrated until the merged SHA's full certification and indexed evidence
 pass. In-kernel timer control remains next after this release gate.
+Standalone RNG-backed boot replay also exposed variable guest queue addresses
+from uncontrolled kernel allocation. UART-only and health-check examples omit
+that unused device explicitly; do not generalize their evidence to arbitrary
+RNG-backed boot. Close this gap with controlled boot or a retained checkpoint
+boundary, not address normalization or relaxed trace comparison.
 
 1. Automatically execute the released amd64 runtime on native KVM after its
    release passes all consumer checks.

@@ -64,6 +64,8 @@ cp /opt/theseus/vmlinux work/guest/vmlinux
 
 These copies become inputs to the service manifests. Planning hashes them;
 replay does not silently select newer binaries from the container.
+The manifest sets `entropy_device = false`: this health-check service does
+not need the seeded virtio RNG.
 
 ## 4. Run, inspect, and replay
 

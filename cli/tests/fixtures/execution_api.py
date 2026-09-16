@@ -8,6 +8,8 @@ import socket
 import sys
 
 MODE = "exit"
+ENTROPY_DEVICE = True
+entropy_configured = False
 sock = sys.argv[sys.argv.index("--api-sock") + 1]
 server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 server.bind(sock)
@@ -83,8 +85,12 @@ while True:
             output.touch()
             if body["replay_trace_path"]:
                 expected = json.loads(Path(body["replay_trace_path"]).read_text())
+        elif endpoint == "/entropy":
+            assert ENTROPY_DEVICE, "unused RNG must not be attached"
+            entropy_configured = True
         elif endpoint == "/actions":
             assert output is not None, "execution must be configured before boot"
+            assert entropy_configured == ENTROPY_DEVICE
             started = True
             serial.write_text("THES:M:42\n")
         elif endpoint == "/serial-input":

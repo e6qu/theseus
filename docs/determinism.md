@@ -121,6 +121,10 @@ fitting the default HTTP API limit after hexadecimal encoding.
 Version-2 plans use the topology runner's `quiet loglevel=0` boot policy to
 suppress host-clock-dependent kernel diagnostics. This does not control those
 clocks or filter decisions out of the captured stream.
+`run.entropy_device = false` omits the seeded virtio RNG for guests that do
+not use it. Otherwise, kernel boot allocation can change its queue addresses
+before the application starts. Replay rejects that divergence; neither the
+device seed nor quiet boot makes arbitrary kernel boot deterministic.
 
 `theseus replay --output diagnostics bundle` installs the recorded stream
 before the first guest run. It checks the complete stream, local ledgers, and

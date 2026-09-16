@@ -650,7 +650,9 @@ fn configure_and_wait(
         "/serial",
         json!({ "serial_out_path": serial_log_text }),
     )?;
-    api_put(socket, "/entropy", json!({ "seed": plan.run.seed }))?;
+    if plan.run.entropy_device {
+        api_put(socket, "/entropy", json!({ "seed": plan.run.seed }))?;
+    }
     if capture {
         api_put(
             socket,
@@ -1570,6 +1572,40 @@ mem_size_mib = 128
         )
         .unwrap();
         directory
+    }
+
+    #[test]
+    fn uart_only_bundle_locks_and_replays_an_omitted_entropy_device() {
+        let directory = execution_api_fixture("exit");
+        let root = directory.path();
+        let manifest = root.join("theseus.toml");
+        let text = fs::read_to_string(&manifest).unwrap();
+        fs::write(
+            &manifest,
+            text.replace("seed = 42", "seed = 42\nentropy_device = false"),
+        )
+        .unwrap();
+        let runtime = root.join("runtime/firecracker");
+        let script = fs::read_to_string(&runtime).unwrap();
+        fs::write(
+            &runtime,
+            script.replace("ENTROPY_DEVICE = True", "ENTROPY_DEVICE = False"),
+        )
+        .unwrap();
+        let bundle = root.join("run");
+        test(&manifest, &bundle).unwrap();
+        let mut locked: Value =
+            serde_json::from_slice(&fs::read(bundle.join("replay-plan.json")).unwrap()).unwrap();
+        assert_eq!(locked["run"]["entropy_device"], false);
+        let legacy_default = {
+            locked["run"]
+                .as_object_mut()
+                .unwrap()
+                .remove("entropy_device");
+            serde_json::from_value::<RunPlan>(locked).unwrap()
+        };
+        assert!(legacy_default.run.entropy_device);
+        replay_to(&bundle, root.join("rerun")).unwrap();
     }
 
     #[test]

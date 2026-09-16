@@ -84,6 +84,16 @@ jobs:
           done
           python3 -c 'import json; e = json.load(open("work/replay/execution.json")); t = e["machine_execution_trace"]; assert "host:serial_input:6:32312e35430a" in t; assert t[-1] == "vcpu:0:pio_write:0x64:1:fe", t[-10:]'
 
+      - name: Report native replay divergence
+        if: failure()
+        working-directory: docs/tutorials/04-read-serial
+        run: |
+          for evidence in work/*/execution.json; do
+            if test -f "$evidence"; then
+              jq '{boundary, replay_error, ledger: .machine_execution_ledger}' "$evidence"
+            fi
+          done
+
       - name: Retain native replay diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

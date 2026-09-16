@@ -50,6 +50,11 @@ legacy input replay without claiming machine-stream enforcement.
 Version-2 plans boot with `quiet loglevel=0`, as topology runs do: kernel
 diagnostics can contain uncontrolled host-clock values. All device decisions
 made under that boot policy are still checked.
+`run.entropy_device` defaults to `true`. Set it to `false` for a guest that
+does not need the seeded virtio RNG; the choice is locked in its replay plan.
+Boot-time Linux allocation and hardware entropy can still change RNG queue
+addresses. Active replay rejects those changes; a seed alone does not control
+the kernel's boot behavior.
 
 Use `replay --output` to retain diagnostics in a new named directory. It writes
 serial and Firecracker logs, fresh execution evidence, and `result.json` even

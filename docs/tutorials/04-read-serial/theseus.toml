@@ -9,6 +9,7 @@ initramfs = "work/guest/initramfs.cpio.gz"
 
 [run]
 seed = 42
+entropy_device = false # This guest needs only the UART, not a virtio RNG.
 vcpu_count = 1
 mem_size_mib = 128
 timeout_secs = 10
