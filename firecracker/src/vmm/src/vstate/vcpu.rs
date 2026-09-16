@@ -459,11 +459,31 @@ impl MachineExecutionController {
         vm_fd: &VmFd,
         ledger: &Arc<Mutex<ExecutionLedger>>,
     ) -> Result<bool, String> {
-        self.deliver_pending_interrupt_with(vcpu, ledger, |gsi| {
-            vm_fd.set_irq_line(gsi, true)
-                .and_then(|()| vm_fd.set_irq_line(gsi, false))
-                .map_err(|error| error.to_string())
-        })
+        let mut delivered_any = false;
+        loop {
+            let delivered = self.deliver_pending_interrupt_with(vcpu, ledger, |gsi| {
+                vm_fd
+                    .set_irq_line(gsi, true)
+                    .and_then(|()| vm_fd.set_irq_line(gsi, false))
+                    .map_err(|error| error.to_string())
+            })?;
+            delivered_any |= delivered;
+            if !delivered || !self.replay_expects_interrupt(vcpu) {
+                return Ok(delivered_any);
+            }
+        }
+    }
+
+    fn replay_expects_interrupt(&self, vcpu: u8) -> bool {
+        let state = self
+            .state
+            .lock()
+            .expect("machine execution controller lock poisoned");
+        state
+            .expected
+            .as_ref()
+            .and_then(|expected| expected.get(state.position))
+            .is_some_and(|record| record.starts_with(&format!("vcpu:{vcpu}:interrupt:")))
     }
 
     fn deliver_pending_interrupt_with(
@@ -672,11 +692,11 @@ impl MachineExecutionController {
             .lock()
             .expect("machine execution controller lock poisoned");
         loop {
-            if self.shutdown_requested() {
-                return Err("machine execution rejected host input after guest shutdown".to_owned());
-            }
             if let Some(detail) = state.divergence.clone() {
                 return Err(detail);
+            }
+            if self.shutdown_requested() {
+                return Err("machine execution rejected host input after guest shutdown".to_owned());
             }
             let Some(expected) = state.expected.as_ref() else {
                 break;
@@ -1697,6 +1717,42 @@ mod execution_ledger_tests {
         assert_eq!(ledger.lock().unwrap().evidence().decisions, 1);
         assert!(controller.pending_interrupts_for_test().is_empty());
         assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
+    fn consecutive_recorded_interrupts_are_injected_before_guest_execution() {
+        let controller = MachineExecutionController::default();
+        controller.enable_deterministic_interrupts();
+        controller
+            .enforce(vec![
+                "vcpu:0:interrupt:vmgenid:6".into(),
+                "vcpu:0:interrupt:vmclock:7".into(),
+                "host:serial_input:1:41".into(),
+            ])
+            .unwrap();
+        controller.request_edge_interrupt("vmgenid", 6).unwrap();
+        controller.request_edge_interrupt("vmclock", 7).unwrap();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let mut delivered = Vec::new();
+        while controller.replay_expects_interrupt(0) {
+            assert!(
+                controller
+                    .deliver_pending_interrupt_with(0, &ledger, |gsi| {
+                        delivered.push(gsi);
+                        Ok(())
+                    })
+                    .unwrap()
+            );
+        }
+        assert_eq!(delivered, [6, 7]);
+        assert_eq!(
+            controller.execution_state().trace(),
+            [
+                "vcpu:0:interrupt:vmgenid:6",
+                "vcpu:0:interrupt:vmclock:7"
+            ]
+        );
+        assert_eq!(controller.replay_error(), Some("machine execution replay stopped at decision 2 of 3".into()));
     }
 
     #[test]

@@ -247,7 +247,7 @@ pub enum VmmError {
     DirtyBitmap(kvm_ioctls::Error),
     /// Theseus: error reading a paused vCPU program counter. {0}
     GuestProgramCounter(kvm_ioctls::Error),
-    /// Theseus: execution-coverage vCPU count mismatch: {0}
+    /// Theseus: execution-control error: {0}
     ExecutionCoverage(String),
     /// I8042 error: {0}
     I8042Error(devices::legacy::I8042DeviceError),
