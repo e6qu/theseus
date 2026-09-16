@@ -1936,6 +1936,14 @@ impl ServiceVm {
             .map_err(|error| error.to_string())
     }
 
+    fn serial_input_diagnostics(&self) -> Result<String, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .serial_input_diagnostics()
+            .map_err(|error| error.to_string())
+    }
+
     fn jump_virtual_time(&self, nanoseconds: u64) -> Result<(), String> {
         self.vmm
             .lock()
@@ -11873,8 +11881,13 @@ fn wait_for_serial_after_rounds(
         advance_campaign_operation_round(target, services, switches)?;
     }
     let unread = target.vm.serial_input_depth()?;
+    let uart = target.vm.serial_input_diagnostics()?;
+    let trace = target.vm.machine_execution_trace()?;
+    let trace_tail = trace.iter().rev().take(8).cloned().collect::<Vec<_>>();
     Err(format!(
-        "service did not announce {purpose} within {CAMPAIGN_BARRIER_MAX_ROUNDS} topology rounds after UART input ({unread} unread UART bytes): {}",
+        "service did not announce {purpose} within {CAMPAIGN_BARRIER_MAX_ROUNDS} topology rounds after UART input ({unread} unread UART bytes; {uart}; VM exit={:?}; decisions={}; newest decisions={trace_tail:?}): {}",
+        target.vm.exited(),
+        trace.len(),
         serial_log.display()
     ))
 }

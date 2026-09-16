@@ -1222,7 +1222,10 @@ impl Vcpu {
                     return VcpuRunState::Paused;
                 }
                 // Emulation errors lead to vCPU exit.
-                Err(_) => return self.exit(FcExitCode::GenericError),
+                Err(error) => {
+                    error!("vCPU {} emulation failed: {error}", self.kvm_vcpu.index);
+                    return self.exit(FcExitCode::GenericError);
+                }
             }
         }
 
