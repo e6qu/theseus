@@ -55,11 +55,20 @@ while True:
     connection, _ = server.accept()
     with connection:
         request = bytearray()
-        while chunk := connection.recv(4096):
+        while b"\r\n\r\n" not in request:
+            chunk = connection.recv(4096)
+            if not chunk:
+                break
             request.extend(chunk)
         if not request:
             continue
         header, body = bytes(request).split(b"\r\n\r\n", 1)
+        length = next(int(line.split(b":", 1)[1]) for line in header.split(b"\r\n")
+                      if line.lower().startswith(b"content-length:"))
+        while len(body) < length:
+            chunk = connection.recv(length - len(body))
+            assert chunk, "incomplete request body"
+            body += chunk
         method, endpoint, _ = header.split(b"\r\n", 1)[0].decode().split()
         body = json.loads(body)
         done = False

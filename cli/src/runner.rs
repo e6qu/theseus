@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -1079,20 +1079,13 @@ fn api_request(
         endpoint,
         reason: source.to_string(),
     })?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .map_err(|source| RunError::Api {
-            endpoint,
-            reason: source.to_string(),
-        })?;
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|source| RunError::Api {
-            endpoint,
-            reason: source.to_string(),
-        })?;
-    if !response.starts_with("HTTP/1.1 204") {
+    // Firecracker keeps HTTP connections open. Frame the response instead of
+    // half-closing the request or waiting for EOF from the server.
+    let response = read_api_response(stream).map_err(|source| RunError::Api {
+        endpoint,
+        reason: source.to_string(),
+    })?;
+    if response.split_whitespace().nth(1) != Some("204") {
         return Err(RunError::Api {
             endpoint,
             reason: if response.is_empty() {
@@ -1103,6 +1096,58 @@ fn api_request(
         });
     }
     Ok(())
+}
+
+fn read_api_response(stream: UnixStream) -> std::io::Result<String> {
+    use std::io::{Error, ErrorKind};
+    let invalid = |message| Error::new(ErrorKind::InvalidData, message);
+    let mut stream = BufReader::new(stream);
+    let mut header = Vec::new();
+    while !header.ends_with(b"\r\n\r\n") {
+        if header.len() == 16 * 1024 {
+            return Err(invalid("API response headers exceed 16 KiB"));
+        }
+        let mut byte = [0];
+        stream.read_exact(&mut byte)?;
+        header.push(byte[0]);
+    }
+    let header = String::from_utf8(header).map_err(|_| invalid("invalid API response headers"))?;
+    let mut lines = header.split("\r\n");
+    let status = lines.next().unwrap_or_default();
+    let mut fields = status.split_whitespace();
+    if fields.next() != Some("HTTP/1.1")
+        || !fields
+            .next()
+            .is_some_and(|code| code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err(invalid("invalid API response status"));
+    }
+    let mut length = None;
+    for line in lines.filter(|line| !line.is_empty()) {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| invalid("invalid API response header"))?;
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err(invalid("unsupported API response transfer encoding"));
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            let value = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| invalid("invalid API response length"))?;
+            if length.replace(value).is_some() || value > 128 * 1024 {
+                return Err(invalid("duplicate or oversized API response length"));
+            }
+        }
+    }
+    let length = match length {
+        Some(length) => length,
+        None if status.split_whitespace().nth(1) == Some("204") => 0,
+        None => return Err(invalid("missing API response length")),
+    };
+    let mut body = vec![0; length];
+    stream.read_exact(&mut body)?;
+    Ok(header + &String::from_utf8_lossy(&body))
 }
 
 fn verify_artifact(base: &Path, artifact: &crate::manifest::ArtifactPlan) -> Result<(), RunError> {
@@ -1722,17 +1767,57 @@ body_contains = "ok"
         let listener = UnixListener::bind(&socket).unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = String::new();
-            stream.read_to_string(&mut request).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = vec![0; b"PUT /entropy HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"seed\":42}".len()];
+            stream.read_exact(&mut request).unwrap();
+            let request = String::from_utf8(request).unwrap();
             assert!(request.starts_with("PUT /entropy HTTP/1.1"));
             assert!(request.contains("{\"seed\":42}"));
             stream
                 .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
                 .unwrap();
+            // Keep the server's write side open until the client has consumed
+            // the framed response and dropped its connection.
+            assert_eq!(stream.read(&mut [0]).unwrap(), 0);
         });
 
         api_put(&socket, "/entropy", json!({ "seed": 42 })).unwrap();
         server.join().unwrap();
+    }
+
+    #[test]
+    fn api_response_reads_framed_faults_and_rejects_invalid_lengths() {
+        for (response, expected) in [
+            (
+                "HTTP/1.1 400 Bad Request\r\ncontent-length: 5\r\n\r\nfault",
+                Some("fault"),
+            ),
+            ("HTTP/1.1 400 Bad Request\r\n\r\n", None),
+            (
+                "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n",
+                None,
+            ),
+            (
+                "HTTP/1.1 400 Bad Request\r\nContent-Length: 131073\r\n\r\n",
+                None,
+            ),
+            (
+                "HTTP/1.1 204 No Content\r\nTransfer-Encoding: chunked\r\n\r\n",
+                None,
+            ),
+            ("HTTP/1.1 2040 Invalid\r\nContent-Length: 0\r\n\r\n", None),
+        ] {
+            let (client, mut server) = UnixStream::pair().unwrap();
+            server.write_all(response.as_bytes()).unwrap();
+            let result = read_api_response(client);
+            if let Some(body) = expected {
+                assert!(result.unwrap().ends_with(body));
+            } else {
+                assert!(result.is_err(), "accepted {response:?}");
+            }
+        }
     }
 
     #[test]
