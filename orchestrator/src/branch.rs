@@ -9,22 +9,21 @@
 //! restore path, with the memfd referenced as `/proc/self/fd/<n>` and the
 //! memory backend type `File` — so no new restore machinery is needed.
 //!
-//! Two children spawned from the same [`BranchPoint`] differ *only* by seed
-//! (see [`BranchPoint::child_seed`]); virtual time, clock state and memory
-//! contents are identical. This is the Antithesis branch-point semantics.
+//! Children start with the same saved registers, virtual clock and RAM.
+//! Callers select future entropy seeds with [`BranchPoint::child_seed`]; a
+//! seed change alone does not reset a Linux CSPRNG retained in guest RAM.
 //!
-//! v1 copies guest RAM eagerly per branch point. The copy-on-write
-//! optimization (uffd write-protect, share pages until written) is the
-//! follow-up; the interface here is designed to make that a transparent
-//! change.
+//! Capture copies guest RAM eagerly once per branch point. Children restore
+//! with private copy-on-write file mappings; untouched pages are shared and
+//! child writes are isolated. Exporting a durable root adds a disk copy.
 
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
-use memfd::MemfdOptions;
+use memfd::{FileSeal, MemfdOptions};
 
 use vm_memory::{GuestMemoryBackend, GuestMemoryRegion};
 use vmm::persist::{MicrovmState, VmInfo};
@@ -71,11 +70,79 @@ pub struct BranchPoint {
 }
 
 impl BranchPoint {
+    /// Copy a retained snapshot into sealed backing memory before restoration.
+    /// Callers must verify the copied bytes against locked digests before
+    /// creating VMs; changes to the original file cannot alter child mappings.
+    pub fn import_snapshot(
+        state_path: &Path,
+        memory_path: &Path,
+        base_seed: u64,
+    ) -> Result<Self, BranchError> {
+        let mut state_bytes = Vec::new();
+        File::open(state_path)?
+            .take(128 * 1024 * 1024 + 1)
+            .read_to_end(&mut state_bytes)?;
+        if state_bytes.len() > 128 * 1024 * 1024 {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "snapshot exceeds 128 MiB").into(),
+            );
+        }
+        deserialize_state(&state_bytes)?;
+        let source = File::open(memory_path)?;
+        let mem_size = source.metadata()?.len();
+        if mem_size == 0 || mem_size > 64 * 1024 * 1024 * 1024 {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "invalid retained RAM size").into(),
+            );
+        }
+        let sealed = MemfdOptions::default()
+            .allow_sealing(true)
+            .create("theseus-retained-root")
+            .map_err(BranchError::Memfd)?;
+        let mut destination = sealed.as_file();
+        let mut offset = 0;
+        let mut buffer = [0u8; 64 * 1024];
+        while offset < mem_size {
+            let length = (mem_size - offset).min(buffer.len() as u64) as usize;
+            let count = source.read_at(&mut buffer[..length], offset)?;
+            if count == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "retained RAM changed during copy",
+                )
+                .into());
+            }
+            destination.write_all(&buffer[..count])?;
+            offset += count as u64;
+        }
+        destination.seek(SeekFrom::Start(0))?;
+        sealed
+            .add_seals(&[
+                FileSeal::SealGrow,
+                FileSeal::SealShrink,
+                FileSeal::SealWrite,
+                FileSeal::SealSeal,
+            ])
+            .map_err(BranchError::Memfd)?;
+        let memory = sealed.into_file();
+        Ok(Self {
+            state_bytes,
+            memory,
+            mem_size,
+            base_seed,
+            branch_count: 0,
+        })
+    }
+
+    /// Exact immutable serialized state used to create every restored child.
+    pub fn snapshot_bytes(&self) -> &[u8] {
+        &self.state_bytes
+    }
     /// Capture the current state of a microVM.
     ///
     /// **Precondition: all vCPUs must be paused.** Callers use the regular
-    /// pause machinery; the quantum boundaries of Track B′ make pause points
-    /// deterministic.
+    /// pause machinery. A paused cut retains its exact ancestry; it does not
+    /// imply repeatable pause positions across independent kernel boots.
     pub fn capture(vmm: &mut Vmm, vm_info: &VmInfo, base_seed: u64) -> Result<Self, BranchError> {
         let state_bytes = serialize_state(&vmm.save_state(vm_info)?)?;
 
@@ -188,19 +255,27 @@ pub fn deserialize_state(bytes: &[u8]) -> Result<MicrovmState, BranchError> {
 /// The layout matches the snapshot memory-file format (regions concatenated
 /// in order), so the regular snapshot-restore path can consume it directly.
 pub fn dump_memory_to_memfd(mem: &GuestMemoryMmap) -> Result<(File, u64), BranchError> {
-    let memfd: File = MemfdOptions::default()
+    let memfd = MemfdOptions::default()
+        .allow_sealing(true)
         .close_on_exec(false)
         .create("theseus-branch-mem")
-        .map_err(BranchError::Memfd)?
-        .into_file();
+        .map_err(BranchError::Memfd)?;
 
     let mem_size: u64 = mem.iter().map(|region| region.len() as u64).sum();
-    memfd.set_len(mem_size)?;
+    memfd.as_file().set_len(mem_size)?;
 
-    let mut file = memfd;
+    let mut file = memfd.as_file().try_clone()?;
     mem.dump(&mut file)?;
     file.flush()?;
-    Ok((file, mem_size))
+    memfd
+        .add_seals(&[
+            FileSeal::SealGrow,
+            FileSeal::SealShrink,
+            FileSeal::SealWrite,
+            FileSeal::SealSeal,
+        ])
+        .map_err(BranchError::Memfd)?;
+    Ok((memfd.into_file(), mem_size))
 }
 
 #[cfg(test)]
@@ -240,6 +315,7 @@ mod tests {
             .unwrap();
         assert_eq!(&dump[0x2000..0x3000], &guest_bytes[..]);
         assert_eq!(&guest_bytes[..], &pattern[..]);
+        assert!(file.write_at(b"changed", 0).is_err());
     }
 
     #[test]
@@ -267,6 +343,25 @@ mod tests {
 
         assert_eq!(std::fs::read(state_file.as_path()).unwrap(), state);
         assert_eq!(std::fs::read(memory_file.as_path()).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn retained_import_is_sealed_and_independent_of_source_files() {
+        let state_file = vmm_sys_util::tempfile::TempFile::new().unwrap();
+        let memory_file = vmm_sys_util::tempfile::TempFile::new().unwrap();
+        let state = serialize_state(&MicrovmState::default()).unwrap();
+        std::fs::write(state_file.as_path(), &state).unwrap();
+        std::fs::write(memory_file.as_path(), b"hello").unwrap();
+        let branch =
+            BranchPoint::import_snapshot(state_file.as_path(), memory_file.as_path(), 42).unwrap();
+        std::fs::write(memory_file.as_path(), b"later").unwrap();
+        std::fs::write(state_file.as_path(), b"changed").unwrap();
+        let mut bytes = [0; 5];
+        branch.memory_file().read_exact_at(&mut bytes, 0).unwrap();
+        assert_eq!(&bytes, b"hello");
+        assert_eq!(branch.snapshot_bytes(), state);
+        assert!(branch.memory_file().write_at(b"bad", 0).is_err());
+        assert!(branch.memory_file().set_len(0).is_err());
     }
 
     #[test]

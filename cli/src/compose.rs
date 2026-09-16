@@ -83,6 +83,8 @@ struct ComposeFile {
 #[serde(deny_unknown_fields)]
 struct ComposeTheseus {
     #[serde(default)]
+    replay_start: crate::manifest::ReplayStart,
+    #[serde(default)]
     campaign: Option<ComposeCampaign>,
 }
 
@@ -1159,6 +1161,7 @@ pub struct ComposePlan {
     pub campaign: Option<CampaignPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topology_runner: Option<ArtifactPlan>,
+    pub replay_start: crate::manifest::ReplayStart,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1885,6 +1888,21 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
 
     validate_dependency_graph(&services)?;
 
+    let replay_start = compose
+        .theseus
+        .as_ref()
+        .map_or(crate::manifest::ReplayStart::FreshBoot, |theseus| {
+            theseus.replay_start
+        });
+    if replay_start == crate::manifest::ReplayStart::ReadyCheckpoint
+        && services
+            .values()
+            .any(|service| service.run.run.virtual_time.is_none())
+    {
+        return Err(ComposeError::Invalid(
+            "ready_checkpoint requires virtual time on every service".to_owned(),
+        ));
+    }
     let campaign = campaign_plan(compose.theseus, &mut services)?;
     let networks = memberships
         .into_iter()
@@ -1898,6 +1916,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         networks,
         campaign,
         topology_runner: None,
+        replay_start,
     })
 }
 
@@ -7311,6 +7330,45 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("manages topology checkpoints"));
+    }
+
+    #[test]
+    fn compose_accepts_explicit_topology_checkpoint_and_requires_all_clocks() {
+        let directory = fixture("services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  replay_start: ready_checkpoint\n");
+        let path = directory.path().join("compose.yaml");
+        let plan = load_compose_plan(&path).unwrap();
+        assert_eq!(
+            plan.replay_start,
+            crate::manifest::ReplayStart::ReadyCheckpoint
+        );
+        let manifest = directory.path().join("api/theseus.toml");
+        let text = fs::read_to_string(&manifest).unwrap();
+        fs::write(&manifest, text.split("[run.virtual_time]").next().unwrap()).unwrap();
+        assert!(load_compose_plan(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("virtual time on every service"));
+    }
+
+    #[test]
+    fn runtime_witness_tutorial_is_a_valid_checkpoint_plan() {
+        let compose = include_str!("../../docs/tutorials/11-certify-runtime/compose.yaml")
+            .replace("  service:", "  api:")
+            .replace("service/theseus.toml", "api/theseus.toml");
+        let directory = fixture(&compose);
+        let manifest = include_str!("../../docs/tutorials/11-certify-runtime/service/theseus.toml")
+            .replace("guest/initramfs.cpio.gz", "guest/initramfs.cpio");
+        fs::write(directory.path().join("api/theseus.toml"), manifest).unwrap();
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(
+            plan.replay_start,
+            crate::manifest::ReplayStart::ReadyCheckpoint
+        );
+        assert_eq!(
+            plan.services["api"].run.events[0].data_hex,
+            "66696e6973680a"
+        );
+        assert_eq!(plan.services["api"].run.storage.len(), 1);
     }
 
     fn image_fixture(compose: &str, files: &[(&str, u32)]) -> tempfile::TempDir {

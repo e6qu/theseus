@@ -149,6 +149,8 @@ jobs:
                     -exec tail -160 {} \;
                   find /tutorial/certificate -name result.json -print \
                     -exec cat {} \;
+                  find /tutorial/certificate -name execution-error.json -print \
+                    -exec cat {} \;
                   exit "$status"
                 }
               grep -F '"'"'"status"'"'": "'"'"passed"'"'"' \

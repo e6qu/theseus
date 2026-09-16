@@ -153,13 +153,18 @@ impl DeviceManager {
         rate_limiter: Option<TokenBucket>,
     ) -> Result<Arc<Mutex<SerialDevice>>, std::io::Error> {
         let (serial_in, serial_out) = match output {
-            Some(path) => (
-                None,
-                SerialOut::new(
-                    SerialOutInner::File(open_file_nonblock(path)?),
-                    rate_limiter,
-                ),
-            ),
+            Some(path) => {
+                let mut file = open_file_nonblock(path)?;
+                if state.is_some() && file.metadata()?.is_file() {
+                    // Topology children retain the parent's transcript in
+                    // their new log. Never overwrite it on snapshot restore.
+                    // Fresh API checkpoint logs are empty; FIFO sinks cannot
+                    // seek and retain their existing nonblocking behavior.
+                    use std::io::{Seek, SeekFrom};
+                    file.seek(SeekFrom::End(0))?;
+                }
+                (None, SerialOut::new(SerialOutInner::File(file), rate_limiter))
+            }
             None => {
                 Self::set_stdout_nonblocking();
 
@@ -814,6 +819,18 @@ impl<'a> Persist<'a> for DeviceManager {
 pub(crate) mod tests {
     use super::*;
     use vmm_sys_util::tempfile::TempFile;
+
+    #[test]
+    fn serial_checkpoint_preserves_transcript_before_resumed_output() {
+        let file = TempFile::new().unwrap();
+        let path = file.as_path().to_path_buf();
+        std::fs::write(&path, b"THES:M:42\n").unwrap();
+        let mut manager = EventManager::new().unwrap();
+        let device = DeviceManager::setup_serial_device(&mut manager, Some(&path),
+            Some(&serial::SerialState::default()), None).unwrap();
+        device.lock().unwrap().serial.write(0, b'X').unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"THES:M:42\nX");
+    }
 
     use crate::builder::tests::{
         CustomBlockConfig, default_kernel_cmdline, default_vmm, default_vmm_with_pci,

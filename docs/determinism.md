@@ -190,6 +190,42 @@ checkpoint improves the starting state, not those guarantees. Exploration
 keeps its existing branch-managed checkpoint workflow; Compose likewise manages
 whole-topology checkpoints and rejects this single-service flag.
 
+### Retained topology roots
+
+Set `x-theseus.replay_start: ready_checkpoint` in Compose to retain the
+whole-topology starting state. Every service must use virtual time and wait
+for input after its readiness marker. The baseline and replay restore the same
+locked state, rather than booting independently. Campaigns may reuse this root
+for their operation-prefix tree; retain the complete output directory.
+
+`starting_checkpoint` locks `metadata.json`; metadata locks every service's
+`vmstate` and `memory` plus the bounded binary `context.bin`. Context contains
+simulated NIC queues, seeded link state and framed digest input, switch queues,
+UART transcripts, scheduler state, control/PS/2 state, execution prefixes, and
+undelivered userspace interrupts. Loading checks architecture, VM configuration,
+member hashes and lengths, and reconstructs rolling ledgers before creating VMs.
+Root loading copies RAM into a sealed memfd and verifies the copied bytes,
+so later changes to the retained file cannot alter child mappings. Capture
+also seals in-process RAM images. Import is an eager RAM copy; child restores
+remain private COW mappings, not a zero-copy workflow.
+Each service result identifies the root digest and inherited decision count.
+Version-5 runtime certificates distinguish this contract from fresh-boot v4.
+The native validation archive retains the complete certificate directory under
+`fixed-plan/`. Offline verification binds its exact embedded plan, state/RAM/
+context inventory, runtime/guest artifacts, prefixes, ledgers, serial bytes,
+and passing active replay. Certificate JSON alone is not a replayable root.
+
+Boot decisions remain retained ancestry; only the resumed suffix executes
+again. A restart can introduce an uncontrolled new boot. This feature does not
+control instruction boundaries or kernel timers. RAM and UART ancestry can
+contain secrets. Network digest ancestry is retained in host memory and the
+context file; large traffic histories increase checkpoint cost. Context and VM
+state are bounded to 128 MiB each, guest RAM to 64 GiB per service.
+
+Active replay divergence during startup retains `execution-error.json` beside
+the affected service's serial log, containing the first error, partial machine
+trace and ledgers. It fails immediately instead of exhausting dependency rounds.
+
 This controls concurrent emulated device effects, explicit host inputs, and
 supported userspace device interrupt injection at the KVM boundary. Theseus
 does not yet make guest instructions deterministic, choose Linux thread or
@@ -216,7 +252,9 @@ schedule in-kernel timer interrupts between exits.
   on aarch64 there is no userspace trap knob).
 - **Unmodified Linux CSPRNG.** A stock kernel can mix timing jitter, so its
   random-device output may diverge even when virtio entropy is seeded. Use the
-  matching published kernel/module pair when random-device replay matters.
+  matching published arm64 kernel/module pair, or retain initialized Linux
+  random state in a checkpoint. Published amd64 kernels do not include that
+  arm64 seed-loader module.
 - **`detrng` owns one stream per VM timeline.** Parallel in-process timelines
   enter distinct streams, so their
   host-side random calls cannot interleave.

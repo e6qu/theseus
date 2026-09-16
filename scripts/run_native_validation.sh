@@ -14,6 +14,8 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 validation="$root/.native-evidence/$THESEUS_ARCH/validation"
 rm -rf "$validation"
 mkdir -p "$validation"
+test -f "$root/docs/tutorials/11-certify-runtime/certificate/certificate.json"
+cp -a "$root/docs/tutorials/11-certify-runtime/certificate" "$validation/fixed-plan"
 
 runtime() {
   tutorial=$1

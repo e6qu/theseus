@@ -56,6 +56,8 @@ def main() -> None:
     assert 'cp /opt/theseus/pivot.json runtime-pivot.json' in WORKFLOW
     assert "scripts/native_runtime_evidence.py seal" in WORKFLOW
     assert "scripts/run_native_validation.sh" in WORKFLOW
+    assert '"$validation/fixed-plan"' in VALIDATION
+    assert "execution-error.json" in WORKFLOW
     assert 'grep -F "\\\"host:serial_input:"' in VALIDATION
     assert 'grep -F "\\\"vcpu:0:interrupt:serial:"' in VALIDATION
     assert 'grep -F "\\\"vcpu:0:interrupt:virtio-"' in VALIDATION

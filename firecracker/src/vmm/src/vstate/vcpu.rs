@@ -633,6 +633,13 @@ impl MachineExecutionController {
         Ok(())
     }
 
+    fn replay_divergence(&self) -> Option<String> {
+        self.state
+            .lock()
+            .expect("machine execution controller lock poisoned")
+            .divergence.clone()
+    }
+
     fn replay_error(&self) -> Option<String> {
         let state = self
             .state
@@ -1764,6 +1771,7 @@ mod execution_ledger_tests {
         assert_eq!(ledger.lock().unwrap().evidence().decisions, 0);
         assert!(controller.execution_state().trace().is_empty());
         assert!(controller.replay_error().unwrap().contains("decision 0"));
+        assert_eq!(controller.replay_divergence(), controller.replay_error());
     }
 
     #[test]
@@ -1936,6 +1944,7 @@ mod execution_ledger_tests {
             controller.replay_error().as_deref(),
             Some("machine execution replay stopped at decision 1 of 2")
         );
+        assert_eq!(controller.replay_divergence(), None);
     }
 
     #[test]
@@ -2374,6 +2383,11 @@ impl VcpuHandle {
     /// Return a recorded mismatch or incomplete expected suffix.
     pub fn machine_execution_replay_error(&self) -> Option<String> {
         self.machine_execution.replay_error()
+    }
+
+    /// Return an actual mismatch without treating an in-progress suffix as an error.
+    pub fn machine_execution_replay_divergence(&self) -> Option<String> {
+        self.machine_execution.replay_divergence()
     }
 
     /// Clone the controller used to serialize host and vCPU effects.

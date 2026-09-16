@@ -600,6 +600,19 @@ impl Vmm {
             .machine_execution_replay_error())
     }
 
+    /// Poll a running replay for a mismatch, not an unfinished expected suffix.
+    pub fn machine_execution_replay_divergence(&self) -> Result<Option<String>, VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        Ok(kvm_vm
+            .vcpus_handles()
+            .first()
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))?
+            .machine_execution_replay_divergence())
+    }
+
     fn apply_machine_host_effect<T>(
         &self,
         effect: String,

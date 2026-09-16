@@ -48,8 +48,9 @@ Theseus currently has:
 - A Linux/KVM runtime built around Firecracker.
 - Container image conversion, image-backed services, topology execution, and a
   strict supported subset of Compose.
-- Seeded entropy, a matching kernel random-device module, simulated networking
-  and storage, exit-counted virtual time, and explicit fault operations.
+- Seeded entropy, an arm64 kernel random-device module, retained CRNG state,
+  simulated networking and storage, exit-counted virtual time, and explicit
+  fault operations.
 - Bounded campaigns, static and adaptive case selection, checkpoint-prefix
   reuse, minimization, locked replay, comparison, evaluation, and reports.
 - Serial and SDK evidence for always, sometimes, reachable, and unreachable
@@ -115,8 +116,9 @@ The baseline has important limits:
   Linux thread/process ordering, when the guest services an interrupt,
   in-kernel timer delivery, or when the guest consumes queued input.
 - Guest counters can advance within an exit-counted virtual-time quantum.
-- Stock-kernel `/dev/random` and `/dev/urandom` replay requires the matching
-  released kernel and Theseus random-device module.
+- Fresh-boot `/dev/random` and `/dev/urandom` seeding requires the matching
+  released arm64 kernel and Theseus random-device module. Ready-checkpoint
+  replay retains Linux's CRNG state instead; it does not prove repeatable boot.
 - Application coverage still requires an explicit build frontend and coverage
   catalog. Rust dynamic dependencies, Go external modules and CGO, Java,
   JavaScript, .NET, and transparent instrumentation of existing images remain
@@ -166,12 +168,23 @@ the merged release's corresponding evidence before marking it product-ready.
 
 The released amd64 qualification for `c92f9e076f9b` still fails its fixed-plan
 replay before dependency startup. The full release portfolio is not
-demonstrated. Next, give topology/certification runs an explicit retained
-starting checkpoint with locked ancestry (or control their boot), and retain
-the first replay divergence even when startup fails. Standalone UART/RNG
-checkpoint evidence does not substitute for that topology proof; never silently
-drop boot decisions from a fresh-boot contract. Then complete the portfolio
-below before advancing to in-kernel timer control.
+demonstrated. Whole-topology ready roots now retain VM state/RAM, simulated
+NIC/switch queues and seeded link state, scheduler cursors, UART ancestry,
+transient devices, pending interrupts, and full inherited execution prefixes.
+Fixed-plan and campaign replay can restore that locked root. Version-5
+certificates identify checkpoint ancestry and a nonempty actively replayed
+suffix; fresh-boot v4 remains a separate contract. Tutorial 11 uses this
+starting-state boundary and does not claim fresh-boot restart proof. Startup
+divergence retains its first error and partial machine stream instead of
+exhausting dependency rounds. Native PR CI covers one-service and two-service
+dependency roots, exact repeated replay, corrupted-RAM prelaunch rejection,
+and startup divergence. Require the merged release's certificate and complete
+indexed portfolio before marking this product-ready.
+Standalone UART/RNG or checkpoint source evidence does not substitute for
+that release proof. Never silently drop boot decisions from a fresh-boot
+contract. Restart can introduce another uncontrolled boot and remains a
+separate qualification gap. Complete the portfolio below before advancing
+to in-kernel timer control.
 
 1. Automatically execute the released amd64 runtime on native KVM after its
    release passes all consumer checks.
@@ -185,6 +198,10 @@ below before advancing to in-kernel timer control.
    and a cryptographic inventory for every validation file.
    Version-5 validation must include exact standalone container run/replay
    evidence and a retained passing active-replay check, not only replay stdout.
+   A v5 checkpoint certificate also requires the complete fixed-plan witness
+   in that archive: locked state/RAM/context, inherited prefixes, both run
+   results and logs, and the identical indexed certificate. JSON alone is not
+   a replayable checkpoint witness.
 5. Make the released CLI reject incomplete, renamed, unsafe, mismatched, or
    semantically empty evidence while reporting the exact certified
    architecture set. Exercise its offline report, comparison, evaluation,

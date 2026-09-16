@@ -44,6 +44,8 @@ use vmm::{
     EventManager, ExecutionLedger, ExecutionLedgerEvidence, FcExitCode, MachineExecutionState, Vmm,
 };
 
+mod starting_state;
+
 const USAGE: &str = "Usage:
   theseus-topology --plan topology-plan.json --output replay-dir [--minimize]
   theseus-topology certify --plan topology-plan.json --output certificate-dir";
@@ -59,6 +61,12 @@ struct TopologyPlan {
     campaign: Option<CampaignPlan>,
     #[serde(default)]
     topology_runner: Option<Artifact>,
+    #[serde(default)]
+    replay_start: starting_state::ReplayStart,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    starting_checkpoint: Option<Artifact>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    checkpoint_prefixes: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -682,6 +690,8 @@ enum PropertyKind {
 
 #[derive(Debug, Serialize)]
 struct CampaignResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    starting_checkpoint_sha256: Option<String>,
     format: &'static str,
     decision_trace_format: &'static str,
     status: &'static str,
@@ -1038,6 +1048,8 @@ struct CampaignReplayVerification {
 
 #[derive(Debug, Deserialize)]
 struct RecordedCampaignResult {
+    #[serde(default)]
+    starting_checkpoint_sha256: Option<String>,
     #[serde(default)]
     guidance: Option<CampaignGuidance>,
     #[serde(default)]
@@ -1517,6 +1529,8 @@ struct CheckResult {
 #[derive(Debug, Serialize)]
 struct ServiceResult {
     status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_start: Option<starting_state::ExecutionStart>,
     serial_log: String,
     serial_logs: Vec<String>,
     serial_sha256: Vec<String>,
@@ -1536,6 +1550,8 @@ struct ServiceResult {
 
 #[derive(Debug, Deserialize)]
 struct RecordedServiceResult {
+    #[serde(default)]
+    execution_start: Option<starting_state::ExecutionStart>,
     #[serde(default)]
     serial_log: Option<String>,
     #[serde(default)]
@@ -1608,6 +1624,8 @@ struct CertificateRepeatability {
 
 #[derive(Serialize)]
 struct CertificateServiceEvidence {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_start: Option<starting_state::ExecutionStart>,
     entropy_probe_sha256: String,
     serial_sha256: Vec<String>,
     storage_sha256: BTreeMap<String, String>,
@@ -1634,7 +1652,7 @@ struct NetworkTraffic {
     rx_sha256: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct NetworkFrame {
     round: u64,
     direction: String,
@@ -1768,6 +1786,7 @@ struct ServiceSchedulerCheckpoint {
     execution_ledgers: Option<Vec<ExecutionLedger>>,
     /// VM-global rolling execution state inherited by restored children.
     machine_execution_state: Option<MachineExecutionState>,
+    devices: Option<vmm::checkpoint::ExecutionDeviceState>,
 }
 
 #[derive(Clone)]
@@ -2398,6 +2417,14 @@ impl ServiceVm {
             .map_err(|error| error.to_string())
     }
 
+    fn machine_execution_replay_divergence(&self) -> Result<Option<String>, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .machine_execution_replay_divergence()
+            .map_err(|error| error.to_string())
+    }
+
     fn validate_execution_locations(&self) -> Result<(), String> {
         self.vmm
             .lock()
@@ -2474,11 +2501,20 @@ fn capture_campaign_checkpoint(
             let virtual_time_ns = service.vm.virtual_time_ns()?;
             let execution_locations = service.vm.execution_locations()?;
             let execution_ledgers = service.vm.execution_ledgers()?;
-            let machine_execution_state = service.vm.machine_execution_state()?;
             snapshots.insert(
                 name.clone(),
                 service.vm.snapshot(topology.services[name].run.run.seed)?,
             );
+            // Saving devices can enqueue interrupts. Capture the execution
+            // queue and transient devices AFTER save_state, at the same cut.
+            let machine_execution_state = service.vm.machine_execution_state()?;
+            let devices = service
+                .vm
+                .vmm
+                .lock()
+                .expect("VMM lock poisoned")
+                .execution_device_state()
+                .map_err(|error| error.to_string())?;
             scheduler.insert(
                 name.clone(),
                 ServiceSchedulerCheckpoint {
@@ -2496,6 +2532,7 @@ fn capture_campaign_checkpoint(
                     execution_locations: Some(execution_locations),
                     execution_ledgers: Some(execution_ledgers),
                     machine_execution_state: Some(machine_execution_state),
+                    devices: Some(devices),
                 },
             );
         }
@@ -2724,6 +2761,7 @@ fn checkpoint_campaign_operation(
             scheduler.execution_locations.as_deref(),
             scheduler.execution_ledgers.as_deref(),
             scheduler.machine_execution_state.as_ref(),
+            scheduler.devices.as_ref(),
             parent
                 .services
                 .get(name)
@@ -2922,7 +2960,26 @@ fn execute_plan(
     }
     resolve_topology_artifacts(&mut topology, plan)?;
     let service_names = topology.services.keys().cloned().collect::<Vec<_>>();
+    if topology.starting_checkpoint.is_some()
+        && topology.replay_start != starting_state::ReplayStart::ReadyCheckpoint
+    {
+        return Err("a retained topology checkpoint cannot be replayed as fresh_boot".to_owned());
+    }
+    if topology.replay_start == starting_state::ReplayStart::ReadyCheckpoint {
+        validate_certification_plan_devices(&topology)?;
+    }
     let recorded_campaign = recorded_campaign_result(plan)?;
+    if recorded_campaign
+        .as_ref()
+        .and_then(|result| result.starting_checkpoint_sha256.as_ref())
+        != topology
+            .starting_checkpoint
+            .as_ref()
+            .map(|artifact| &artifact.sha256)
+        && recorded_campaign.is_some()
+    {
+        return Err("recorded campaign checkpoint origin differs from its replay plan".to_owned());
+    }
     let (
         expected_serial,
         expected_faults,
@@ -2956,6 +3013,28 @@ fn execute_plan(
             recorded_lifecycle_barrier_rounds(plan)?,
         )
     };
+    let retained_root = topology
+        .starting_checkpoint
+        .as_ref()
+        .map(|locked| starting_state::load(&topology, locked))
+        .transpose()?;
+    if plan.file_name().and_then(|name| name.to_str()) == Some("replay-plan.json") {
+        if topology.replay_start == starting_state::ReplayStart::ReadyCheckpoint
+            && retained_root.is_none()
+        {
+            return Err("ready-checkpoint replay is missing its retained root".to_owned());
+        }
+        if recorded_campaign.is_none() {
+            starting_state::check_recorded_contract(&topology, plan)?;
+            if retained_root.is_some() && expected_machine_execution_traces.is_none() {
+                return Err("checkpoint replay is missing its active machine stream".to_owned());
+            }
+        }
+    }
+    if let (Some(root), Some(expected)) = (&retained_root, &expected_machine_execution_traces) {
+        starting_state::check_prefix(root, expected)?;
+        starting_state::check_recorded_origin(&topology, root, plan)?;
+    }
     if output.exists() {
         return Err(format!(
             "replay output already exists: {}",
@@ -2991,10 +3070,23 @@ fn execute_plan(
         if minimize {
             return Err("--minimize requires a campaign replay bundle".to_owned());
         }
+        let root = if topology.replay_start == starting_state::ReplayStart::ReadyCheckpoint {
+            if let Some(root) = retained_root {
+                Some(root)
+            } else {
+                starting_state::boot_or_load(&mut topology, &output.join("checkpoint"), "")?;
+                Some(starting_state::load(
+                    &topology,
+                    topology.starting_checkpoint.as_ref().unwrap(),
+                )?)
+            }
+        } else {
+            None
+        };
         execute(
             topology,
             &output,
-            None,
+            root.as_ref(),
             expected_serial,
             expected_faults,
             expected_network,
@@ -3023,9 +3115,18 @@ fn certify(plan: &str, output: &Path) -> Result<(), String> {
         ));
     }
     let input = fs::read(plan).map_err(|error| format!("cannot read {plan}: {error}"))?;
-    let topology: TopologyPlan = serde_json::from_slice(&input)
+    let mut topology: TopologyPlan = serde_json::from_slice(&input)
         .map_err(|error| format!("cannot parse topology plan: {error}"))?;
     validate_certification_plan(&topology)?;
+    if topology.replay_start == starting_state::ReplayStart::ReadyCheckpoint {
+        let runner = env::current_exe().map_err(|error| error.to_string())?;
+        topology.topology_runner = Some(Artifact {
+            sha256: vmm::checkpoint::artifact(&runner, 256 * 1024 * 1024)
+                .map_err(|error| error.to_string())?
+                .sha256,
+            path: runner.display().to_string(),
+        });
+    }
     ensure_kvm_access()?;
 
     fs::create_dir_all(output).map_err(|error| error.to_string())?;
@@ -3037,17 +3138,22 @@ fn certify(plan: &str, output: &Path) -> Result<(), String> {
         .map_err(|error| format!("cannot read {}: {error}", replay_plan.display()))?;
     let replay_topology: TopologyPlan = serde_json::from_slice(&replay_input)
         .map_err(|error| format!("cannot parse {}: {error}", replay_plan.display()))?;
+    let checkpoint_start = replay_topology.starting_checkpoint.is_some();
     let replay = output.join("replay");
     execute_plan(replay_topology, &replay_plan, replay, false)?;
 
     let services = certification_service_evidence(&first)?;
     let certificate = RuntimeCertificate {
-        format: "theseus-runtime-certificate-v4",
+        format: if checkpoint_start { "theseus-runtime-certificate-v5" } else { "theseus-runtime-certificate-v4" },
         status: "passed",
         profile: RuntimeSupportProfile {
             id: "linux-kvm-simulated-io-v1",
             architecture: runtime_architecture()?,
-            execution: "two real-KVM executions with per-vCPU ledgers; the second is actively gated by the first run's exact machine-wide trace of KVM exits and host inputs",
+            execution: if checkpoint_start {
+                "two real-KVM executions restored from one locked whole-topology ready checkpoint; boot is an inherited prefix, and the second resumed suffix is actively gated by the first exact machine trace"
+            } else {
+                "two fresh-boot real-KVM executions with per-vCPU ledgers; the second is actively gated by the first run's exact machine-wide trace of KVM exits and host inputs"
+            },
             virtual_time: "exit-counted quanta with exact final vCPU-clock fingerprint equality",
             entropy: "seeded virtio-rng with exact next-64-byte fingerprint equality",
             network: "Theseus simulated virtio-net only",
@@ -3063,9 +3169,9 @@ fn certify(plan: &str, output: &Path) -> Result<(), String> {
             known_limit: "counter reads can free-run within an exit-counted quantum; this profile compares end-of-run fingerprints, not instruction-by-instruction clock reads",
         },
         source: CertificateSource {
-            plan_sha256: format!("{:x}", Sha256::digest(&input)),
+            plan_sha256: format!("{:x}", Sha256::digest(if checkpoint_start { &replay_input } else { &input })),
             plan: plan.to_owned(),
-            plan_contents: String::from_utf8(input.clone())
+            plan_contents: String::from_utf8(if checkpoint_start { replay_input.clone() } else { input.clone() })
                 .expect("a parsed JSON plan is valid UTF-8"),
         },
         repeatability: CertificateRepeatability {
@@ -3104,6 +3210,27 @@ fn validate_certification_plan(topology: &TopologyPlan) -> Result<(), String> {
         if clock.tick_ns == 0 || clock.exits_per_tick == 0 {
             return Err(format!(
                 "service {name:?} has an invalid virtual-time configuration; deterministic certification fails closed"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_certification_plan_devices(topology: &TopologyPlan) -> Result<(), String> {
+    for (name, service) in &topology.services {
+        if service
+            .run
+            .run
+            .virtual_time
+            .as_ref()
+            .is_none_or(|clock| clock.tick_ns == 0 || clock.exits_per_tick == 0)
+            || service.run.run.vcpu_count == 0
+            || service.run.run.vcpu_count > 32
+            || service.run.run.mem_size_mib == 0
+            || service.run.run.mem_size_mib > 65536
+        {
+            return Err(format!(
+                "invalid deterministic checkpoint machine configuration for {name:?}"
             ));
         }
     }
@@ -3224,6 +3351,7 @@ fn certification_service_evidence(
             Ok((
                 name.clone(),
                 CertificateServiceEvidence {
+                    execution_start: recorded.execution_start,
                     entropy_probe_sha256,
                     serial_sha256: recorded.serial_sha256,
                     storage_sha256: recorded.storage_sha256.unwrap_or_default(),
@@ -3283,7 +3411,7 @@ fn execute_campaign(
         verify_recorded_campaign_guidance(campaign.guidance, campaign.coverage, recorded)?;
     }
     let checkpoint =
-        boot_campaign_checkpoint(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
+        starting_state::boot_or_load(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
     let instruction_symbolizer = CampaignInstructionSymbolizer::from_topology(&topology);
     let application_symbolizer = CampaignApplicationSymbolizer::from_topology(&topology);
     let base = serde_json::to_vec(&topology)
@@ -3607,6 +3735,10 @@ fn execute_campaign(
     fs::write(
         output.join("campaign-result.json"),
         serde_json::to_vec_pretty(&CampaignResult {
+            starting_checkpoint_sha256: topology
+                .starting_checkpoint
+                .as_ref()
+                .map(|artifact| artifact.sha256.clone()),
             format: "theseus-compose-campaign-result-v1",
             decision_trace_format: "theseus-campaign-decision-trace-v1",
             status: if passed && replay_verified {
@@ -3709,7 +3841,7 @@ fn execute_campaign(
 fn boot_campaign_checkpoint(
     topology: &mut TopologyPlan,
     directory: &Path,
-    driver: &str,
+    _driver: &str,
 ) -> Result<CampaignCheckpoint, String> {
     fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     configure_container_networks(topology)?;
@@ -3836,7 +3968,7 @@ fn execute_campaign_minimized(
     .map_err(|error| format!("cannot parse campaign result: {error}"))?;
     verify_recorded_campaign_guidance(campaign.guidance, campaign.coverage, &recorded)?;
     let checkpoint =
-        boot_campaign_checkpoint(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
+        starting_state::boot_or_load(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
     let base = serde_json::to_vec(&topology)
         .map_err(|error| format!("cannot encode campaign base plan: {error}"))?;
     let mut checkpoints = CampaignCheckpointTree::new(checkpoint);
@@ -9741,6 +9873,7 @@ fn execute(
                     scheduler.execution_locations.as_deref(),
                     scheduler.execution_ledgers.as_deref(),
                     scheduler.machine_execution_state.as_ref(),
+                    scheduler.devices.as_ref(),
                     checkpoint
                         .services
                         .get(name)
@@ -10100,8 +10233,11 @@ fn execute(
                 },
             });
             if !matches && error.is_none() {
-                error = Some(machine_execution_replay_error.clone().unwrap_or_else(||
-                    "ordered KVM execution replay diverged".to_owned()));
+                error = Some(
+                    machine_execution_replay_error
+                        .clone()
+                        .unwrap_or_else(|| "ordered KVM execution replay diverged".to_owned()),
+                );
             }
         }
         if let Some(expected) = &expected_machine_execution_ledgers {
@@ -10113,16 +10249,18 @@ fn execute(
                 name: "replay_machine_execution_ledger".to_owned(),
                 status: if matches { "passed" } else { "failed" },
                 detail: if matches {
-                    "machine-wide execution stream matches the original replay bundle"
-                        .to_owned()
+                    "machine-wide execution stream matches the original replay bundle".to_owned()
                 } else {
                     "machine-wide execution stream differs from the original replay bundle"
                         .to_owned()
                 },
             });
             if !matches && error.is_none() {
-                error = Some(machine_execution_replay_error.clone().unwrap_or_else(||
-                    "machine-wide execution replay diverged".to_owned()));
+                error = Some(
+                    machine_execution_replay_error
+                        .clone()
+                        .unwrap_or_else(|| "machine-wide execution replay diverged".to_owned()),
+                );
             }
         }
         if let Some(expected) = &expected_machine_execution_traces {
@@ -10143,8 +10281,11 @@ fn execute(
                 },
             });
             if !matches && error.is_none() {
-                error = Some(machine_execution_replay_error.clone().unwrap_or_else(||
-                    "active machine execution replay diverged".to_owned()));
+                error = Some(
+                    machine_execution_replay_error
+                        .clone()
+                        .unwrap_or_else(|| "active machine execution replay diverged".to_owned()),
+                );
             }
         }
         let status = if checks.iter().all(|check| check.status == "passed") {
@@ -10157,6 +10298,7 @@ fn execute(
         }
         let result = ServiceResult {
             status,
+            execution_start: starting_state::origin(&topology, checkpoint, name),
             serial_log: service.serial_logs[0].display().to_string(),
             serial_logs: service
                 .serial_logs
@@ -10459,6 +10601,7 @@ fn advance_network_round(
     switches: &BTreeMap<String, SharedSimSwitch>,
     services: &BTreeMap<String, ServiceRuntime>,
 ) -> Result<(), String> {
+    reject_active_replay_divergence(services)?;
     for service in services.values() {
         service.vm.advance_simulated_networks()?;
     }
@@ -10467,6 +10610,59 @@ fn advance_network_round(
             .lock()
             .map_err(|_| "simulated switch lock poisoned".to_owned())?
             .advance_round();
+    }
+    Ok(())
+}
+
+/// Preserve the first active divergence even when no guest readiness marker
+/// has been emitted. An unstarted replay must not hide behind a round timeout.
+fn reject_active_replay_divergence(
+    services: &BTreeMap<String, ServiceRuntime>,
+) -> Result<(), String> {
+    for (name, service) in services {
+        if let Some(error) = service.vm.machine_execution_replay_divergence()? {
+            for paused in services.values() {
+                let _ = paused.vm.pause();
+            }
+            let path = service
+                .serial_logs
+                .first()
+                .and_then(|serial| serial.parent())
+                .ok_or("diverging service has no diagnostic directory")?
+                .join("execution-error.json");
+            let diagnostic = serde_json::json!({
+                "format": "theseus-topology-execution-error-v1", "boundary": "runtime_error",
+                "service": name, "replay_error": error,
+                "machine": service.vm.machine_execution_ledger_evidence()?,
+                "trace": service.vm.machine_execution_trace()?,
+                "vcpus": service.vm.execution_ledger_evidence()?,
+            });
+            let file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path);
+            let retained = match file {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    file.write_all(
+                        &serde_json::to_vec_pretty(&diagnostic)
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .and_then(|()| file.sync_all())
+                    .map_err(|error| error.to_string())
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+                Err(error) => Err(format!("cannot retain {}: {error}", path.display())),
+            };
+            for stopped in services.values() {
+                stopped.vm.stop();
+            }
+            retained?;
+            return Err(format!(
+                "service {name:?} active machine replay diverged: {error}; inspect {}",
+                path.display()
+            ));
+        }
     }
     Ok(())
 }
@@ -10720,6 +10916,7 @@ fn wait_for_serial_with_service_rounds(
     max_rounds: u64,
 ) -> Result<u64, String> {
     for round in 0..=max_rounds {
+        reject_active_replay_divergence(services)?;
         if fs::read(serial_log)
             .is_ok_and(|serial| serial_marker_after(&serial, input_offset, needle))
         {
@@ -11436,6 +11633,7 @@ fn wait_for_serial_with_topology_rounds(
     max_rounds: u64,
 ) -> Result<u64, String> {
     for round in 0..=max_rounds {
+        reject_active_replay_divergence(services)?;
         if fs::read(serial_log)
             .is_ok_and(|serial| serial.windows(needle.len()).any(|window| window == needle))
         {
@@ -11829,6 +12027,7 @@ fn restore_service(
     execution_locations: Option<&[Vec<u64>]>,
     execution_ledgers: Option<&[ExecutionLedger]>,
     machine_execution_state: Option<&MachineExecutionState>,
+    devices: Option<&vmm::checkpoint::ExecutionDeviceState>,
     checkpoint: &ServiceVmCheckpoint,
 ) -> Result<ServiceVm, String> {
     let mut resources = service_resources(service, kernel, initramfs, serial)?;
@@ -11893,6 +12092,10 @@ fn restore_service(
         }
         if let Some(machine_execution_state) = machine_execution_state {
             vmm.seed_machine_execution_state(machine_execution_state.clone())
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(devices) = devices {
+            vmm.restore_execution_devices(devices)
                 .map_err(|error| error.to_string())?;
         }
         for (network, id) in &vm.networks {
@@ -12013,6 +12216,9 @@ fn artifact_at(path: PathBuf) -> Result<Artifact, String> {
 /// not preserve a dependency on the machine that created it.
 fn resolve_topology_artifacts(topology: &mut TopologyPlan, plan: &Path) -> Result<(), String> {
     let parent = canonical_parent(plan, "topology plan")?;
+    if let Some(checkpoint) = &mut topology.starting_checkpoint {
+        resolve_artifact_path(checkpoint, &parent)?;
+    }
     if let Some(runner) = &mut topology.topology_runner {
         resolve_artifact_path(runner, &parent)?;
     }
@@ -12848,6 +13054,7 @@ mod tests {
                     execution_locations: None,
                     execution_ledgers: None,
                     machine_execution_state: None,
+                devices: None,
                 },
             )]),
             round: 0,
@@ -12941,6 +13148,7 @@ mod tests {
                     execution_locations: None,
                     execution_ledgers: None,
                     machine_execution_state: None,
+                    devices: None,
                 },
             )]),
             round: 0,
@@ -13047,6 +13255,7 @@ mod tests {
                         execution_locations: None,
                         execution_ledgers: None,
                         machine_execution_state: None,
+                        devices: None,
                     },
                 ),
                 (
@@ -13066,6 +13275,7 @@ mod tests {
                         execution_locations: None,
                         execution_ledgers: None,
                         machine_execution_state: None,
+                        devices: None,
                     },
                 ),
             ]),
@@ -13747,6 +13957,7 @@ mod tests {
                     execution_locations: None,
                     execution_ledgers: None,
                     machine_execution_state: None,
+                    devices: None,
                 },
             )]),
             round: 0,
@@ -13773,6 +13984,7 @@ mod tests {
                     execution_locations: None,
                     execution_ledgers: None,
                     machine_execution_state: None,
+                devices: None,
                 },
                 ),
                 (
@@ -13795,6 +14007,7 @@ mod tests {
                     execution_locations: None,
                     execution_ledgers: None,
                     machine_execution_state: None,
+                devices: None,
                 },
                 ),
             ]),
@@ -14199,6 +14412,7 @@ mod tests {
                     execution_locations: None,
                     execution_ledgers: None,
                     machine_execution_state: None,
+                devices: None,
                 },
         );
         assert!(campaign_operation_serial_guards_are_ready(
@@ -14314,6 +14528,7 @@ mod tests {
             execution_locations: None,
             execution_ledgers: None,
             machine_execution_state: None,
+            devices: None,
         };
         let checkpoint = CampaignCheckpoint {
             services: BTreeMap::new(),
@@ -15117,6 +15332,7 @@ mod tests {
                 execution_locations,
                 execution_ledgers: None,
                 machine_execution_state: None,
+                devices: None,
             };
         let checkpoint = CampaignCheckpoint {
             switches: BTreeMap::new(),
@@ -15460,6 +15676,7 @@ mod tests {
     #[test]
     fn replay_rejects_a_changed_recorded_guidance_or_coverage_policy() {
         let recorded = RecordedCampaignResult {
+            starting_checkpoint_sha256: None,
             guidance: Some(CampaignGuidance::Adaptive),
             coverage: Some(CampaignCoverage::Markers),
             generated_candidates: 0,

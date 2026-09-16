@@ -25,6 +25,10 @@ loopback = false
 id = "state"
 size_mib = 1
 
+[[events]]
+when = "ready"
+data = "66696e6973680a" # finish followed by newline
+
 [[checks]]
 name = "service completed"
 kind = "serial_contains"
