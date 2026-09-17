@@ -102,7 +102,9 @@ identities, and rejects an extra access at trace exhaustion. Campaign replay
 uses the trace's explicit host inputs as its portable control stream;
 intervening MMIO, PIO, and interrupt turns remain evidence because Linux
 execution between controlled turns is not instruction-scheduled. Read values
-are checked after device access and cannot be rolled back.
+are checked after device access and cannot be rolled back. Exported campaign
+and minimized-counterexample replay plans retain this host-input mode even
+after they become ordinary fixed-schedule topologies.
 
 An attached x86 i8042 reset request ends the stream on its own recorded write.
 It does not keep polling until the event loop notices an asynchronous reset

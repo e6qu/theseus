@@ -71,6 +71,22 @@ struct TopologyPlan {
     starting_checkpoint: Option<Artifact>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     checkpoint_prefixes: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "MachineReplayMode::is_exact")]
+    machine_replay: MachineReplayMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum MachineReplayMode {
+    #[default]
+    Exact,
+    HostInputs,
+}
+
+impl MachineReplayMode {
+    fn is_exact(&self) -> bool {
+        *self == Self::Exact
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -3454,6 +3470,9 @@ fn execute_campaign(
     recorded: Option<&RecordedCampaignResult>,
     verified_root: Option<CampaignCheckpoint>,
 ) -> Result<(), String> {
+    // Exported campaign and minimized-counterexample plans become ordinary
+    // topologies, so retain their portable replay contract in the plan itself.
+    topology.machine_replay = MachineReplayMode::HostInputs;
     let campaign = topology
         .campaign
         .take()
@@ -4060,6 +4079,7 @@ fn execute_campaign_minimized(
     source_plan: &Path,
     verified_root: Option<CampaignCheckpoint>,
 ) -> Result<(), String> {
+    topology.machine_replay = MachineReplayMode::HostInputs;
     let campaign = topology
         .campaign
         .take()
@@ -9966,6 +9986,8 @@ fn execute(
     expected_machine_execution_traces: Option<BTreeMap<String, Vec<String>>>,
     expected_lifecycle_rounds: Option<u64>,
 ) -> Result<(), String> {
+    let control_replay = completion == ExecutionCompletion::CampaignCheckpoint
+        || topology.machine_replay == MachineReplayMode::HostInputs;
     // Checkpoint-backed campaign leaves skip the artifact-locking branch
     // below, but they still need an output root before the replay plan can be
     // made relative to it.  Create the root for both fresh and restored runs.
@@ -10070,7 +10092,7 @@ fn execute(
                 .get(name)
                 .ok_or_else(|| format!("recorded machine execution trace missing service {name}"))?
                 .clone();
-            if completion == ExecutionCompletion::CampaignCheckpoint {
+            if control_replay {
                 vm.enforce_machine_execution_control_trace(trace)?;
             } else {
                 vm.enforce_machine_execution_trace(trace)?;
@@ -10183,12 +10205,7 @@ fn execute(
         advance_network_round(&switches, &services)?;
     }
     if let Some(expected) = &expected_machine_execution_traces {
-        complete_machine_execution_replay(
-            &mut services,
-            expected,
-            max_rounds,
-            completion == ExecutionCompletion::CampaignCheckpoint,
-        )?;
+        complete_machine_execution_replay(&mut services, expected, max_rounds, control_replay)?;
     }
     let network_sha256 = network_fingerprint(&switches)?;
     fs::write(
@@ -10450,7 +10467,7 @@ fn execute(
                 .get(name)
                 .expect("recorded machine execution trace missing service");
             let matches = machine_execution_replay_error.is_none()
-                && if completion == ExecutionCompletion::CampaignCheckpoint {
+                && if control_replay {
                     machine_replay_control_trace(expected)
                         == machine_replay_control_trace(&machine_execution_trace)
                 } else {
@@ -10460,7 +10477,7 @@ fn execute(
                 name: "replay_machine_execution_trace".to_owned(),
                 status: if matches { "passed" } else { "failed" },
                 detail: if matches {
-                    if completion == ExecutionCompletion::CampaignCheckpoint {
+                    if control_replay {
                         "the recorded host-input stream actively governed replay".to_owned()
                     } else {
                         "the recorded machine execution trace actively governed replay".to_owned()

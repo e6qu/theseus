@@ -719,6 +719,18 @@ mod tests {
     }
 
     #[test]
+    fn portable_campaign_replay_mode_survives_export() {
+        let mut topology = topology();
+        assert_eq!(topology.machine_replay, MachineReplayMode::Exact);
+        topology.machine_replay = MachineReplayMode::HostInputs;
+
+        let encoded = serde_json::to_vec(&topology).unwrap();
+        let decoded: TopologyPlan = serde_json::from_slice(&encoded).unwrap();
+
+        assert_eq!(decoded.machine_replay, MachineReplayMode::HostInputs);
+    }
+
+    #[test]
     fn root_identity_binds_configuration_not_capture_path_or_schedule() {
         let first = topology();
         let digest = configuration(&first).unwrap();
