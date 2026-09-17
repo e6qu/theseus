@@ -530,7 +530,7 @@ impl MachineExecutionController {
             .state
             .lock()
             .expect("machine execution controller lock poisoned");
-        let mut pending = loop {
+        let (mut pending, pending_index) = loop {
             if self.shutdown_requested() || self.vcpu_control_requested() {
                 return Ok(false);
             }
@@ -563,7 +563,7 @@ impl MachineExecutionController {
                 return Ok(false);
             };
             let Some(expected) = state.expected.as_ref() else {
-                break pending;
+                break (pending, 0);
             };
             let Some(expected_record) = expected.get(state.position) else {
                 // Exact replay ends at a control-plane cut. Leave later
@@ -572,7 +572,25 @@ impl MachineExecutionController {
                 return Ok(false);
             };
             if expected_record.starts_with(&format!("vcpu:{vcpu}:interrupt:")) {
-                break pending;
+                if let Some(index) = pending.iter().position(|interrupt| {
+                    format!(
+                        "vcpu:{vcpu}:interrupt:{}:{}",
+                        interrupt.source, interrupt.gsi
+                    ) == *expected_record
+                }) {
+                    break (pending, index);
+                }
+                // Async sources may publish in a different host order after
+                // checkpoint restore. Keep unrelated requests queued and
+                // wait for the exact interrupt selected by the replay stream.
+                drop(pending);
+                state = self
+                    .turn_changed
+                    .wait(state)
+                    .expect(
+                        "machine execution controller lock poisoned while waiting for recorded interrupt",
+                    );
+                continue;
             }
             if machine_record_actor(expected_record) == Some(MachineExecutionActor::Vcpu(vcpu)) {
                 // A pending interrupt may have arrived before an earlier
@@ -599,7 +617,9 @@ impl MachineExecutionController {
                 return Err(detail);
             }
         };
-        let interrupt = pending.front().expect("pending interrupt disappeared");
+        let interrupt = pending
+            .get(pending_index)
+            .expect("pending interrupt disappeared");
         let decision = format!("interrupt:{}:{}", interrupt.source, interrupt.gsi);
         let record = format!("vcpu:{vcpu}:{decision}");
         if let Some(expected) = state.expected.as_ref() {
@@ -624,7 +644,7 @@ impl MachineExecutionController {
         }
         inject(interrupt.gsi)
             .map_err(|error| format!("failed to deliver {decision}: {error}"))?;
-        pending.pop_front();
+        pending.remove(pending_index);
         drop(pending);
         ledger
             .lock()
@@ -1849,23 +1869,35 @@ mod execution_ledger_tests {
     }
 
     #[test]
-    fn changed_interrupt_never_injects_or_records_a_decision() {
+    fn replay_selects_the_recorded_interrupt_from_pending_requests() {
         let controller = Arc::new(MachineExecutionController::default());
         controller.enable_deterministic_interrupts();
         controller
             .enforce(vec!["vcpu:0:interrupt:virtio-mmio:5".into()])
             .unwrap();
         controller.request_edge_interrupt("serial", 4).unwrap();
+        let producer = controller.clone();
+        let producer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            producer.request_edge_interrupt("virtio-mmio", 5).unwrap();
+        });
         let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
-        let error = controller
-            .deliver_pending_interrupt_with(0, &ledger, |_| {
-                panic!("unrecorded interrupt injected")
-            })
-            .unwrap_err();
-        assert!(error.contains("decision 0"));
-        assert_eq!(controller.execution_state().trace().len(), 0);
-        assert_eq!(ledger.lock().unwrap().evidence().decisions, 0);
-        assert_eq!(controller.replay_error(), Some(error));
+        assert!(
+            controller
+                .deliver_pending_interrupt_with(0, &ledger, |gsi| {
+                    assert_eq!(gsi, 5);
+                    Ok(())
+                })
+                .unwrap()
+        );
+        producer.join().unwrap();
+        assert_eq!(
+            controller.execution_state().trace(),
+            ["vcpu:0:interrupt:virtio-mmio:5"]
+        );
+        assert_eq!(controller.pending_interrupts_for_test(), [("serial", 4)]);
+        assert_eq!(ledger.lock().unwrap().evidence().decisions, 1);
+        assert_eq!(controller.replay_error(), None);
     }
 
     #[test]
