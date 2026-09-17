@@ -8,4 +8,6 @@ echo THES:M:42
 read -r command < /dev/ttyS0
 [ "$command" = finish ] || exit 1
 echo finished
+# Wait until the UART has transmitted the result before resetting the VM.
+/bin/busybox stty -F /dev/ttyS0 -echo -opost
 reboot -f

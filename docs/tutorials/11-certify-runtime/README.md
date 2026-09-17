@@ -37,6 +37,8 @@ chmod +x service/guest/root/init
 ```
 
 The init script prints `THES:M:42`, then waits for `finish` on its serial TTY.
+It drains the result through the UART before resetting the VM, so the retained
+terminal boundary does not depend on host thread timing.
 Inspect `service/init` before building it. `x-theseus.replay_start` asks the
 runner to capture every service and the simulated network at that ready boundary.
 Both executions restore this checkpoint before sending the recorded UART input.
