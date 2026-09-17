@@ -433,10 +433,14 @@ impl MachineExecutionController {
             .expect("pending interrupt queue lock poisoned");
         // Level sources remain asserted until the guest clears their status;
         // repeated triggers before injection are not new line transitions.
-        if !coalesce || !pending.contains(&interrupt) {
+        let enqueued = !coalesce || !pending.contains(&interrupt);
+        if enqueued {
             pending.push_back(interrupt);
         }
         drop(pending);
+        if !enqueued {
+            return Ok(());
+        }
         self.turn_changed.notify_all();
         self.kick_vcpus()
     }
