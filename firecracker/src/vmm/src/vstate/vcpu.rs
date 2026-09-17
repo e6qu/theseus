@@ -2127,6 +2127,50 @@ mod execution_ledger_tests {
     }
 
     #[test]
+    fn execution_ledger_host_turn_yields_to_vcpu_control_messages() {
+        let mut peripherals = Peripherals::default();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let controller = Arc::new(MachineExecutionController::default());
+        controller
+            .enforce(vec![
+                "host:serial_input:1:41".to_owned(),
+                "vcpu:0:mmio_write:0x10:1:2a".to_owned(),
+            ])
+            .unwrap();
+
+        let result = handle_kvm_exit_recorded(
+            &mut peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &[0x2a])),
+            0,
+            &ledger,
+            &controller,
+        )
+        .unwrap();
+        assert_eq!(result, VcpuEmulation::Interrupted);
+        assert!(controller.execution_state().trace().is_empty());
+        assert_eq!(controller.replay_divergence(), None);
+
+        controller
+            .apply_host_effect("serial_input:1:41".to_owned(), || Ok::<(), ()>(()))
+            .unwrap()
+            .unwrap();
+        let result = handle_kvm_exit_recorded(
+            &mut peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &[0x2a])),
+            0,
+            &ledger,
+            &controller,
+        )
+        .unwrap();
+        assert_eq!(result, VcpuEmulation::Handled);
+        assert_eq!(
+            controller.execution_state().trace(),
+            ["host:serial_input:1:41", "vcpu:0:mmio_write:0x10:1:2a"]
+        );
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
     fn active_replay_rejects_a_changed_host_effect_before_delivery() {
         let controller = MachineExecutionController::default();
         controller
@@ -2755,50 +2799,6 @@ pub(crate) mod tests {
                 .decisions,
             2
         );
-    }
-
-    #[test]
-    fn execution_ledger_host_turn_yields_to_vcpu_control_messages() {
-        let (_, mut vcpu) = setup_vcpu(0x1000);
-        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
-        let controller = Arc::new(MachineExecutionController::default());
-        controller
-            .enforce(vec![
-                "host:serial_input:1:41".to_owned(),
-                "vcpu:0:mmio_write:0x10:1:2a".to_owned(),
-            ])
-            .unwrap();
-
-        let result = handle_kvm_exit_recorded(
-            &mut vcpu.kvm_vcpu.peripherals,
-            Ok(VcpuExit::MmioWrite(0x10, &[0x2a])),
-            0,
-            &ledger,
-            &controller,
-        )
-        .unwrap();
-        assert_eq!(result, VcpuEmulation::Interrupted);
-        assert!(controller.execution_state().trace().is_empty());
-        assert_eq!(controller.replay_divergence(), None);
-
-        controller
-            .apply_host_effect("serial_input:1:41".to_owned(), || Ok::<(), ()>(()))
-            .unwrap()
-            .unwrap();
-        let result = handle_kvm_exit_recorded(
-            &mut vcpu.kvm_vcpu.peripherals,
-            Ok(VcpuExit::MmioWrite(0x10, &[0x2a])),
-            0,
-            &ledger,
-            &controller,
-        )
-        .unwrap();
-        assert_eq!(result, VcpuEmulation::Handled);
-        assert_eq!(
-            controller.execution_state().trace(),
-            ["host:serial_input:1:41", "vcpu:0:mmio_write:0x10:1:2a"]
-        );
-        assert_eq!(controller.replay_error(), None);
     }
 
     impl PartialEq for VcpuResponse {
