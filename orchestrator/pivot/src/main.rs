@@ -1429,6 +1429,7 @@ fn configure_interface(interface: &NetworkInterface) -> Result<(), String> {
             interface.prefix_len
         ));
     }
+    let address = ipv4(&interface.address)?;
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
     if fd < 0 {
         return Err(format!(
@@ -1437,8 +1438,15 @@ fn configure_interface(interface: &NetworkInterface) -> Result<(), String> {
         ));
     }
     let result = (|| {
+        if interface.name != "lo" {
+            let mut request = ifreq(&interface.name)?;
+            request.data[..2].copy_from_slice(&libc::ARPHRD_ETHER.to_ne_bytes());
+            request.data[2..8].copy_from_slice(&deterministic_mac(address));
+            ioctl(fd, libc::SIOCSIFHWADDR as libc::Ioctl, &mut request)?;
+        }
+
         let mut request = ifreq(&interface.name)?;
-        set_sockaddr(&mut request, ipv4(&interface.address)?);
+        set_sockaddr(&mut request, address);
         ioctl(fd, libc::SIOCSIFADDR as libc::Ioctl, &mut request)?;
 
         let mask = if interface.prefix_len == 0 {
