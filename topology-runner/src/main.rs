@@ -11324,11 +11324,33 @@ fn advance_topology_round_with_target(
 }
 
 fn serial_marker_after(serial: &[u8], input_offset: usize, needle: &[u8]) -> bool {
-    serial.get(input_offset..).is_some_and(|response| {
-        response
-            .windows(needle.len())
-            .any(|window| window == needle)
-    })
+    serial
+        .get(input_offset..)
+        .is_some_and(|response| serial_marker_line_end(response, needle).is_some())
+}
+
+/// A marker is complete only after its line terminator has reached the host
+/// log. Observing the marker bytes alone can race the UART's trailing CR/LF,
+/// producing a result digest for a file that is still growing.
+fn serial_marker_line_end(response: &[u8], needle: &[u8]) -> Option<(usize, usize)> {
+    if needle.is_empty() {
+        return None;
+    }
+    response
+        .windows(needle.len())
+        .enumerate()
+        .find_map(|(marker_offset, window)| {
+            if window != needle {
+                return None;
+            }
+            let marker_end = marker_offset + needle.len();
+            let suffix = &response[marker_end..];
+            let newline = suffix.iter().position(|byte| *byte == b'\n')?;
+            suffix[..newline]
+                .iter()
+                .all(|byte| *byte == b'\r')
+                .then_some((marker_offset, marker_end + newline + 1))
+        })
 }
 
 fn inject_campaign_events(
@@ -12219,11 +12241,8 @@ fn wait_for_serial_after_rounds(
     for step in 0..=max_rounds {
         if let Ok(serial) = fs::read(serial_log) {
             let response = serial.get(input_offset..).unwrap_or_default();
-            if let Some(marker_offset) = response
-                .windows(needle.len())
-                .position(|window| window == needle)
-            {
-                let through_marker = &response[..marker_offset + needle.len()];
+            if let Some((marker_offset, line_end)) = serial_marker_line_end(response, needle) {
+                let through_marker = &response[..line_end];
                 return Ok(CampaignUartBarrier {
                     recorded: true,
                     checkpoint: String::from_utf8_lossy(needle).into_owned(),
@@ -16550,8 +16569,13 @@ mod tests {
     fn serial_marker_after_ignores_a_historical_matching_marker() {
         let old = b"THES:M:complete\n";
         assert!(!serial_marker_after(old, old.len(), b"THES:M:complete"));
+        assert!(!serial_marker_after(
+            &[old.as_slice(), b"reply THES:M:complete\r"].concat(),
+            old.len(),
+            b"THES:M:complete"
+        ));
         assert!(serial_marker_after(
-            &[old.as_slice(), b"reply THES:M:complete"].concat(),
+            &[old.as_slice(), b"reply THES:M:complete\r\r\n"].concat(),
             old.len(),
             b"THES:M:complete"
         ));

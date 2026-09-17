@@ -325,8 +325,11 @@ impl Bundle<'_> {
                 } else {
                     format!("serial-{index}.log")
                 };
-                if self.digest(&directory.join(name))?.0 != string(expected)? {
-                    return Err("retained UART log hash differs".into());
+                if self.digest(&directory.join(&name))?.0 != string(expected)? {
+                    return Err(format!(
+                        "retained UART log hash differs: {}",
+                        directory.join(name).display()
+                    ));
                 }
             }
             if let Some(run) = aggregate {
