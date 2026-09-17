@@ -3085,6 +3085,25 @@ fn execute_plan(
         (
             None, None, None, None, None, None, None, None, None, None, None, None,
         )
+    } else if topology.machine_replay == MachineReplayMode::HostInputs {
+        // Portable campaign exports promise the recorded external inputs and
+        // declared properties, not byte-identical Linux execution between
+        // those inputs. Keep comparisons for host-controlled topology effects
+        // and use the complete trace only for its host-input projection.
+        (
+            None,
+            recorded_fault_fingerprints(plan, &service_names)?,
+            recorded_network_fingerprint(plan)?,
+            recorded_campaign_actions(plan)?,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            recorded_machine_execution_traces(plan, &service_names)?,
+            recorded_lifecycle_barrier_rounds(plan)?,
+        )
     } else {
         (
             recorded_serial_fingerprints(plan, &service_names)?,
@@ -10042,6 +10061,14 @@ fn execute(
     expected_machine_execution_traces: Option<BTreeMap<String, Vec<String>>>,
     expected_lifecycle_rounds: Option<u64>,
 ) -> Result<(), String> {
+    // An exported campaign is a fixed-schedule plan, but its terminal state is
+    // still the final operation checkpoint. Its service entrypoints are often
+    // daemons and are not expected to exit.
+    let completion = if topology.machine_replay == MachineReplayMode::HostInputs {
+        ExecutionCompletion::CampaignCheckpoint
+    } else {
+        completion
+    };
     let control_replay = completion == ExecutionCompletion::CampaignCheckpoint
         || topology.machine_replay == MachineReplayMode::HostInputs;
     // Checkpoint-backed campaign leaves skip the artifact-locking branch

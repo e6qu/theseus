@@ -56,7 +56,8 @@ passing unit suite alone is not treated as runtime proof.
   portable replay on its explicit host inputs. Device interrupts follow the
   restored device state and remain evidence; Linux execution and interrupt
   timing between host inputs are not claimed to be identical. Exported and
-  minimized plans preserve the explored cross-service host-input order.
+  minimized plans preserve the explored cross-service host-input order and
+  evaluate their properties at the final operation checkpoint.
 - Ready-checkpoint replay retains VM state, RAM, the execution prefix, and
   pending userspace interrupts. Both the test and its replays restore that
   same state; uncontrolled kernel boot is inherited, not replayed.

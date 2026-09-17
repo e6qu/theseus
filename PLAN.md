@@ -236,10 +236,12 @@ Fixed-run replay can enforce that complete exit stream. Portable
 checkpoint-backed campaigns currently enforce its explicit host-input
 projection while retaining all intervening exits and userspace interrupt
 deliveries as evidence. Exported counterexamples preserve their global
-cross-service input order. They do not claim identical Linux execution or
-interrupt timing between controlled turns; making the full stream portable
-requires the runnable-entity and instruction-boundary control in the next
-slice.
+cross-service input order and finish at their last operation checkpoint;
+acceptance uses declared properties and controlled topology effects rather
+than unstable whole-execution fingerprints. They do not claim identical Linux
+execution or interrupt timing between controlled turns; making the full stream
+portable requires the runnable-entity and instruction-boundary control in the
+next slice.
 
 The next slice must control in-kernel timer delivery, then runnable guest
 entities, virtual-clock reads, and guest-side input consumption between KVM
