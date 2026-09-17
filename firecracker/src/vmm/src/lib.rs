@@ -613,6 +613,28 @@ impl Vmm {
             .machine_execution_replay_divergence())
     }
 
+    /// Briefly wait for an active exact replay to consume another decision.
+    ///
+    /// Non-replay execution returns immediately. This gives asynchronous
+    /// device workers time to publish a completion without spending thousands
+    /// of deterministic topology rounds in a tight host-side polling loop.
+    pub fn wait_for_machine_execution_replay_progress(
+        &self,
+        position: usize,
+        timeout: std::time::Duration,
+    ) -> Result<bool, VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        kvm_vm
+            .vcpus_handles()
+            .first()
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))?
+            .wait_for_machine_execution_replay_progress(position, timeout)
+            .map_err(VmmError::ExecutionCoverage)
+    }
+
     fn apply_machine_host_effect<T>(
         &self,
         effect: String,

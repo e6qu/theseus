@@ -15,6 +15,7 @@ use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use addr2line::Loader;
 use object::{BinaryFormat, Object, ObjectKind, ObjectSection, ObjectSymbol, SymbolKind};
@@ -2438,6 +2439,14 @@ impl ServiceVm {
             .lock()
             .expect("VMM lock poisoned")
             .machine_execution_replay_divergence()
+            .map_err(|error| error.to_string())
+    }
+
+    fn wait_for_machine_execution_replay_progress(&self, position: usize) -> Result<bool, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .wait_for_machine_execution_replay_progress(position, Duration::from_millis(1))
             .map_err(|error| error.to_string())
     }
 
@@ -10156,6 +10165,9 @@ fn execute(
         }
         advance_network_round(&switches, &services)?;
     }
+    if let Some(expected) = &expected_machine_execution_traces {
+        complete_machine_execution_replay(&mut services, expected, max_rounds)?;
+    }
     let network_sha256 = network_fingerprint(&switches)?;
     fs::write(
         output.join("topology-result.json"),
@@ -10813,6 +10825,64 @@ fn reject_active_replay_divergence(
         }
     }
     Ok(())
+}
+
+/// Reach the exact retained machine cut before collecting a checkpoint-backed
+/// result. A campaign leaf intentionally does not wait for daemon exit, but its
+/// recorded stream can still contain asynchronous device completions that were
+/// already in flight when the leaf was captured.
+fn complete_machine_execution_replay(
+    services: &mut BTreeMap<String, ServiceRuntime>,
+    expected: &BTreeMap<String, Vec<String>>,
+    max_polls: u64,
+) -> Result<(), String> {
+    for poll in 0..=max_polls {
+        reject_active_replay_divergence(services)?;
+        let mut positions = BTreeMap::new();
+        let mut incomplete = false;
+        for (name, service) in services.iter() {
+            let position = service.vm.machine_execution_trace()?.len();
+            let expected_len = expected
+                .get(name)
+                .ok_or_else(|| format!("recorded machine execution trace missing service {name}"))?
+                .len();
+            if position > expected_len {
+                return Err(format!(
+                    "service {name:?} extended its exact machine replay past decision {expected_len}"
+                ));
+            }
+            incomplete |= position < expected_len;
+            positions.insert(name.clone(), position);
+        }
+        if !incomplete {
+            return Ok(());
+        }
+        if poll == max_polls {
+            break;
+        }
+        for service in services.values_mut() {
+            service.vm.pump();
+        }
+        for (name, service) in services.iter() {
+            if positions[name] < expected[name].len() {
+                service
+                    .vm
+                    .wait_for_machine_execution_replay_progress(positions[name])?;
+            }
+        }
+    }
+    let pending = services
+        .iter()
+        .map(|(name, service)| {
+            let actual = service.vm.machine_execution_trace()?.len();
+            let expected = expected[name].len();
+            Ok(format!("{name}:{actual}/{expected}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Err(format!(
+        "machine execution replay did not reach its retained cut ({})",
+        pending.join(", ")
+    ))
 }
 
 fn recorded_fault_fingerprints(
@@ -11952,6 +12022,7 @@ fn advance_campaign_operation_round(
     services: &mut BTreeMap<String, ServiceRuntime>,
     switches: &BTreeMap<String, SharedSimSwitch>,
 ) -> Result<(), String> {
+    let replay_position = target.vm.machine_execution_trace()?.len();
     target.vm.pump();
     target.vm.advance_simulated_networks()?;
     for service in services.values_mut() {
@@ -11964,6 +12035,13 @@ fn advance_campaign_operation_round(
             .map_err(|_| "simulated switch lock poisoned".to_owned())?
             .advance_round();
     }
+    // Exact replay can deliberately park a vCPU at an asynchronous virtio
+    // interrupt turn. Do not let the host-side round loop exhaust its entire
+    // deterministic budget before the device worker gets scheduled and
+    // publishes that completion.
+    target
+        .vm
+        .wait_for_machine_execution_replay_progress(replay_position)?;
     Ok(())
 }
 

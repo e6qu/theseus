@@ -561,7 +561,10 @@ impl MachineExecutionController {
                 break pending;
             };
             let Some(expected_record) = expected.get(state.position) else {
-                break pending;
+                // Exact replay ends at a control-plane cut. Leave later
+                // interrupts queued so the vCPU can return to its control
+                // loop and be paused without extending the retained stream.
+                return Ok(false);
             };
             if expected_record.starts_with(&format!("vcpu:{vcpu}:interrupt:")) {
                 break pending;
@@ -693,6 +696,35 @@ impl MachineExecutionController {
                 })
             })
         })
+    }
+
+    fn wait_for_replay_progress(
+        &self,
+        position: usize,
+        timeout: Duration,
+    ) -> Result<bool, String> {
+        let state = self
+            .state
+            .lock()
+            .expect("machine execution controller lock poisoned");
+        if state.expected.is_none() || state.execution.trace.len() > position {
+            return Ok(true);
+        }
+        if let Some(detail) = state.divergence.clone() {
+            return Err(detail);
+        }
+        let (state, _) = self
+            .turn_changed
+            .wait_timeout_while(state, timeout, |state| {
+                state.expected.is_some()
+                    && state.divergence.is_none()
+                    && state.execution.trace.len() <= position
+            })
+            .expect("machine execution controller lock poisoned while waiting for replay progress");
+        if let Some(detail) = state.divergence.clone() {
+            return Err(detail);
+        }
+        Ok(state.expected.is_none() || state.execution.trace.len() > position)
     }
 
     pub(crate) fn apply_host_effect<T, E>(
@@ -1511,11 +1543,13 @@ fn handle_kvm_exit_recorded(
     if let Some(detail) = machine.divergence.clone() {
         return Err(VcpuError::FaultyKvmExit(detail));
     }
-    if let Some(expected_record) = machine
-        .expected
-        .as_ref()
-        .and_then(|expected| expected.get(machine.position))
-    {
+    if let Some(expected) = machine.expected.as_ref() {
+        let Some(expected_record) = expected.get(machine.position) else {
+            // The retained stream is an exact boundary, not merely a prefix.
+            // Leave the next KVM exit pending while the control loop observes
+            // Pause or Finish.
+            return Ok(VcpuEmulation::Interrupted);
+        };
         if machine_record_actor(expected_record) != Some(MachineExecutionActor::Vcpu(vcpu)) {
             // Leave the unhandled KVM exit pending and return to the vCPU
             // control loop. Waiting on the replay condition variable here
@@ -1712,6 +1746,29 @@ mod execution_ledger_tests {
         assert_eq!(controller.execution_state().trace(), ["vcpu:0:interrupt:virtio-mmio:5"]);
         assert_eq!(ledger.lock().unwrap().evidence().decisions, 1);
         assert!(controller.pending_interrupts_for_test().is_empty());
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
+    fn topology_wait_observes_asynchronous_replay_progress() {
+        let controller = Arc::new(MachineExecutionController::default());
+        controller
+            .enforce(vec!["host:serial_input:1:41".into()])
+            .unwrap();
+        let producer = controller.clone();
+        let producer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            producer
+                .apply_host_effect("serial_input:1:41".into(), || Ok::<_, ()>(()))
+                .unwrap()
+                .unwrap();
+        });
+        assert!(
+            controller
+                .wait_for_replay_progress(0, std::time::Duration::from_secs(1))
+                .unwrap()
+        );
+        producer.join().unwrap();
         assert_eq!(controller.replay_error(), None);
     }
 
@@ -2171,6 +2228,36 @@ mod execution_ledger_tests {
     }
 
     #[test]
+    fn completed_replay_yields_without_extending_the_retained_stream() {
+        let (mut peripherals, device) = counting_device();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let controller = Arc::new(MachineExecutionController::default());
+        controller
+            .enforce(vec!["host:serial_input:1:41".to_owned()])
+            .unwrap();
+        controller
+            .apply_host_effect("serial_input:1:41".to_owned(), || Ok::<(), ()>(()))
+            .unwrap()
+            .unwrap();
+
+        let result = handle_kvm_exit_recorded(
+            &mut peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &[0x2a])),
+            0,
+            &ledger,
+            &controller,
+        )
+        .unwrap();
+        assert_eq!(result, VcpuEmulation::Interrupted);
+        assert_eq!(device.lock().unwrap().writes, 0);
+        assert_eq!(
+            controller.execution_state().trace(),
+            ["host:serial_input:1:41"]
+        );
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
     fn active_replay_rejects_a_changed_host_effect_before_delivery() {
         let controller = MachineExecutionController::default();
         controller
@@ -2537,6 +2624,16 @@ impl VcpuHandle {
     /// Return an actual mismatch without treating an in-progress suffix as an error.
     pub fn machine_execution_replay_divergence(&self) -> Option<String> {
         self.machine_execution.replay_divergence()
+    }
+
+    /// Briefly yield a replaying vCPU to asynchronous device completion.
+    pub fn wait_for_machine_execution_replay_progress(
+        &self,
+        position: usize,
+        timeout: Duration,
+    ) -> Result<bool, String> {
+        self.machine_execution
+            .wait_for_replay_progress(position, timeout)
     }
 
     /// Clone the controller used to serialize host and vCPU effects.
