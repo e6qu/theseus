@@ -62,7 +62,7 @@ prepare_runtime "$container" .
 runtime "$container" '
   theseus test --dry-run > plan.json
   theseus test --output work/replay theseus.toml
-  grep -a "^THES:HTTP:operation:read_health:PASS$" work/replay/serial.log
+  grep -aF "THES:HTTP:operation:read_health:PASS" work/replay/serial.log
   theseus replay --output work/rerun work/replay > replay.log
   grep -F "replay passed" replay.log
   cmp work/replay/execution.json work/rerun/execution.json

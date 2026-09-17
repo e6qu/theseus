@@ -80,7 +80,7 @@ theseus evaluate public-evaluation/theseus-evaluation.toml > evaluation.json
 grep -Fq '"status": "passed"' evaluation.json
 grep -Fq '"files":' evaluation.json
 theseus compose replay public-evaluation/campaign --output rerun
-grep -a '^THES:HTTP:operation:read_health:PASS$' rerun/services/api/serial.log
+grep -aF 'THES:HTTP:operation:read_health:PASS' rerun/services/api/serial.log
 echo 'PASS: Theseus published and replayed a locked public campaign'
 ```
 

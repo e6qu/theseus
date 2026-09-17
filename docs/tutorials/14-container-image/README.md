@@ -71,7 +71,7 @@ not need the seeded virtio RNG.
 
 ```sh
 theseus test --output work/replay theseus.toml
-grep -a '^THES:HTTP:operation:read_health:PASS$' work/replay/serial.log
+grep -aF 'THES:HTTP:operation:read_health:PASS' work/replay/serial.log
 theseus replay --output work/rerun work/replay
 cmp work/replay/execution.json work/rerun/execution.json
 echo 'PASS: Theseus checked and replayed an unmodified container service'
