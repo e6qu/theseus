@@ -512,6 +512,9 @@ impl MachineExecutionController {
             .state
             .lock()
             .expect("machine execution controller lock poisoned");
+        if state.control_only {
+            return true;
+        }
         match state.expected.as_ref() {
             None => true,
             Some(expected) => expected
@@ -568,6 +571,13 @@ impl MachineExecutionController {
             let Some(expected) = state.expected.as_ref() else {
                 break (pending, 0);
             };
+            if state.control_only {
+                // Campaign replay controls explicit host inputs. Interrupt
+                // timing depends on guest execution between those inputs, so
+                // inject restored device requests in their observed order and
+                // retain them as evidence without treating them as host turns.
+                break (pending, 0);
+            }
             let Some(expected_record) = expected.get(state.position) else {
                 // Exact replay ends at a control-plane cut. Leave later
                 // interrupts queued so the vCPU can return to its control
@@ -602,13 +612,6 @@ impl MachineExecutionController {
                 // not merely vCPU ownership.
                 return Ok(false);
             }
-            if state.control_only {
-                // A campaign operation will apply the next host decision from
-                // its deterministic round loop. Keep an early device
-                // interrupt queued and return to that loop instead of turning
-                // host scheduling delay into replay divergence.
-                return Ok(false);
-            }
             drop(pending);
             let (next, timeout) = self
                 .turn_changed
@@ -632,7 +635,7 @@ impl MachineExecutionController {
             .expect("pending interrupt disappeared");
         let decision = format!("interrupt:{}:{}", interrupt.source, interrupt.gsi);
         let record = format!("vcpu:{vcpu}:{decision}");
-        if let Some(expected) = state.expected.as_ref() {
+        if !state.control_only && let Some(expected) = state.expected.as_ref() {
             let expected_record = expected.get(state.position);
             if expected_record != Some(&record) {
                 let detail = format!(
@@ -662,7 +665,9 @@ impl MachineExecutionController {
             .record(decision);
         state.execution.ledger.record(record.clone());
         state.execution.trace.push(record);
-        state.position = state.position.saturating_add(1);
+        if !state.control_only {
+            state.position = state.position.saturating_add(1);
+        }
         self.turn_changed.notify_all();
         Ok(true)
     }
@@ -947,7 +952,7 @@ fn machine_interrupt_record(record: &str) -> Option<(u8, &'static str, u32)> {
 }
 
 fn machine_replay_control_record(record: &str) -> bool {
-    record.starts_with("host:") || machine_interrupt_record(record).is_some()
+    record.starts_with("host:")
 }
 
 fn valid_machine_vcpu_effect(effect: &str) -> bool {
@@ -2125,7 +2130,7 @@ mod execution_ledger_tests {
     }
 
     #[test]
-    fn campaign_replay_gates_control_turns_without_requiring_identical_device_exits() {
+    fn campaign_replay_gates_host_turns_without_requiring_identical_guest_execution() {
         let (mut peripherals, device) = counting_device();
         let controller = Arc::new(MachineExecutionController::default());
         controller.enable_deterministic_interrupts();
@@ -2151,15 +2156,20 @@ mod execution_ledger_tests {
         );
         assert_eq!(device.lock().unwrap().writes, 1);
         assert_eq!(controller.state.lock().unwrap().position, 0);
+        controller.request_edge_interrupt("serial", 4).unwrap();
         controller
             .request_edge_interrupt("virtio-mmio", 5)
             .unwrap();
-        assert!(!controller
-            .deliver_pending_interrupt_with(0, &ledger, |_| {
-                panic!("interrupt injected before the recorded host input")
+        let mut delivered = Vec::new();
+        assert!(controller
+            .deliver_pending_interrupts_with(0, &ledger, |gsi| {
+                delivered.push(gsi);
+                Ok(())
             })
             .unwrap());
+        assert_eq!(delivered, [4, 5]);
         assert_eq!(controller.replay_divergence(), None);
+        assert_eq!(controller.replay_position(), 0);
         controller
             .apply_host_effect("serial_input:1:41".into(), || Ok::<_, ()>(()))
             .unwrap()
@@ -2174,16 +2184,7 @@ mod execution_ledger_tests {
         )
         .unwrap();
         assert_eq!(controller.replay_position(), 1);
-        assert!(!controller
-            .wait_for_replay_progress(1, std::time::Duration::ZERO)
-            .unwrap());
-        assert_eq!(
-            controller.pending_interrupts_for_test(),
-            [("virtio-mmio", 5)]
-        );
-        assert!(controller
-            .deliver_pending_interrupt_with(0, &ledger, |_| Ok(()))
-            .unwrap());
+        assert!(controller.pending_interrupts_for_test().is_empty());
         assert_eq!(controller.replay_error(), None);
     }
 
@@ -2890,7 +2891,7 @@ impl VcpuHandle {
         self.machine_execution.enforce(trace)
     }
 
-    /// Replay only externally scheduled host and interrupt decisions.
+    /// Replay only explicit host decisions.
     pub fn enforce_machine_execution_control_trace(
         &self,
         trace: Vec<String>,

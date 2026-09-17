@@ -46,15 +46,16 @@ passing unit suite alone is not treated as runtime proof.
 - Branch-aware per-vCPU ledgers plus one VM-wide ordered stream of handled KVM
   exits, emulated device effects, UART and control-channel input, and virtual
   clock jumps. UART, virtio MMIO, virtio MSI-X, ACPI notification, and keyboard
-  interrupts are injected as recorded vCPU turns. Replay rejects a changed
-  actor, input, interrupt, or exit and reports the first divergent boundary.
+  interrupts are retained as recorded vCPU turns. Fixed-run replay rejects a
+  changed actor, input, interrupt, or exit and reports the first divergent
+  boundary.
 - Single-service `test` bundles retain the complete machine stream. `replay`
   actively admits that stream through guest exit and retains new diagnostics
   with `--output`; it does not just rerun a seed and compare printed output.
 - Checkpoint-backed campaigns retain the same complete exit evidence but gate
-  the portable replay on its external control stream: host inputs and recorded
-  interrupt deliveries. Linux execution between those turns is not claimed to
-  be identical.
+  portable replay on its explicit host inputs. Device interrupts follow the
+  restored device state and remain evidence; Linux execution and interrupt
+  timing between host inputs are not claimed to be identical.
 - Ready-checkpoint replay retains VM state, RAM, the execution prefix, and
   pending userspace interrupts. Both the test and its replays restore that
   same state; uncontrolled kernel boot is inherited, not replayed.
@@ -83,8 +84,8 @@ passing unit suite alone is not treated as runtime proof.
   cancellation, direct futex use, blocking I/O, and processes remain outside
   this profile.
 - Fixed-run replay gates every recorded vCPU turn and explicit host input.
-  Checkpoint-backed campaign replay gates host inputs and supported userspace
-  interrupt deliveries while retaining intervening exits as evidence. Neither
+  Checkpoint-backed campaign replay gates explicit host inputs while retaining
+  intervening exits and userspace interrupt deliveries as evidence. Neither
   mode chooses instruction or thread order, guest interrupt-service timing, or
   in-kernel timer delivery.
 - Device-write payloads and read addresses/widths are checked before device

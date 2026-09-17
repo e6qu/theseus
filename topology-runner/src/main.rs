@@ -10461,8 +10461,7 @@ fn execute(
                 status: if matches { "passed" } else { "failed" },
                 detail: if matches {
                     if completion == ExecutionCompletion::CampaignCheckpoint {
-                        "the recorded host and interrupt control stream actively governed replay"
-                            .to_owned()
+                        "the recorded host-input stream actively governed replay".to_owned()
                     } else {
                         "the recorded machine execution trace actively governed replay".to_owned()
                     }
@@ -10860,7 +10859,7 @@ fn reject_active_replay_divergence(
 }
 
 /// Reach the retained replay cut before collecting a checkpoint-backed result.
-/// Campaigns use the portable host/interrupt control projection; fixed runs
+/// Campaigns use the portable host-input control projection; fixed runs
 /// require the complete machine trace.
 fn complete_machine_execution_replay(
     services: &mut BTreeMap<String, ServiceRuntime>,
@@ -10936,7 +10935,7 @@ fn machine_replay_decisions(trace: &[String], control_only: bool) -> usize {
 fn machine_replay_control_trace(trace: &[String]) -> Vec<&str> {
     trace
         .iter()
-        .filter(|record| record.starts_with("host:") || record.contains(":interrupt:"))
+        .filter(|record| record.starts_with("host:"))
         .map(String::as_str)
         .collect()
 }

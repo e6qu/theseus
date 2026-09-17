@@ -89,19 +89,20 @@ before guest entry and records `vcpu:<id>:interrupt:<source>:<gsi>` in the same
 machine stream. Sources cover UART, virtio MMIO, virtio MSI-X, VM generation
 and clock notifications, and the i8042 keyboard. Checkpoints retain undelivered
 requests, including notifications created while restoring a VM, and replay
-requires the same vCPU delivery turns. Checkpoint-backed campaign replay can
-materialize a recorded delivery edge after the restored device had a chance to
-publish it; subsequent device reads still verify the restored state. Vhost-user
-and other direct notifier paths remain outside the deterministic profile.
+requires the same vCPU delivery turns in fixed runs. Checkpoint-backed campaign
+replay lets queued interrupts follow restored device state and retains their
+observed delivery turns as evidence; it does not claim identical interrupt
+timing between explicit host inputs. Vhost-user and other direct notifier paths
+remain outside the deterministic profile.
 
 The VM-wide gate retains the bounded complete trace as well as the rolling
 digest. Checkpoints clone both forms into each child. Fixed-run replay admits
 only the actor named by every next record, checks complete writes and read
 identities, and rejects an extra access at trace exhaustion. Campaign replay
-uses the trace's host inputs and interrupt deliveries as its portable control
-stream; intervening MMIO and PIO exits remain evidence because Linux execution
-between controlled turns is not instruction-scheduled. Read values are checked
-after device access and cannot be rolled back.
+uses the trace's explicit host inputs as its portable control stream;
+intervening MMIO, PIO, and interrupt turns remain evidence because Linux
+execution between controlled turns is not instruction-scheduled. Read values
+are checked after device access and cannot be rolled back.
 
 An attached x86 i8042 reset request ends the stream on its own recorded write.
 It does not keep polling until the event loop notices an asynchronous reset
@@ -159,8 +160,8 @@ and `prelude.log`, in addition to the runtime and guest inputs. Metadata binds
 state/RAM hashes and lengths, machine/clock/entropy configuration, the complete
 inherited trace, pending userspace interrupts, control FIFO/log, and amd64 PS/2
 registers/FIFO. Loading rebuilds machine and local hashes from the validated
-prefix and installs the retained host/interrupt control stream before the first
-campaign resume. Fixed-run replay installs the complete expected trace.
+prefix and installs the retained host-input stream before the first campaign
+resume. Fixed-run replay installs the complete expected trace.
 Snapshot restore retains vCPU registers, virtual-clock counters, UART state,
 and RNG state. New restore-time notifications join the retained pending queue
 in the same order for the baseline and replay.
@@ -285,10 +286,11 @@ schedule in-kernel timer interrupts between exits.
   direct futex use, blocking syscalls, processes, and uninstrumented library
   concurrency remain outside the supported scheduling profile.
 - **Execution between KVM exits.** The machine replay gate selects and verifies
-  vCPU turns, explicit host inputs, and supported userspace device interrupt
-  injection at controlled boundaries. It cannot control or explain divergence
-  that happens entirely between those boundaries, including guest interrupt
-  servicing, in-kernel timer delivery, and guest-side input consumption.
+  every vCPU turn and explicit host input in fixed runs. Checkpoint-backed
+  campaigns gate explicit host inputs and retain the intervening vCPU and
+  interrupt turns as evidence. They cannot control or explain divergence that
+  happens between those inputs, including guest interrupt servicing, in-kernel
+  timer delivery, and guest-side input consumption.
 
 ## Replay fingerprints
 

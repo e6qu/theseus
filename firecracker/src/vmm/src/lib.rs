@@ -587,7 +587,7 @@ impl Vmm {
             .map_err(VmmError::ExecutionCoverage)
     }
 
-    /// Install the externally scheduled host and interrupt replay stream.
+    /// Install the explicit host-input replay stream.
     pub fn enforce_machine_execution_control_trace(
         &self,
         trace: Vec<String>,
