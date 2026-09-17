@@ -29,7 +29,7 @@ commands='
   grep -F "backplane:partition@setup" minimized/minimization.json
   grep -F "backplane:heal@probe_partition" minimized/minimization.json
   grep -E "\"dropped\": [1-9][0-9]*" rerun/services/*/result.json
-  grep -F "\"network\":\"recovered\"" rerun/services/writer-a/serial.log
+  grep -F "\"network\":\"recovery_probe_sent\"" rerun/services/writer-a/serial.log
   grep -F "\"kind\": \"partition\"" rerun/topology-result.json
   grep -F "\"kind\": \"heal\"" rerun/topology-result.json
   grep -F "\"value\":1" rerun/services/counter/serial.log
