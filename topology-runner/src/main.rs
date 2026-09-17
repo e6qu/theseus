@@ -3810,7 +3810,11 @@ fn execute_campaign(
             &mut pending,
         );
         if let Some(expected) = expected {
-            let mismatches = campaign_replay_mismatches(expected, &run);
+            let mismatches = if topology.machine_replay == MachineReplayMode::HostInputs {
+                campaign_host_input_replay_mismatches(expected, &run)
+            } else {
+                campaign_replay_mismatches(expected, &run)
+            };
             if !mismatches.is_empty() {
                 replay_mismatches.push(format!("run {index}: {}", mismatches.join(", ")));
             }
@@ -3833,7 +3837,13 @@ fn execute_campaign(
             .all(|property| property.status == "passed");
     let search_matches = recorded
         .and_then(|recorded| recorded.search.as_ref())
-        .is_none_or(|expected| expected == &search);
+        .is_none_or(|expected| {
+            if topology.machine_replay == MachineReplayMode::HostInputs {
+                campaign_host_input_search_matches(expected, &search)
+            } else {
+                expected == &search
+            }
+        });
     let replay_verified = recorded.is_none()
         || (replay_mismatches.is_empty()
             && search_matches
@@ -6513,6 +6523,99 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
         mismatches.push("status".to_owned());
     }
     mismatches
+}
+
+/// Portable checkpoint replay governs declared host inputs and application-
+/// level decisions, not the exact Linux instruction at which a vCPU happened
+/// to pause. Keep the complete low-level observations in each new result, but
+/// do not turn them into claims the host-input contract does not make.
+fn campaign_host_input_replay_mismatches(
+    expected: &RecordedCampaignRun,
+    actual: &CampaignRun,
+) -> Vec<String> {
+    let mut mismatches = campaign_replay_mismatches(expected, actual);
+    mismatches.retain(|mismatch| {
+        !matches!(
+            mismatch.as_str(),
+            "guidance ledger"
+                | "posterior guidance evidence"
+                | "operation-boundary timeline"
+                | "checkpoint program counters"
+                | "symbolized instruction locations"
+                | "instruction-location coverage"
+                | "checkpoint-PC coverage"
+                | "ordered KVM execution ledger"
+                | "machine-wide execution stream"
+                | "actively enforced machine execution trace"
+                | "topology-state coverage"
+        )
+    });
+    if !expected.timeline.is_empty()
+        && !campaign_host_input_timeline_matches(&expected.timeline, &actual.timeline)
+    {
+        mismatches.push("operation control timeline".to_owned());
+    }
+    if !expected.machine_execution_traces.is_empty()
+        && !campaign_host_input_traces_match(
+            &expected.machine_execution_traces,
+            &actual.machine_execution_traces,
+        )
+    {
+        mismatches.push("actively enforced host-input trace".to_owned());
+    }
+    mismatches
+}
+
+fn campaign_host_input_timeline_matches(
+    expected: &[CampaignTimelineBoundary],
+    actual: &[CampaignTimelineBoundary],
+) -> bool {
+    expected.len() == actual.len()
+        && expected.iter().zip(actual).all(|(expected, actual)| {
+            (expected.id.is_empty() || expected.id == actual.id)
+                && expected.operation == actual.operation
+                && expected.command == actual.command
+                && expected.test_command_path == actual.test_command_path
+                && expected.terminated_command_services == actual.terminated_command_services
+                && (expected.service.is_empty() || expected.service == actual.service)
+                && (campaign_input_is_absent(&expected.input) || expected.input == actual.input)
+                && (campaign_uart_delivery_is_absent(&expected.delivery)
+                    || (expected.delivery.recorded == actual.delivery.recorded
+                        && expected.delivery.accepted_bytes == actual.delivery.accepted_bytes
+                        && expected.delivery.checkpoint == actual.delivery.checkpoint))
+                && (campaign_uart_barrier_is_absent(&expected.barrier)
+                    || (expected.barrier.recorded == actual.barrier.recorded
+                        && expected.barrier.checkpoint == actual.barrier.checkpoint))
+                && expected.actions == actual.actions
+        })
+}
+
+fn campaign_host_input_traces_match(
+    expected: &BTreeMap<String, Vec<String>>,
+    actual: &BTreeMap<String, Vec<String>>,
+) -> bool {
+    expected.len() == actual.len()
+        && expected.iter().all(|(name, expected)| {
+            actual.get(name).is_some_and(|actual| {
+                machine_replay_control_trace(expected) == machine_replay_control_trace(actual)
+            })
+        })
+}
+
+fn campaign_host_input_search_matches(
+    expected: &CampaignSearchEvidence,
+    actual: &CampaignSearchEvidence,
+) -> bool {
+    let mut expected = expected.clone();
+    let mut actual = actual.clone();
+    // Paused RAM dirtiness and guidance hashes include ungoverned kernel PCs
+    // and topology-state fingerprints. Structural checkpoint work and the
+    // number of recorded observations remain comparable.
+    expected.checkpoint.private_dirty_pages = 0;
+    actual.checkpoint.private_dirty_pages = 0;
+    expected.guidance_sha256.clear();
+    actual.guidance_sha256.clear();
+    expected == actual
 }
 
 /// Legacy campaign results can omit the target service, stable boundary ID,
@@ -16836,6 +16939,57 @@ mod tests {
             .push("other".to_owned());
         assert!(campaign_replay_mismatches(&changed_timeline, &actual)
             .contains(&"operation-boundary timeline".to_owned()));
+        assert!(campaign_host_input_replay_mismatches(&expected, &actual).is_empty());
+        let mut ungoverned_drift = expected.clone();
+        ungoverned_drift.program_counters.get_mut("api").unwrap()[0] = "0xffffffff".to_owned();
+        ungoverned_drift.timeline[0].round += 10;
+        ungoverned_drift.timeline[0].barrier.round += 10;
+        ungoverned_drift.timeline[0]
+            .program_counters
+            .get_mut("api")
+            .unwrap()[0] = "0xffffffff".to_owned();
+        ungoverned_drift.execution_ledgers.get_mut("api").unwrap()[0].decisions += 1;
+        ungoverned_drift
+            .machine_execution_ledgers
+            .get_mut("api")
+            .unwrap()
+            .decisions += 1;
+        ungoverned_drift
+            .machine_execution_traces
+            .get_mut("api")
+            .unwrap()[0] = "vcpu:0:pio_read:0x64:1:".to_owned();
+        ungoverned_drift.state_sha256 = "different-state".to_owned();
+        assert!(campaign_host_input_replay_mismatches(&ungoverned_drift, &actual).is_empty());
+        let mut changed_control_input = expected.clone();
+        changed_control_input.timeline[0].input.sha256 = "other-input".to_owned();
+        assert!(
+            campaign_host_input_replay_mismatches(&changed_control_input, &actual)
+                .contains(&"operation control timeline".to_owned())
+        );
+        let mut changed_control_trace = expected.clone();
+        changed_control_trace
+            .machine_execution_traces
+            .get_mut("api")
+            .unwrap()
+            .push("host:serial_input:1:41".to_owned());
+        assert!(
+            campaign_host_input_replay_mismatches(&changed_control_trace, &actual)
+                .contains(&"actively enforced host-input trace".to_owned())
+        );
+        let search = CampaignSearchEvidence::default();
+        let mut ungoverned_search = search.clone();
+        ungoverned_search.checkpoint.private_dirty_pages = 42;
+        ungoverned_search.guidance_sha256 = "different-observations".to_owned();
+        assert!(campaign_host_input_search_matches(
+            &ungoverned_search,
+            &search
+        ));
+        let mut changed_search = search.clone();
+        changed_search.checkpoint.checkpoint_nodes = 1;
+        assert!(!campaign_host_input_search_matches(
+            &changed_search,
+            &search
+        ));
         let mut changed = actual;
         changed.state_sha256 = "other-state".to_owned();
         assert_eq!(

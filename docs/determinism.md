@@ -110,6 +110,9 @@ the explored order instead of grouping each service's inputs together. Replay
 ends at the final operation checkpoint and evaluates the declared properties
 there. It does not require byte-identical serial output, traffic, entropy,
 virtual-clock state, or KVM ledgers that the portable contract does not govern.
+Paused kernel PCs, instruction symbols, dirty-page counts, and derived topology
+state remain useful search evidence, but are likewise observations rather than
+portable replay gates.
 
 An attached x86 i8042 reset request ends the stream on its own recorded write.
 It does not keep polling until the event loop notices an asynchronous reset
