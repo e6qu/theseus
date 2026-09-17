@@ -117,7 +117,7 @@ x-theseus:
         sets_state: {phase: partitioned}
         shell:
           phase: setup
-          command: [/bin/sh, -c, "rm -f /state/*; echo 0 > /state/counter; mkfifo /state/a.go /state/b.go"]
+          command: [/bin/sh, -c, "rm -f /state/*; echo 0 > /state/counter; mkfifo /state/a.ready /state/b.ready /state/a.go /state/b.go"]
 
       - name: probe_partition
         service: writer-a
@@ -153,7 +153,7 @@ x-theseus:
         requires_state: {a: running, b: idle}
         sets_state: {a: released}
         shell:
-          command: [/bin/sh, -c, "printf 'go\n' > /state/a.go"]
+          command: [/bin/sh, -c, "read -r ready < /state/a.ready; test \"$ready\" = ready; printf 'go\n' > /state/a.go"]
 
       - name: complete_a
         service: writer-a
@@ -181,7 +181,7 @@ x-theseus:
         requires_state: {a: done, b: running}
         sets_state: {b: released}
         shell:
-          command: [/bin/sh, -c, "printf 'go\n' > /state/b.go"]
+          command: [/bin/sh, -c, "read -r ready < /state/b.ready; test \"$ready\" = ready; printf 'go\n' > /state/b.go"]
 
       - name: launch_b_overlapped
         service: writer-b
@@ -199,7 +199,7 @@ x-theseus:
         requires_state: {a: running, b: running}
         sets_state: {a: released, b: released}
         shell:
-          command: [/bin/sh, -c, "printf 'go\n' > /state/a.go; printf 'go\n' > /state/b.go"]
+          command: [/bin/sh, -c, "read -r ready_a < /state/a.ready; read -r ready_b < /state/b.ready; test \"$ready_a\" = ready; test \"$ready_b\" = ready; printf 'go\n' > /state/a.go; printf 'go\n' > /state/b.go"]
 
       - name: complete_b
         service: writer-b
@@ -228,7 +228,7 @@ x-theseus:
         sets_state: {phase: recovered}
         shell:
           phase: recovery
-          command: [/bin/sh, -c, "rm -f /state/*.go; mkfifo /state/a.go /state/b.go"]
+          command: [/bin/sh, -c, "rm -f /state/*.ready /state/*.go; mkfifo /state/a.ready /state/b.ready /state/a.go /state/b.go"]
 
     properties:
       - name: network_recovery_is_reachable

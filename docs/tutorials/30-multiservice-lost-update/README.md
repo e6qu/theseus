@@ -33,9 +33,11 @@ export THESEUS_IMAGE=ghcr.io/e6qu/theseus:${THESEUS_TAG}-${THESEUS_ARCH}
 
 This directory is the complete tutorial input. The two `increment` files are
 the worker client and the deliberately unsafe counter endpoint. The endpoint
-uses named pipes to pause each request without timers. `probe.c` sends one UDP
-datagram and exits without waiting for a reply. There is no orchestration
-script and no repository checkout.
+uses one named pipe to announce that each request has read the counter and a
+second to hold the write. The campaign releases both writes only after both
+reads, without timers. `probe.c` sends one UDP datagram and exits without
+waiting for a reply. There is no orchestration script and no repository
+checkout.
 
 ## 1. Build and inspect the services
 
