@@ -853,7 +853,11 @@ fn verify_runtime_validation(
         "schedule-search/report/report.md",
         "schedule-search/minimized/minimization.json",
         "schedule-search/minimized/replay-plan.json",
-        "schedule-search/rerun/campaign-result.json",
+        "schedule-search/minimized/services/ledger/result.json",
+        "schedule-search/minimized/topology-result.json",
+        "schedule-search/rerun/replay-plan.json",
+        "schedule-search/rerun/services/ledger/result.json",
+        "schedule-search/rerun/topology-result.json",
         "schedule-search/source/compose.yaml",
         "schedule-search/source/service/main.c",
         "schedule-search/source/service/theseus.toml",
@@ -1222,11 +1226,11 @@ fn verify_runtime_validation(
         minimization["property"] == "lost_update_is_unreachable",
         "schedule minimization names the wrong property",
     )?;
-    verify_validation_campaign(
-        &retained["schedule-search/rerun/campaign-result.json"],
+    verify_validation_topology_replay(
+        &retained["schedule-search/rerun/replay-plan.json"],
+        &retained["schedule-search/rerun/services/ledger/result.json"],
         "schedule replay",
-        "thread_scheduling_decisions",
-        true,
+        "counterexample: lost_update_is_unreachable",
     )?;
     verify_validation_campaign(
         &retained["pthread-sync/campaign/campaign-result.json"],
@@ -1740,6 +1744,64 @@ fn verify_validation_campaign(
     Ok(())
 }
 
+fn verify_validation_topology_replay(
+    plan_bytes: &[u8],
+    result_bytes: &[u8],
+    scenario: &str,
+    counterexample: &str,
+) -> Result<(), EvidenceError> {
+    let plan: serde_json::Value = parse_json_bytes(plan_bytes, scenario)?;
+    let services = plan["services"]
+        .as_object()
+        .filter(|services| !services.is_empty())
+        .ok_or_else(|| EvidenceError(format!("{scenario} has no services")))?;
+    require(
+        plan["format"] == "theseus-compose-plan-v1"
+            && plan["machine_replay"] == "host_inputs"
+            && plan["campaign"].is_null(),
+        &format!("{scenario} is not a fixed host-input replay"),
+    )?;
+    let vcpu_count = services
+        .values()
+        .next()
+        .and_then(|service| service["run"]["run"]["vcpu_count"].as_u64())
+        .filter(|count| (1..=32).contains(count))
+        .ok_or_else(|| EvidenceError(format!("{scenario} has an invalid vCPU count")))?
+        as u8;
+    let result: serde_json::Value = parse_json_bytes(result_bytes, scenario)?;
+    let passed_check = |name: &str| {
+        result["checks"].as_array().is_some_and(|checks| {
+            checks
+                .iter()
+                .any(|check| check["name"] == name && check["status"] == "passed")
+        })
+    };
+    require(
+        result["status"] == "passed"
+            && result["error"].is_null()
+            && passed_check("campaign_checkpoint")
+            && passed_check(counterexample)
+            && passed_check("replay_machine_execution_trace"),
+        &format!("{scenario} did not reproduce and actively govern its counterexample"),
+    )?;
+    require(
+        result["machine_execution_trace"]
+            .as_array()
+            .is_some_and(|trace| !trace.is_empty()),
+        &format!("{scenario} retained no machine execution trace"),
+    )?;
+    let evidence: crate::execution::Evidence = serde_json::from_value(serde_json::json!({
+        "format": "theseus-execution-v1",
+        "boundary": "pause",
+        "execution_ledgers": result["execution_ledgers"],
+        "machine_execution_ledger": result["machine_execution_ledger"],
+        "machine_execution_trace": result["machine_execution_trace"],
+        "replay_error": null
+    }))
+    .map_err(|error| EvidenceError(format!("invalid {scenario} execution evidence: {error}")))?;
+    evidence.validate(vcpu_count).map_err(EvidenceError)
+}
+
 fn require_safe_archive_path(path: &Path) -> Result<(), EvidenceError> {
     require(
         !path.is_absolute()
@@ -2177,8 +2239,8 @@ mod tests {
     }
 
     #[test]
-    fn v5_rejects_missing_changed_paused_or_unchecked_api_replay_even_after_resealing() {
-        for mutation in ["missing", "digest", "pause", "check"] {
+    fn v5_rejects_changed_runtime_replay_evidence_even_after_resealing() {
+        for mutation in ["missing", "digest", "pause", "check", "schedule"] {
             let temporary = tempfile::tempdir().unwrap();
             let directory = temporary.path();
             write_architecture(directory, "amd64", "passed");
@@ -2186,10 +2248,10 @@ mod tests {
             if mutation == "missing" {
                 fs::remove_file(root.join("container/rerun/execution.json")).unwrap();
             } else {
-                let name = if mutation == "check" {
-                    "container/rerun/result.json"
-                } else {
-                    "container/rerun/execution.json"
+                let name = match mutation {
+                    "check" => "container/rerun/result.json",
+                    "schedule" => "schedule-search/rerun/services/ledger/result.json",
+                    _ => "container/rerun/execution.json",
                 };
                 let path = root.join(name);
                 let mut value: serde_json::Value =
@@ -2201,6 +2263,7 @@ mod tests {
                     }
                     "pause" => value["boundary"] = serde_json::json!("pause"),
                     "check" => value["checks"][0]["status"] = serde_json::json!("failed"),
+                    "schedule" => value["checks"][1]["status"] = serde_json::json!("failed"),
                     _ => unreachable!(),
                 }
                 fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
@@ -2443,6 +2506,36 @@ mod tests {
             }
             serde_json::to_vec(&value).unwrap()
         };
+        let ledger = |record: &str| {
+            let mut digest = Sha256::new();
+            digest.update((record.len() as u64).to_le_bytes());
+            digest.update(record.as_bytes());
+            serde_json::json!({
+                "decisions": 1,
+                "sha256": format!("{:x}", digest.finalize()),
+                "tail": [record]
+            })
+        };
+        let schedule_replay_plan = serde_json::to_vec(&serde_json::json!({
+            "format": "theseus-compose-plan-v1",
+            "machine_replay": "host_inputs",
+            "campaign": null,
+            "services": {"ledger": {"run": {"run": {"vcpu_count": 1}}}}
+        }))
+        .unwrap();
+        let schedule_replay_result = serde_json::to_vec(&serde_json::json!({
+            "status": "passed",
+            "error": null,
+            "checks": [
+                {"name": "campaign_checkpoint", "status": "passed"},
+                {"name": "counterexample: lost_update_is_unreachable", "status": "passed"},
+                {"name": "replay_machine_execution_trace", "status": "passed"}
+            ],
+            "execution_ledgers": [ledger("pio_write:0x64:1:fe")],
+            "machine_execution_ledger": ledger("vcpu:0:pio_write:0x64:1:fe"),
+            "machine_execution_trace": ["vcpu:0:pio_write:0x64:1:fe"]
+        }))
+        .unwrap();
         let files: Vec<(&str, Vec<u8>)> = vec![
             ("container/plan.json", run_plan.to_vec()),
             ("container/run/replay-plan.json", b"{}".to_vec()),
@@ -2504,10 +2597,29 @@ mod tests {
                 "schedule-search/minimized/minimization.json",
                 br#"{"property":"lost_update_is_unreachable"}"#.to_vec(),
             ),
-            ("schedule-search/minimized/replay-plan.json", b"{}".to_vec()),
             (
-                "schedule-search/rerun/campaign-result.json",
-                campaign("thread_scheduling_decisions", true),
+                "schedule-search/minimized/replay-plan.json",
+                schedule_replay_plan.clone(),
+            ),
+            (
+                "schedule-search/minimized/services/ledger/result.json",
+                schedule_replay_result.clone(),
+            ),
+            (
+                "schedule-search/minimized/topology-result.json",
+                b"{}".to_vec(),
+            ),
+            (
+                "schedule-search/rerun/replay-plan.json",
+                schedule_replay_plan,
+            ),
+            (
+                "schedule-search/rerun/services/ledger/result.json",
+                schedule_replay_result,
+            ),
+            (
+                "schedule-search/rerun/topology-result.json",
+                b"{}".to_vec(),
             ),
             (
                 "schedule-search/source/compose.yaml",
@@ -2591,12 +2703,6 @@ mod tests {
             fs::write(path, bytes).unwrap();
         }
         if !legacy {
-            let ledger = |record: &str| {
-                let mut digest = Sha256::new();
-                digest.update((record.len() as u64).to_le_bytes());
-                digest.update(record.as_bytes());
-                serde_json::json!({"decisions": 1, "sha256": format!("{:x}", digest.finalize()), "tail": [record]})
-            };
             let execution = serde_json::json!({
                 "format": "theseus-execution-v1", "boundary": "guest_exit", "replay_error": null,
                 "execution_ledgers": [ledger("pio_write:0x64:1:fe")],
