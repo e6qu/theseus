@@ -11742,9 +11742,47 @@ fn wait_for_serial_with_topology_rounds(
         advance_network_round(switches, services)?;
     }
     Err(format!(
-        "service did not announce {purpose} within {max_rounds} topology rounds: {}",
+        "service did not announce {purpose} within {max_rounds} topology rounds (network={}): {}",
+        network_timeout_evidence(services),
         serial_log.display()
     ))
+}
+
+fn network_timeout_evidence(services: &BTreeMap<String, ServiceRuntime>) -> String {
+    let evidence = services
+        .iter()
+        .map(|(name, service)| {
+            let traffic = service.vm.network_traffic();
+            let traces = service.vm.network_trace().map(|networks| {
+                networks
+                    .into_iter()
+                    .map(|(network, frames)| {
+                        let frames = frames
+                            .into_iter()
+                            .map(|frame| {
+                                serde_json::json!({
+                                    "round": frame.round,
+                                    "direction": frame.direction,
+                                    "drop_reason": frame.drop_reason,
+                                    "bytes": frame.data_hex.len() / 2,
+                                    "ethertype": frame.data_hex.get(24..28).unwrap_or("unknown"),
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        (network, frames)
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            });
+            (
+                name,
+                serde_json::json!({
+                    "traffic": traffic.unwrap_or_default(),
+                    "trace": traces.unwrap_or_default(),
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    serde_json::to_string(&evidence).unwrap_or_else(|error| format!("unavailable:{error}"))
 }
 
 /// Resume services in a deterministic topological order. A pivot emits its
