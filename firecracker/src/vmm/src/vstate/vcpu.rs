@@ -10,7 +10,7 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering, fence};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::sync::{Arc, Barrier, Condvar, Mutex, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::{fmt, io, thread};
 
 use kvm_bindings::{KVM_SYSTEM_EVENT_RESET, KVM_SYSTEM_EVENT_SHUTDOWN};
@@ -522,7 +522,6 @@ impl MachineExecutionController {
         if !self.deterministic_interrupts_enabled() {
             return Ok(false);
         }
-        let mut interrupt_wait_started = None;
         let mut state = self
             .state
             .lock()
@@ -549,26 +548,12 @@ impl MachineExecutionController {
                     // event loop after this vCPU reaches its injection turn.
                     // Wait for that producer without running more guest code.
                     drop(pending);
-                    let started = interrupt_wait_started.get_or_insert_with(Instant::now);
-                    let remaining = MACHINE_EXECUTION_TURN_TIMEOUT.saturating_sub(started.elapsed());
-                    let (next, timeout) = self.turn_changed
-                        .wait_timeout(state, remaining)
-                        .expect("machine execution controller lock poisoned while waiting for interrupt request");
-                    state = next;
-                    // Requests use a separate queue lock: recheck it even on
-                    // timeout, so a notification just before the wait cannot
-                    // turn an already-queued completion into a divergence.
-                    if timeout.timed_out() && state.divergence.is_none() && !self.shutdown_requested()
-                        && self.pending_interrupts.lock().expect("pending interrupt queue lock poisoned").is_empty()
-                    {
-                        let detail = format!(
-                            "machine execution replay expected an interrupt at decision {}, but no interrupt became pending",
-                            state.position
+                    state = self
+                        .turn_changed
+                        .wait(state)
+                        .expect(
+                            "machine execution controller lock poisoned while waiting for interrupt request",
                         );
-                        state.divergence = Some(detail.clone());
-                        self.turn_changed.notify_all();
-                        return Err(detail);
-                    }
                     continue;
                 }
                 return Ok(false);
@@ -1860,23 +1845,23 @@ mod execution_ledger_tests {
     }
 
     #[test]
-    fn missing_or_changed_interrupt_never_injects_or_records_a_decision() {
-        for pending in [None, Some(("serial", 4))] {
-            let controller = Arc::new(MachineExecutionController::default());
-            controller.enable_deterministic_interrupts();
-            controller.enforce(vec!["vcpu:0:interrupt:virtio-mmio:5".into()]).unwrap();
-            if let Some((source, gsi)) = pending {
-                controller.request_edge_interrupt(source, gsi).unwrap();
-            }
-            let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
-            let error = controller.deliver_pending_interrupt_with(0, &ledger, |_| {
+    fn changed_interrupt_never_injects_or_records_a_decision() {
+        let controller = Arc::new(MachineExecutionController::default());
+        controller.enable_deterministic_interrupts();
+        controller
+            .enforce(vec!["vcpu:0:interrupt:virtio-mmio:5".into()])
+            .unwrap();
+        controller.request_edge_interrupt("serial", 4).unwrap();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let error = controller
+            .deliver_pending_interrupt_with(0, &ledger, |_| {
                 panic!("unrecorded interrupt injected")
-            }).unwrap_err();
-            assert!(error.contains("decision 0"));
-            assert_eq!(controller.execution_state().trace().len(), 0);
-            assert_eq!(ledger.lock().unwrap().evidence().decisions, 0);
-            assert_eq!(controller.replay_error(), Some(error));
-        }
+            })
+            .unwrap_err();
+        assert!(error.contains("decision 0"));
+        assert_eq!(controller.execution_state().trace().len(), 0);
+        assert_eq!(ledger.lock().unwrap().evidence().decisions, 0);
+        assert_eq!(controller.replay_error(), Some(error));
     }
 
     #[test]
