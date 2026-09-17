@@ -115,8 +115,11 @@ def main() -> None:
         assert 'cp --parents "$dependency" /rootfs' in dockerfile
     assert "cmp work/replay/execution.json work/rerun/execution.json" not in VALIDATION
     assert "theseus compare campaign rerun" in VALIDATION
-    assert "theseus evaluate capture campaign" in VALIDATION
+    assert "theseus evaluate capture rerun" in VALIDATION
     assert "theseus evaluate evaluation/theseus-evaluation.toml" in VALIDATION
+    assert VALIDATION.index("theseus compose replay campaign --output rerun") < VALIDATION.index(
+        "theseus evaluate capture rerun"
+    )
     assert "execution_decisions" in VALIDATION
     assert 'status\\\": \\\"same' in VALIDATION
     assert "scripts/runtime_validation_evidence.py" in VALIDATION

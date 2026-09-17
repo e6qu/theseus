@@ -486,10 +486,15 @@ pub fn capture_evaluation(
         source,
     })?;
     let result: CampaignResult = read_json(&campaign.join("campaign-result.json"))?;
-    if result.format != "theseus-compose-campaign-result-v1" || !has_complete_replay_plan(&campaign)
+    if result.format != "theseus-compose-campaign-result-v1"
+        || !result
+            .replay_verification
+            .as_ref()
+            .is_some_and(|verification| verification.status == "passed")
+        || !has_complete_replay_plan(&campaign)
     {
         return Err(EvaluationError::Invalid(
-            "capture needs a complete Compose campaign replay bundle".to_owned(),
+            "capture needs a complete, replay-verified Compose campaign bundle".to_owned(),
         ));
     }
     let output = output.as_ref();
@@ -992,5 +997,26 @@ status = "failed"
             .unwrap()
             .join("campaign/replay-plan.json")
             .is_file());
+    }
+
+    #[test]
+    fn capture_rejects_an_unverified_campaign() {
+        let directory = tempfile::tempdir().unwrap();
+        let campaign = directory.path().join("campaign");
+        fs::create_dir_all(&campaign).unwrap();
+        fs::write(
+            campaign.join("replay-plan.json"),
+            r#"{"format":"theseus-compose-plan-v1","services":{"api":{}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            campaign.join("campaign-result.json"),
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"passed","runs":[],"properties":[]}"#,
+        )
+        .unwrap();
+
+        let error = capture_evaluation(&campaign, directory.path().join("public"), "unverified")
+            .unwrap_err();
+        assert!(error.to_string().contains("replay-verified"));
     }
 }

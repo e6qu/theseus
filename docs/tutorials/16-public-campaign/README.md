@@ -4,7 +4,7 @@ The tutorial runs a normal BusyBox HTTP image as a Compose campaign, then
 publishes its completed replay directory:
 
 ```sh
-theseus evaluate capture campaign --output public-evaluation --name "HTTP health campaign"
+theseus evaluate capture verified --output public-evaluation --name "HTTP health campaign"
 ```
 
 `public-evaluation/` contains the copied campaign, a version 2 evaluation
@@ -12,9 +12,9 @@ contract, and a lock covering every copied file. Give that directory to a
 reader with the published `theseus` binary. They can inspect the result and
 replay the campaign without this source tree or the original campaign output.
 
-Use capture only after the campaign is complete. It records the observed
-status and property outcomes; add an independently repeatable conventional
-baseline later if you want one.
+Use capture only after replay passes. It records the verified status and
+property outcomes; add an independently repeatable conventional baseline
+later if you want one.
 
 ## Before you start
 
@@ -75,7 +75,8 @@ replay does not silently select newer binaries from the container.
 
 ```sh
 theseus compose explore --output campaign compose.yaml
-theseus evaluate capture campaign --output public-evaluation --name "HTTP health campaign"
+theseus compose replay campaign --output verified
+theseus evaluate capture verified --output public-evaluation --name "HTTP health campaign"
 theseus evaluate public-evaluation/theseus-evaluation.toml > evaluation.json
 grep -Fq '"status": "passed"' evaluation.json
 grep -Fq '"files":' evaluation.json
@@ -103,5 +104,5 @@ Keep `campaign/` and `rerun/` when investigating a result.
 Back on the host, remove generated data only after inspection:
 
 ```sh
-rm -rf api/work campaign public-evaluation rerun evaluation.json
+rm -rf api/work campaign verified public-evaluation rerun evaluation.json
 ```

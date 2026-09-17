@@ -10394,6 +10394,21 @@ fn execute(
     if let Some(expected) = &expected_machine_execution_traces {
         complete_machine_execution_replay(&mut services, expected, max_rounds, control_replay)?;
     }
+    // A campaign ends at an operation checkpoint, not at guest exit. Freeze
+    // every still-running vCPU before reading the terminal evidence so the
+    // per-vCPU ledgers and complete machine trace describe one exact cut.
+    // Pause is idempotent for services already held by a scheduled fault.
+    for service in services.values() {
+        if service.vm.exited().is_none() {
+            if let Err(error) = service.vm.pause() {
+                // A short-lived guest can exit between the state check and
+                // the pause request. Its terminal state is already stable.
+                if service.vm.exited().is_none() {
+                    return Err(error);
+                }
+            }
+        }
+    }
     let network_sha256 = network_fingerprint(&switches)?;
     fs::write(
         output.join("topology-result.json"),

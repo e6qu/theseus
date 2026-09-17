@@ -98,7 +98,7 @@ runtime "$coverage" '
   grep -A2 "\"replay_verification\"" rerun/campaign-result.json | grep "\"status\": \"passed\""
   theseus compare campaign rerun > comparison.json
   grep -F "\"format\": \"theseus-campaign-comparison-v1\"" comparison.json
-  theseus evaluate capture campaign --output evaluation --name "C coverage campaign"
+  theseus evaluate capture rerun --output evaluation --name "C coverage campaign"
   theseus evaluate evaluation/theseus-evaluation.toml > evaluation.json
   grep -F "\"status\": \"passed\"" evaluation.json
 '
