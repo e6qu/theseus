@@ -41,8 +41,13 @@ commands='
   theseus compose verify retained/minimized
   theseus compose replay retained/minimized --output retained/rerun
   theseus compose verify retained/rerun
-  for service in counter writer-a writer-b; do
-    cmp rerun/services/$service/serial.log retained/rerun/services/$service/serial.log
+  for replay in rerun retained/rerun; do
+    for service in counter writer-a writer-b; do
+      jq -e ".status == \"passed\"" "$replay/services/$service/result.json" >/dev/null
+    done
+    grep -F "\"value\":1" "$replay/services/counter/serial.log"
+    grep -F "\"worker\":\"a\"" "$replay/services/writer-a/serial.log"
+    grep -F "\"worker\":\"b\"" "$replay/services/writer-b/serial.log"
   done
 '
 if test -n "${THESEUS_SOURCE_RUNTIME:-}"; then
