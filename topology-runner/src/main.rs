@@ -4058,7 +4058,8 @@ fn execute_campaign_minimized(
     let base = serde_json::to_vec(&topology)
         .map_err(|error| format!("cannot encode campaign base plan: {error}"))?;
     let mut checkpoints = CampaignCheckpointTree::new(checkpoint);
-    let (property, mut schedule) = campaign_counterexample(&campaign, source, &recorded)?;
+    let (property, mut schedule, mut locked_machine_execution_traces) =
+        campaign_counterexample(&campaign, source, &recorded)?;
     let original_operations = schedule
         .operations
         .iter()
@@ -4087,7 +4088,7 @@ fn execute_campaign_minimized(
             }
             let directory = attempts.join(format!("{attempt:03}"));
             attempt += 1;
-            execute_campaign_minimization_attempt(
+            let reproduced = execute_campaign_minimization_attempt(
                 &topology,
                 &campaign,
                 &base,
@@ -4096,7 +4097,12 @@ fn execute_campaign_minimized(
                 &property,
                 output,
                 &directory,
-            )
+            )?;
+            if reproduced {
+                locked_machine_execution_traces =
+                    Some(campaign_machine_execution_traces(&directory)?);
+            }
+            Ok(reproduced)
         })?;
     schedule.operations = operations;
     schedule.thread_schedule_prefixes = campaign_prefixes_for_subsequence(
@@ -4132,7 +4138,7 @@ fn execute_campaign_minimized(
             };
             let directory = attempts.join(format!("{attempt:03}"));
             attempt += 1;
-            execute_campaign_minimization_attempt(
+            let reproduced = execute_campaign_minimization_attempt(
                 &topology,
                 &campaign,
                 &base,
@@ -4141,12 +4147,26 @@ fn execute_campaign_minimized(
                 &property,
                 output,
                 &directory,
-            )
+            )?;
+            if reproduced {
+                locked_machine_execution_traces =
+                    Some(campaign_machine_execution_traces(&directory)?);
+            }
+            Ok(reproduced)
         })?;
     schedule.faults = combine_faults(&optional_faults);
-    let prefix = match checkpoints
-        .checkpoint_for_guarded_schedule(&topology, &campaign, &schedule, output, None)?
-    {
+    // Rebuild the winning schedule from the retained ready root under the
+    // exact machine stream that demonstrated the failure. Reusing a prefix
+    // from a rejected minimization candidate could silently select a sibling
+    // guest interleaving and erase the counterexample.
+    let mut final_checkpoints = CampaignCheckpointTree::new(checkpoints.root.clone());
+    let prefix = match final_checkpoints.checkpoint_for_guarded_schedule(
+        &topology,
+        &campaign,
+        &schedule,
+        output,
+        locked_machine_execution_traces.as_ref(),
+    )? {
         CampaignPrefixResult::Ready(prefix) => prefix,
         CampaignPrefixResult::MarkerGuardRejected | CampaignPrefixResult::SerialGuardRejected => {
             return Err(
@@ -4179,7 +4199,7 @@ fn execute_campaign_minimized(
         None,
         None,
         None,
-        None,
+        locked_machine_execution_traces,
         None,
     );
     write_replay_plan(&output.join("replay-plan.json"), &replay)?;
@@ -4391,7 +4411,14 @@ fn campaign_counterexample(
     campaign: &CampaignPlan,
     source: &Path,
     recorded: &RecordedCampaignResult,
-) -> Result<(CampaignProperty, CampaignSchedule), String> {
+) -> Result<
+    (
+        CampaignProperty,
+        CampaignSchedule,
+        Option<BTreeMap<String, Vec<String>>>,
+    ),
+    String,
+> {
     for property in &campaign.properties {
         let matches = recorded
             .runs
@@ -4465,6 +4492,8 @@ fn campaign_counterexample(
                 operations,
                 faults,
             },
+            (!recorded_run.machine_execution_traces.is_empty())
+                .then(|| recorded_run.machine_execution_traces.clone()),
         ));
     }
     Err("campaign bundle has no failing property to minimize".to_owned())
