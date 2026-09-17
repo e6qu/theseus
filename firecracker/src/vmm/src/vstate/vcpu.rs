@@ -749,7 +749,33 @@ impl MachineExecutionController {
         if let Some(detail) = state.divergence.clone() {
             return Err(detail);
         }
-        Ok(state.expected.is_none() || state.execution.trace.len() > position)
+        let progressed = state.expected.is_none() || state.execution.trace.len() > position;
+        if !progressed
+            && state.position == position
+            && let Some((_, source, gsi)) = state
+                .expected
+                .as_ref()
+                .and_then(|expected| expected.get(position))
+                .and_then(|record| machine_interrupt_record(record))
+        {
+            let mut pending = self
+                .pending_interrupts
+                .lock()
+                .expect("pending interrupt queue lock poisoned");
+            let interrupt = PendingInterrupt {
+                source,
+                gsi,
+                coalesce: true,
+            };
+            if !pending.contains(&interrupt) {
+                // Interrupt delivery is itself a recorded replay decision.
+                // Materialize that turn after the real source had a chance to
+                // publish, then let later device accesses verify its state.
+                pending.push_back(interrupt);
+                self.turn_changed.notify_all();
+            }
+        }
+        Ok(progressed)
     }
 
     pub(crate) fn apply_host_effect<T, E>(
@@ -844,6 +870,26 @@ fn machine_record_actor(record: &str) -> Option<MachineExecutionActor> {
     }
     let id = vcpu.parse::<u8>().ok()?;
     (vcpu == id.to_string()).then_some(MachineExecutionActor::Vcpu(id))
+}
+
+fn machine_interrupt_record(record: &str) -> Option<(u8, &'static str, u32)> {
+    let (vcpu, effect) = record.strip_prefix("vcpu:")?.split_once(':')?;
+    let id = vcpu.parse::<u8>().ok()?;
+    if vcpu != id.to_string() {
+        return None;
+    }
+    let interrupt = effect.strip_prefix("interrupt:")?;
+    let (source, gsi) = interrupt.split_once(':')?;
+    let source = match source {
+        "serial" => "serial",
+        "i8042" => "i8042",
+        "virtio-mmio" => "virtio-mmio",
+        "virtio-msix" => "virtio-msix",
+        "vmgenid" => "vmgenid",
+        "vmclock" => "vmclock",
+        _ => return None,
+    };
+    Some((id, source, gsi.parse().ok()?))
 }
 
 fn valid_machine_vcpu_effect(effect: &str) -> bool {
@@ -1800,6 +1846,30 @@ mod execution_ledger_tests {
                 .unwrap()
         );
         producer.join().unwrap();
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
+    fn topology_wait_materializes_a_recorded_interrupt_turn() {
+        let controller = MachineExecutionController::default();
+        controller.enable_deterministic_interrupts();
+        controller
+            .enforce(vec!["vcpu:0:interrupt:virtio-mmio:5".into()])
+            .unwrap();
+        assert!(!controller
+            .wait_for_replay_progress(0, std::time::Duration::ZERO)
+            .unwrap());
+        assert_eq!(
+            controller.pending_interrupts_for_test(),
+            [("virtio-mmio", 5)]
+        );
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        assert!(controller
+            .deliver_pending_interrupt_with(0, &ledger, |gsi| {
+                assert_eq!(gsi, 5);
+                Ok(())
+            })
+            .unwrap());
         assert_eq!(controller.replay_error(), None);
     }
 
