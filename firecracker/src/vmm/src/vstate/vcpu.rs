@@ -1508,45 +1508,21 @@ fn handle_kvm_exit_recorded(
     if machine_execution.shutdown_requested() {
         return Ok(VcpuEmulation::Stopped);
     }
-    loop {
-        if machine_execution.shutdown_requested() {
-            return Ok(VcpuEmulation::Stopped);
-        }
-        if let Some(detail) = machine.divergence.clone() {
-            return Err(VcpuError::FaultyKvmExit(detail));
-        }
-        let Some(expected) = machine.expected.as_ref() else {
-            break;
-        };
-        let Some(expected_record) = expected.get(machine.position) else {
-            break;
-        };
-        if machine_record_actor(expected_record) == Some(MachineExecutionActor::Vcpu(vcpu)) {
-            break;
-        }
-        let (next, timeout) = machine_execution
-            .turn_changed
-            .wait_timeout(machine, MACHINE_EXECUTION_TURN_TIMEOUT)
-            .expect("machine execution controller lock poisoned while waiting for replay turn");
-        machine = next;
-        if timeout.timed_out() {
-            let expected_actor = machine
-                .expected
-                .as_ref()
-                .and_then(|expected| expected.get(machine.position))
-                .and_then(|record| machine_record_actor(record));
-            let detail = format!(
-                "machine execution replay expected {} at decision {}, but vCPU {vcpu} reached an exit",
-                match expected_actor {
-                    Some(MachineExecutionActor::Vcpu(value)) => format!("vCPU {value}"),
-                    Some(MachineExecutionActor::Host) => "a host effect".to_owned(),
-                    None => "an unknown actor".to_owned(),
-                },
-                machine.position
-            );
-            machine.divergence = Some(detail.clone());
-            machine_execution.turn_changed.notify_all();
-            return Err(VcpuError::FaultyKvmExit(detail));
+    if let Some(detail) = machine.divergence.clone() {
+        return Err(VcpuError::FaultyKvmExit(detail));
+    }
+    if let Some(expected_record) = machine
+        .expected
+        .as_ref()
+        .and_then(|expected| expected.get(machine.position))
+    {
+        if machine_record_actor(expected_record) != Some(MachineExecutionActor::Vcpu(vcpu)) {
+            // Leave the unhandled KVM exit pending and return to the vCPU
+            // control loop. Waiting on the replay condition variable here
+            // prevents Pause and Finish messages from being observed while a
+            // checkpoint boundary is deliberately holding this vCPU behind a
+            // recorded host or sibling-vCPU turn.
+            return Ok(VcpuEmulation::Interrupted);
         }
     }
     if machine.execution.trace.len() == MACHINE_EXECUTION_TRACE_LIMIT {
@@ -2779,6 +2755,50 @@ pub(crate) mod tests {
                 .decisions,
             2
         );
+    }
+
+    #[test]
+    fn execution_ledger_host_turn_yields_to_vcpu_control_messages() {
+        let (_, mut vcpu) = setup_vcpu(0x1000);
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let controller = Arc::new(MachineExecutionController::default());
+        controller
+            .enforce(vec![
+                "host:serial_input:1:41".to_owned(),
+                "vcpu:0:mmio_write:0x10:1:2a".to_owned(),
+            ])
+            .unwrap();
+
+        let result = handle_kvm_exit_recorded(
+            &mut vcpu.kvm_vcpu.peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &[0x2a])),
+            0,
+            &ledger,
+            &controller,
+        )
+        .unwrap();
+        assert_eq!(result, VcpuEmulation::Interrupted);
+        assert!(controller.execution_state().trace().is_empty());
+        assert_eq!(controller.replay_divergence(), None);
+
+        controller
+            .apply_host_effect("serial_input:1:41".to_owned(), || Ok::<(), ()>(()))
+            .unwrap()
+            .unwrap();
+        let result = handle_kvm_exit_recorded(
+            &mut vcpu.kvm_vcpu.peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &[0x2a])),
+            0,
+            &ledger,
+            &controller,
+        )
+        .unwrap();
+        assert_eq!(result, VcpuEmulation::Handled);
+        assert_eq!(
+            controller.execution_state().trace(),
+            ["host:serial_input:1:41", "vcpu:0:mmio_write:0x10:1:2a"]
+        );
+        assert_eq!(controller.replay_error(), None);
     }
 
     impl PartialEq for VcpuResponse {
