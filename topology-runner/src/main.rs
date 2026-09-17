@@ -1447,8 +1447,9 @@ struct StoragePlan {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct EventPlan {
     data_hex: String,
-    /// Campaign operations use an explicit serial barrier.  Ordinary manifest
-    /// events leave it absent and retain the original fire-and-forget mode.
+    /// An explicit serial barrier supplied by a manifest or campaign
+    /// operation. The next input is withheld until this complete line reaches
+    /// the host transcript.
     #[serde(default)]
     checkpoint: Option<String>,
     /// Topology mutations deliberately occur only after the event's serial

@@ -128,6 +128,10 @@ machine ledger, observed boundary, and first active replay error. `[[events]]`
 become exact `host:serial_input` decisions after the ready marker, not bytes
 written to an unrecorded stdin pipe. Each event is at most 16,384 bytes,
 fitting the default HTTP API limit after hexadecimal encoding.
+An event may set `checkpoint` to a literal single-line serial marker. Theseus
+waits until that complete line reaches the retained transcript before sending
+the next event. Use this handshake when a guest must publish a result before a
+later input allows it to exit or reset.
 Version-2 plans use the topology runner's `quiet loglevel=0` boot policy to
 suppress host-clock-dependent kernel diagnostics. This does not control those
 clocks or filter decisions out of the captured stream.

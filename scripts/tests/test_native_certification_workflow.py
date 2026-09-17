@@ -47,9 +47,17 @@ def main() -> None:
     assert "THES:M:42" in CERTIFICATION_INIT
     assert "reboot -f" in CERTIFICATION_INIT
     assert "poweroff -f" not in CERTIFICATION_INIT
-    assert CERTIFICATION_INIT.count("stty -F /dev/ttyS0 -echo -opost") == 2
-    assert CERTIFICATION_INIT.index("echo finished") < CERTIFICATION_INIT.rindex("stty -F")
-    assert CERTIFICATION_INIT.rindex("stty -F") < CERTIFICATION_INIT.index("reboot -f")
+    assert CERTIFICATION_INIT.count("stty -F /dev/ttyS0 -echo -opost") == 1
+    assert CERTIFICATION_INIT.count("read -r command < /dev/ttyS0") == 2
+    assert '[ "$command" = shutdown ]' in CERTIFICATION_INIT
+    assert CERTIFICATION_INIT.index("echo finished") < CERTIFICATION_INIT.index(
+        '[ "$command" = shutdown ]'
+    )
+    assert CERTIFICATION_INIT.index('[ "$command" = shutdown ]') < CERTIFICATION_INIT.index(
+        "reboot -f"
+    )
+    assert 'checkpoint = "finished"' in CERTIFICATION_MANIFEST
+    assert 'data = "73687574646f776e0a"' in CERTIFICATION_MANIFEST
     assert "max_rounds = 10000000" in CERTIFICATION_MANIFEST
     assert WORKFLOW.count('docker build --load --platform "linux/$ARCH"') == 2
     assert "docs/tutorials/30-multiservice-lost-update" in WORKFLOW

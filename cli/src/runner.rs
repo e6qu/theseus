@@ -90,6 +90,9 @@ pub enum RunError {
     },
     MissingStdin,
     GuestNeverReady,
+    EventCheckpointNotReached {
+        checkpoint: String,
+    },
     TimedOut {
         seconds: u64,
     },
@@ -171,6 +174,10 @@ impl fmt::Display for RunError {
             Self::GuestNeverReady => {
                 write!(formatter, "guest did not emit the Theseus ready marker")
             }
+            Self::EventCheckpointNotReached { checkpoint } => write!(
+                formatter,
+                "guest did not emit serial checkpoint {checkpoint:?} as a complete line"
+            ),
             Self::TimedOut { seconds } => {
                 write!(formatter, "guest did not exit within {seconds} seconds")
             }
@@ -861,6 +868,12 @@ fn send_events_and_wait(
             wait_for_ready(serial_log.to_path_buf(), child, plan.run.timeout_secs)?;
         }
         for event in &plan.events {
+            let input_offset = fs::metadata(serial_log)
+                .map_err(|source| RunError::Read {
+                    path: serial_log.to_path_buf(),
+                    source,
+                })?
+                .len() as usize;
             if capture {
                 // Keep each manifest payload one exact host-input decision.
                 api_put(
@@ -879,17 +892,26 @@ fn send_events_and_wait(
                         source,
                     })?;
             }
-        }
-        if !capture {
-            child
-                .stdin
-                .as_mut()
-                .ok_or(RunError::MissingStdin)?
-                .flush()
-                .map_err(|source| RunError::Write {
-                    path: PathBuf::from("Firecracker serial input"),
-                    source,
-                })?;
+            if !capture {
+                child
+                    .stdin
+                    .as_mut()
+                    .ok_or(RunError::MissingStdin)?
+                    .flush()
+                    .map_err(|source| RunError::Write {
+                        path: PathBuf::from("Firecracker serial input"),
+                        source,
+                    })?;
+            }
+            if let Some(checkpoint) = &event.checkpoint {
+                wait_for_serial_checkpoint(
+                    serial_log,
+                    input_offset,
+                    checkpoint,
+                    child,
+                    plan.run.timeout_secs,
+                )?;
+            }
         }
     }
     let terminal = wait_for_exit(child, plan.run.timeout_secs, capture.then_some(socket))?;
@@ -946,6 +968,58 @@ fn wait_for_ready(
         thread::sleep(POLL_INTERVAL);
     }
     Err(RunError::GuestNeverReady)
+}
+
+fn wait_for_serial_checkpoint(
+    serial_log: &Path,
+    input_offset: usize,
+    checkpoint: &str,
+    child: &mut Child,
+    timeout_secs: u64,
+) -> Result<(), RunError> {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    while Instant::now() < deadline {
+        let contents = fs::read(serial_log).map_err(|source| RunError::Read {
+            path: serial_log.to_path_buf(),
+            source,
+        })?;
+        if contents
+            .get(input_offset..)
+            .is_some_and(|response| serial_checkpoint_seen(response, checkpoint.as_bytes()))
+        {
+            return Ok(());
+        }
+        if let Some(status) = child.try_wait().map_err(|source| RunError::Read {
+            path: PathBuf::from("Firecracker process"),
+            source,
+        })? {
+            return Err(RunError::GuestExited {
+                status: status.to_string(),
+            });
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+    Err(RunError::EventCheckpointNotReached {
+        checkpoint: checkpoint.to_owned(),
+    })
+}
+
+fn serial_checkpoint_seen(response: &[u8], checkpoint: &[u8]) -> bool {
+    !checkpoint.is_empty()
+        && response
+            .windows(checkpoint.len())
+            .enumerate()
+            .any(|(offset, window)| {
+                window == checkpoint
+                    && response[offset + checkpoint.len()..]
+                        .iter()
+                        .position(|byte| *byte == b'\n')
+                        .is_some_and(|newline| {
+                            response[offset + checkpoint.len()..offset + checkpoint.len() + newline]
+                                .iter()
+                                .all(|byte| *byte == b'\r')
+                        })
+            })
 }
 
 enum Terminal {
@@ -1786,6 +1860,17 @@ fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
                 reason: "event data must be non-empty, even-length hexadecimal".to_owned(),
             });
         }
+        if event.checkpoint.as_ref().is_some_and(|checkpoint| {
+            checkpoint.is_empty()
+                || checkpoint
+                    .chars()
+                    .any(|character| matches!(character, '\r' | '\n' | '\0'))
+        }) {
+            return Err(RunError::InvalidBundle {
+                path: path.to_path_buf(),
+                reason: "event checkpoint must be a non-empty single-line serial marker".to_owned(),
+            });
+        }
     }
     let mut check_names = HashSet::new();
     for check in &plan.checks {
@@ -2482,5 +2567,14 @@ body_contains = "ok"
         assert!(execution.checks.iter().any(|check| {
             check.name == "container_service.operation.read_health" && check.status == "passed"
         }));
+    }
+
+    #[test]
+    fn serial_checkpoint_requires_a_complete_line() {
+        assert!(!serial_checkpoint_seen(b"finished", b"finished"));
+        assert!(serial_checkpoint_seen(b"unfinished\n", b"finished"));
+        assert!(serial_checkpoint_seen(b"noise\nfinished\n", b"finished"));
+        assert!(serial_checkpoint_seen(b"finished\r\n", b"finished"));
+        assert!(!serial_checkpoint_seen(b"finished!\n", b"finished"));
     }
 }
