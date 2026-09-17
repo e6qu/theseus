@@ -602,6 +602,13 @@ impl MachineExecutionController {
                 // not merely vCPU ownership.
                 return Ok(false);
             }
+            if state.control_only {
+                // A campaign operation will apply the next host decision from
+                // its deterministic round loop. Keep an early device
+                // interrupt queued and return to that loop instead of turning
+                // host scheduling delay into replay divergence.
+                return Ok(false);
+            }
             drop(pending);
             let (next, timeout) = self
                 .turn_changed
@@ -811,7 +818,10 @@ impl MachineExecutionController {
                 gsi,
                 coalesce: true,
             };
-            if !pending.contains(&interrupt) {
+            if !pending
+                .iter()
+                .any(|pending| pending.source == source && pending.gsi == gsi)
+            {
                 // Interrupt delivery is itself a recorded replay decision.
                 // Materialize that turn after the real source had a chance to
                 // publish, then let later device accesses verify its state.
@@ -2141,6 +2151,15 @@ mod execution_ledger_tests {
         );
         assert_eq!(device.lock().unwrap().writes, 1);
         assert_eq!(controller.state.lock().unwrap().position, 0);
+        controller
+            .request_edge_interrupt("virtio-mmio", 5)
+            .unwrap();
+        assert!(!controller
+            .deliver_pending_interrupt_with(0, &ledger, |_| {
+                panic!("interrupt injected before the recorded host input")
+            })
+            .unwrap());
+        assert_eq!(controller.replay_divergence(), None);
         controller
             .apply_host_effect("serial_input:1:41".into(), || Ok::<_, ()>(()))
             .unwrap()
