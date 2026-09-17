@@ -212,6 +212,7 @@ pub struct MachineExecutionController {
     state: Mutex<MachineExecutionControl>,
     pending_interrupts: Mutex<VecDeque<PendingInterrupt>>,
     deterministic_interrupts: AtomicBool,
+    control_requested: AtomicBool,
     shutdown_requested: AtomicBool,
     interrupt_kickers: Mutex<Vec<Weak<Mutex<Option<VcpuInterruptKick>>>>>,
     turn_changed: Condvar,
@@ -228,6 +229,7 @@ impl Default for MachineExecutionController {
             }),
             pending_interrupts: Mutex::new(VecDeque::new()),
             deterministic_interrupts: AtomicBool::new(false),
+            control_requested: AtomicBool::new(false),
             shutdown_requested: AtomicBool::new(false),
             interrupt_kickers: Mutex::new(Vec::new()),
             turn_changed: Condvar::new(),
@@ -325,6 +327,20 @@ impl DeferredInterrupt {
 }
 
 impl MachineExecutionController {
+    fn request_vcpu_control(&self) {
+        self.control_requested.store(true, Ordering::Release);
+        self.turn_changed.notify_all();
+    }
+
+    fn resume_vcpu_execution(&self) {
+        self.control_requested.store(false, Ordering::Release);
+        self.turn_changed.notify_all();
+    }
+
+    fn vcpu_control_requested(&self) -> bool {
+        self.control_requested.load(Ordering::Acquire)
+    }
+
     /// Freeze device-effect admission after a guest terminal request.
     pub(crate) fn request_shutdown(&self) {
         if self.shutdown_requested.swap(true, Ordering::AcqRel) {
@@ -512,7 +528,7 @@ impl MachineExecutionController {
             .lock()
             .expect("machine execution controller lock poisoned");
         let mut pending = loop {
-            if self.shutdown_requested() {
+            if self.shutdown_requested() || self.vcpu_control_requested() {
                 return Ok(false);
             }
             if let Some(detail) = state.divergence.clone() {
@@ -1468,6 +1484,9 @@ impl Vcpu {
         if self.machine_execution.shutdown_requested() {
             return Ok(VcpuEmulation::Stopped);
         }
+        if self.machine_execution.vcpu_control_requested() {
+            return Ok(VcpuEmulation::Interrupted);
+        }
         // Theseus: anchor the guest clock before the first KVM_RUN. On
         // aarch64 the counter offset is only writable after vCPU init (which
         // happens at configure time), so this is the earliest safe point.
@@ -1539,6 +1558,9 @@ fn handle_kvm_exit_recorded(
         .expect("machine execution controller lock poisoned");
     if machine_execution.shutdown_requested() {
         return Ok(VcpuEmulation::Stopped);
+    }
+    if machine_execution.vcpu_control_requested() {
+        return Ok(VcpuEmulation::Interrupted);
     }
     if let Some(detail) = machine.divergence.clone() {
         return Err(VcpuError::FaultyKvmExit(detail));
@@ -1898,6 +1920,33 @@ mod execution_ledger_tests {
         stop.join().unwrap();
         assert_eq!(controller.execution_state().trace().len(), 0);
         assert_eq!(ledger.lock().unwrap().evidence().decisions, 0);
+    }
+
+    #[test]
+    fn control_request_wakes_a_vcpu_waiting_for_recorded_interrupt() {
+        let controller = Arc::new(MachineExecutionController::default());
+        controller.enable_deterministic_interrupts();
+        controller
+            .enforce(vec!["vcpu:0:interrupt:virtio-mmio:5".into()])
+            .unwrap();
+        let control = controller.clone();
+        let control = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            control.request_vcpu_control();
+        });
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        assert!(
+            !controller
+                .deliver_pending_interrupt_with(0, &ledger, |_| {
+                    panic!("interrupt injected while vCPU control was pending")
+                })
+                .unwrap()
+        );
+        control.join().unwrap();
+        assert!(controller.vcpu_control_requested());
+        controller.resume_vcpu_execution();
+        assert!(!controller.vcpu_control_requested());
+        assert_eq!(controller.replay_divergence(), None);
     }
 
     impl BusDevice for CountingDevice {
@@ -2531,6 +2580,13 @@ impl VcpuHandle {
     ///
     /// When [`vmm_sys_util::linux::signal::Killable::kill`] errors.
     pub fn send_event(&mut self, event: VcpuEvent) -> Result<(), VcpuSendEventError> {
+        match &event {
+            VcpuEvent::Pause | VcpuEvent::Finish => {
+                self.machine_execution.request_vcpu_control();
+            }
+            VcpuEvent::Resume => self.machine_execution.resume_vcpu_execution(),
+            _ => {}
+        }
         // Use expect() to crash if the other thread closed this channel.
         self.event_sender
             .send(event)
