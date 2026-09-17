@@ -3127,6 +3127,7 @@ fn execute_plan(
             topology,
             &output,
             root.as_ref(),
+            ExecutionCompletion::GuestExit,
             expected_serial,
             expected_faults,
             expected_network,
@@ -3571,6 +3572,7 @@ fn execute_campaign(
             run,
             &run_dir,
             Some(&prefix.checkpoint),
+            ExecutionCompletion::CampaignCheckpoint,
             None,
             None,
             None,
@@ -4166,6 +4168,7 @@ fn execute_campaign_minimized(
         final_plan,
         output,
         Some(&prefix.checkpoint),
+        ExecutionCompletion::CampaignCheckpoint,
         None,
         None,
         None,
@@ -4313,6 +4316,7 @@ fn execute_campaign_minimization_attempt(
         plan,
         directory,
         Some(&prefix.checkpoint),
+        ExecutionCompletion::CampaignCheckpoint,
         None,
         None,
         None,
@@ -9884,10 +9888,17 @@ fn json_condition_description(condition: &JsonCondition) -> String {
     )
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExecutionCompletion {
+    GuestExit,
+    CampaignCheckpoint,
+}
+
 fn execute(
     mut topology: TopologyPlan,
     output: &Path,
     checkpoint: Option<&CampaignCheckpoint>,
+    completion: ExecutionCompletion,
     expected_serial: Option<BTreeMap<String, Vec<String>>>,
     expected_faults: Option<BTreeMap<String, String>>,
     expected_network: Option<String>,
@@ -10084,7 +10095,11 @@ fn execute(
         )?;
         services.insert(name.clone(), driver);
     }
-    while round.saturating_add(lifecycle_barrier_rounds) < max_rounds
+    // A campaign branch ends at its last operation checkpoint. Container
+    // entrypoints are usually daemons, so waiting for guest exit would only
+    // burn the complete round budget and incorrectly fail a valid branch.
+    while completion == ExecutionCompletion::GuestExit
+        && round.saturating_add(lifecycle_barrier_rounds) < max_rounds
         && services
             .values()
             .any(|service| service.vm.exited().is_none())
@@ -10140,13 +10155,22 @@ fn execute(
         service.record_network_traffic()?;
         service.record_network_trace()?;
         let exit = service.vm.exited();
-        let (exit_status, mut error) = match exit {
-            Some(FcExitCode::Ok) => ("passed", None),
-            Some(code) => ("failed", Some(format!("guest exited with {code:?}"))),
-            None => (
-                "failed",
-                Some("guest did not exit before the configured topology round budget".to_owned()),
+        let (exit_status, mut error, exit_detail) = match exit {
+            Some(FcExitCode::Ok) => ("passed", None, "guest exited with status 0".to_owned()),
+            Some(code) => {
+                let detail = format!("guest exited with {code:?}");
+                ("failed", Some(detail.clone()), detail)
+            }
+            None if completion == ExecutionCompletion::CampaignCheckpoint => (
+                "passed",
+                None,
+                "campaign operation checkpoint reached".to_owned(),
             ),
+            None => {
+                let detail =
+                    "guest did not exit before the configured topology round budget".to_owned();
+                ("failed", Some(detail.clone()), detail)
+            }
         };
         let mut checks = evaluate_checks(&topology.services[name].run.checks, &service.serial_logs);
         let serial_sha256 = serial_fingerprints(&service.serial_logs)?;
@@ -10163,11 +10187,13 @@ fn execute(
         checks.insert(
             0,
             CheckResult {
-                name: "guest_exit".to_owned(),
+                name: match completion {
+                    ExecutionCompletion::GuestExit => "guest_exit",
+                    ExecutionCompletion::CampaignCheckpoint => "campaign_checkpoint",
+                }
+                .to_owned(),
                 status: exit_status,
-                detail: error
-                    .clone()
-                    .unwrap_or_else(|| "guest exited with status 0".to_owned()),
+                detail: exit_detail,
             },
         );
         if let Some(expected) = &expected_serial {
@@ -11997,10 +12023,8 @@ fn evaluate_checks(checks: &[CheckPlan], serial_logs: &[PathBuf]) -> Vec<CheckRe
                 _ => check.value.as_bytes().to_vec(),
             };
             let contains = serial_logs.iter().any(|path| {
-                fs::read(path)
-                    .unwrap_or_default()
-                    .windows(needle.len())
-                    .any(|window| window == needle)
+                let serial = fs::read(path).unwrap_or_default();
+                needle.is_empty() || serial.windows(needle.len()).any(|window| window == needle)
             });
             let serial = serial_logs
                 .iter()
@@ -13826,6 +13850,37 @@ mod tests {
         }))
         .unwrap();
         assert!(nested_predicate_description(&serial).contains("JSONPath"));
+    }
+
+    #[test]
+    fn compound_serial_checks_allow_an_empty_plain_text_value() {
+        let serial = std::env::temp_dir().join(format!(
+            "theseus-topology-compound-check-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&serial, b"{\"event\":\"inspect\",\"value\":1}\n").unwrap();
+        let predicate = serde_json::from_value(serde_json::json!({
+            "json": {"fields": {"/event": "inspect", "/value": 1}}
+        }))
+        .unwrap();
+        let results = evaluate_checks(
+            &[CheckPlan {
+                name: "counterexample".to_owned(),
+                kind: CheckKind::SerialPropertyMatches,
+                value: String::new(),
+                contains_all: Vec::new(),
+                contains_any: Vec::new(),
+                contains_none: Vec::new(),
+                predicate: Some(predicate),
+            }],
+            std::slice::from_ref(&serial),
+        );
+        fs::remove_file(serial).unwrap();
+
+        assert_eq!(results[0].status, "passed");
     }
 
     #[test]
