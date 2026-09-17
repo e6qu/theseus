@@ -51,6 +51,10 @@ passing unit suite alone is not treated as runtime proof.
 - Single-service `test` bundles retain the complete machine stream. `replay`
   actively admits that stream through guest exit and retains new diagnostics
   with `--output`; it does not just rerun a seed and compare printed output.
+- Checkpoint-backed campaigns retain the same complete exit evidence but gate
+  the portable replay on its external control stream: host inputs and recorded
+  interrupt deliveries. Linux execution between those turns is not claimed to
+  be identical.
 - Ready-checkpoint replay retains VM state, RAM, the execution prefix, and
   pending userspace interrupts. Both the test and its replays restore that
   same state; uncontrolled kernel boot is inherited, not replayed.
@@ -78,11 +82,11 @@ passing unit suite alone is not treated as runtime proof.
   locking, and untimed condition waits/signals/broadcasts. Timed waits,
   cancellation, direct futex use, blocking I/O, and processes remain outside
   this profile.
-- The machine stream gates replayed vCPU turns and explicit host inputs, and
-  rejects divergence at hypervisor and device boundaries. It controls the
-  supported userspace device interrupt sources, but does not yet choose
-  instruction or thread order, guest interrupt-service timing, or in-kernel
-  timer delivery.
+- Fixed-run replay gates every recorded vCPU turn and explicit host input.
+  Checkpoint-backed campaign replay gates host inputs and supported userspace
+  interrupt deliveries while retaining intervening exits as evidence. Neither
+  mode chooses instruction or thread order, guest interrupt-service timing, or
+  in-kernel timer delivery.
 - Device-write payloads and read addresses/widths are checked before device
   access. Read values can only be checked after the device supplies them;
   replay stops on a mismatch but cannot undo that read. Host-timed cutoffs are

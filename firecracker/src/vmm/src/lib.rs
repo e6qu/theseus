@@ -587,6 +587,23 @@ impl Vmm {
             .map_err(VmmError::ExecutionCoverage)
     }
 
+    /// Install the externally scheduled host and interrupt replay stream.
+    pub fn enforce_machine_execution_control_trace(
+        &self,
+        trace: Vec<String>,
+    ) -> Result<(), VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        kvm_vm
+            .vcpus_handles()
+            .first()
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))?
+            .enforce_machine_execution_control_trace(trace)
+            .map_err(VmmError::ExecutionCoverage)
+    }
+
     /// Return a mismatch or an expected suffix that was not consumed.
     pub fn machine_execution_replay_error(&self) -> Result<Option<String>, VmmError> {
         let kvm_vm = self
@@ -613,7 +630,20 @@ impl Vmm {
             .machine_execution_replay_divergence())
     }
 
-    /// Briefly wait for an active exact replay to consume another decision.
+    /// Return the number of active replay decisions admitted so far.
+    pub fn machine_execution_replay_position(&self) -> Result<usize, VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        Ok(kvm_vm
+            .vcpus_handles()
+            .first()
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))?
+            .machine_execution_replay_position())
+    }
+
+    /// Briefly wait for an active replay to consume another controlled decision.
     ///
     /// Non-replay execution returns immediately. This gives asynchronous
     /// device workers time to publish a completion without spending thousands

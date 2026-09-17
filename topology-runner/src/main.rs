@@ -2426,6 +2426,14 @@ impl ServiceVm {
             .map_err(|error| error.to_string())
     }
 
+    fn enforce_machine_execution_control_trace(&self, trace: Vec<String>) -> Result<(), String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .enforce_machine_execution_control_trace(trace)
+            .map_err(|error| error.to_string())
+    }
+
     fn machine_execution_replay_error(&self) -> Result<Option<String>, String> {
         self.vmm
             .lock()
@@ -2439,6 +2447,14 @@ impl ServiceVm {
             .lock()
             .expect("VMM lock poisoned")
             .machine_execution_replay_divergence()
+            .map_err(|error| error.to_string())
+    }
+
+    fn machine_execution_replay_position(&self) -> Result<usize, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .machine_execution_replay_position()
             .map_err(|error| error.to_string())
     }
 
@@ -2811,7 +2827,7 @@ fn checkpoint_campaign_operation(
                 .ok_or_else(|| format!("checkpoint is missing VM state for {name}"))?,
         )?;
         if let Some(expected) = expected {
-            vm.enforce_machine_execution_trace(
+            vm.enforce_machine_execution_control_trace(
                 expected
                     .get(name)
                     .ok_or_else(|| format!("missing replay stream for {name}"))?
@@ -4165,7 +4181,7 @@ fn execute_campaign_minimized(
         })?;
     schedule.faults = combine_faults(&optional_faults);
     // Rebuild the winning schedule from the retained ready root under the
-    // exact machine stream that demonstrated the failure. Reusing a prefix
+    // machine control stream that demonstrated the failure. Reusing a prefix
     // from a rejected minimization candidate could silently select a sibling
     // guest interleaving and erase the counterexample.
     let mut final_checkpoints = CampaignCheckpointTree::new(checkpoints.root.clone());
@@ -10050,14 +10066,15 @@ fn execute(
                 )
             };
         if let Some(expected) = &expected_machine_execution_traces {
-            vm.enforce_machine_execution_trace(
-                expected
-                    .get(name)
-                    .ok_or_else(|| {
-                        format!("recorded machine execution trace missing service {name}")
-                    })?
-                    .clone(),
-            )?;
+            let trace = expected
+                .get(name)
+                .ok_or_else(|| format!("recorded machine execution trace missing service {name}"))?
+                .clone();
+            if completion == ExecutionCompletion::CampaignCheckpoint {
+                vm.enforce_machine_execution_control_trace(trace)?;
+            } else {
+                vm.enforce_machine_execution_trace(trace)?;
+            }
         }
         services.insert(
             name.clone(),
@@ -10166,7 +10183,12 @@ fn execute(
         advance_network_round(&switches, &services)?;
     }
     if let Some(expected) = &expected_machine_execution_traces {
-        complete_machine_execution_replay(&mut services, expected, max_rounds)?;
+        complete_machine_execution_replay(
+            &mut services,
+            expected,
+            max_rounds,
+            completion == ExecutionCompletion::CampaignCheckpoint,
+        )?;
     }
     let network_sha256 = network_fingerprint(&switches)?;
     fs::write(
@@ -10427,13 +10449,23 @@ fn execute(
             let expected = expected
                 .get(name)
                 .expect("recorded machine execution trace missing service");
-            let matches =
-                machine_execution_replay_error.is_none() && expected == &machine_execution_trace;
+            let matches = machine_execution_replay_error.is_none()
+                && if completion == ExecutionCompletion::CampaignCheckpoint {
+                    machine_replay_control_trace(expected)
+                        == machine_replay_control_trace(&machine_execution_trace)
+                } else {
+                    expected == &machine_execution_trace
+                };
             checks.push(CheckResult {
                 name: "replay_machine_execution_trace".to_owned(),
                 status: if matches { "passed" } else { "failed" },
                 detail: if matches {
-                    "the recorded machine execution trace actively governed replay".to_owned()
+                    if completion == ExecutionCompletion::CampaignCheckpoint {
+                        "the recorded host and interrupt control stream actively governed replay"
+                            .to_owned()
+                    } else {
+                        "the recorded machine execution trace actively governed replay".to_owned()
+                    }
                 } else {
                     machine_execution_replay_error.clone().unwrap_or_else(|| {
                         "machine execution trace differs from the original replay bundle".to_owned()
@@ -10827,31 +10859,35 @@ fn reject_active_replay_divergence(
     Ok(())
 }
 
-/// Reach the exact retained machine cut before collecting a checkpoint-backed
-/// result. A campaign leaf intentionally does not wait for daemon exit, but its
-/// recorded stream can still contain asynchronous device completions that were
-/// already in flight when the leaf was captured.
+/// Reach the retained replay cut before collecting a checkpoint-backed result.
+/// Campaigns use the portable host/interrupt control projection; fixed runs
+/// require the complete machine trace.
 fn complete_machine_execution_replay(
     services: &mut BTreeMap<String, ServiceRuntime>,
     expected: &BTreeMap<String, Vec<String>>,
     max_polls: u64,
+    control_only: bool,
 ) -> Result<(), String> {
     for poll in 0..=max_polls {
         reject_active_replay_divergence(services)?;
         let mut positions = BTreeMap::new();
         let mut incomplete = false;
         for (name, service) in services.iter() {
-            let position = service.vm.machine_execution_trace()?.len();
-            let expected_len = expected
-                .get(name)
-                .ok_or_else(|| format!("recorded machine execution trace missing service {name}"))?
-                .len();
-            if position > expected_len {
+            let trace = service.vm.machine_execution_trace()?;
+            let position = service.vm.machine_execution_replay_position()?;
+            let actual_decisions = machine_replay_decisions(&trace, control_only);
+            let expected_decisions = machine_replay_decisions(
+                expected.get(name).ok_or_else(|| {
+                    format!("recorded machine execution trace missing service {name}")
+                })?,
+                control_only,
+            );
+            if actual_decisions > expected_decisions {
                 return Err(format!(
-                    "service {name:?} extended its exact machine replay past decision {expected_len}"
+                    "service {name:?} extended its machine replay past decision {expected_decisions}"
                 ));
             }
-            incomplete |= position < expected_len;
+            incomplete |= actual_decisions < expected_decisions;
             positions.insert(name.clone(), position);
         }
         if !incomplete {
@@ -10864,7 +10900,10 @@ fn complete_machine_execution_replay(
             service.vm.pump();
         }
         for (name, service) in services.iter() {
-            if positions[name] < expected[name].len() {
+            let actual_decisions =
+                machine_replay_decisions(&service.vm.machine_execution_trace()?, control_only);
+            let expected_decisions = machine_replay_decisions(&expected[name], control_only);
+            if actual_decisions < expected_decisions {
                 service
                     .vm
                     .wait_for_machine_execution_replay_progress(positions[name])?;
@@ -10874,8 +10913,9 @@ fn complete_machine_execution_replay(
     let pending = services
         .iter()
         .map(|(name, service)| {
-            let actual = service.vm.machine_execution_trace()?.len();
-            let expected = expected[name].len();
+            let actual =
+                machine_replay_decisions(&service.vm.machine_execution_trace()?, control_only);
+            let expected = machine_replay_decisions(&expected[name], control_only);
             Ok(format!("{name}:{actual}/{expected}"))
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -10883,6 +10923,22 @@ fn complete_machine_execution_replay(
         "machine execution replay did not reach its retained cut ({})",
         pending.join(", ")
     ))
+}
+
+fn machine_replay_decisions(trace: &[String], control_only: bool) -> usize {
+    if control_only {
+        machine_replay_control_trace(trace).len()
+    } else {
+        trace.len()
+    }
+}
+
+fn machine_replay_control_trace(trace: &[String]) -> Vec<&str> {
+    trace
+        .iter()
+        .filter(|record| record.starts_with("host:") || record.contains(":interrupt:"))
+        .map(String::as_str)
+        .collect()
 }
 
 fn recorded_fault_fingerprints(
@@ -12022,7 +12078,7 @@ fn advance_campaign_operation_round(
     services: &mut BTreeMap<String, ServiceRuntime>,
     switches: &BTreeMap<String, SharedSimSwitch>,
 ) -> Result<(), String> {
-    let replay_position = target.vm.machine_execution_trace()?.len();
+    let replay_position = target.vm.machine_execution_replay_position()?;
     target.vm.pump();
     target.vm.advance_simulated_networks()?;
     for service in services.values_mut() {

@@ -232,6 +232,13 @@ prefix, missing suffix, or extra effect. Writes and read identities are gated
 before device access; read values are necessarily checked afterward. Guest
 reset is a terminal admission turn, not an asynchronous host-timed cutoff.
 
+Fixed-run replay can enforce that complete exit stream. Portable
+checkpoint-backed campaigns currently enforce its host-input and interrupt
+control projection while retaining all intervening exits as evidence. They do
+not claim identical Linux execution between controlled turns; making the full
+stream portable requires the runnable-entity and instruction-boundary control
+in the next slice.
+
 The next slice must control in-kernel timer delivery, then runnable guest
 entities, virtual-clock reads, and guest-side input consumption between KVM
 exits. Controlled injection is not general interrupt determinism: the guest

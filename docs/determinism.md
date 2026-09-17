@@ -89,20 +89,19 @@ before guest entry and records `vcpu:<id>:interrupt:<source>:<gsi>` in the same
 machine stream. Sources cover UART, virtio MMIO, virtio MSI-X, VM generation
 and clock notifications, and the i8042 keyboard. Checkpoints retain undelivered
 requests, including notifications created while restoring a VM, and replay
-requires the same vCPU delivery turns. If a recorded device completion has not
-yet reached the host queue, the vCPU waits at that turn without running more
-guest code. The wait is bounded; absent or mismatched requests fail replay.
-Vhost-user and other direct notifier
-paths remain outside the deterministic profile.
+requires the same vCPU delivery turns. Checkpoint-backed campaign replay can
+materialize a recorded delivery edge after the restored device had a chance to
+publish it; subsequent device reads still verify the restored state. Vhost-user
+and other direct notifier paths remain outside the deterministic profile.
 
-The VM-wide gate retains the bounded exact trace as well as the rolling digest.
-Checkpoints clone both forms into each child. Locked replay admits only the
-actor named by the next record. It checks complete writes, read addresses and
-widths, terminal exits, and explicit inputs before applying their effects.
-Read values are checked after device access; a mismatch stops replay but does
-not roll back a consumed device value. A wrong prefix, actor, input, payload,
-missing suffix, or extra event fails replay. Trace exhaustion also rejects the
-next access before device emulation.
+The VM-wide gate retains the bounded complete trace as well as the rolling
+digest. Checkpoints clone both forms into each child. Fixed-run replay admits
+only the actor named by every next record, checks complete writes and read
+identities, and rejects an extra access at trace exhaustion. Campaign replay
+uses the trace's host inputs and interrupt deliveries as its portable control
+stream; intervening MMIO and PIO exits remain evidence because Linux execution
+between controlled turns is not instruction-scheduled. Read values are checked
+after device access and cannot be rolled back.
 
 An attached x86 i8042 reset request ends the stream on its own recorded write.
 It does not keep polling until the event loop notices an asynchronous reset
@@ -160,7 +159,8 @@ and `prelude.log`, in addition to the runtime and guest inputs. Metadata binds
 state/RAM hashes and lengths, machine/clock/entropy configuration, the complete
 inherited trace, pending userspace interrupts, control FIFO/log, and amd64 PS/2
 registers/FIFO. Loading rebuilds machine and local hashes from the validated
-prefix and installs an expected complete trace before the first resume.
+prefix and installs the retained host/interrupt control stream before the first
+campaign resume. Fixed-run replay installs the complete expected trace.
 Snapshot restore retains vCPU registers, virtual-clock counters, UART state,
 and RNG state. New restore-time notifications join the retained pending queue
 in the same order for the baseline and replay.

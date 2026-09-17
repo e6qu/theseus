@@ -201,6 +201,7 @@ struct MachineExecutionControl {
     execution: MachineExecutionState,
     expected: Option<Vec<String>>,
     position: usize,
+    control_only: bool,
     divergence: Option<String>,
 }
 
@@ -225,6 +226,7 @@ impl Default for MachineExecutionController {
                 execution: MachineExecutionState::default(),
                 expected: None,
                 position: 0,
+                control_only: false,
                 divergence: None,
             }),
             pending_interrupts: Mutex::new(VecDeque::new()),
@@ -386,6 +388,7 @@ impl MachineExecutionController {
         state.position = execution.trace.len();
         state.execution = execution;
         state.expected = None;
+        state.control_only = false;
         state.divergence = None;
         let mut live_interrupts = self
             .pending_interrupts
@@ -674,25 +677,55 @@ impl MachineExecutionController {
     }
 
     fn enforce(&self, expected: Vec<String>) -> Result<(), String> {
+        self.enforce_with_mode(expected, false)
+    }
+
+    fn enforce_control(&self, expected: Vec<String>) -> Result<(), String> {
+        self.enforce_with_mode(expected, true)
+    }
+
+    fn enforce_with_mode(
+        &self,
+        expected: Vec<String>,
+        control_only: bool,
+    ) -> Result<(), String> {
         Self::validate_trace(&expected)?;
         let mut state = self
             .state
             .lock()
             .expect("machine execution controller lock poisoned");
-        if !expected.starts_with(&state.execution.trace) {
+        let actual = if control_only {
+            state
+                .execution
+                .trace
+                .iter()
+                .filter(|record| machine_replay_control_record(record))
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            state.execution.trace.clone()
+        };
+        let expected = if control_only {
+            expected
+                .into_iter()
+                .filter(|record| machine_replay_control_record(record))
+                .collect::<Vec<_>>()
+        } else {
+            expected
+        };
+        if !expected.starts_with(&actual) {
             return Err(format!(
                 "machine execution trace diverged before replay began at decision {}",
-                state
-                    .execution
-                    .trace
+                actual
                     .iter()
                     .zip(&expected)
                     .take_while(|(actual, expected)| actual == expected)
                     .count()
             ));
         }
-        state.position = state.execution.trace.len();
+        state.position = actual.len();
         state.expected = Some(expected);
+        state.control_only = control_only;
         state.divergence = None;
         self.turn_changed.notify_all();
         Ok(())
@@ -703,6 +736,18 @@ impl MachineExecutionController {
             .lock()
             .expect("machine execution controller lock poisoned")
             .divergence.clone()
+    }
+
+    fn replay_position(&self) -> usize {
+        let state = self
+            .state
+            .lock()
+            .expect("machine execution controller lock poisoned");
+        if state.expected.is_some() {
+            state.position
+        } else {
+            state.execution.trace.len()
+        }
     }
 
     fn replay_error(&self) -> Option<String> {
@@ -732,7 +777,7 @@ impl MachineExecutionController {
             .state
             .lock()
             .expect("machine execution controller lock poisoned");
-        if state.expected.is_none() || state.execution.trace.len() > position {
+        if state.expected.is_none() || state.position > position {
             return Ok(true);
         }
         if let Some(detail) = state.divergence.clone() {
@@ -743,19 +788,18 @@ impl MachineExecutionController {
             .wait_timeout_while(state, timeout, |state| {
                 state.expected.is_some()
                     && state.divergence.is_none()
-                    && state.execution.trace.len() <= position
+                    && state.position <= position
             })
             .expect("machine execution controller lock poisoned while waiting for replay progress");
         if let Some(detail) = state.divergence.clone() {
             return Err(detail);
         }
-        let progressed = state.expected.is_none() || state.execution.trace.len() > position;
+        let progressed = state.expected.is_none() || state.position > position;
         if !progressed
-            && state.position == position
             && let Some((_, source, gsi)) = state
                 .expected
                 .as_ref()
-                .and_then(|expected| expected.get(position))
+                .and_then(|expected| expected.get(state.position))
                 .and_then(|record| machine_interrupt_record(record))
         {
             let mut pending = self
@@ -890,6 +934,10 @@ fn machine_interrupt_record(record: &str) -> Option<(u8, &'static str, u32)> {
         _ => return None,
     };
     Some((id, source, gsi.parse().ok()?))
+}
+
+fn machine_replay_control_record(record: &str) -> bool {
+    record.starts_with("host:") || machine_interrupt_record(record).is_some()
 }
 
 fn valid_machine_vcpu_effect(effect: &str) -> bool {
@@ -1621,13 +1669,15 @@ fn handle_kvm_exit_recorded(
         return Err(VcpuError::FaultyKvmExit(detail));
     }
     if let Some(expected) = machine.expected.as_ref() {
-        let Some(expected_record) = expected.get(machine.position) else {
+        if expected.get(machine.position).is_none() && !machine.control_only {
             // The retained stream is an exact boundary, not merely a prefix.
             // Leave the next KVM exit pending while the control loop observes
             // Pause or Finish.
             return Ok(VcpuEmulation::Interrupted);
-        };
-        if machine_record_actor(expected_record) != Some(MachineExecutionActor::Vcpu(vcpu)) {
+        }
+        if !machine.control_only && expected.get(machine.position).is_some_and(|record| {
+            machine_record_actor(record) != Some(MachineExecutionActor::Vcpu(vcpu))
+        }) {
             // Leave the unhandled KVM exit pending and return to the vCPU
             // control loop. Waiting on the replay condition variable here
             // prevents Pause and Finish messages from being observed while a
@@ -1669,7 +1719,9 @@ fn handle_kvm_exit_recorded(
         Ok(exit) => Some((format!("vcpu:{vcpu}:kvm:{exit:?}"), true)),
         Err(_) => None,
     };
-    if let (Some(expected), Some((observed, exact))) = (&machine.expected, admission) {
+    if !machine.control_only
+        && let (Some(expected), Some((observed, exact))) = (&machine.expected, admission)
+    {
         let matches = expected.get(machine.position).is_some_and(|record| {
             if exact { record == &observed } else { record.starts_with(&observed) }
         });
@@ -1726,7 +1778,7 @@ fn handle_kvm_exit_recorded(
         (&outcome, decision)
     {
         let record = format!("vcpu:{vcpu}:{decision}");
-        if let Some(expected) = machine.expected.as_ref() {
+        if !machine.control_only && let Some(expected) = machine.expected.as_ref() {
             if expected.get(machine.position) != Some(&record) {
                 let detail = format!(
                     "machine execution replay diverged at decision {}: expected {:?}, observed {record:?}",
@@ -1744,7 +1796,9 @@ fn handle_kvm_exit_recorded(
             .record(decision);
         machine.execution.ledger.record(record.clone());
         machine.execution.trace.push(record);
-        machine.position = machine.position.saturating_add(1);
+        if !machine.control_only {
+            machine.position = machine.position.saturating_add(1);
+        }
         machine_execution.turn_changed.notify_all();
     }
     outcome
@@ -2058,6 +2112,60 @@ mod execution_ledger_tests {
         let mut peripherals = Peripherals::default();
         peripherals.mmio_bus = Some(bus);
         (peripherals, device)
+    }
+
+    #[test]
+    fn campaign_replay_gates_control_turns_without_requiring_identical_device_exits() {
+        let (mut peripherals, device) = counting_device();
+        let controller = Arc::new(MachineExecutionController::default());
+        controller.enable_deterministic_interrupts();
+        controller
+            .enforce_control(vec![
+                "vcpu:0:mmio_write:0x10:1:2a".into(),
+                "host:serial_input:1:41".into(),
+                "vcpu:0:interrupt:virtio-mmio:5".into(),
+            ])
+            .unwrap();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let data = [7];
+        assert_eq!(
+            handle_kvm_exit_recorded(
+                &mut peripherals,
+                Ok(VcpuExit::MmioWrite(0x10, &data)),
+                0,
+                &ledger,
+                &controller,
+            )
+            .unwrap(),
+            VcpuEmulation::Handled
+        );
+        assert_eq!(device.lock().unwrap().writes, 1);
+        assert_eq!(controller.state.lock().unwrap().position, 0);
+        controller
+            .apply_host_effect("serial_input:1:41".into(), || Ok::<_, ()>(()))
+            .unwrap()
+            .unwrap();
+        let other_data = [9];
+        handle_kvm_exit_recorded(
+            &mut peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &other_data)),
+            0,
+            &ledger,
+            &controller,
+        )
+        .unwrap();
+        assert_eq!(controller.replay_position(), 1);
+        assert!(!controller
+            .wait_for_replay_progress(1, std::time::Duration::ZERO)
+            .unwrap());
+        assert_eq!(
+            controller.pending_interrupts_for_test(),
+            [("virtio-mmio", 5)]
+        );
+        assert!(controller
+            .deliver_pending_interrupt_with(0, &ledger, |_| Ok(()))
+            .unwrap());
+        assert_eq!(controller.replay_error(), None);
     }
 
     #[test]
@@ -2763,6 +2871,14 @@ impl VcpuHandle {
         self.machine_execution.enforce(trace)
     }
 
+    /// Replay only externally scheduled host and interrupt decisions.
+    pub fn enforce_machine_execution_control_trace(
+        &self,
+        trace: Vec<String>,
+    ) -> Result<(), String> {
+        self.machine_execution.enforce_control(trace)
+    }
+
     /// Return a recorded mismatch or incomplete expected suffix.
     pub fn machine_execution_replay_error(&self) -> Option<String> {
         self.machine_execution.replay_error()
@@ -2771,6 +2887,11 @@ impl VcpuHandle {
     /// Return an actual mismatch without treating an in-progress suffix as an error.
     pub fn machine_execution_replay_divergence(&self) -> Option<String> {
         self.machine_execution.replay_divergence()
+    }
+
+    /// Return the number of replay decisions admitted so far.
+    pub fn machine_execution_replay_position(&self) -> usize {
+        self.machine_execution.replay_position()
     }
 
     /// Briefly yield a replaying vCPU to asynchronous device completion.

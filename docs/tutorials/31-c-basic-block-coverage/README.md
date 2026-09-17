@@ -99,7 +99,9 @@ theseus compose verify rerun
 grep -n '"status": "passed"' rerun/campaign-result.json
 ```
 
-Replay checks the recorded application blocks and complete machine stream.
+Replay checks the recorded application blocks and actively gates the retained
+host-input and interrupt-delivery stream. The complete intervening machine
+trace remains in the bundle as evidence.
 Keep the whole `campaign` directory, including its checkpoint and artifacts,
 to move or replay it elsewhere. `compose verify` checks retained integrity
 without KVM; it does not certify native execution.
