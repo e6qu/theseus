@@ -723,11 +723,13 @@ mod tests {
         let mut topology = topology();
         assert_eq!(topology.machine_replay, MachineReplayMode::Exact);
         topology.machine_replay = MachineReplayMode::HostInputs;
+        topology.event_order = vec!["api".to_owned(), "api".to_owned()];
 
         let encoded = serde_json::to_vec(&topology).unwrap();
         let decoded: TopologyPlan = serde_json::from_slice(&encoded).unwrap();
 
         assert_eq!(decoded.machine_replay, MachineReplayMode::HostInputs);
+        assert_eq!(decoded.event_order, ["api", "api"]);
     }
 
     #[test]

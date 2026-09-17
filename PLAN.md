@@ -235,7 +235,8 @@ reset is a terminal admission turn, not an asynchronous host-timed cutoff.
 Fixed-run replay can enforce that complete exit stream. Portable
 checkpoint-backed campaigns currently enforce its explicit host-input
 projection while retaining all intervening exits and userspace interrupt
-deliveries as evidence. They do not claim identical Linux execution or
+deliveries as evidence. Exported counterexamples preserve their global
+cross-service input order. They do not claim identical Linux execution or
 interrupt timing between controlled turns; making the full stream portable
 requires the runnable-entity and instruction-boundary control in the next
 slice.

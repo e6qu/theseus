@@ -73,6 +73,10 @@ struct TopologyPlan {
     checkpoint_prefixes: BTreeMap<String, u64>,
     #[serde(default, skip_serializing_if = "MachineReplayMode::is_exact")]
     machine_replay: MachineReplayMode,
+    /// Global service order for plan-level events. Campaign exports need this
+    /// because per-service event arrays cannot represent cross-service order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    event_order: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -7147,6 +7151,7 @@ fn apply_campaign_schedule(
     for service in topology.services.values_mut() {
         service.run.events.clear();
     }
+    topology.event_order.clear();
     for campaign_event in events {
         if !campaign_event.recover_faults.is_empty() {
             let service = topology
@@ -7161,6 +7166,7 @@ fn apply_campaign_schedule(
             let mut quiet = campaign_shell_termination_event(&campaign_event.service);
             quiet.actions = campaign_event.recover_faults.clone();
             service.run.events.push(quiet);
+            topology.event_order.push(campaign_event.service.clone());
         }
         for service_name in &campaign_event.terminate_shell_processes {
             if !campaign_event.recover_faults.is_empty() && service_name == &campaign_event.service
@@ -7174,6 +7180,7 @@ fn apply_campaign_schedule(
                 .run
                 .events
                 .push(campaign_shell_termination_event(service_name));
+            topology.event_order.push(service_name.clone());
         }
         let service = topology
             .services
@@ -7185,6 +7192,7 @@ fn apply_campaign_schedule(
                 )
             })?;
         service.run.events.push(campaign_event.event.clone());
+        topology.event_order.push(campaign_event.service.clone());
     }
     for candidate in selected {
         if matches!(
@@ -7225,6 +7233,54 @@ fn clear_campaign_events(topology: &mut TopologyPlan) {
     for service in topology.services.values_mut() {
         service.run.events.clear();
     }
+    topology.event_order.clear();
+}
+
+/// Restore the global event stream recorded by a campaign export. Legacy and
+/// hand-written plans without an order retain the original service-grouped
+/// behavior.
+fn ordered_topology_events(topology: &TopologyPlan) -> Result<Vec<(String, EventPlan)>, String> {
+    if topology.event_order.is_empty() {
+        return Ok(topology
+            .services
+            .iter()
+            .flat_map(|(name, service)| {
+                service
+                    .run
+                    .events
+                    .iter()
+                    .cloned()
+                    .map(|event| (name.clone(), event))
+            })
+            .collect());
+    }
+
+    let mut positions = BTreeMap::<String, usize>::new();
+    let mut ordered = Vec::with_capacity(topology.event_order.len());
+    for name in &topology.event_order {
+        let service = topology
+            .services
+            .get(name)
+            .ok_or_else(|| format!("event_order names unknown service {name}"))?;
+        let position = positions.entry(name.clone()).or_default();
+        let event = service
+            .run
+            .events
+            .get(*position)
+            .ok_or_else(|| format!("event_order has too many entries for service {name}"))?;
+        ordered.push((name.clone(), event.clone()));
+        *position += 1;
+    }
+    for (name, service) in &topology.services {
+        let included = positions.get(name).copied().unwrap_or_default();
+        if included != service.run.events.len() {
+            return Err(format!(
+                "event_order includes {included} of {} events for service {name}",
+                service.run.events.len()
+            ));
+        }
+    }
+    Ok(ordered)
 }
 
 fn campaign_schedule_event(
@@ -10143,10 +10199,11 @@ fn execute(
     }
     let mut actions = Vec::new();
     let mut lifecycle_barrier_rounds: u64 = 0;
-    for name in &names {
-        let events = topology.services[name].run.events.clone();
-        if !events.is_empty() {
-            let serial = services[name].serial_logs[0].clone();
+    let ordered_events = ordered_topology_events(&topology)?;
+    let mut ready_services = BTreeSet::new();
+    for (name, event) in ordered_events {
+        if ready_services.insert(name.clone()) {
+            let serial = services[&name].serial_logs[0].clone();
             let remaining = max_rounds.saturating_sub(round);
             round = round.saturating_add(wait_for_serial_with_topology_rounds(
                 &serial,
@@ -10157,12 +10214,12 @@ fn execute(
                 remaining,
             )?);
         }
-        let mut driver = services.remove(name).expect("topology service missing");
+        let mut driver = services.remove(&name).expect("topology service missing");
         let serial = driver.serial_logs[0].clone();
         inject_campaign_events(
-            name,
+            &name,
             &mut driver,
-            &events,
+            std::slice::from_ref(&event),
             &serial,
             &topology,
             &mut services,
@@ -10170,7 +10227,7 @@ fn execute(
             &mut round,
             &mut actions,
         )?;
-        services.insert(name.clone(), driver);
+        services.insert(name, driver);
     }
     // A campaign branch ends at its last operation checkpoint. Container
     // entrypoints are usually daemons, so waiting for guest exit would only
@@ -13067,6 +13124,56 @@ mod tests {
         assert!(TOPOLOGY_BOOT_ARGS.contains("console=ttyS0"));
         assert!(TOPOLOGY_BOOT_ARGS.contains("quiet"));
         assert!(TOPOLOGY_BOOT_ARGS.contains("loglevel=0"));
+    }
+
+    #[test]
+    fn exported_campaign_events_recover_global_service_order() {
+        let service = serde_json::json!({
+            "manifest": "theseus.toml",
+            "networks": [],
+            "run": {
+                "format": "theseus-run-plan-v1",
+                "manifest": "theseus.toml",
+                "runtime": {"firecracker": {"path": "firecracker", "sha256": "a"}},
+                "guest": {
+                    "kernel": {"path": "vmlinux", "sha256": "b"},
+                    "initramfs": {"path": "initramfs", "sha256": "c"}
+                },
+                "run": {
+                    "seed": 1, "vcpu_count": 1, "mem_size_mib": 128,
+                    "timeout_secs": 1, "virtual_time": null
+                }
+            }
+        });
+        let mut topology: TopologyPlan = serde_json::from_value(serde_json::json!({
+            "format": "theseus-compose-plan-v1",
+            "compose": "compose.yaml",
+            "services": {"alpha": service.clone(), "beta": service},
+            "networks": {},
+            "event_order": ["alpha", "beta", "alpha"]
+        }))
+        .unwrap();
+        let event = |data_hex: &str| EventPlan {
+            data_hex: data_hex.to_owned(),
+            checkpoint: None,
+            actions: Vec::new(),
+        };
+        topology.services.get_mut("alpha").unwrap().run.events = vec![event("01"), event("03")];
+        topology.services.get_mut("beta").unwrap().run.events = vec![event("02")];
+
+        let ordered = ordered_topology_events(&topology).unwrap();
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|(name, event)| (name.as_str(), event.data_hex.as_str()))
+                .collect::<Vec<_>>(),
+            [("alpha", "01"), ("beta", "02"), ("alpha", "03")]
+        );
+
+        topology.event_order.pop();
+        assert!(ordered_topology_events(&topology)
+            .unwrap_err()
+            .contains("includes 1 of 2 events for service alpha"));
     }
 
     #[test]

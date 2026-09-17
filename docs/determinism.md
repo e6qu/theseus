@@ -104,7 +104,9 @@ intervening MMIO, PIO, and interrupt turns remain evidence because Linux
 execution between controlled turns is not instruction-scheduled. Read values
 are checked after device access and cannot be rolled back. Exported campaign
 and minimized-counterexample replay plans retain this host-input mode even
-after they become ordinary fixed-schedule topologies.
+after they become ordinary fixed-schedule topologies. They also retain one
+global service/event order: replay injects cross-service UART operations in
+the explored order instead of grouping each service's inputs together.
 
 An attached x86 i8042 reset request ends the stream on its own recorded write.
 It does not keep polling until the event loop notices an asynchronous reset
