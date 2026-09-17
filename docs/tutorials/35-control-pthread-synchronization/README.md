@@ -37,6 +37,9 @@ docker build --load --platform "linux/$THESEUS_ARCH" \
 docker save theseus-pthread-sync-tutorial -o service/work/service.tar
 ```
 
+The final image contains only the two compiled commands, the schedule catalog,
+and their runtime libraries. This keeps deterministic guest startup short.
+
 Two readers wait until a writer changes `value`. The writer broadcasts the
 condition. Every thread uses the same mutex. The compiler frontend wraps
 `pthread_mutex_lock`, `pthread_mutex_unlock`,

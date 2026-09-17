@@ -36,6 +36,9 @@ docker build --load --platform "linux/$THESEUS_ARCH" \
 docker save theseus-thread-search-tutorial -o service/work/service.tar
 ```
 
+The final image contains only the two compiled commands, the schedule catalog,
+and their runtime libraries. This keeps deterministic guest startup short.
+
 Each worker loads an atomic balance and later stores its own update. The
 individual accesses are valid C, but the transaction is not atomic.
 

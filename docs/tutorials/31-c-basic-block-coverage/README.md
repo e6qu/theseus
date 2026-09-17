@@ -50,6 +50,10 @@ docker save theseus-c-coverage-tutorial -o service/work/service.tar
 sed -n '1,160p' compose.yaml
 ```
 
+The final image contains only the two compiled commands, the coverage catalog,
+and their runtime libraries. Keeping the guest small leaves the deterministic
+round budget for the campaign instead of image unpacking.
+
 The Compose extension selects `application_blocks`. Each record is scoped by
 service, process, module, build SHA-256, and module-relative block address, so
 ASLR cannot change its identity and a different build cannot be conflated with

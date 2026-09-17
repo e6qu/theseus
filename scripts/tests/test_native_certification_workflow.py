@@ -100,6 +100,16 @@ def main() -> None:
     assert 'machine_replay = "host_inputs"' in (
         ROOT / "docs/tutorials/14-container-image/theseus.toml"
     ).read_text()
+    for tutorial in (
+        "31-c-basic-block-coverage",
+        "33-search-thread-schedules",
+        "35-control-pthread-synchronization",
+    ):
+        dockerfile = (
+            ROOT / "docs/tutorials" / tutorial / "service/Dockerfile"
+        ).read_text()
+        assert "FROM scratch" in dockerfile
+        assert 'cp --parents "$dependency" /rootfs' in dockerfile
     assert "cmp work/replay/execution.json work/rerun/execution.json" not in VALIDATION
     assert "theseus compare campaign rerun" in VALIDATION
     assert "theseus evaluate capture campaign" in VALIDATION
