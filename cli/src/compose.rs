@@ -7372,10 +7372,7 @@ mod tests {
             plan.services["api"].run.events[0].checkpoint.as_deref(),
             Some("finished")
         );
-        assert_eq!(
-            plan.services["api"].run.events[1].data_hex,
-            "73687574646f776e0a"
-        );
+        assert_eq!(plan.services["api"].run.events.len(), 1);
         assert_eq!(plan.services["api"].run.storage.len(), 1);
     }
 

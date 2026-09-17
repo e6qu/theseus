@@ -13,6 +13,9 @@ CERTIFICATION_INIT = (
 CERTIFICATION_MANIFEST = (
     ROOT / "docs/tutorials/11-certify-runtime/service/theseus.toml"
 ).read_text()
+CERTIFICATION_FINISH = (
+    ROOT / "docs/tutorials/11-certify-runtime/service/finish.c"
+).read_text()
 
 
 def main() -> None:
@@ -45,19 +48,14 @@ def main() -> None:
     assert "theseus compose plan > /tutorial/plan.json" in WORKFLOW
     assert "--plan /tutorial/plan.json --output /tutorial/certificate" in WORKFLOW
     assert "THES:M:42" in CERTIFICATION_INIT
-    assert "reboot -f" in CERTIFICATION_INIT
-    assert "poweroff -f" not in CERTIFICATION_INIT
+    assert "exec /bin/finish" in CERTIFICATION_INIT
+    assert "RB_AUTOBOOT" in CERTIFICATION_FINISH
+    assert "tcdrain(serial)" in CERTIFICATION_FINISH
     assert CERTIFICATION_INIT.count("stty -F /dev/ttyS0 -echo -opost") == 1
-    assert CERTIFICATION_INIT.count("read -r command < /dev/ttyS0") == 2
-    assert '[ "$command" = shutdown ]' in CERTIFICATION_INIT
-    assert CERTIFICATION_INIT.index("echo finished") < CERTIFICATION_INIT.index(
-        '[ "$command" = shutdown ]'
-    )
-    assert CERTIFICATION_INIT.index('[ "$command" = shutdown ]') < CERTIFICATION_INIT.index(
-        "reboot -f"
-    )
+    assert CERTIFICATION_INIT.count("read -r command < /dev/ttyS0") == 1
+    assert source_ci.count("gcc -static -O2 -Wall -Wextra -Werror service/finish.c") == 1
+    assert WORKFLOW.count("gcc -static -O2 -Wall -Wextra -Werror service/finish.c") == 1
     assert 'checkpoint = "finished"' in CERTIFICATION_MANIFEST
-    assert 'data = "73687574646f776e0a"' in CERTIFICATION_MANIFEST
     assert "max_rounds = 10000000" in CERTIFICATION_MANIFEST
     assert WORKFLOW.count('docker build --load --platform "linux/$ARCH"') == 2
     assert "docs/tutorials/30-multiservice-lost-update" in WORKFLOW

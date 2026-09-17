@@ -126,9 +126,10 @@ jobs:
           cp ../04-read-serial/work/runtime/firecracker service/runtime/firecracker
           cp ../04-read-serial/work/guest/vmlinux service/guest/vmlinux
           cp /bin/busybox service/guest/root/bin/busybox
-          for applet in mkdir mount reboot; do
+          for applet in mkdir mount; do
             ln -sf busybox "service/guest/root/bin/$applet"
           done
+          gcc -static -O2 -Wall -Wextra -Werror service/finish.c -o service/guest/root/bin/finish
           cp service/init service/guest/root/init
           chmod +x service/guest/root/init
           (cd service/guest/root && find . -print | cpio -o -H newc --quiet | gzip > ../initramfs.cpio.gz)
