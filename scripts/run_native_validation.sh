@@ -138,10 +138,10 @@ runtime "$schedule" '
   theseus compose verify campaign > bundle-verification.json
   theseus compose verify minimized > minimized-bundle-verification.json
   theseus compose verify rerun > replay-bundle-verification.json
-  grep -A2 '"name": "counterexample: lost_update_is_unreachable"' \
-    rerun/services/ledger/result.json | grep '"status": "passed"'
-  grep -A2 '"name": "replay_machine_execution_trace"' \
-    rerun/services/ledger/result.json | grep '"status": "passed"'
+  grep -A2 "\"name\": \"counterexample: lost_update_is_unreachable\"" \
+    rerun/services/ledger/result.json | grep "\"status\": \"passed\""
+  grep -A2 "\"name\": \"replay_machine_execution_trace\"" \
+    rerun/services/ledger/result.json | grep "\"status\": \"passed\""
 '
 mkdir -p "$validation/schedule-search"
 cp "$schedule/plan.json" "$validation/schedule-search/"
