@@ -533,7 +533,7 @@ fn has_complete_replay_plan(bundle: &Path) -> bool {
     plan.get("format").and_then(serde_json::Value::as_str) == Some("theseus-compose-plan-v1")
         && plan
             .get("services")
-            .and_then(serde_json::Value::as_array)
+            .and_then(serde_json::Value::as_object)
             .is_some_and(|services| !services.is_empty())
 }
 
@@ -860,7 +860,7 @@ status = "failed"
         fs::write(directory.path().join("bundle/campaign-result.json"), r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","generated_candidates":8,"unique_topology_states":3,"unique_instruction_locations":5,"search":{"checkpoint":{"root_captures":1,"prefix_captures":2,"checkpoint_nodes":3,"prefix_reuses":4,"avoided_prefix_recomputations":5}},"replay_verification":{"status":"passed"},"runs":[{"timeline":[{},{}]}],"properties":[{"name":"consistent_read","status":"failed"}]}"#).unwrap();
         fs::write(
             directory.path().join("bundle/replay-plan.json"),
-            r#"{"format":"theseus-compose-plan-v1","services":[{}]}"#,
+            r#"{"format":"theseus-compose-plan-v1","services":{"api":{}}}"#,
         )
         .unwrap();
         fs::write(directory.path().join("bundle/minimization.json"), r#"{"original_operations":["write","read"],"minimized_operations":["write"],"original_faults":["partition"],"minimized_faults":[],"operation_attempts":3,"fault_attempts":2}"#).unwrap();
@@ -921,7 +921,7 @@ status = "failed"
         fs::write(directory.path().join("bundle/campaign-result.json"), result).unwrap();
         fs::write(
             directory.path().join("bundle/replay-plan.json"),
-            r#"{"format":"theseus-compose-plan-v1","services":[{}]}"#,
+            r#"{"format":"theseus-compose-plan-v1","services":{"api":{}}}"#,
         )
         .unwrap();
         fs::write(directory.path().join("bundle/minimization.json"), "{}").unwrap();
@@ -975,7 +975,7 @@ status = "failed"
         fs::create_dir_all(campaign.join("services/api")).unwrap();
         fs::write(
             campaign.join("replay-plan.json"),
-            r#"{"format":"theseus-compose-plan-v1","services":[{}]}"#,
+            r#"{"format":"theseus-compose-plan-v1","services":{"api":{}}}"#,
         )
         .unwrap();
         fs::write(campaign.join("services/api/serial.log"), "evidence\n").unwrap();
