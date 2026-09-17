@@ -133,12 +133,17 @@ not use it. Otherwise, kernel boot allocation can change its queue addresses
 before the application starts. Replay rejects that divergence; neither the
 device seed nor quiet boot makes arbitrary kernel boot deterministic.
 
-`theseus replay --output diagnostics bundle` installs the recorded stream
-before the first guest run. It checks the complete stream, local ledgers, and
-terminal boundary as well as application checks. Missing or inconsistent
-execution evidence is an error; deleting `result.json` cannot downgrade the
-versioned replay plan. Older `theseus-run-plan-v1` bundles retain their legacy
-seed/input replay behavior and do not establish machine-stream enforcement.
+`theseus replay --output diagnostics bundle` defaults to installing the
+recorded stream before the first guest run. It checks the complete stream,
+local ledgers, terminal boundary, and application checks. A manifest may set
+`run.machine_replay = "host_inputs"` when guest-kernel timing is outside the
+test contract. That mode reapplies the locked events and service operations,
+requires the declared checks and terminal boundary, compares the explicit
+`host:` projection, and retains the new complete stream as evidence. Missing
+or inconsistent execution evidence is an error in either mode; deleting
+`result.json` cannot downgrade the versioned replay plan. Older
+`theseus-run-plan-v1` bundles retain their legacy seed/input replay behavior
+and do not establish machine-stream enforcement.
 
 A host timeout pauses the VM and flushes a diagnostic cut before killing it.
 Its boundary is `pause`, not `guest_exit`, and active replay rejects that cut:
@@ -168,10 +173,10 @@ state/RAM hashes and lengths, machine/clock/entropy configuration, the complete
 inherited trace, pending userspace interrupts, control FIFO/log, and amd64 PS/2
 registers/FIFO. Loading rebuilds machine and local hashes from the validated
 prefix and installs the retained host-input stream before the first campaign
-resume. Fixed-run replay installs the complete expected trace.
-Snapshot restore retains vCPU registers, virtual-clock counters, UART state,
-and RNG state. New restore-time notifications join the retained pending queue
-in the same order for the baseline and replay.
+resume. Snapshot restore retains vCPU registers, virtual-clock counters, UART
+state, and RNG state. New restore-time notifications join the retained pending
+queue in the same order for the baseline and replay. Fixed-run replay installs
+the complete expected trace unless its plan explicitly selects `host_inputs`.
 
 `execution.json.start` identifies the metadata digest and inherited decision
 count. The prefix is captured ancestry, not actively replayed kernel boot;
@@ -292,12 +297,13 @@ schedule in-kernel timer interrupts between exits.
   condition waits/signals/broadcasts. Timed waits, cancellation, semaphores,
   direct futex use, blocking syscalls, processes, and uninstrumented library
   concurrency remain outside the supported scheduling profile.
-- **Execution between KVM exits.** The machine replay gate selects and verifies
-  every vCPU turn and explicit host input in fixed runs. Checkpoint-backed
-  campaigns gate explicit host inputs and retain the intervening vCPU and
-  interrupt turns as evidence. They cannot control or explain divergence that
-  happens between those inputs, including guest interrupt servicing, in-kernel
-  timer delivery, and guest-side input consumption.
+- **Execution between KVM exits.** Exact fixed-run replay selects and verifies
+  every vCPU turn and explicit host input. Fixed runs that select
+  `machine_replay = "host_inputs"` and checkpoint-backed campaigns gate explicit
+  host inputs and retain intervening vCPU and interrupt turns as evidence. They
+  cannot control or explain divergence between those inputs, including guest
+  interrupt servicing, in-kernel timer delivery, and guest-side input
+  consumption.
 
 ## Replay fingerprints
 

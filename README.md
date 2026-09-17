@@ -50,8 +50,9 @@ passing unit suite alone is not treated as runtime proof.
   changed actor, input, interrupt, or exit and reports the first divergent
   boundary.
 - Single-service `test` bundles retain the complete machine stream. `replay`
-  actively admits that stream through guest exit and retains new diagnostics
-  with `--output`; it does not just rerun a seed and compare printed output.
+  defaults to admitting that exact stream through guest exit; manifests may
+  instead select `machine_replay = "host_inputs"` to reapply locked inputs and
+  verify declared outcomes while retaining intervening execution as evidence.
 - Checkpoint-backed campaigns retain the same complete exit evidence but gate
   portable replay on its explicit host inputs. Device interrupts follow the
   restored device state and remain evidence; Linux execution and interrupt
@@ -85,11 +86,11 @@ passing unit suite alone is not treated as runtime proof.
   locking, and untimed condition waits/signals/broadcasts. Timed waits,
   cancellation, direct futex use, blocking I/O, and processes remain outside
   this profile.
-- Fixed-run replay gates every recorded vCPU turn and explicit host input.
-  Checkpoint-backed campaign replay gates explicit host inputs while retaining
-  intervening exits and userspace interrupt deliveries as evidence. Neither
-  mode chooses instruction or thread order, guest interrupt-service timing, or
-  in-kernel timer delivery.
+- Fixed-run replay defaults to gating every recorded vCPU turn and explicit
+  host input. A fixed run or checkpoint-backed campaign may instead gate its
+  explicit host inputs while retaining intervening exits and userspace
+  interrupt deliveries as evidence. Neither mode chooses instruction or thread
+  order, guest interrupt-service timing, or in-kernel timer delivery.
 - Device-write payloads and read addresses/widths are checked before device
   access. Read values can only be checked after the device supplies them;
   replay stops on a mismatch but cannot undo that read. Host-timed cutoffs are

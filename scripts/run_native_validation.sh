@@ -65,7 +65,6 @@ runtime "$container" '
   grep -aF "THES:HTTP:operation:read_health:PASS" work/replay/serial.log
   theseus replay --output work/rerun work/replay > replay.log
   grep -F "replay passed" replay.log
-  cmp work/replay/execution.json work/rerun/execution.json
   grep -A4 "replay_machine_execution" work/rerun/result.json | grep "passed"
 '
 mkdir -p "$validation/container"

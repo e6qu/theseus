@@ -186,8 +186,9 @@ the portfolio below before advancing to in-kernel timer control.
 4. Retain exact plans, locked workloads, complete result inventories, serial
    logs, reports, minimizations, replay results, host facts, runtime identities,
    and a cryptographic inventory for every validation file.
-   Version-5 validation must include exact standalone container run/replay
-   evidence and a retained passing active-replay check, not only replay stdout.
+   Version-5 validation must include standalone container run/replay evidence
+   under its declared host-input contract and a retained passing replay check,
+   not only replay stdout.
    A v5 checkpoint certificate also requires the complete fixed-plan witness
    in that archive: locked state/RAM/context, inherited prefixes, both run
    results and logs, and the identical indexed certificate. JSON alone is not

@@ -1125,9 +1125,29 @@ fn verify_runtime_validation(
         original.validate(vcpu_count).map_err(EvidenceError)?;
         replay.validate(vcpu_count).map_err(EvidenceError)?;
         verify_api_origin(&replay_plan, &original, &files, &retained, architecture)?;
-        require(original.boundary == "guest_exit" && original.replay_error.is_none()
-            && !original.machine_execution_trace.is_empty() && original == replay,
-            "container API replay did not reproduce the exact admitted machine stream through guest exit")?;
+        let machine_replay = replay_plan["run"]["machine_replay"]
+            .as_str()
+            .unwrap_or("exact");
+        require(
+            matches!(machine_replay, "exact" | "host_inputs"),
+            "container replay plan has an unsupported machine replay contract",
+        )?;
+        let execution_matches = if machine_replay == "host_inputs" {
+            original.boundary == replay.boundary
+                && original.start == replay.start
+                && machine_replay_control_trace(&original.machine_execution_trace)
+                    == machine_replay_control_trace(&replay.machine_execution_trace)
+        } else {
+            original == replay
+        };
+        require(
+            original.boundary == "guest_exit"
+                && original.replay_error.is_none()
+                && replay.replay_error.is_none()
+                && !original.machine_execution_trace.is_empty()
+                && execution_matches,
+            "container API replay did not satisfy its declared machine replay contract through guest exit",
+        )?;
         let result: serde_json::Value = parse_json_bytes(
             &retained["container/rerun/result.json"],
             "container replay result",
@@ -1302,6 +1322,14 @@ fn verify_runtime_validation(
         )?;
     }
     Ok(())
+}
+
+fn machine_replay_control_trace(trace: &[String]) -> Vec<&str> {
+    trace
+        .iter()
+        .filter(|record| record.starts_with("host:"))
+        .map(String::as_str)
+        .collect()
 }
 
 /// Bind a checkpoint certificate to the entire retained first/replay witness.
@@ -2060,6 +2088,59 @@ mod tests {
         assert!(error
             .to_string()
             .contains("one or more replay services did not pass"));
+    }
+
+    #[test]
+    fn verifies_a_host_input_container_replay_with_different_guest_execution() {
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary.path();
+        write_architecture(directory, "amd64", "passed");
+        let root = directory.join("validation-amd64/validation");
+
+        let plan_path = root.join("container/run/replay-plan.json");
+        let mut plan: serde_json::Value =
+            serde_json::from_slice(&fs::read(&plan_path).unwrap()).unwrap();
+        plan["run"]["machine_replay"] = serde_json::json!("host_inputs");
+        fs::write(&plan_path, serde_json::to_vec(&plan).unwrap()).unwrap();
+
+        let replay_path = root.join("container/rerun/execution.json");
+        let mut replay: serde_json::Value =
+            serde_json::from_slice(&fs::read(&replay_path).unwrap()).unwrap();
+        let record = "vcpu:0:pio_write:0x64:1:20";
+        let local = "pio_write:0x64:1:20";
+        let ledger = |value: &str| {
+            let mut digest = Sha256::new();
+            digest.update((value.len() as u64).to_le_bytes());
+            digest.update(value.as_bytes());
+            serde_json::json!({
+                "decisions": 1,
+                "sha256": format!("{:x}", digest.finalize()),
+                "tail": [value]
+            })
+        };
+        replay["machine_execution_trace"] = serde_json::json!([record]);
+        replay["machine_execution_ledger"] = ledger(record);
+        replay["execution_ledgers"] = serde_json::json!([ledger(local)]);
+        fs::write(&replay_path, serde_json::to_vec(&replay).unwrap()).unwrap();
+
+        let mut proof: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("evidence.json")).unwrap()).unwrap();
+        let mut inventory = BTreeMap::new();
+        inventory_tree(&root, &root, &mut inventory);
+        inventory.remove("evidence.json");
+        proof["files"] = serde_json::to_value(inventory).unwrap();
+        fs::write(
+            root.join("evidence.json"),
+            serde_json::to_vec(&proof).unwrap(),
+        )
+        .unwrap();
+        archive_validation(directory, "amd64", &root);
+
+        let index = write_index(directory, false);
+        assert_eq!(
+            verify_native_evidence(index).unwrap().architectures,
+            vec!["amd64"]
+        );
     }
 
     #[test]

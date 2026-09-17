@@ -141,6 +141,8 @@ struct Run {
     seed: u64,
     #[serde(default)]
     replay_start: ReplayStart,
+    #[serde(default)]
+    machine_replay: MachineReplayMode,
     #[serde(default = "default_entropy_device")]
     entropy_device: bool,
     vcpu_count: u8,
@@ -443,6 +445,22 @@ fn is_fresh_boot(start: &ReplayStart) -> bool {
     *start == ReplayStart::FreshBoot
 }
 
+/// How a locked run constrains machine execution during replay.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineReplayMode {
+    /// Admit every recorded vCPU, device, interrupt, and host-input decision.
+    #[default]
+    Exact,
+    /// Reapply the locked host inputs and verify the declared outcome while
+    /// retaining intervening machine execution as evidence.
+    HostInputs,
+}
+
+fn is_exact_machine_replay(mode: &MachineReplayMode) -> bool {
+    *mode == MachineReplayMode::Exact
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RuntimePlan {
     pub firecracker: ArtifactPlan,
@@ -472,6 +490,8 @@ pub struct RunPlanConfig {
     pub seed: u64,
     #[serde(default, skip_serializing_if = "is_fresh_boot")]
     pub replay_start: ReplayStart,
+    #[serde(default, skip_serializing_if = "is_exact_machine_replay")]
+    pub machine_replay: MachineReplayMode,
     /// Attach the seeded virtio RNG. UART-only guests can omit this device.
     #[serde(
         default = "default_entropy_device",
@@ -856,6 +876,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
         run: RunPlanConfig {
             seed: manifest.run.seed,
             replay_start: manifest.run.replay_start,
+            machine_replay: manifest.run.machine_replay,
             entropy_device: manifest.run.entropy_device,
             vcpu_count: manifest.run.vcpu_count,
             mem_size_mib: manifest.run.mem_size_mib,
@@ -1426,6 +1447,7 @@ initramfs = "guest/initramfs.cpio"
 
 [run]
 seed = 42
+machine_replay = "host_inputs"
 vcpu_count = 1
 mem_size_mib = 128
 
@@ -1462,6 +1484,7 @@ corrupt_read_xor = 1
         let plan = load_plan(directory.path().join("test/theseus.toml")).unwrap();
         assert_eq!(plan.format, "theseus-run-plan-v1");
         assert_eq!(plan.run.seed, 42);
+        assert_eq!(plan.run.machine_replay, MachineReplayMode::HostInputs);
         assert_eq!(plan.events[0].data_hex, "aa00");
         assert_eq!(plan.network.drop_ppm, 100);
         assert_eq!(plan.network.duplicate_ppm, 200);

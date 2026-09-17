@@ -97,7 +97,10 @@ def main() -> None:
         assert tutorial in VALIDATION
     assert VALIDATION.count("theseus compose replay") == 4
     assert "theseus replay --output work/rerun work/replay" in VALIDATION
-    assert "cmp work/replay/execution.json work/rerun/execution.json" in VALIDATION
+    assert 'machine_replay = "host_inputs"' in (
+        ROOT / "docs/tutorials/14-container-image/theseus.toml"
+    ).read_text()
+    assert "cmp work/replay/execution.json work/rerun/execution.json" not in VALIDATION
     assert "theseus compare campaign rerun" in VALIDATION
     assert "theseus evaluate capture campaign" in VALIDATION
     assert "theseus evaluate evaluation/theseus-evaluation.toml" in VALIDATION

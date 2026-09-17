@@ -548,7 +548,11 @@ fn execute(
         None
     };
     let capture = captures_execution(plan);
+    // Exact replay is installed in Firecracker before its first vCPU turn.
+    // Host-input replay is driven by this locked plan's events and service
+    // operations; intervening guest execution remains evidence, not control.
     let expected_trace = expected
+        .filter(|_| plan.run.machine_replay == crate::manifest::MachineReplayMode::Exact)
         .map(|evidence| {
             let path = run_directory.join("expected-execution.json");
             write_json(&path, &evidence.machine_execution_trace)?;
@@ -593,12 +597,19 @@ fn execute(
             ),
         });
         if let Some(expected) = expected {
-            let matches = expected == &evidence;
+            let matches = replay_execution_matches(plan.run.machine_replay, expected, &evidence);
             execution.checks.push(if matches {
                 passed(
                     "replay_machine_execution",
                     "machine_execution",
-                    "the exact ordered stream actively governed replay through guest exit",
+                    match plan.run.machine_replay {
+                        crate::manifest::MachineReplayMode::Exact => {
+                            "the exact ordered stream actively governed replay through guest exit"
+                        }
+                        crate::manifest::MachineReplayMode::HostInputs => {
+                            "the locked host-input stream and declared outcome reproduced"
+                        }
+                    },
                 )
             } else {
                 failed(
@@ -613,6 +624,29 @@ fn execute(
         }
     }
     Ok(execution)
+}
+
+fn replay_execution_matches(
+    mode: crate::manifest::MachineReplayMode,
+    expected: &crate::execution::Evidence,
+    actual: &crate::execution::Evidence,
+) -> bool {
+    if mode == crate::manifest::MachineReplayMode::Exact {
+        return expected == actual;
+    }
+    actual.replay_error.is_none()
+        && expected.boundary == actual.boundary
+        && expected.start == actual.start
+        && machine_replay_control_trace(&expected.machine_execution_trace)
+            == machine_replay_control_trace(&actual.machine_execution_trace)
+}
+
+fn machine_replay_control_trace(trace: &[String]) -> Vec<&str> {
+    trace
+        .iter()
+        .filter(|record| record.starts_with("host:"))
+        .map(String::as_str)
+        .collect()
 }
 
 fn launch_runtime(
@@ -2105,6 +2139,52 @@ mem_size_mib = 128
         let rejected = root.join("missing-evidence");
         assert!(replay_to(&bundle, &rejected).is_err());
         assert!(!rejected.exists());
+    }
+
+    #[test]
+    fn host_input_projection_ignores_intervening_guest_execution() {
+        let original = vec![
+            "vcpu:0:pio_write:0x3f8:1:41".to_owned(),
+            "host:serial_input:2:2a0a".to_owned(),
+            "vcpu:0:interrupt:serial:4".to_owned(),
+            "host:control_event:ctrl_alt_del".to_owned(),
+        ];
+        let replay = vec![
+            "vcpu:0:mmio_read:0x1000:4:00000000".to_owned(),
+            "host:serial_input:2:2a0a".to_owned(),
+            "vcpu:0:pio_write:0x64:1:fe".to_owned(),
+            "host:control_event:ctrl_alt_del".to_owned(),
+        ];
+        assert_ne!(original, replay);
+        assert_eq!(
+            machine_replay_control_trace(&original),
+            machine_replay_control_trace(&replay)
+        );
+    }
+
+    #[test]
+    fn host_input_bundle_reapplies_its_plan_without_installing_an_exact_trace() {
+        let directory = execution_api_fixture("exit");
+        let root = directory.path();
+        let manifest = root.join("theseus.toml");
+        let text = fs::read_to_string(&manifest).unwrap();
+        fs::write(
+            &manifest,
+            text.replace("seed = 42", "seed = 42\nmachine_replay = \"host_inputs\""),
+        )
+        .unwrap();
+        let bundle = root.join("run");
+        test(&manifest, &bundle).unwrap();
+        let rerun = root.join("rerun");
+        replay_to(&bundle, &rerun).unwrap();
+        assert!(!rerun.join("expected-execution.json").exists());
+        let result: Value =
+            serde_json::from_slice(&fs::read(rerun.join("result.json")).unwrap()).unwrap();
+        assert!(result["checks"].as_array().unwrap().iter().any(|check| {
+            check["name"] == "replay_machine_execution"
+                && check["status"] == "passed"
+                && check["detail"] == "the locked host-input stream and declared outcome reproduced"
+        }));
     }
 
     #[test]

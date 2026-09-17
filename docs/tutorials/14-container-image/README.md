@@ -73,17 +73,18 @@ not need the seeded virtio RNG.
 theseus test --output work/replay theseus.toml
 grep -aF 'THES:HTTP:operation:read_health:PASS' work/replay/serial.log
 theseus replay --output work/rerun work/replay
-cmp work/replay/execution.json work/rerun/execution.json
+grep -A4 'replay_machine_execution' work/rerun/result.json | grep 'passed'
 echo 'PASS: Theseus checked and replayed an unmodified container service'
 ```
 
-Each `grep` is an observation to review. It exits successfully only when
-the recorded bundle contains the behavior named by that command. The replay
-command consumes the recorded bundle rather than selecting new artifacts.
-For releases with machine-stream capture, replay must admit the exact ordered
-device/input stream through guest exit, not just produce the same health line.
-Uncontrolled kernel timing can still cause replay to fail; inspect the retained
-diagnostics instead of treating a rerun of the seed as deterministic replay.
+Each `grep` is an observation to review. It exits successfully only when the
+recorded bundle contains the behavior named by that command. The replay command
+consumes the recorded bundle rather than selecting new artifacts. This manifest
+selects `machine_replay = "host_inputs"`: replay reapplies the locked service
+operations and requires the declared HTTP checks to pass. The intervening vCPU,
+device, and interrupt stream is retained as evidence but may differ with guest
+kernel timing. Use `machine_replay = "exact"` when a workload must reproduce
+every recorded machine decision.
 
 ## 5. Inspect the retained evidence
 
