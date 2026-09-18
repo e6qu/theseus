@@ -211,6 +211,16 @@ recovery event is `recovery_probe_sent`; the released verifier must check that
 same retained event. Do not duplicate tutorial commands or stale expected
 markers in workflow YAML.
 
+Treat `compare` as an observational artifact throughout qualification. A
+well-formed `diverged` result is valid under `host_inputs`; replay admission is
+decided by the declared control projection and explicit replay checks, not by
+incidental equality of uncontrolled KVM exits.
+
+Campaign UART barriers must yield host time to the running vCPU as well as to
+active replay. A deterministic round bound is not a useful liveness bound when
+the host loop can consume every round before a release-built guest runs. Failed
+native certification must retain its partial guest evidence and serial logs.
+
 ## Priority 1: deterministic execution and scheduling plane
 
 This is the largest technical gap to Antithesis and takes precedence over

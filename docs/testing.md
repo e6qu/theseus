@@ -86,6 +86,10 @@ an inventoried validation archive. The released CLI also
 renders the report, compares the coverage campaign with its replay, captures
 an offline evaluation, evaluates its lock, minimizes the schedule failure, and
 replays every retained path.
+The comparison is an observation, not replay admission: both `same` and a
+well-formed `diverged` result are valid. Under the `host_inputs` contract,
+uncontrolled guest execution may change a KVM-exit ledger while the retained
+host-input projection and explicit replay checks still pass.
 Runtime-validation version 5 also retains the single-container run and its
 named replay diagnostics. Offline verification recomputes both sets of digests
 from their complete traces and requires an identical guest-exit boundary, the
@@ -103,6 +107,9 @@ archive with the released CLI before it attests and uploads them. The index can
 name one or both supported architectures, so consumers never have to infer the
 certification scope from absent files. The workflow file alone is not proof;
 the indexed assets must exist and verify on the named release.
+If native certification fails, the workflow retains the partial fixed-plan,
+counterexample, and validation directories for diagnosis instead of leaving
+the only useful guest logs on an ephemeral runner.
 
 The certificate is evidence for the strict `linux-kvm-simulated-io-v1`
 profile, not a claim about tap networking, host-backed disks, or every clock

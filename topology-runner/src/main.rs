@@ -2479,11 +2479,11 @@ impl ServiceVm {
             .map_err(|error| error.to_string())
     }
 
-    fn wait_for_machine_execution_replay_progress(&self, position: usize) -> Result<bool, String> {
+    fn wait_for_machine_execution_progress(&self, position: usize) -> Result<bool, String> {
         self.vmm
             .lock()
             .expect("VMM lock poisoned")
-            .wait_for_machine_execution_replay_progress(position, Duration::from_millis(1))
+            .wait_for_machine_execution_progress(position, Duration::from_millis(1))
             .map_err(|error| error.to_string())
     }
 
@@ -11125,7 +11125,7 @@ fn complete_machine_execution_replay(
             if actual_decisions < expected_decisions {
                 service
                     .vm
-                    .wait_for_machine_execution_replay_progress(positions[name])?;
+                    .wait_for_machine_execution_progress(positions[name])?;
             }
         }
     }
@@ -12338,7 +12338,7 @@ fn advance_campaign_operation_round(
     // publishes that completion.
     target
         .vm
-        .wait_for_machine_execution_replay_progress(replay_position)?;
+        .wait_for_machine_execution_progress(replay_position)?;
     Ok(())
 }
 

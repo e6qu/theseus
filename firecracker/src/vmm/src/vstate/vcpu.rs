@@ -780,7 +780,7 @@ impl MachineExecutionController {
         })
     }
 
-    fn wait_for_replay_progress(
+    fn wait_for_execution_progress(
         &self,
         position: usize,
         timeout: Duration,
@@ -789,7 +789,14 @@ impl MachineExecutionController {
             .state
             .lock()
             .expect("machine execution controller lock poisoned");
-        if state.expected.is_none() || state.position > position {
+        let observed_position = |state: &MachineExecutionControl| {
+            if state.expected.is_some() {
+                state.position
+            } else {
+                state.execution.trace.len()
+            }
+        };
+        if observed_position(&state) > position {
             return Ok(true);
         }
         if let Some(detail) = state.divergence.clone() {
@@ -798,15 +805,15 @@ impl MachineExecutionController {
         let (state, _) = self
             .turn_changed
             .wait_timeout_while(state, timeout, |state| {
-                state.expected.is_some()
-                    && state.divergence.is_none()
-                    && state.position <= position
+                state.divergence.is_none() && observed_position(state) <= position
             })
-            .expect("machine execution controller lock poisoned while waiting for replay progress");
+            .expect(
+                "machine execution controller lock poisoned while waiting for execution progress",
+            );
         if let Some(detail) = state.divergence.clone() {
             return Err(detail);
         }
-        let progressed = state.expected.is_none() || state.position > position;
+        let progressed = observed_position(&state) > position;
         if !progressed
             && let Some((_, source, gsi)) = state
                 .expected
@@ -1911,11 +1918,32 @@ mod execution_ledger_tests {
         });
         assert!(
             controller
-                .wait_for_replay_progress(0, std::time::Duration::from_secs(1))
+                .wait_for_execution_progress(0, std::time::Duration::from_secs(1))
                 .unwrap()
         );
         producer.join().unwrap();
         assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
+    fn topology_wait_yields_to_uncontrolled_machine_progress() {
+        let controller = Arc::new(MachineExecutionController::default());
+        let producer = controller.clone();
+        let producer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            producer
+                .apply_host_effect("serial_input:1:41".into(), || Ok::<_, ()>(()))
+                .unwrap()
+                .unwrap();
+        });
+        assert!(controller
+            .wait_for_execution_progress(0, std::time::Duration::from_secs(1))
+            .unwrap());
+        producer.join().unwrap();
+        assert_eq!(
+            controller.execution_state().trace(),
+            ["host:serial_input:1:41"]
+        );
     }
 
     #[test]
@@ -1926,7 +1954,7 @@ mod execution_ledger_tests {
             .enforce(vec!["vcpu:0:interrupt:virtio-mmio:5".into()])
             .unwrap();
         assert!(!controller
-            .wait_for_replay_progress(0, std::time::Duration::ZERO)
+            .wait_for_execution_progress(0, std::time::Duration::ZERO)
             .unwrap());
         assert_eq!(
             controller.pending_interrupts_for_test(),
@@ -2914,14 +2942,14 @@ impl VcpuHandle {
         self.machine_execution.replay_position()
     }
 
-    /// Briefly yield a replaying vCPU to asynchronous device completion.
-    pub fn wait_for_machine_execution_replay_progress(
+    /// Briefly yield to a running vCPU or asynchronous replay completion.
+    pub fn wait_for_machine_execution_progress(
         &self,
         position: usize,
         timeout: Duration,
     ) -> Result<bool, String> {
         self.machine_execution
-            .wait_for_replay_progress(position, timeout)
+            .wait_for_execution_progress(position, timeout)
     }
 
     /// Clone the controller used to serialize host and vCPU effects.
