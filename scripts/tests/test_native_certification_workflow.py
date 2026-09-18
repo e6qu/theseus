@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = (ROOT / ".github/workflows/certify-deterministic-runtime.yml").read_text()
 VALIDATION = (ROOT / "scripts/run_native_validation.sh").read_text()
+COUNTEREXAMPLE = (ROOT / "scripts/run_native_counterexample.sh").read_text()
 CERTIFICATION_INIT = (
     ROOT / "docs/tutorials/11-certify-runtime/service/init"
 ).read_text()
@@ -138,6 +139,21 @@ def main() -> None:
     assert "scripts/runtime_validation_evidence.py" in VALIDATION
     assert "scripts/reproducible_tar.py" in VALIDATION
     assert " jq " not in VALIDATION
+    # The released path executes the counterexample as root inside a
+    # privileged container. It must hand the generated outputs back to the
+    # invoking user, or the hosted seal step cannot extend minimized/.
+    assert COUNTEREXAMPLE.count('sh -ec "$commands"') == 1
+    assert 'sh -ec "$commands$ownership"' in COUNTEREXAMPLE
+    assert '-e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)"' in COUNTEREXAMPLE
+    assert 'chown -R "$HOST_UID:$HOST_GID" "$output"' in COUNTEREXAMPLE
+    assert (
+        "for output in plan.json runtime-pivot.json campaign minimized rerun retained; do"
+        in COUNTEREXAMPLE
+    )
+    assert COUNTEREXAMPLE.index("HOST_UID") > COUNTEREXAMPLE.index(
+        "cp /opt/theseus/pivot.json runtime-pivot.json"
+    )
+    assert "chown" not in COUNTEREXAMPLE.split("commands='")[0]
 
 
 if __name__ == "__main__":
