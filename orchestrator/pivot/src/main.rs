@@ -904,6 +904,7 @@ const APPLICATION_BLOCK_COVERAGE_PREFIX: &[u8] = b"THES:COV:v1:";
 const APPLICATION_EDGE_COVERAGE_PREFIX: &[u8] = b"THES:COV:v2:";
 const THREAD_SCHEDULE_PREFIX: &[u8] = b"THES:SCHED:v1:";
 const THREAD_SCHEDULE_ERROR_PREFIX: &[u8] = b"THES:SCHED:ERROR:";
+const THREAD_SYNCHRONIZATION_PREFIX: &[u8] = b"THES:SYNC:v1:";
 const STRUCTURED_CHOICE_PREFIX: &[u8] = b"THES:CHOICE:";
 
 struct ShellOperationResult {
@@ -1067,6 +1068,7 @@ fn forward_instrumentation_records(output: &[u8]) -> Vec<u8> {
             || record.starts_with(APPLICATION_EDGE_COVERAGE_PREFIX)
             || record.starts_with(THREAD_SCHEDULE_PREFIX)
             || record.starts_with(THREAD_SCHEDULE_ERROR_PREFIX)
+            || record.starts_with(THREAD_SYNCHRONIZATION_PREFIX)
             || record.starts_with(STRUCTURED_CHOICE_PREFIX)
         {
             if let Ok(record) = std::str::from_utf8(record) {
@@ -1884,6 +1886,12 @@ mod tests {
             forward_instrumentation_records(output),
             b"{\"balance\":22}\n"
         );
+    }
+
+    #[test]
+    fn separates_thread_synchronization_records_from_command_json() {
+        let output = b"THES:SYNC:v1:worker:condition:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:7:1:wait:condition:1:-\n{\"value\":42}\n";
+        assert_eq!(forward_instrumentation_records(output), b"{\"value\":42}\n");
     }
 
     #[test]
