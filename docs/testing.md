@@ -118,9 +118,9 @@ the indexed assets must exist and verify on the named release.
 If native certification fails, the workflow retains the partial fixed-plan,
 counterexample, and validation directories for diagnosis instead of leaving
 the only useful guest logs on an ephemeral runner. The released-path
-counterexample container also hands its generated outputs back to the
-invoking user, so the hosted seal step can extend the retained minimized
-archive with the evidence and source directories.
+validation and counterexample containers also hand their generated outputs
+back to the invoking user, so the hosted seal and archive steps can read and
+extend the retained bundles.
 
 The certificate is evidence for the strict `linux-kvm-simulated-io-v1`
 profile, not a claim about tap networking, host-backed disks, or every clock

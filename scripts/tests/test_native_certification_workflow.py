@@ -154,6 +154,16 @@ def main() -> None:
         "cp /opt/theseus/pivot.json runtime-pivot.json"
     )
     assert "chown" not in COUNTEREXAMPLE.split("commands='")[0]
+    # The released validation container must also restore invoking-user
+    # ownership: docker save writes 0600 image archives and fs::copy
+    # preserves that mode, so root-owned bundle artifacts would be unreadable
+    # to the host-side evidence copies.
+    assert VALIDATION.count("restore_host_ownership") == 2
+    assert 'sh -ec \'chown -R "$HOST_UID:$HOST_GID" /tutorial\'' in VALIDATION
+    assert '-e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)"' in VALIDATION
+    assert VALIDATION.index("restore_host_ownership \"$tutorial\"") > VALIDATION.index(
+        "docker run --rm --privileged"
+    )
 
 
 if __name__ == "__main__":

@@ -34,6 +34,19 @@ runtime() {
   fi
   docker run --rm --privileged --platform "linux/$THESEUS_ARCH" \
     -v "$tutorial":/tutorial -w /tutorial "$THESEUS_IMAGE" sh -ec "$*"
+  restore_host_ownership "$tutorial"
+}
+
+# The released image runs as root, and generated outputs can inherit
+# restrictive modes (docker save writes 0600 archives that fs::copy
+# preserves). Hand the whole mounted tutorial back to the invoking user so
+# host-side evidence copies can read the bundles.
+restore_host_ownership() {
+  tutorial=$1
+  docker run --rm --platform "linux/$THESEUS_ARCH" \
+    -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+    -v "$tutorial":/tutorial -w /tutorial "$THESEUS_IMAGE" \
+    sh -ec 'chown -R "$HOST_UID:$HOST_GID" /tutorial'
 }
 
 prepare_runtime() {
