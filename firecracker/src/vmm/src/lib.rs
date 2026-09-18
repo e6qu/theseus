@@ -643,12 +643,12 @@ impl Vmm {
             .machine_execution_replay_position())
     }
 
-    /// Briefly wait for an active replay to consume another controlled decision.
+    /// Briefly wait for the running machine to record another decision.
     ///
-    /// Non-replay execution returns immediately. This gives asynchronous
-    /// device workers time to publish a completion without spending thousands
-    /// of deterministic topology rounds in a tight host-side polling loop.
-    pub fn wait_for_machine_execution_replay_progress(
+    /// During replay this observes controlled progress. During ordinary
+    /// execution it yields host time to the vCPU instead of spending thousands
+    /// of deterministic topology rounds in a tight polling loop.
+    pub fn wait_for_machine_execution_progress(
         &self,
         position: usize,
         timeout: std::time::Duration,
@@ -661,7 +661,7 @@ impl Vmm {
             .vcpus_handles()
             .first()
             .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))?
-            .wait_for_machine_execution_replay_progress(position, timeout)
+            .wait_for_machine_execution_progress(position, timeout)
             .map_err(VmmError::ExecutionCoverage)
     }
 

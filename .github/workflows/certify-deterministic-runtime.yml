@@ -212,6 +212,20 @@ jobs:
           THESEUS_TAG: ${{ needs.resolve.outputs.tag }}
         run: sh scripts/run_native_validation.sh
 
+      - name: Retain failed native certification diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: failed-native-certification-${{ matrix.arch }}
+          path: |
+            docs/tutorials/11-certify-runtime/certificate/
+            docs/tutorials/30-multiservice-lost-update/campaign/
+            docs/tutorials/30-multiservice-lost-update/minimized/
+            docs/tutorials/30-multiservice-lost-update/rerun/
+            docs/tutorials/30-multiservice-lost-update/retained/
+            .native-evidence/${{ matrix.arch }}/validation/
+          if-no-files-found: ignore
+
       - name: Stage architecture evidence
         env:
           ARCH: ${{ matrix.arch }}

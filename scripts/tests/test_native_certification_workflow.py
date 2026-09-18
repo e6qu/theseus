@@ -65,6 +65,10 @@ def main() -> None:
     assert "docs/tutorials/30-multiservice-lost-update" in WORKFLOW
     assert "scripts/native_runtime_evidence.py seal" in WORKFLOW
     assert "scripts/run_native_validation.sh" in WORKFLOW
+    assert "name: Retain failed native certification diagnostics" in WORKFLOW
+    assert "if: failure()" in WORKFLOW
+    assert "name: failed-native-certification-${{ matrix.arch }}" in WORKFLOW
+    assert "docs/tutorials/30-multiservice-lost-update/campaign/" in WORKFLOW
     assert '"$validation/fixed-plan"' in VALIDATION
     assert "execution-error.json" in WORKFLOW
     assert 'grep -F "\\\"host:serial_input:"' in VALIDATION
