@@ -47,6 +47,7 @@ def main() -> None:
     assert 'docker pull "$IMAGE:$TAG-$ARCH"' in WORKFLOW
     assert "theseus compose plan > /tutorial/plan.json" in WORKFLOW
     assert "--plan /tutorial/plan.json --output /tutorial/certificate" in WORKFLOW
+    assert "grep -F" not in WORKFLOW
     assert "THES:M:42" in CERTIFICATION_INIT
     assert "exec /bin/finish" in CERTIFICATION_INIT
     assert "RB_AUTOBOOT" in CERTIFICATION_FINISH
