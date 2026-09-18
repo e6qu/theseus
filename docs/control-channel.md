@@ -20,9 +20,12 @@ map (8 bytes):
 | 6 | `COMMAND` | W | guest command (`0x01` = setup complete) |
 | 7 | `LOG` | W | guest marker byte into the host event log |
 
-No IRQ, no ACPI/FDT entry: the guest polls with raw loads/stores. The
-device is not snapshotted (the FIFO is transient); it is re-attached on
-every snapshot restore.
+No IRQ, no ACPI/FDT entry: the guest polls with raw loads/stores. Raw
+Firecracker snapshot files do not contain the device (the FIFO is transient),
+so a raw snapshot restore re-attaches it afresh. Theseus execution
+checkpoints are stricter: they retain the control state — pending host events
+and the guest event log — as locked checkpoint members, so a restored timeline
+continues its control-channel history instead of restarting it.
 
 ## Serial transport (Linux guests, no driver)
 

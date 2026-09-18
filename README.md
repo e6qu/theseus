@@ -112,7 +112,8 @@ review.
 ## Start with the tutorials
 
 The [tutorial index](docs/tutorials/) starts with CLI and service-facing
-examples:
+examples. The numbers below are a suggested reading path, not tutorial
+numbers; each links to a complete tutorial directory:
 
 1. Replay ordinary Linux `/dev/random` and `/dev/urandom` reads.
 2. Select a deterministic random stream with a seed.
@@ -145,6 +146,8 @@ examples:
     them.
 17. Reject execution divergence in an uninstrumented container from its ordered
     per-vCPU exit streams and the machine-wide execution stream.
+18. Replay serial input and standard random-device reads from a retained
+    ready checkpoint without claiming deterministic kernel boot.
 
 Each tutorial directory is its own working directory and complete input
 context. Runnable tutorials use published Theseus images or binaries, not a

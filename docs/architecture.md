@@ -23,7 +23,18 @@ theseus/
 ├── engine/             # theseus-engine. Leaf deterministic components:
 │                       # detrng, virtual clock, sim net backend, control door.
 ├── orchestrator/       # theseus-orchestrator. Timeline branching,
-│                       # coverage, and the exploration engine.
+│                       # coverage, OCI conversion, and the exploration
+│                       # engine. `pivot/` is the image-side init bridge.
+├── cli/                # theseus-cli. Manifest and Compose planning,
+│                       # campaigns, replay, comparison, evaluation, reports.
+├── topology-runner/    # theseus-topology. Multi-service KVM execution,
+│                       # campaigns, checkpoints, and certification.
+├── image-runner/       # Commands, probes, and readiness inside converted
+│                       # images.
+├── explorer-runner/    # Single-guest branching execution.
+├── instrumentation/    # GCC C block/schedule frontends, LLVM edge
+│                       # frontends, Go support, and the inspect tool.
+├── evaluations/        # Locked public evaluation fixtures.
 ├── e2e/                # Live-KVM check harness (see e2e/README.md)
 └── docs/               # You are here.
 ```
@@ -31,10 +42,9 @@ theseus/
 Dependency direction (cycles are not allowed):
 
 ```
-vmm ────────► engine ────────► sdk
- ▲            (leaf)
- │
- └── orchestrator (one-way)
+sdk ◄── engine ◄── vmm ◄── orchestrator
+                    ▲
+  firecracker ──────┘ (one-way)
 ```
 
 - `vmm` (inside `firecracker/`) depends on `engine` and re-exports its
@@ -43,6 +53,11 @@ vmm ────────► engine ────────► sdk
 - `engine` depends only on `sdk` (never on `vmm`) — that is what makes it a
   leaf.
 - `orchestrator` depends on `vmm` one-way; `vmm` does not depend on it.
+- `topology-runner` and `image-runner` depend on `orchestrator` (and
+  `topology-runner` on `engine`); `explorer-runner` also depends on `vmm`
+  and `cli`. `cli` itself has no internal crate dependencies: it plans and
+  validates with ordinary serialization only, so every offline command works
+  without KVM.
 
 ## Why the split is shaped this way
 

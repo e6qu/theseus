@@ -13,20 +13,32 @@ theseus test [--output replay-dir] [theseus.toml]
 theseus replay replay-dir
 theseus replay --output diagnostics-dir replay-dir
 theseus explore [--output exploration-dir] [theseus.toml]
-theseus explore --replay exploration-dir [--output exploration-dir]
-theseus explore --replay exploration-dir --seed-path seed,... [--output exploration-dir]
+theseus explore --replay exploration-dir [--seed-path seed,...] [--output exploration-dir]
 theseus explore --minimize exploration-dir --seed-path seed,... [--output exploration-dir]
 theseus explore --snapshot exploration-dir --seed-path seed,... [--output snapshot-dir]
 theseus report [--output report-dir] result-dir
 theseus report --format markdown|json|junit [--output file] result-dir
+theseus compare left-campaign-dir right-campaign-dir
+theseus compare --format json|markdown left-campaign-dir right-campaign-dir
+theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
+theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
+theseus evaluate lock [theseus-evaluation.toml]
+theseus evaluate capture campaign-dir --output evaluation-dir --name name
 theseus evidence verify native-evidence.json
+theseus coverage cargo --process NAME --module NAME --bin NAME --symbols DIR --output FILE
+    [--manifest-path Cargo.toml] [--package NAME] [--release] [--locked] [--offline]
+    [--no-default-features] [--features FEATURES] [--target-dir DIR]
+theseus coverage go --process NAME --module NAME --package PACKAGE --symbols DIR --output FILE
+    [--goarch amd64|arm64] [--tags TAGS] [--mod readonly|vendor] [--offline] [--target-dir DIR]
 theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
 theseus compose replay replay-dir [--output replay-dir]
 theseus compose verify checkpoint-bundle-dir
 theseus compose explore [--output campaign-dir] [compose.yaml]
+theseus compose explore --expect-counterexample property [--output campaign-dir] [compose.yaml]
 theseus compose explore --minimize campaign-dir [--output minimized-dir]
+theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
 ```
 
 `validate` checks the manifest and artifacts. `test --dry-run` prints the
@@ -144,6 +156,26 @@ may include a conventional-chaos baseline and manually observed investigation
 seconds, but Theseus labels those informational: neither affects a replay
 verdict or proves a comparison with another product.
 
+A version-2 evaluation names a `lockfile`. `evaluate lock` resolves every
+declared workload bundle and writes that lockfile with the complete file
+inventory of each bundle, so later evaluation can reject a modified artifact:
+
+```sh
+theseus evaluate lock evaluations/replicated-counter/theseus-evaluation.toml
+```
+
+`evaluate capture` is the publication boundary for a campaign produced on a
+KVM runner. It requires a complete, replay-verified Compose campaign bundle,
+copies it into a new self-contained evaluation directory, writes a version-2
+evaluation naming the observed campaign and property outcomes, and locks every
+copied artifact:
+
+```sh
+theseus evaluate capture theseus-compose-campaign \
+  --output evaluations/my-system --name my-system
+theseus evaluate evaluations/my-system/theseus-evaluation.toml
+```
+
 The report shows checks and serial logs for one timeline, service checks and
 applied faults for a topology, and the search tree plus dirty-page coverage
 proxy for an exploration. Every report includes a copy-paste command that
@@ -197,7 +229,10 @@ theseus coverage cargo \
 The command resolves the selected graph, hashes each package tree and the
 workspace build configuration, isolates the build under a build-scoped target
 directory, preserves an unstripped symbol file, and writes
-`work/api.theseus-coverage.json`. Host build scripts and proc macros are build
+`work/api.theseus-coverage.json`. Pass `--features` and
+`--no-default-features` to resolve a specific Cargo feature set, and
+`--target-dir` to place that isolated build under a chosen directory instead
+of the workspace default. Host build scripts and proc macros are build
 inputs but are not instrumented; Rust dynamic-library targets still need
 independent module handling. See Tutorials 37 and 38.
 
@@ -213,10 +248,12 @@ theseus coverage go \
 The command targets a fixed-address Linux ELF for amd64 or arm64, disables
 CGO, preserves an unstripped symbol file, and writes
 `work/api.theseus-coverage.json`. Each basic block emits its absolute program
-counter once. External module packages are build inputs but are not
-instrumented. Declare the manifest and symbols in the same coverage catalog;
-the runner validates the Go callback and debug data before boot and reports
-source locations. See Tutorial 39.
+counter once. `--target-dir` places the isolated build under a chosen
+directory; `--goarch`, `--tags`, and `--mod` select the target architecture,
+build tags, and module resolution mode. External module packages are build
+inputs but are not instrumented. Declare the manifest and symbols in the same
+coverage catalog; the runner validates the Go callback and debug data before
+boot and reports source locations. See Tutorial 39.
 
 Commands built with the packaged `theseus-schedule-cc` frontend accept a
 Compose shell operation's explicit `thread_schedule: [0, 1, 2]`. Planning
@@ -335,13 +372,15 @@ bundle and needs the matching published Linux runtime to execute it.
 max_nodes = 7
 branches_per_node = 2
 max_depth = 2
+run_ms = 100
 rendezvous = true
 branch_event_suffix = true
 novelty = "markers" # or "coverage"
 events = ["90"]
 ```
 
-`max_nodes` is a hard cap, including the root. `markers` ranks children by
+`max_nodes` is a hard cap, including the root. `run_ms` bounds each captured
+timeline's run in milliseconds (default 100). `markers` ranks children by
 new SDK marker bytes; `coverage` ranks by a deterministic dirty-page footprint
 proxy. Every result node records its seed path, marker stream, entropy probe,
 and dirty-page count. Use a seed path as the replay recipe.
@@ -434,6 +473,12 @@ For a prebuilt guest, omit `runtime.image_adapter` and use
 exclusive. Image replay locks both the original archive and adapter binary;
 it does not rely on a host Docker daemon.
 
+An image-backed service can also declare a `[container_service]` boot
+contract — HTTP or gRPC readiness, assertions, operations, shell operations,
+and the `campaign` flag — in the service manifest. That contract is injected
+into the image's PID 1; see
+[the container-images guide](../docs/guides/container-images/README.md).
+
 `events.data` is an even-length hexadecimal byte string. Version 1 has one
 delivery point: `ready`, after the guest announces that it can receive input.
 The replay bundle preserves the resulting plan verbatim. The runner delivers
@@ -456,11 +501,21 @@ either topology feature.
 
 ## Compose topology planning
 
-Use a small, strict Compose subset to describe a set of Theseus test
-directories. Each service names its own `theseus.toml`; the plan locks the
-runtime, kernel, and selected guest-input digest for every service. It accepts only named
-networks and `x-theseus.manifest`. Docker images, ports, volumes, host
-networks, `depends_on`, and other host-oriented Compose features are rejected.
+Use a small, strict Compose subset to describe a set of Theseus services.
+Every service names its own `theseus.toml` through `x-theseus.manifest`; that
+per-service manifest selects either an initramfs or a Docker image archive,
+and image-backed services use the same launch fields described in
+[the container-images guide](../docs/guides/container-images/README.md). The plan
+locks the runtime, kernel, and selected guest-input digest for every service.
+
+Besides `x-theseus` and `networks`, a service may declare `depends_on` (with
+`condition: service_healthy`), `environment`, `env_file`, `command`,
+`entrypoint`, `working_dir`, `user`, `hostname`, `extra_hosts`, `read_only`,
+`tmpfs`, `configs`, `secrets`, bind `volumes`, `healthcheck`, and CPU/memory
+limits through `cpus`, `mem_limit`, or `deploy.resources.limits`. Host ports
+and host networks are rejected, `image` is not a service field (the archive is
+declared in the service manifest), and environment values must be literal:
+host-environment inheritance and interpolation have no deterministic meaning.
 
 ```yaml
 name: example
@@ -503,7 +558,9 @@ published Linux runtime bundle. It copies and re-checks each service’s
 Firecracker, kernel, and selected guest input before booting; then it connects service
 NICs through an in-process deterministic switch and pumps them in sorted
 service-name order. `at_round` is a global scheduler round, not elapsed host
-time. Faults are scoped to the service that declares them and must be strictly
+time. The topology round budget is the largest `[run].max_rounds` across the
+service manifests; it defaults to 10000000. Faults are scoped to the service
+that declares them and must be strictly
 ordered. `pause` resumes after `duration_rounds`; `restart` cold-boots from
 locked artifacts; and `clock_jump` advances the guest's enabled virtual clock
 by `nanoseconds`. The replay directory contains `replay-plan.json` and, for
