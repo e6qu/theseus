@@ -81,6 +81,7 @@ jobs:
             test -x /usr/local/bin/theseus-topology
             test -x /usr/local/bin/theseus-explorer
             test -x /usr/local/bin/theseus-image
+            jq --version
             test -s /opt/theseus/vmlinux
             test -x /opt/theseus/pivot
             test -s /opt/theseus/pivot.json
@@ -409,6 +410,7 @@ jobs:
             test -x /usr/local/bin/theseus-topology
             test -x /usr/local/bin/theseus-explorer
             test -x /usr/local/bin/theseus-image
+            jq --version
             test -s /opt/theseus/vmlinux
             test -x /opt/theseus/pivot
             test -s /opt/theseus/pivot.json

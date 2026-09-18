@@ -73,6 +73,9 @@ def main() -> None:
     assert "name: Retain failed native certification diagnostics" in WORKFLOW
     assert "if: failure()" in WORKFLOW
     assert "name: failed-native-certification-${{ matrix.arch }}" in WORKFLOW
+    assert "name: Make failed native certification diagnostics readable" in WORKFLOW
+    assert 'sudo chmod -R a+rX "$path"' in WORKFLOW
+    assert "include-hidden-files: true" in WORKFLOW
     assert "docs/tutorials/30-multiservice-lost-update/campaign/" in WORKFLOW
     assert '"$validation/fixed-plan"' in VALIDATION
     assert "execution-error.json" in WORKFLOW
