@@ -24,6 +24,11 @@ def main() -> None:
     assert 'sh scripts/run_native_counterexample.sh || counterexample_status=$?' in source_ci
     assert 'test "$validation_status" -eq 0' in source_ci
     assert 'test "$counterexample_status" -eq 0' in source_ci
+    assert "cargo build -p firecracker --release" in source_ci
+    for package in ("cli", "topology-runner", "image-runner"):
+        assert f"cargo build --manifest-path {package}/Cargo.toml --locked --release" in source_ci
+        assert f"{package}/target/release/" in source_ci
+    assert "firecracker/build/cargo_target/release/firecracker" in source_ci
     assert "workflow_run:" in WORKFLOW
     assert "workflows: [publish-runtime]" in WORKFLOW
     assert "default: amd64" in WORKFLOW
@@ -68,6 +73,9 @@ def main() -> None:
     assert "name: Retain failed native certification diagnostics" in WORKFLOW
     assert "if: failure()" in WORKFLOW
     assert "name: failed-native-certification-${{ matrix.arch }}" in WORKFLOW
+    assert "name: Make failed native certification diagnostics readable" in WORKFLOW
+    assert 'sudo chmod -R a+rX "$path"' in WORKFLOW
+    assert "include-hidden-files: true" in WORKFLOW
     assert "docs/tutorials/30-multiservice-lost-update/campaign/" in WORKFLOW
     assert '"$validation/fixed-plan"' in VALIDATION
     assert "execution-error.json" in WORKFLOW

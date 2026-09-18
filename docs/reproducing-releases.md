@@ -85,7 +85,9 @@ unsafe archive, a changed file inventory, a replay that lacks the required
 partition, dropped frame, recovery probe, or lost update, and validation that
 lacks its container, coverage, schedule-search, pthread, or ordered-execution
 evidence. It also rejects partial per-run ledgers, malformed machine traces,
-divergent comparisons, and empty evaluations:
+malformed or contradictory comparisons, and empty evaluations. A well-formed
+`diverged` comparison remains valid observational evidence; the explicit replay
+checks decide replay admission:
 
 ```sh
 theseus evidence verify "$work/theseus-${TAG}-native-evidence.json"
