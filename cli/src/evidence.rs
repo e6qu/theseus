@@ -1184,12 +1184,7 @@ fn verify_runtime_validation(
         "unique_application_blocks",
         true,
     )?;
-    let comparison: serde_json::Value =
-        parse_json_bytes(&retained["coverage/comparison.json"], "campaign comparison")?;
-    require(
-        comparison["format"] == "theseus-campaign-comparison-v1" && comparison["status"] == "same",
-        "released CLI did not retain an identical campaign comparison",
-    )?;
+    verify_campaign_comparison(&retained["coverage/comparison.json"], "coverage comparison")?;
     let evaluation: serde_json::Value =
         parse_json_bytes(&retained["coverage/evaluation.json"], "campaign evaluation")?;
     require(
@@ -1305,20 +1300,9 @@ fn verify_runtime_validation(
                 "strict execution replay",
             )?;
         }
-        let comparison: serde_json::Value = parse_json_bytes(
+        verify_campaign_comparison(
             &retained["strict-execution/comparison.json"],
             "strict execution comparison",
-        )?;
-        require(
-            comparison["format"] == "theseus-campaign-comparison-v1"
-                && match comparison["status"].as_str() {
-                    Some("same") => comparison["divergence"].is_null(),
-                    Some("diverged") => comparison["divergence"]["reason"]
-                        .as_str()
-                        .is_some_and(|reason| !reason.is_empty()),
-                    _ => false,
-                },
-            "strict execution comparison has no valid observational result",
         )?;
     }
     for name in [
@@ -1344,6 +1328,21 @@ fn machine_replay_control_trace(trace: &[String]) -> Vec<&str> {
         .filter(|record| record.starts_with("host:"))
         .map(String::as_str)
         .collect()
+}
+
+fn verify_campaign_comparison(bytes: &[u8], scenario: &str) -> Result<(), EvidenceError> {
+    let comparison: serde_json::Value = parse_json_bytes(bytes, scenario)?;
+    require(
+        comparison["format"] == "theseus-campaign-comparison-v1"
+            && match comparison["status"].as_str() {
+                Some("same") => comparison["divergence"].is_null(),
+                Some("diverged") => comparison["divergence"]["reason"]
+                    .as_str()
+                    .is_some_and(|reason| !reason.is_empty()),
+                _ => false,
+            },
+        &format!("{scenario} has no valid observational result"),
+    )
 }
 
 /// Bind a checkpoint certificate to the entire retained first/replay witness.
@@ -1961,6 +1960,48 @@ mod tests {
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
     const TAG: &str = "0123456789ab";
     const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn campaign_comparison_is_observational_not_a_replay_gate() {
+        for comparison in [
+            serde_json::json!({
+                "format": "theseus-campaign-comparison-v1",
+                "status": "same"
+            }),
+            serde_json::json!({
+                "format": "theseus-campaign-comparison-v1",
+                "status": "diverged",
+                "divergence": {"reason": "ordered KVM execution ledger differs"}
+            }),
+        ] {
+            verify_campaign_comparison(
+                &serde_json::to_vec(&comparison).unwrap(),
+                "campaign comparison",
+            )
+            .unwrap();
+        }
+        for comparison in [
+            serde_json::json!({
+                "format": "theseus-campaign-comparison-v1",
+                "status": "diverged"
+            }),
+            serde_json::json!({
+                "format": "theseus-campaign-comparison-v1",
+                "status": "same",
+                "divergence": {"reason": "contradictory result"}
+            }),
+            serde_json::json!({
+                "format": "theseus-campaign-comparison-v1",
+                "status": "passed"
+            }),
+        ] {
+            assert!(verify_campaign_comparison(
+                &serde_json::to_vec(&comparison).unwrap(),
+                "campaign comparison",
+            )
+            .is_err());
+        }
+    }
 
     #[test]
     fn verifies_complete_native_evidence_pair() {
@@ -2590,7 +2631,7 @@ mod tests {
             ),
             (
                 "coverage/comparison.json",
-                br#"{"format":"theseus-campaign-comparison-v1","status":"same"}"#.to_vec(),
+                br#"{"format":"theseus-campaign-comparison-v1","status":"diverged","divergence":{"reason":"ordered KVM execution ledger differs"}}"#.to_vec(),
             ),
             (
                 "coverage/evaluation.json",

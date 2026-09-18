@@ -86,6 +86,10 @@ an inventoried validation archive. The released CLI also
 renders the report, compares the coverage campaign with its replay, captures
 an offline evaluation, evaluates its lock, minimizes the schedule failure, and
 replays every retained path.
+The comparison is an observation, not replay admission: both `same` and a
+well-formed `diverged` result are valid. Under the `host_inputs` contract,
+uncontrolled guest execution may change a KVM-exit ledger while the retained
+host-input projection and explicit replay checks still pass.
 Runtime-validation version 5 also retains the single-container run and its
 named replay diagnostics. Offline verification recomputes both sets of digests
 from their complete traces and requires an identical guest-exit boundary, the

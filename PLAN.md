@@ -211,6 +211,11 @@ recovery event is `recovery_probe_sent`; the released verifier must check that
 same retained event. Do not duplicate tutorial commands or stale expected
 markers in workflow YAML.
 
+Treat `compare` as an observational artifact throughout qualification. A
+well-formed `diverged` result is valid under `host_inputs`; replay admission is
+decided by the declared control projection and explicit replay checks, not by
+incidental equality of uncontrolled KVM exits.
+
 ## Priority 1: deterministic execution and scheduling plane
 
 This is the largest technical gap to Antithesis and takes precedence over
