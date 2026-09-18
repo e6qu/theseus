@@ -67,6 +67,14 @@ else
       done
       cp /opt/theseus/pivot.json runtime-pivot.json
     '
+  ownership='
+    for output in plan.json runtime-pivot.json campaign minimized rerun retained; do
+      if test -e "$output"; then
+        chown -R "$HOST_UID:$HOST_GID" "$output"
+      fi
+    done
+  '
   docker run --rm --privileged --platform "linux/$THESEUS_ARCH" \
-    -v "$tutorial":/tutorial -w /tutorial "$THESEUS_IMAGE" sh -ec "$commands"
+    -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+    -v "$tutorial":/tutorial -w /tutorial "$THESEUS_IMAGE" sh -ec "$commands$ownership"
 fi
