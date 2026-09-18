@@ -18,8 +18,8 @@ mapping behavior. Capture itself still performs one full RAM dump per branch
 point, so the complete path is not zero-copy.
 
 Each child is reseeded before resume, so siblings differ *only* by seed
-(`splitmix64(base_seed ^ branch_index)` — deterministic). Fault schedules
-are a second divergence axis: the sim-net config is rewritten in the
+(`splitmix64(base_seed ^ (branch_index << 32))` — deterministic). Fault
+schedules are a second divergence axis: the sim-net config is rewritten in the
 captured state per child.
 
 ## The timeline tree
@@ -214,6 +214,98 @@ hexadecimal byte; serial values are UTF-8 text. Each check applies to every
 captured timeline, not merely the root. A failed result names the first seed
 paths that violated it. The bundle records each timeline's serial console as
 `serial/<seed>.log`, and the static report shows those logs.
+
+## Operation state and phases
+
+A campaign can constrain when an operation may run and what it records, so a
+generated timeline reads as an intentional scenario:
+
+```yaml
+x-theseus:
+  campaign:
+    driver: counter
+    state: {phase: new, worker: idle}
+    operations:
+      - name: setup
+        max_uses: 1
+        requires_state: {phase: new}
+        sets_state: {phase: partitioned}
+        shell:
+          phase: setup
+          command: [/bin/sh, -c, "rm -f /state/*"]
+      - name: recover
+        requires_state: {phase: inspected}
+        sets_state: {phase: recovered}
+        shell:
+          phase: recovery
+          command: [/bin/sh, -c, "mkfifo /state/ready"]
+```
+
+`requires_state` and `sets_state` are ordered key/value maps over the
+campaign state; planning only generates an operation when its requirements
+match the current state, then applies its updates. `max_uses` bounds how many
+times one operation may appear in a timeline. The shell `phase` vocabulary is
+`run` (default), `setup`, `launch`, `completion`, `assertion`, and
+`recovery`; `launch`/`completion` form the named-process overlap protocol
+described above, and the remaining phases exist to make a retained scenario
+readable. Tutorial 30 uses this contract for its partition, probe, and
+recovery steps.
+
+## Campaign properties
+
+A Compose campaign declares named properties under `x-theseus.campaign`.
+Every generated timeline is evaluated against them, and `kind` selects the
+quantifier over the corpus:
+
+- `always` — every generated timeline must report the property.
+- `sometimes` — at least one generated timeline must report it.
+- `reachable` — the campaign must reach a timeline that reports it.
+- `unreachable` — no generated timeline may report it.
+
+A property observes the ordered serial transcripts of its service (or the
+whole topology) with:
+
+- `contains`, `contains_all`, `contains_any`, `contains_none` — literal
+  substring requirements over the transcript lines.
+- `predicate` — a structured JSON predicate evaluated against one
+  JSON-lines event (`output_json: true` on a shell operation emits one).
+  It accepts RFC 9535 `query`, exact `fields` matches, `where` comparators,
+  array predicates, and nested `all`/`any`/`none` groups.
+- `requires_serial_all`, `requires_serial_any`, `excludes_serial_any` —
+  guards that must (or must not) appear before the observing operation, each
+  matching a `contains` substring, a `matches` regex, or a JSON predicate on
+  a named service.
+- `requires_serial_correlations` — JSON Pointer values that must agree
+  between two service transcripts, such as a request ID echoed by a replica.
+- `requires_serial_joins` / `excludes_serial_joins` — values from one
+  endpoint's transcript that must (or must not) occur in every or any other
+  endpoint, with optional `quantifier` and `occurs` bounds.
+- `requires_serial_evidence` / `excludes_serial_evidence` — composable
+  `all`/`any`/`none` groups over the guards, correlations, joins, and
+  relations above.
+
+```yaml
+properties:
+  - name: network_recovery_is_reachable
+    kind: reachable
+    service: writer-a
+    predicate:
+      json:
+        fields: {/event: shell_operation, /name: verify_recovery, /output/network: recovery_probe_sent}
+  - name: distributed_lost_update_is_unreachable
+    kind: unreachable
+    service: counter
+    predicate:
+      json:
+        fields: {/event: shell_operation, /name: inspect, /output/value: 1}
+```
+
+Planning locks the complete property set, and campaign results retain each
+verdict. `--expect-counterexample` succeeds only when the named property is
+retained as failed, and its minimization preserves that outcome. Tutorial 30
+is the worked example. `compare` reports differing property
+verdicts between two campaigns; it remains an observation, not a causal
+result.
 
 ## Structured choices and unified guidance
 

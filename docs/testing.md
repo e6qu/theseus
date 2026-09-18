@@ -55,8 +55,15 @@ pushes, never on `main`). One job on pinned Ubuntu 24.04:
 6. Bounded thread-schedule expansion, locked schedule cases, invalid-search
    rejection, campaign selection, reporting, and tutorial structure.
 
-KVM-backed tests (branch boots, explorer, coverage) are intentionally not
-in CI — run them locally in the privileged container.
+The Rust unit suites above stay KVM-free by exact module filters. PR CI then
+runs four separate native-KVM steps with the source runtime on GitHub's amd64
+runner: Tutorial 4's UART/reset replay, Tutorial 42's ready-checkpoint replay,
+Tutorial 11's whole-topology certification, and the ordinary checkpoint-backed
+product qualification that builds release-mode binaries and executes the
+native validation and counterexample scripts. The explorer branch-boot search
+and the full released-runtime portfolio are not part of PR CI: they run
+through the release certification workflow, or locally in the privileged
+container.
 
 ## Runtime certification
 

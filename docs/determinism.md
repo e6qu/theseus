@@ -277,10 +277,6 @@ schedule in-kernel timer interrupts between exits.
   host-backed pmem are **rejected** when virtual time is enabled. A
   deterministic topology uses Theseus's simulated NIC and memory-only block
   devices instead.
-- The test harness itself used unseeded randomness (descriptor gaps,
-  frame payloads); now fixed patterns.
-- `test_token_bucket_auto_replenish_one` flaked on wall-clock sleeps; it
-  now drives a synthetic clock via `TokenBucket::auto_replenish_at`.
 
 ## Known leaks (honest list)
 
