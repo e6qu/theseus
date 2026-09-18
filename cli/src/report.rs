@@ -458,6 +458,8 @@ struct CampaignCheckpointEconomics {
     private_dirty_pages: u64,
     #[serde(default)]
     snapshot_file_bytes: u64,
+    #[serde(default)]
+    prefix_evictions: usize,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -1197,7 +1199,7 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         coverage: Some(Coverage {
             label: "Campaign corpus".to_owned(),
             summary: format!(
-                "{} of {} deterministic candidates selected by {guidance} using {coverage_signal}; {} marker-guard leaves and {} serial-guard leaves skipped; {} structured choices, {} thread-scheduling decisions, {} synchronization events, and {} ordered KVM execution decisions retained; {} unique application coverage points including {} LLVM edges; {} unique instruction locations; {} unique topology states; {} root captures, {} reusable checkpoint nodes, {} prefix captures, {} prefix reuses ({} avoided recomputations), {} topology restores ({} prefix materializations + {} leaf replays); {} retained immutable bytes, {} logical COW-mapped restore bytes, {} dirty pages at capture barriers, {} snapshot-file bytes{}",
+                "{} of {} deterministic candidates selected by {guidance} using {coverage_signal}; {} marker-guard leaves and {} serial-guard leaves skipped; {} structured choices, {} thread-scheduling decisions, {} synchronization events, and {} ordered KVM execution decisions retained; {} unique application coverage points including {} LLVM edges; {} unique instruction locations; {} unique topology states; {} root captures, {} reusable checkpoint nodes, {} prefix captures, {} prefix reuses ({} avoided recomputations), {} topology restores ({} prefix materializations + {} leaf replays); {} retained immutable bytes, {} logical COW-mapped restore bytes, {} dirty pages at capture barriers, {} prefix snapshot-file bytes, {} prefix evictions{}",
                 result.runs.len(),
                 result.generated_candidates,
                 result.marker_guard_rejections,
@@ -1222,6 +1224,7 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
                 checkpoint.shared_cow_restore_bytes,
                 checkpoint.private_dirty_pages,
                 checkpoint.snapshot_file_bytes,
+                checkpoint.prefix_evictions,
                 guidance_ledger.unwrap_or_default(),
             ),
         }),
@@ -2421,7 +2424,7 @@ mod tests {
         assert!(html.contains("network:backplane"));
         assert!(html.contains("consistent_read"));
         assert!(html.contains(
-            "1 root captures, 4 reusable checkpoint nodes, 3 prefix captures, 7 prefix reuses (7 avoided recomputations), 4 topology restores (3 prefix materializations + 1 leaf replays); 1048576 retained immutable bytes, 4194304 logical COW-mapped restore bytes, 12 dirty pages at capture barriers, 0 snapshot-file bytes; guidance ledger: 1 observations, sha256 ledger-hash"
+            "1 root captures, 4 reusable checkpoint nodes, 3 prefix captures, 7 prefix reuses (7 avoided recomputations), 4 topology restores (3 prefix materializations + 1 leaf replays); 1048576 retained immutable bytes, 4194304 logical COW-mapped restore bytes, 12 dirty pages at capture barriers, 0 prefix snapshot-file bytes, 0 prefix evictions; guidance ledger: 1 observations, sha256 ledger-hash"
         ));
         assert!(html.contains(
             "1 of 12 deterministic candidates selected by posterior coverage and action-yield guidance using exit-sampled execution-location novelty"

@@ -141,6 +141,8 @@ struct Run {
     seed: u64,
     #[serde(default)]
     replay_start: ReplayStart,
+    #[serde(default)]
+    machine_replay: MachineReplayMode,
     #[serde(default = "default_entropy_device")]
     entropy_device: bool,
     vcpu_count: u8,
@@ -165,6 +167,8 @@ pub struct VirtualTime {
 struct Event {
     when: EventWhen,
     data: String,
+    #[serde(default)]
+    checkpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -443,6 +447,22 @@ fn is_fresh_boot(start: &ReplayStart) -> bool {
     *start == ReplayStart::FreshBoot
 }
 
+/// How a locked run constrains machine execution during replay.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineReplayMode {
+    /// Admit every recorded vCPU, device, interrupt, and host-input decision.
+    #[default]
+    Exact,
+    /// Reapply the locked host inputs and verify the declared outcome while
+    /// retaining intervening machine execution as evidence.
+    HostInputs,
+}
+
+fn is_exact_machine_replay(mode: &MachineReplayMode) -> bool {
+    *mode == MachineReplayMode::Exact
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RuntimePlan {
     pub firecracker: ArtifactPlan,
@@ -472,6 +492,8 @@ pub struct RunPlanConfig {
     pub seed: u64,
     #[serde(default, skip_serializing_if = "is_fresh_boot")]
     pub replay_start: ReplayStart,
+    #[serde(default, skip_serializing_if = "is_exact_machine_replay")]
+    pub machine_replay: MachineReplayMode,
     /// Attach the seeded virtio RNG. UART-only guests can omit this device.
     #[serde(
         default = "default_entropy_device",
@@ -493,6 +515,10 @@ pub struct RunPlanConfig {
 pub struct EventPlan {
     pub when: EventWhen,
     pub data_hex: String,
+    /// Do not send the next event until this literal marker and its line
+    /// ending have reached the retained serial transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -732,6 +758,18 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             "ready_checkpoint requires virtual_time and ready-gated UART events; exploration manages its own checkpoints".into(),
         ));
     }
+    for (index, event) in manifest.events.iter().enumerate() {
+        if event.checkpoint.as_ref().is_some_and(|checkpoint| {
+            checkpoint.is_empty()
+                || checkpoint
+                    .chars()
+                    .any(|character| matches!(character, '\r' | '\n' | '\0'))
+        }) {
+            return Err(LoadError::InvalidRunConfig(format!(
+                "events[{index}].checkpoint must be a non-empty single-line serial marker"
+            )));
+        }
+    }
     if manifest.explore.is_some() && !manifest.run.entropy_device {
         return Err(LoadError::InvalidRunConfig(
             "exploration requires entropy_device = true for branch reseeding and probes".to_owned(),
@@ -834,6 +872,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             Ok(EventPlan {
                 when: event.when.clone(),
                 data_hex: hex(&data),
+                checkpoint: event.checkpoint.clone(),
             })
         })
         .collect::<Result<_, LoadError>>()?;
@@ -856,6 +895,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
         run: RunPlanConfig {
             seed: manifest.run.seed,
             replay_start: manifest.run.replay_start,
+            machine_replay: manifest.run.machine_replay,
             entropy_device: manifest.run.entropy_device,
             vcpu_count: manifest.run.vcpu_count,
             mem_size_mib: manifest.run.mem_size_mib,
@@ -1426,6 +1466,7 @@ initramfs = "guest/initramfs.cpio"
 
 [run]
 seed = 42
+machine_replay = "host_inputs"
 vcpu_count = 1
 mem_size_mib = 128
 
@@ -1436,6 +1477,7 @@ exits_per_tick = 1024
 [[events]]
 when = "ready"
 data = "Aa00"
+checkpoint = "accepted"
 
 [network]
 loopback = true
@@ -1462,7 +1504,9 @@ corrupt_read_xor = 1
         let plan = load_plan(directory.path().join("test/theseus.toml")).unwrap();
         assert_eq!(plan.format, "theseus-run-plan-v1");
         assert_eq!(plan.run.seed, 42);
+        assert_eq!(plan.run.machine_replay, MachineReplayMode::HostInputs);
         assert_eq!(plan.events[0].data_hex, "aa00");
+        assert_eq!(plan.events[0].checkpoint.as_deref(), Some("accepted"));
         assert_eq!(plan.network.drop_ppm, 100);
         assert_eq!(plan.network.duplicate_ppm, 200);
         assert_eq!(plan.network.corrupt_ppm, 300);

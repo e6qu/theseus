@@ -89,20 +89,30 @@ before guest entry and records `vcpu:<id>:interrupt:<source>:<gsi>` in the same
 machine stream. Sources cover UART, virtio MMIO, virtio MSI-X, VM generation
 and clock notifications, and the i8042 keyboard. Checkpoints retain undelivered
 requests, including notifications created while restoring a VM, and replay
-requires the same vCPU delivery turns. If a recorded device completion has not
-yet reached the host queue, the vCPU waits at that turn without running more
-guest code. The wait is bounded; absent or mismatched requests fail replay.
-Vhost-user and other direct notifier
-paths remain outside the deterministic profile.
+requires the same vCPU delivery turns in fixed runs. Checkpoint-backed campaign
+replay lets queued interrupts follow restored device state and retains their
+observed delivery turns as evidence; it does not claim identical interrupt
+timing between explicit host inputs. Vhost-user and other direct notifier paths
+remain outside the deterministic profile.
 
-The VM-wide gate retains the bounded exact trace as well as the rolling digest.
-Checkpoints clone both forms into each child. Locked replay admits only the
-actor named by the next record. It checks complete writes, read addresses and
-widths, terminal exits, and explicit inputs before applying their effects.
-Read values are checked after device access; a mismatch stops replay but does
-not roll back a consumed device value. A wrong prefix, actor, input, payload,
-missing suffix, or extra event fails replay. Trace exhaustion also rejects the
-next access before device emulation.
+The VM-wide gate retains the bounded complete trace as well as the rolling
+digest. Checkpoints clone both forms into each child. Fixed-run replay admits
+only the actor named by every next record, checks complete writes and read
+identities, and rejects an extra access at trace exhaustion. Campaign replay
+uses the trace's explicit host inputs as its portable control stream;
+intervening MMIO, PIO, and interrupt turns remain evidence because Linux
+execution between controlled turns is not instruction-scheduled. Read values
+are checked after device access and cannot be rolled back. Exported campaign
+and minimized-counterexample replay plans retain this host-input mode even
+after they become ordinary fixed-schedule topologies. They also retain one
+global service/event order: replay injects cross-service UART operations in
+the explored order instead of grouping each service's inputs together. Replay
+ends at the final operation checkpoint and evaluates the declared properties
+there. It does not require byte-identical serial output, traffic, entropy,
+virtual-clock state, or KVM ledgers that the portable contract does not govern.
+Paused kernel PCs, instruction symbols, dirty-page counts, and derived topology
+state remain useful search evidence, but are likewise observations rather than
+portable replay gates.
 
 An attached x86 i8042 reset request ends the stream on its own recorded write.
 It does not keep polling until the event loop notices an asynchronous reset
@@ -118,6 +128,10 @@ machine ledger, observed boundary, and first active replay error. `[[events]]`
 become exact `host:serial_input` decisions after the ready marker, not bytes
 written to an unrecorded stdin pipe. Each event is at most 16,384 bytes,
 fitting the default HTTP API limit after hexadecimal encoding.
+An event may set `checkpoint` to a literal single-line serial marker. Theseus
+waits until that complete line reaches the retained transcript before sending
+the next event. Use this handshake when a guest must publish a result before a
+later input allows it to exit or reset.
 Version-2 plans use the topology runner's `quiet loglevel=0` boot policy to
 suppress host-clock-dependent kernel diagnostics. This does not control those
 clocks or filter decisions out of the captured stream.
@@ -126,12 +140,17 @@ not use it. Otherwise, kernel boot allocation can change its queue addresses
 before the application starts. Replay rejects that divergence; neither the
 device seed nor quiet boot makes arbitrary kernel boot deterministic.
 
-`theseus replay --output diagnostics bundle` installs the recorded stream
-before the first guest run. It checks the complete stream, local ledgers, and
-terminal boundary as well as application checks. Missing or inconsistent
-execution evidence is an error; deleting `result.json` cannot downgrade the
-versioned replay plan. Older `theseus-run-plan-v1` bundles retain their legacy
-seed/input replay behavior and do not establish machine-stream enforcement.
+`theseus replay --output diagnostics bundle` defaults to installing the
+recorded stream before the first guest run. It checks the complete stream,
+local ledgers, terminal boundary, and application checks. A manifest may set
+`run.machine_replay = "host_inputs"` when guest-kernel timing is outside the
+test contract. That mode reapplies the locked events and service operations,
+requires the declared checks and terminal boundary, compares the explicit
+`host:` projection, and retains the new complete stream as evidence. Missing
+or inconsistent execution evidence is an error in either mode; deleting
+`result.json` cannot downgrade the versioned replay plan. Older
+`theseus-run-plan-v1` bundles retain their legacy seed/input replay behavior
+and do not establish machine-stream enforcement.
 
 A host timeout pauses the VM and flushes a diagnostic cut before killing it.
 Its boundary is `pause`, not `guest_exit`, and active replay rejects that cut:
@@ -160,10 +179,11 @@ and `prelude.log`, in addition to the runtime and guest inputs. Metadata binds
 state/RAM hashes and lengths, machine/clock/entropy configuration, the complete
 inherited trace, pending userspace interrupts, control FIFO/log, and amd64 PS/2
 registers/FIFO. Loading rebuilds machine and local hashes from the validated
-prefix and installs an expected complete trace before the first resume.
-Snapshot restore retains vCPU registers, virtual-clock counters, UART state,
-and RNG state. New restore-time notifications join the retained pending queue
-in the same order for the baseline and replay.
+prefix and installs the retained host-input stream before the first campaign
+resume. Snapshot restore retains vCPU registers, virtual-clock counters, UART
+state, and RNG state. New restore-time notifications join the retained pending
+queue in the same order for the baseline and replay. Fixed-run replay installs
+the complete expected trace unless its plan explicitly selects `host_inputs`.
 
 `execution.json.start` identifies the metadata digest and inherited decision
 count. The prefix is captured ancestry, not actively replayed kernel boot;
@@ -197,6 +217,25 @@ whole-topology starting state. Every service must use virtual time and wait
 for input after its readiness marker. The baseline and replay restore the same
 locked state, rather than booting independently. Campaigns may reuse this root
 for their operation-prefix tree; retain the complete output directory.
+
+Ready-root exports copy locked runtime and guest inputs into their own
+`checkpoint/artifacts/` directory. Replayed campaigns and minimized bundles
+retain a local root with the same identity; they do not require the original
+campaign directory. Campaign run subdirectories share the campaign root:
+move the whole campaign, not an individual `runs/000` directory.
+
+`theseus compose verify bundle-dir` checks ready-root integrity without KVM.
+It binds configuration, members, execution ancestry, UART bytes, and complete
+machine/vCPU ledgers, including their campaign aggregates. It does not decode
+KVM CPU state or establish native execution provenance. Active replay remains
+a separate runtime operation.
+
+The operation-prefix cache uses a deterministic LRU policy with a 512 MiB
+materialized-RAM budget. Evicted prefixes can be reconstructed from retained
+ancestors. The immutable root, active working branches, binary context, and
+other host allocations are outside that budget; this is not a process-RSS cap.
+Reports distinguish prefix snapshot-file bytes from durable root exports and
+show prefix evictions explicitly.
 
 `starting_checkpoint` locks `metadata.json`; metadata locks every service's
 `vmstate` and `memory` plus the bounded binary `context.bin`. Context contains
@@ -265,11 +304,13 @@ schedule in-kernel timer interrupts between exits.
   condition waits/signals/broadcasts. Timed waits, cancellation, semaphores,
   direct futex use, blocking syscalls, processes, and uninstrumented library
   concurrency remain outside the supported scheduling profile.
-- **Execution between KVM exits.** The machine replay gate selects and verifies
-  vCPU turns, explicit host inputs, and supported userspace device interrupt
-  injection at controlled boundaries. It cannot control or explain divergence
-  that happens entirely between those boundaries, including guest interrupt
-  servicing, in-kernel timer delivery, and guest-side input consumption.
+- **Execution between KVM exits.** Exact fixed-run replay selects and verifies
+  every vCPU turn and explicit host input. Fixed runs that select
+  `machine_replay = "host_inputs"` and checkpoint-backed campaigns gate explicit
+  host inputs and retain intervening vCPU and interrupt turns as evidence. They
+  cannot control or explain divergence between those inputs, including guest
+  interrupt servicing, in-kernel timer delivery, and guest-side input
+  consumption.
 
 ## Replay fingerprints
 

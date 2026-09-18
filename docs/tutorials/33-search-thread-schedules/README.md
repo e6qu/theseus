@@ -36,6 +36,9 @@ docker build --load --platform "linux/$THESEUS_ARCH" \
 docker save theseus-thread-search-tutorial -o service/work/service.tar
 ```
 
+The final image contains only the two compiled commands, the schedule catalog,
+and their runtime libraries. This keeps deterministic guest startup short.
+
 Each worker loads an atomic balance and later stores its own update. The
 individual accesses are valid C, but the transaction is not atomic.
 
@@ -66,6 +69,9 @@ sequence are stored in `plan.json`; replay never regenerates the search space.
 
 ## 4. Run the search
 
+Theseus captures the service at readiness. All schedules inherit that same
+boot state; replay checks resumed execution, not a second boot.
+
 ```sh
 theseus compose explore --expect-counterexample lost_update_is_unreachable \
   --output campaign compose.yaml
@@ -85,12 +91,19 @@ theseus compose explore --minimize campaign \
   --expect-counterexample lost_update_is_unreachable --output minimized
 grep -n 'schedule-\|THESEUS_THREAD_SCHEDULE' minimized/replay-plan.json
 theseus compose replay minimized --output rerun
+theseus compose verify campaign
+theseus compose verify minimized
+theseus compose verify rerun
 grep -R '"balance":22' rerun/services/ledger/serial.log
 ```
 
 The minimized bundle keeps the failing schedule case. Replay also checks the
 ordered runnable masks, selected threads, build identity, and scheduling-point
 offsets recorded by that case.
+
+Keep the whole `minimized` directory. It contains the checkpoint, RAM, and
+locked inputs needed to move and replay this failure elsewhere. `compose
+verify` checks their integrity offline; it does not certify native execution.
 
 ## 6. Clean up (optional)
 

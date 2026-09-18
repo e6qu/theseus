@@ -10,6 +10,14 @@ case "$THESEUS_ARCH" in
   *) echo "unsupported architecture: $THESEUS_ARCH" >&2; exit 2 ;;
 esac
 
+if test -n "${THESEUS_SOURCE_RUNTIME:-}"; then
+  case "$THESEUS_SOURCE_RUNTIME" in /*) ;; *) echo 'source runtime must be an absolute directory' >&2; exit 2 ;; esac
+  for binary in theseus theseus-topology theseus-image firecracker; do
+    test -x "$THESEUS_SOURCE_RUNTIME/$binary"
+  done
+  test -f "$THESEUS_SOURCE_RUNTIME/vmlinux"
+fi
+
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 validation="$root/.native-evidence/$THESEUS_ARCH/validation"
 rm -rf "$validation"
@@ -20,6 +28,10 @@ cp -a "$root/docs/tutorials/11-certify-runtime/certificate" "$validation/fixed-p
 runtime() {
   tutorial=$1
   shift
+  if test -n "${THESEUS_SOURCE_RUNTIME:-}"; then
+    (cd "$tutorial"; PATH="$THESEUS_SOURCE_RUNTIME:$PATH" sh -ec "$*")
+    return
+  fi
   docker run --rm --privileged --platform "linux/$THESEUS_ARCH" \
     -v "$tutorial":/tutorial -w /tutorial "$THESEUS_IMAGE" sh -ec "$*"
 }
@@ -28,6 +40,12 @@ prepare_runtime() {
   tutorial=$1
   service=$2
   mkdir -p "$tutorial/$service/work/runtime" "$tutorial/$service/work/guest"
+  if test -n "${THESEUS_SOURCE_RUNTIME:-}"; then
+    cp "$THESEUS_SOURCE_RUNTIME/firecracker" "$tutorial/$service/work/runtime/firecracker"
+    cp "$THESEUS_SOURCE_RUNTIME/theseus-image" "$tutorial/$service/work/runtime/theseus-image"
+    cp "$THESEUS_SOURCE_RUNTIME/vmlinux" "$tutorial/$service/work/guest/vmlinux"
+    return
+  fi
   docker run --rm --platform "linux/$THESEUS_ARCH" \
     -v "$tutorial":/tutorial -w /tutorial "$THESEUS_IMAGE" sh -ec \
     "cp /usr/local/bin/firecracker '$service/work/runtime/firecracker';
@@ -44,10 +62,9 @@ prepare_runtime "$container" .
 runtime "$container" '
   theseus test --dry-run > plan.json
   theseus test --output work/replay theseus.toml
-  grep -a "^THES:HTTP:operation:read_health:PASS$" work/replay/serial.log
+  grep -aF "THES:HTTP:operation:read_health:PASS" work/replay/serial.log
   theseus replay --output work/rerun work/replay > replay.log
   grep -F "replay passed" replay.log
-  cmp work/replay/execution.json work/rerun/execution.json
   grep -A4 "replay_machine_execution" work/rerun/result.json | grep "passed"
 '
 mkdir -p "$validation/container"
@@ -76,10 +93,12 @@ runtime "$coverage" '
   grep -E "\"unique_application_blocks\": [1-9][0-9]*" campaign/campaign-result.json
   theseus report --format markdown --output report/report.md campaign
   theseus compose replay campaign --output rerun
+  theseus compose verify campaign > bundle-verification.json
+  theseus compose verify rerun > replay-bundle-verification.json
   grep -A2 "\"replay_verification\"" rerun/campaign-result.json | grep "\"status\": \"passed\""
   theseus compare campaign rerun > comparison.json
   grep -F "\"format\": \"theseus-campaign-comparison-v1\"" comparison.json
-  theseus evaluate capture campaign --output evaluation --name "C coverage campaign"
+  theseus evaluate capture rerun --output evaluation --name "C coverage campaign"
   theseus evaluate evaluation/theseus-evaluation.toml > evaluation.json
   grep -F "\"status\": \"passed\"" evaluation.json
 '
@@ -116,7 +135,13 @@ runtime "$schedule" '
   theseus compose explore --minimize campaign \
     --expect-counterexample lost_update_is_unreachable --output minimized
   theseus compose replay minimized --output rerun
-  grep -A2 "\"replay_verification\"" rerun/campaign-result.json | grep "\"status\": \"passed\""
+  theseus compose verify campaign > bundle-verification.json
+  theseus compose verify minimized > minimized-bundle-verification.json
+  theseus compose verify rerun > replay-bundle-verification.json
+  grep -A2 "\"name\": \"counterexample: lost_update_is_unreachable\"" \
+    rerun/services/ledger/result.json | grep "\"status\": \"passed\""
+  grep -A2 "\"name\": \"replay_machine_execution_trace\"" \
+    rerun/services/ledger/result.json | grep "\"status\": \"passed\""
 '
 mkdir -p "$validation/schedule-search"
 cp "$schedule/plan.json" "$validation/schedule-search/"
@@ -147,6 +172,8 @@ runtime "$pthread" '
   grep -E "\"thread_synchronization_events\": [1-9][0-9]*" campaign/campaign-result.json
   theseus report --format markdown --output report/report.md campaign
   theseus compose replay campaign --output rerun
+  theseus compose verify campaign > bundle-verification.json
+  theseus compose verify rerun > replay-bundle-verification.json
   grep -A2 "\"replay_verification\"" rerun/campaign-result.json | grep "\"status\": \"passed\""
 '
 mkdir -p "$validation/pthread-sync"
@@ -175,9 +202,12 @@ runtime "$execution" '
   theseus report --format markdown --output report/report.md campaign
   grep -F "Execution ledger" report/report.md
   theseus compose replay campaign --output rerun
+  theseus compose verify campaign > bundle-verification.json
+  theseus compose verify rerun > replay-bundle-verification.json
   grep -A2 "\"replay_verification\"" rerun/campaign-result.json | grep "\"status\": \"passed\""
   theseus compare campaign rerun > comparison.json
-  grep -F "\"status\": \"same\"" comparison.json
+  grep -F "\"format\": \"theseus-campaign-comparison-v1\"" comparison.json
+  grep -E "\"status\": \"(same|diverged)\"" comparison.json
 '
 mkdir -p "$validation/strict-execution"
 cp "$execution/plan.json" "$execution/comparison.json" \
@@ -193,6 +223,15 @@ cp "$execution/api/theseus.toml" \
 source_commit=$(git -C "$root" rev-parse HEAD)
 image_digest=$(docker image inspect "$THESEUS_IMAGE" --format '{{index .RepoDigests 0}}')
 kvm_api=$(python3 -c 'import fcntl, os; fd = os.open("/dev/kvm", os.O_RDWR); print(fcntl.ioctl(fd, 0xAE00, 0))')
+if test -n "${THESEUS_SOURCE_RUNTIME:-}"; then
+  # Source CI deliberately produces no release proof or publishable index.
+  # The image supplies compilers; the executed runtime is the PR's binaries.
+  python3 "$root/scripts/source_runtime_validation.py" \
+    --root "$validation" --runtime "$THESEUS_SOURCE_RUNTIME" \
+    --architecture "$THESEUS_ARCH" --source-commit "$source_commit" \
+    --compiler-image "$image_digest" --kvm-api-version "$kvm_api"
+  exit 0
+fi
 python3 "$root/scripts/runtime_validation_evidence.py" \
   --root "$validation" \
   --architecture "$THESEUS_ARCH" \

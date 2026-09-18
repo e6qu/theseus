@@ -24,19 +24,26 @@ Run the remaining steps inside the container.
 sed -n '1,220p' compose.yaml
 sed -n '1,200p' service/theseus.toml
 sed -n '1,120p' service/init
+sed -n '1,160p' service/finish.c
 mkdir -p service/runtime service/guest/root/bin
 cp /usr/local/bin/firecracker service/runtime/firecracker
 cp /opt/theseus/vmlinux service/guest/vmlinux
 cp /bin/busybox service/guest/root/bin/busybox
-for applet in mkdir mount reboot; do
+for applet in mkdir mount; do
   ln -sf busybox "service/guest/root/bin/$applet"
 done
+gcc -static -O2 -Wall -Wextra -Werror service/finish.c \
+  -o service/guest/root/bin/finish
 cp service/init service/guest/root/init
 chmod +x service/guest/root/init
 (cd service/guest/root && find . -print | cpio -o -H newc --quiet | gzip > ../initramfs.cpio.gz)
 ```
 
 The init script prints `THES:M:42`, then waits for `finish` on its serial TTY.
+The small C program writes `finished` directly to that TTY, waits for the UART
+to drain, and resets the guest. The event checkpoint also requires the complete
+line to reach the host. This keeps the terminal boundary independent of host
+thread timing.
 Inspect `service/init` before building it. `x-theseus.replay_start` asks the
 runner to capture every service and the simulated network at that ready boundary.
 Both executions restore this checkpoint before sending the recorded UART input.

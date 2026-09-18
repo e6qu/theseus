@@ -149,7 +149,7 @@ impl DeviceManager {
     fn setup_serial_device(
         event_manager: &mut EventManager,
         output: Option<&PathBuf>,
-        state: Option<&serial::SerialState>,
+        state: Option<&persist::SerialState>,
         rate_limiter: Option<TokenBucket>,
     ) -> Result<Arc<Mutex<SerialDevice>>, std::io::Error> {
         let (serial_in, serial_out) = match output {
@@ -175,7 +175,12 @@ impl DeviceManager {
             }
         };
 
-        let serial = Arc::new(Mutex::new(SerialDevice::new(serial_in, serial_out, state)?));
+        let restored: Option<serial::SerialState> = state.map(Into::into);
+        let mut device = SerialDevice::new(serial_in, serial_out, restored.as_ref())?;
+        if let Some(state) = state {
+            device.pending_input.extend(&state.pending_input);
+        }
+        let serial = Arc::new(Mutex::new(device));
         event_manager.add_subscriber(serial.clone());
         Ok(serial)
     }
@@ -185,20 +190,19 @@ impl DeviceManager {
         {
             self.mmio_platform_devices.serial.as_ref().map(|device| {
                 let locked = device.inner.lock().expect("Poisoned lock");
-                locked.serial.state().into()
+                let mut state: persist::SerialState = locked.serial.state().into();
+                state.pending_input = locked.pending_input.iter().copied().collect();
+                state
             })
         }
 
         #[cfg(target_arch = "x86_64")]
         {
             self.legacy_devices.as_ref().map(|legacy| {
-                legacy
-                    .stdio_serial
-                    .lock()
-                    .expect("Poisoned lock")
-                    .serial
-                    .state()
-                    .into()
+                let locked = legacy.stdio_serial.lock().expect("Poisoned lock");
+                let mut state: persist::SerialState = locked.serial.state().into();
+                state.pending_input = locked.pending_input.iter().copied().collect();
+                state
             })
         }
     }
@@ -209,7 +213,7 @@ impl DeviceManager {
         vcpus_exit_evt: &EventFd,
         vm: &KvmVm,
         serial_output: Option<&PathBuf>,
-        serial_state: Option<&serial::SerialState>,
+        serial_state: Option<&persist::SerialState>,
         serial_rate_limiter: Option<TokenBucket>,
     ) -> Result<PortIODeviceManager, DeviceManagerCreateError> {
         // Create serial device
@@ -752,15 +756,13 @@ impl<'a> Persist<'a> for DeviceManager {
     ) -> Result<Self, Self::Error> {
         // Setup legacy devices in case of x86
         #[cfg(target_arch = "x86_64")]
-        let serial_state: Option<vm_superio::serial::SerialState> =
-            state.serial_state.as_ref().map(Into::into);
         #[cfg(target_arch = "x86_64")]
         let legacy_devices = Self::create_legacy_devices(
             constructor_args.event_manager,
             constructor_args.vcpus_exit_evt,
             constructor_args.vm,
             constructor_args.vm_resources.serial_out_path.as_ref(),
-            serial_state.as_ref(),
+            state.serial_state.as_ref(),
             constructor_args.vm_resources.serial_rate_limiter(),
         )?;
 
@@ -826,10 +828,44 @@ pub(crate) mod tests {
         let path = file.as_path().to_path_buf();
         std::fs::write(&path, b"THES:M:42\n").unwrap();
         let mut manager = EventManager::new().unwrap();
-        let device = DeviceManager::setup_serial_device(&mut manager, Some(&path),
-            Some(&serial::SerialState::default()), None).unwrap();
+        let device = DeviceManager::setup_serial_device(
+            &mut manager,
+            Some(&path),
+            Some(&persist::SerialState::default()),
+            None,
+        )
+        .unwrap();
         device.lock().unwrap().serial.write(0, b'X').unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"THES:M:42\nX");
+    }
+
+    #[test]
+    fn serial_checkpoint_preserves_pending_host_input() {
+        let mut manager = EventManager::new().unwrap();
+        let device = DeviceManager::setup_serial_device(&mut manager, None, None, None).unwrap();
+        let input = (0..=127).collect::<Vec<u8>>();
+        device.lock().unwrap().enqueue_raw_input(&input).unwrap();
+        let state = {
+            let locked = device.lock().unwrap();
+            let mut state: persist::SerialState = locked.serial.state().into();
+            state.pending_input = locked.pending_input.iter().copied().collect();
+            state
+        };
+
+        let mut restored_manager = EventManager::new().unwrap();
+        let restored = DeviceManager::setup_serial_device(
+            &mut restored_manager,
+            None,
+            Some(&state),
+            None,
+        )
+        .unwrap();
+        let restored = restored.lock().unwrap();
+        assert_eq!(restored.serial.state().in_buffer, input[..16]);
+        assert_eq!(
+            restored.pending_input.iter().copied().collect::<Vec<_>>(),
+            input[16..]
+        );
     }
 
     use crate::builder::tests::{

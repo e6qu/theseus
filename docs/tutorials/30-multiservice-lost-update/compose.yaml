@@ -31,8 +31,8 @@ services:
     env_file: inputs/worker.env
     environment:
       WORKER_MODE: network
-    entrypoint: [/bin/httpd]
-    command: [-f, -p, '8080', -h, /www]
+    entrypoint: [/bin/sh, -c]
+    command: ["/bin/busybox wget -qO- http://counter:8080/health >/dev/null; exec /bin/httpd -f -p 8080 -h /www"]
     working_dir: /work
     user: "65534:65534"
     read_only: true
@@ -64,8 +64,8 @@ services:
     env_file: inputs/worker.env
     environment:
       WORKER_MODE: network
-    entrypoint: [/bin/httpd]
-    command: [-f, -p, '8080', -h, /www]
+    entrypoint: [/bin/sh, -c]
+    command: ["/bin/busybox wget -qO- http://counter:8080/health >/dev/null; exec /bin/httpd -f -p 8080 -h /www"]
     working_dir: /work
     user: "65534:65534"
     read_only: true
@@ -93,6 +93,7 @@ networks:
   backplane: {}
 
 x-theseus:
+  replay_start: ready_checkpoint
   campaign:
     driver: counter
     state: {phase: new, a: idle, b: idle}
@@ -116,7 +117,7 @@ x-theseus:
         sets_state: {phase: partitioned}
         shell:
           phase: setup
-          command: [/bin/sh, -c, "rm -f /state/*; echo 0 > /state/counter"]
+          command: [/bin/sh, -c, "rm -f /state/*; echo 0 > /state/counter; mkfifo /state/a.ready /state/b.ready /state/a.go /state/b.go"]
 
       - name: probe_partition
         service: writer-a
@@ -124,7 +125,7 @@ x-theseus:
         requires_state: {phase: partitioned}
         sets_state: {phase: partition_probed}
         shell:
-          command: [/bin/sh, -c, "printf partition-probe | /bin/busybox nc -u -w 0 counter 9; printf '{\"network\":\"partition_probe_sent\"}\n'"]
+          command: [/bin/sh, -c, "/work/probe; printf '{\"network\":\"partition_probe_sent\"}\n'"]
           output_json: true
 
       - name: verify_recovery
@@ -133,7 +134,7 @@ x-theseus:
         requires_state: {phase: partition_probed}
         sets_state: {phase: ready}
         shell:
-          command: [/bin/sh, -c, "/bin/busybox wget -qO- http://counter:8080/health >/dev/null; printf '{\"network\":\"recovered\"}\n'"]
+          command: [/bin/sh, -c, "/work/probe; printf '{\"network\":\"recovery_probe_sent\"}\n'"]
           output_json: true
 
       - name: launch_a
@@ -152,7 +153,7 @@ x-theseus:
         requires_state: {a: running, b: idle}
         sets_state: {a: released}
         shell:
-          command: [/bin/sh, -c, "while [ ! -e /state/a.ready ]; do sleep 0.01; done; touch /state/a.go"]
+          command: [/bin/sh, -c, "read -r ready < /state/a.ready; test \"$ready\" = ready; printf 'go\n' > /state/a.go"]
 
       - name: complete_a
         service: writer-a
@@ -180,7 +181,7 @@ x-theseus:
         requires_state: {a: done, b: running}
         sets_state: {b: released}
         shell:
-          command: [/bin/sh, -c, "while [ ! -e /state/b.ready ]; do sleep 0.01; done; touch /state/b.go"]
+          command: [/bin/sh, -c, "read -r ready < /state/b.ready; test \"$ready\" = ready; printf 'go\n' > /state/b.go"]
 
       - name: launch_b_overlapped
         service: writer-b
@@ -198,7 +199,7 @@ x-theseus:
         requires_state: {a: running, b: running}
         sets_state: {a: released, b: released}
         shell:
-          command: [/bin/sh, -c, "while [ ! -e /state/a.ready ] || [ ! -e /state/b.ready ]; do sleep 0.01; done; touch /state/a.go /state/b.go"]
+          command: [/bin/sh, -c, "read -r ready_a < /state/a.ready; read -r ready_b < /state/b.ready; test \"$ready_a\" = ready; test \"$ready_b\" = ready; printf 'go\n' > /state/a.go; printf 'go\n' > /state/b.go"]
 
       - name: complete_b
         service: writer-b
@@ -227,7 +228,7 @@ x-theseus:
         sets_state: {phase: recovered}
         shell:
           phase: recovery
-          command: [/bin/sh, -c, "rm -f /state/*.ready /state/*.go"]
+          command: [/bin/sh, -c, "rm -f /state/*.ready /state/*.go; mkfifo /state/a.ready /state/b.ready /state/a.go /state/b.go"]
 
     properties:
       - name: network_recovery_is_reachable
@@ -235,7 +236,7 @@ x-theseus:
         service: writer-a
         predicate:
           json:
-            fields: {/event: shell_operation, /name: verify_recovery, /output/network: recovered}
+            fields: {/event: shell_operation, /name: verify_recovery, /output/network: recovery_probe_sent}
       - name: sequential_result_is_reachable
         kind: reachable
         service: counter

@@ -526,15 +526,25 @@ pub(super) fn boot_or_load(
     topology: &mut TopologyPlan,
     directory: &Path,
     driver: &str,
+    verified: Option<CampaignCheckpoint>,
 ) -> Result<CampaignCheckpoint, String> {
-    if let Some(locked) = &topology.starting_checkpoint {
+    let inherited_identity = topology
+        .starting_checkpoint
+        .as_ref()
+        .map(|root| root.sha256.clone());
+    let root = if let Some(root) = verified {
+        root
+    } else if let Some(locked) = &topology.starting_checkpoint {
         if topology.replay_start != ReplayStart::ReadyCheckpoint {
             return Err("checkpoint cannot be downgraded to fresh_boot".to_owned());
         }
-        return load(topology, locked);
-    }
-    let root = boot_campaign_checkpoint(topology, directory, driver)?;
+        load(topology, locked)?
+    } else {
+        boot_campaign_checkpoint(topology, directory, driver)?
+    };
     if topology.replay_start == ReplayStart::ReadyCheckpoint {
+        fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+        localize_artifacts(topology, directory)?;
         topology.checkpoint_prefixes = root
             .scheduler
             .iter()
@@ -552,8 +562,121 @@ pub(super) fn boot_or_load(
             .collect();
         topology.starting_checkpoint =
             Some(retain(topology, &root, &directory.join("starting-state"))?);
+        if inherited_identity.as_ref().is_some_and(|expected| {
+            &topology.starting_checkpoint.as_ref().unwrap().sha256 != expected
+        }) {
+            return Err("relocating a checkpoint changed its retained identity".to_owned());
+        }
+        // Canonicalize the first campaign's context through the same verified
+        // import used by replay. A preverified imported root needs no second
+        // eager RAM copy merely to move its retained files.
+        if inherited_identity.is_none() {
+            return load(topology, topology.starting_checkpoint.as_ref().unwrap());
+        }
     }
     Ok(root)
+}
+
+/// Retain every artifact in the plan, including flattened-image provenance,
+/// coverage catalogs, configuration, secrets, and volume inputs. Exported
+/// replays and minimizations must not depend on the original campaign tree.
+fn localize_artifacts(topology: &mut TopologyPlan, directory: &Path) -> Result<(), String> {
+    let artifacts = directory.join("artifacts");
+    fs::create_dir_all(&artifacts).map_err(|error| error.to_string())?;
+    let artifacts = fs::canonicalize(artifacts).map_err(|error| error.to_string())?;
+    let mut value = serde_json::to_value(&*topology).map_err(|error| error.to_string())?;
+    fn copy(value: &mut serde_json::Value, artifacts: &Path) -> Result<(), String> {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let (Some(path), Some(digest)) = (
+                    map.get("path").and_then(|value| value.as_str()),
+                    map.get("sha256").and_then(|value| value.as_str()),
+                ) {
+                    if digest.len() != 64
+                        || !digest
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    {
+                        return Err("invalid artifact identity during checkpoint export".to_owned());
+                    }
+                    let target = artifacts.join(digest);
+                    if target.exists() {
+                        if artifact(&target, MAX_MEMORY)
+                            .map_err(|error| error.to_string())?
+                            .sha256
+                            != digest
+                        {
+                            return Err("changed artifact in checkpoint export".to_owned());
+                        }
+                    } else {
+                        let mut source = fs::File::open(path)
+                            .map_err(|error| format!("cannot export {path}: {error}"))?;
+                        if !source
+                            .metadata()
+                            .map_err(|error| error.to_string())?
+                            .is_file()
+                        {
+                            return Err("checkpoint inputs must be regular files".to_owned());
+                        }
+                        let mut output = fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(&target)
+                            .map_err(|error| error.to_string())?;
+                        let mut hasher = Sha256::new();
+                        let mut buffer = [0; 64 * 1024];
+                        let mut bytes = 0u64;
+                        loop {
+                            let count = source
+                                .read(&mut buffer)
+                                .map_err(|error| error.to_string())?;
+                            if count == 0 {
+                                break;
+                            }
+                            bytes += count as u64;
+                            if bytes > MAX_MEMORY {
+                                return Err("checkpoint input exceeds 64 GiB".to_owned());
+                            }
+                            output
+                                .write_all(&buffer[..count])
+                                .map_err(|error| error.to_string())?;
+                            hasher.update(&buffer[..count]);
+                        }
+                        if format!("{:x}", hasher.finalize()) != digest {
+                            return Err(format!("checkpoint input changed during export: {path}"));
+                        }
+                        output.sync_all().map_err(|error| error.to_string())?;
+                        // Preserve executable runtime and adapter artifacts.
+                        fs::set_permissions(
+                            &target,
+                            source
+                                .metadata()
+                                .map_err(|error| error.to_string())?
+                                .permissions(),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    }
+                    map.insert("path".to_owned(), target.display().to_string().into());
+                } else {
+                    for (key, child) in map {
+                        if key != "starting_checkpoint" {
+                            copy(child, artifacts)?;
+                        }
+                    }
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for child in values {
+                    copy(child, artifacts)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    copy(&mut value, &artifacts)?;
+    *topology = serde_json::from_value(value).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 pub(super) fn check_prefix(
@@ -593,6 +716,20 @@ mod tests {
             }}}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn portable_campaign_replay_mode_survives_export() {
+        let mut topology = topology();
+        assert_eq!(topology.machine_replay, MachineReplayMode::Exact);
+        topology.machine_replay = MachineReplayMode::HostInputs;
+        topology.event_order = vec!["api".to_owned(), "api".to_owned()];
+
+        let encoded = serde_json::to_vec(&topology).unwrap();
+        let decoded: TopologyPlan = serde_json::from_slice(&encoded).unwrap();
+
+        assert_eq!(decoded.machine_replay, MachineReplayMode::HostInputs);
+        assert_eq!(decoded.event_order, ["api", "api"]);
     }
 
     #[test]
@@ -739,5 +876,51 @@ mod tests {
         assert_eq!(nic.read_frame(&mut bytes), Some(6));
         assert_eq!(&bytes[..6], b"queued");
         assert_eq!(nic.stats().tx_sha256, nic.stats().rx_sha256);
+    }
+
+    #[test]
+    fn exported_inputs_survive_source_removal_without_changing_configuration() {
+        let directory = std::env::temp_dir().join(format!(
+            "theseus-export-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = directory.join("source");
+        let exported = directory.join("exported");
+        fs::create_dir_all(&source).unwrap();
+        let mut topology = topology();
+        let run = &mut topology.services.get_mut("api").unwrap().run;
+        for (name, locked) in [
+            ("firecracker", &mut run.runtime.firecracker),
+            ("kernel", &mut run.guest.kernel),
+            ("initrd", run.guest.initramfs.as_mut().unwrap()),
+        ] {
+            let path = source.join(name);
+            fs::write(&path, name.as_bytes()).unwrap();
+            locked.path = path.display().to_string();
+            locked.sha256 = artifact(&path, MAX_MEMORY).unwrap().sha256;
+        }
+        let identity = configuration(&topology).unwrap();
+        localize_artifacts(&mut topology, &exported).unwrap();
+        assert_eq!(configuration(&topology).unwrap(), identity);
+        fs::remove_dir_all(&source).unwrap();
+        let run = &topology.services["api"].run;
+        for locked in [
+            &run.runtime.firecracker,
+            &run.guest.kernel,
+            run.guest.initramfs.as_ref().unwrap(),
+        ] {
+            assert!(Path::new(&locked.path).starts_with(&exported));
+            assert_eq!(
+                artifact(Path::new(&locked.path), MAX_MEMORY)
+                    .unwrap()
+                    .sha256,
+                locked.sha256
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
     }
 }

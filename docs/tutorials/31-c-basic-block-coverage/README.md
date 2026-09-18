@@ -50,6 +50,10 @@ docker save theseus-c-coverage-tutorial -o service/work/service.tar
 sed -n '1,160p' compose.yaml
 ```
 
+The final image contains only the two compiled commands, the coverage catalog,
+and their runtime libraries. Keeping the guest small leaves the deterministic
+round budget for the campaign instead of image unpacking.
+
 The Compose extension selects `application_blocks`. Each record is scoped by
 service, process, module, build SHA-256, and module-relative block address, so
 ASLR cannot change its identity and a different build cannot be conflated with
@@ -77,6 +81,10 @@ grep -n 'application_blocks' plan.json
 
 ## 4. Run the campaign
 
+Theseus boots once, pauses at service readiness, and retains a checkpoint.
+Every input and replay inherits that boot state. Replay checks resumed
+execution, not repeatable boot.
+
 ```sh
 theseus compose explore --output campaign compose.yaml
 ```
@@ -90,12 +98,17 @@ grep -R '^THES:COV:v1:classifier:branching:' campaign/runs/*/services/classifier
 theseus report --format markdown --output report/report.md campaign
 grep -n 'application block' report/report.md
 theseus compose replay campaign --output rerun
+theseus compose verify campaign
+theseus compose verify rerun
 grep -n '"status": "passed"' rerun/campaign-result.json
 ```
 
-The replay succeeds only if the recorded application-block sets and novelty
-match. The raw serial records, structured campaign result, locked service
-image, and human-readable report remain available for inspection.
+Replay checks the recorded application blocks and actively gates the retained
+host-input stream. The complete intervening machine trace, including userspace
+interrupt deliveries, remains in the bundle as evidence.
+Keep the whole `campaign` directory, including its checkpoint and artifacts,
+to move or replay it elsewhere. `compose verify` checks retained integrity
+without KVM; it does not certify native execution.
 
 ## 6. Clean up (optional)
 

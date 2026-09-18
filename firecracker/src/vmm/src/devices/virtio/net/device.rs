@@ -378,17 +378,19 @@ impl Net {
         tx_rate_limiter: RateLimiter,
         mtu: Option<u16>,
     ) -> Result<Self, NetError> {
-        let mut avail_features = (1 << VIRTIO_NET_F_GUEST_CSUM)
-            | (1 << VIRTIO_NET_F_CSUM)
-            | (1 << VIRTIO_NET_F_GUEST_TSO4)
-            | (1 << VIRTIO_NET_F_GUEST_TSO6)
-            | (1 << VIRTIO_NET_F_GUEST_UFO)
-            | (1 << VIRTIO_NET_F_HOST_TSO4)
-            | (1 << VIRTIO_NET_F_HOST_TSO6)
-            | (1 << VIRTIO_NET_F_HOST_UFO)
-            | (1 << VIRTIO_F_VERSION_1)
+        let mut avail_features = (1 << VIRTIO_F_VERSION_1)
             | (1 << VIRTIO_NET_F_MRG_RXBUF)
             | (1 << VIRTIO_RING_F_EVENT_IDX);
+        if matches!(backend, NetBackend::Tap(_)) {
+            avail_features |= (1 << VIRTIO_NET_F_GUEST_CSUM)
+                | (1 << VIRTIO_NET_F_CSUM)
+                | (1 << VIRTIO_NET_F_GUEST_TSO4)
+                | (1 << VIRTIO_NET_F_GUEST_TSO6)
+                | (1 << VIRTIO_NET_F_GUEST_UFO)
+                | (1 << VIRTIO_NET_F_HOST_TSO4)
+                | (1 << VIRTIO_NET_F_HOST_TSO6)
+                | (1 << VIRTIO_NET_F_HOST_UFO);
+        }
 
         let mut config_space = ConfigSpace::default();
         if let Some(mtu) = mtu {
@@ -1533,6 +1535,33 @@ pub mod tests {
         assert_eq!(stats.tx_frames, 0);
         assert_eq!(stats.rx_frames, 0);
         assert_eq!(stats.dropped, 0);
+    }
+
+    #[test]
+    fn simulated_nic_does_not_advertise_unimplemented_offloads() {
+        let net = Net::new_with_sim(
+            "simulated".to_owned(),
+            SimNetConfig::default(),
+            None,
+            RateLimiter::default(),
+            RateLimiter::default(),
+            None,
+        )
+        .unwrap();
+
+        for feature in [
+            VIRTIO_NET_F_GUEST_CSUM,
+            VIRTIO_NET_F_CSUM,
+            VIRTIO_NET_F_GUEST_TSO4,
+            VIRTIO_NET_F_GUEST_TSO6,
+            VIRTIO_NET_F_GUEST_UFO,
+            VIRTIO_NET_F_HOST_TSO4,
+            VIRTIO_NET_F_HOST_TSO6,
+            VIRTIO_NET_F_HOST_UFO,
+        ] {
+            assert_eq!(net.avail_features & (1 << feature), 0);
+        }
+        assert_ne!(net.avail_features & (1 << VIRTIO_F_VERSION_1), 0);
     }
 
     #[test]

@@ -90,6 +90,9 @@ pub enum RunError {
     },
     MissingStdin,
     GuestNeverReady,
+    EventCheckpointNotReached {
+        checkpoint: String,
+    },
     TimedOut {
         seconds: u64,
     },
@@ -171,6 +174,10 @@ impl fmt::Display for RunError {
             Self::GuestNeverReady => {
                 write!(formatter, "guest did not emit the Theseus ready marker")
             }
+            Self::EventCheckpointNotReached { checkpoint } => write!(
+                formatter,
+                "guest did not emit serial checkpoint {checkpoint:?} as a complete line"
+            ),
             Self::TimedOut { seconds } => {
                 write!(formatter, "guest did not exit within {seconds} seconds")
             }
@@ -548,7 +555,11 @@ fn execute(
         None
     };
     let capture = captures_execution(plan);
+    // Exact replay is installed in Firecracker before its first vCPU turn.
+    // Host-input replay is driven by this locked plan's events and service
+    // operations; intervening guest execution remains evidence, not control.
     let expected_trace = expected
+        .filter(|_| plan.run.machine_replay == crate::manifest::MachineReplayMode::Exact)
         .map(|evidence| {
             let path = run_directory.join("expected-execution.json");
             write_json(&path, &evidence.machine_execution_trace)?;
@@ -593,12 +604,19 @@ fn execute(
             ),
         });
         if let Some(expected) = expected {
-            let matches = expected == &evidence;
+            let matches = replay_execution_matches(plan.run.machine_replay, expected, &evidence);
             execution.checks.push(if matches {
                 passed(
                     "replay_machine_execution",
                     "machine_execution",
-                    "the exact ordered stream actively governed replay through guest exit",
+                    match plan.run.machine_replay {
+                        crate::manifest::MachineReplayMode::Exact => {
+                            "the exact ordered stream actively governed replay through guest exit"
+                        }
+                        crate::manifest::MachineReplayMode::HostInputs => {
+                            "the locked host-input stream and declared outcome reproduced"
+                        }
+                    },
                 )
             } else {
                 failed(
@@ -613,6 +631,29 @@ fn execute(
         }
     }
     Ok(execution)
+}
+
+fn replay_execution_matches(
+    mode: crate::manifest::MachineReplayMode,
+    expected: &crate::execution::Evidence,
+    actual: &crate::execution::Evidence,
+) -> bool {
+    if mode == crate::manifest::MachineReplayMode::Exact {
+        return expected == actual;
+    }
+    actual.replay_error.is_none()
+        && expected.boundary == actual.boundary
+        && expected.start == actual.start
+        && machine_replay_control_trace(&expected.machine_execution_trace)
+            == machine_replay_control_trace(&actual.machine_execution_trace)
+}
+
+fn machine_replay_control_trace(trace: &[String]) -> Vec<&str> {
+    trace
+        .iter()
+        .filter(|record| record.starts_with("host:"))
+        .map(String::as_str)
+        .collect()
 }
 
 fn launch_runtime(
@@ -827,6 +868,12 @@ fn send_events_and_wait(
             wait_for_ready(serial_log.to_path_buf(), child, plan.run.timeout_secs)?;
         }
         for event in &plan.events {
+            let input_offset = fs::metadata(serial_log)
+                .map_err(|source| RunError::Read {
+                    path: serial_log.to_path_buf(),
+                    source,
+                })?
+                .len() as usize;
             if capture {
                 // Keep each manifest payload one exact host-input decision.
                 api_put(
@@ -845,17 +892,26 @@ fn send_events_and_wait(
                         source,
                     })?;
             }
-        }
-        if !capture {
-            child
-                .stdin
-                .as_mut()
-                .ok_or(RunError::MissingStdin)?
-                .flush()
-                .map_err(|source| RunError::Write {
-                    path: PathBuf::from("Firecracker serial input"),
-                    source,
-                })?;
+            if !capture {
+                child
+                    .stdin
+                    .as_mut()
+                    .ok_or(RunError::MissingStdin)?
+                    .flush()
+                    .map_err(|source| RunError::Write {
+                        path: PathBuf::from("Firecracker serial input"),
+                        source,
+                    })?;
+            }
+            if let Some(checkpoint) = &event.checkpoint {
+                wait_for_serial_checkpoint(
+                    serial_log,
+                    input_offset,
+                    checkpoint,
+                    child,
+                    plan.run.timeout_secs,
+                )?;
+            }
         }
     }
     let terminal = wait_for_exit(child, plan.run.timeout_secs, capture.then_some(socket))?;
@@ -912,6 +968,58 @@ fn wait_for_ready(
         thread::sleep(POLL_INTERVAL);
     }
     Err(RunError::GuestNeverReady)
+}
+
+fn wait_for_serial_checkpoint(
+    serial_log: &Path,
+    input_offset: usize,
+    checkpoint: &str,
+    child: &mut Child,
+    timeout_secs: u64,
+) -> Result<(), RunError> {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    while Instant::now() < deadline {
+        let contents = fs::read(serial_log).map_err(|source| RunError::Read {
+            path: serial_log.to_path_buf(),
+            source,
+        })?;
+        if contents
+            .get(input_offset..)
+            .is_some_and(|response| serial_checkpoint_seen(response, checkpoint.as_bytes()))
+        {
+            return Ok(());
+        }
+        if let Some(status) = child.try_wait().map_err(|source| RunError::Read {
+            path: PathBuf::from("Firecracker process"),
+            source,
+        })? {
+            return Err(RunError::GuestExited {
+                status: status.to_string(),
+            });
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+    Err(RunError::EventCheckpointNotReached {
+        checkpoint: checkpoint.to_owned(),
+    })
+}
+
+fn serial_checkpoint_seen(response: &[u8], checkpoint: &[u8]) -> bool {
+    !checkpoint.is_empty()
+        && response
+            .windows(checkpoint.len())
+            .enumerate()
+            .any(|(offset, window)| {
+                window == checkpoint
+                    && response[offset + checkpoint.len()..]
+                        .iter()
+                        .position(|byte| *byte == b'\n')
+                        .is_some_and(|newline| {
+                            response[offset + checkpoint.len()..offset + checkpoint.len() + newline]
+                                .iter()
+                                .all(|byte| *byte == b'\r')
+                        })
+            })
 }
 
 enum Terminal {
@@ -1752,6 +1860,17 @@ fn validate_replay_plan(path: &Path, plan: &RunPlan) -> Result<(), RunError> {
                 reason: "event data must be non-empty, even-length hexadecimal".to_owned(),
             });
         }
+        if event.checkpoint.as_ref().is_some_and(|checkpoint| {
+            checkpoint.is_empty()
+                || checkpoint
+                    .chars()
+                    .any(|character| matches!(character, '\r' | '\n' | '\0'))
+        }) {
+            return Err(RunError::InvalidBundle {
+                path: path.to_path_buf(),
+                reason: "event checkpoint must be a non-empty single-line serial marker".to_owned(),
+            });
+        }
     }
     let mut check_names = HashSet::new();
     for check in &plan.checks {
@@ -2108,6 +2227,52 @@ mem_size_mib = 128
     }
 
     #[test]
+    fn host_input_projection_ignores_intervening_guest_execution() {
+        let original = vec![
+            "vcpu:0:pio_write:0x3f8:1:41".to_owned(),
+            "host:serial_input:2:2a0a".to_owned(),
+            "vcpu:0:interrupt:serial:4".to_owned(),
+            "host:control_event:ctrl_alt_del".to_owned(),
+        ];
+        let replay = vec![
+            "vcpu:0:mmio_read:0x1000:4:00000000".to_owned(),
+            "host:serial_input:2:2a0a".to_owned(),
+            "vcpu:0:pio_write:0x64:1:fe".to_owned(),
+            "host:control_event:ctrl_alt_del".to_owned(),
+        ];
+        assert_ne!(original, replay);
+        assert_eq!(
+            machine_replay_control_trace(&original),
+            machine_replay_control_trace(&replay)
+        );
+    }
+
+    #[test]
+    fn host_input_bundle_reapplies_its_plan_without_installing_an_exact_trace() {
+        let directory = execution_api_fixture("exit");
+        let root = directory.path();
+        let manifest = root.join("theseus.toml");
+        let text = fs::read_to_string(&manifest).unwrap();
+        fs::write(
+            &manifest,
+            text.replace("seed = 42", "seed = 42\nmachine_replay = \"host_inputs\""),
+        )
+        .unwrap();
+        let bundle = root.join("run");
+        test(&manifest, &bundle).unwrap();
+        let rerun = root.join("rerun");
+        replay_to(&bundle, &rerun).unwrap();
+        assert!(!rerun.join("expected-execution.json").exists());
+        let result: Value =
+            serde_json::from_slice(&fs::read(rerun.join("result.json")).unwrap()).unwrap();
+        assert!(result["checks"].as_array().unwrap().iter().any(|check| {
+            check["name"] == "replay_machine_execution"
+                && check["status"] == "passed"
+                && check["detail"] == "the locked host-input stream and declared outcome reproduced"
+        }));
+    }
+
+    #[test]
     fn changed_uart_input_fails_before_delivery_and_retains_diagnostics() {
         let directory = execution_api_fixture("exit");
         let root = directory.path();
@@ -2402,5 +2567,14 @@ body_contains = "ok"
         assert!(execution.checks.iter().any(|check| {
             check.name == "container_service.operation.read_health" && check.status == "passed"
         }));
+    }
+
+    #[test]
+    fn serial_checkpoint_requires_a_complete_line() {
+        assert!(!serial_checkpoint_seen(b"finished", b"finished"));
+        assert!(serial_checkpoint_seen(b"unfinished\n", b"finished"));
+        assert!(serial_checkpoint_seen(b"noise\nfinished\n", b"finished"));
+        assert!(serial_checkpoint_seen(b"finished\r\n", b"finished"));
+        assert!(!serial_checkpoint_seen(b"finished!\n", b"finished"));
     }
 }

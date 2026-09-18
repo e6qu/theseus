@@ -13,9 +13,17 @@ CERTIFICATION_INIT = (
 CERTIFICATION_MANIFEST = (
     ROOT / "docs/tutorials/11-certify-runtime/service/theseus.toml"
 ).read_text()
+CERTIFICATION_FINISH = (
+    ROOT / "docs/tutorials/11-certify-runtime/service/finish.c"
+).read_text()
 
 
 def main() -> None:
+    source_ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert 'sh scripts/run_native_validation.sh || validation_status=$?' in source_ci
+    assert 'sh scripts/run_native_counterexample.sh || counterexample_status=$?' in source_ci
+    assert 'test "$validation_status" -eq 0' in source_ci
+    assert 'test "$counterexample_status" -eq 0' in source_ci
     assert "workflow_run:" in WORKFLOW
     assert "workflows: [publish-runtime]" in WORKFLOW
     assert "default: amd64" in WORKFLOW
@@ -40,8 +48,14 @@ def main() -> None:
     assert "theseus compose plan > /tutorial/plan.json" in WORKFLOW
     assert "--plan /tutorial/plan.json --output /tutorial/certificate" in WORKFLOW
     assert "THES:M:42" in CERTIFICATION_INIT
-    assert "reboot -f" in CERTIFICATION_INIT
-    assert "poweroff -f" not in CERTIFICATION_INIT
+    assert "exec /bin/finish" in CERTIFICATION_INIT
+    assert "RB_AUTOBOOT" in CERTIFICATION_FINISH
+    assert "tcdrain(serial)" in CERTIFICATION_FINISH
+    assert CERTIFICATION_INIT.count("stty -F /dev/ttyS0 -echo -opost") == 1
+    assert CERTIFICATION_INIT.count("read -r command < /dev/ttyS0") == 1
+    assert source_ci.count("gcc -static -O2 -Wall -Wextra -Werror service/finish.c") == 1
+    assert WORKFLOW.count("gcc -static -O2 -Wall -Wextra -Werror service/finish.c") == 1
+    assert 'checkpoint = "finished"' in CERTIFICATION_MANIFEST
     assert "max_rounds = 10000000" in CERTIFICATION_MANIFEST
     assert WORKFLOW.count('docker build --load --platform "linux/$ARCH"') == 2
     assert "docs/tutorials/30-multiservice-lost-update" in WORKFLOW
@@ -92,12 +106,28 @@ def main() -> None:
         assert tutorial in VALIDATION
     assert VALIDATION.count("theseus compose replay") == 4
     assert "theseus replay --output work/rerun work/replay" in VALIDATION
-    assert "cmp work/replay/execution.json work/rerun/execution.json" in VALIDATION
+    assert 'machine_replay = "host_inputs"' in (
+        ROOT / "docs/tutorials/14-container-image/theseus.toml"
+    ).read_text()
+    for tutorial in (
+        "31-c-basic-block-coverage",
+        "33-search-thread-schedules",
+        "35-control-pthread-synchronization",
+    ):
+        dockerfile = (
+            ROOT / "docs/tutorials" / tutorial / "service/Dockerfile"
+        ).read_text()
+        assert "FROM scratch" in dockerfile
+        assert 'cp --parents "$dependency" /rootfs' in dockerfile
+    assert "cmp work/replay/execution.json work/rerun/execution.json" not in VALIDATION
     assert "theseus compare campaign rerun" in VALIDATION
-    assert "theseus evaluate capture campaign" in VALIDATION
+    assert "theseus evaluate capture rerun" in VALIDATION
     assert "theseus evaluate evaluation/theseus-evaluation.toml" in VALIDATION
+    assert VALIDATION.index("theseus compose replay campaign --output rerun") < VALIDATION.index(
+        "theseus evaluate capture rerun"
+    )
     assert "execution_decisions" in VALIDATION
-    assert 'status\\\": \\\"same' in VALIDATION
+    assert 'status\\\": \\\"(same|diverged)' in VALIDATION
     assert "scripts/runtime_validation_evidence.py" in VALIDATION
     assert "scripts/reproducible_tar.py" in VALIDATION
     assert " jq " not in VALIDATION

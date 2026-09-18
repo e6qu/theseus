@@ -2,9 +2,10 @@
 
 Run two ordinary worker images against one counter image. The workers use the
 simulated Compose network. Before exploring either counter outcome, the
-campaign applies a required partition, sends a UDP probe that the simulated
-network records as dropped, heals the network, and verifies that HTTP works
-again. The workers then remain in flight at the same time. A sequential
+campaign establishes the network path, applies a required partition, sends a
+UDP probe that the simulated network records as dropped, heals the network,
+and sends a second probe. The following HTTP requests prove that the path
+recovered. The workers then remain in flight at the same time. A sequential
 schedule leaves the counter at two. An overlapping schedule lets both HTTP
 requests read zero before either writes, leaving the counter at one.
 
@@ -12,6 +13,8 @@ This example also exercises one locked runtime contract: service-name
 networking, health checks, launch overrides, numeric credentials, environment
 precedence, configs, secrets, seeded bind mounts, read-only roots, tmpfs, and
 CPU and memory quantities. The images contain no Theseus SDK.
+The workers run as UID 65534 and verify that the injected secret remains
+root-only while the config and seeded fixture remain readable.
 
 ## Before you start
 
@@ -29,8 +32,12 @@ export THESEUS_IMAGE=ghcr.io/e6qu/theseus:${THESEUS_TAG}-${THESEUS_ARCH}
 ```
 
 This directory is the complete tutorial input. The two `increment` files are
-the worker client and the deliberately unsafe counter endpoint. There is no
-orchestration script and no repository checkout.
+the worker client and the deliberately unsafe counter endpoint. The endpoint
+uses one named pipe to announce that each request has read the counter and a
+second to hold the write. The campaign releases both writes only after both
+reads, without timers. `probe.c` sends one UDP datagram and exits without
+waiting for a reply. There is no orchestration script and no repository
+checkout.
 
 ## 1. Build and inspect the services
 
@@ -40,6 +47,7 @@ Read the race and the worker's runtime checks:
 sed -n '1,100p' counter/increment
 sed -n '1,100p' worker/increment
 sed -n '1,100p' worker/check
+sed -n '1,120p' worker/probe.c
 ```
 
 Build and save both images for the native runtime architecture:
@@ -89,6 +97,10 @@ file. The retained replay uses its locked copies instead of these source files.
 
 ## 4. Run the expected counterexample
 
+Theseus boots the three services once and captures their ready state, RAM,
+and network queues. Every timeline inherits this state. Replay checks resumed
+execution; it does not prove repeatable boot.
+
 ```sh
 theseus compose explore \
   --expect-counterexample distributed_lost_update_is_unreachable \
@@ -97,15 +109,17 @@ grep -n 'distributed_lost_update_is_unreachable' campaign/campaign-result.json
 grep -n 'backplane:partition@setup\|backplane:heal@probe_partition' \
   campaign/campaign-result.json
 grep -E '"dropped": [1-9][0-9]*' campaign/campaign-result.json
-grep -R '"network":"recovered"' campaign/runs/*/services/writer-a/serial.log
+grep -R '"network":"recovery_probe_sent"' campaign/runs/*/services/writer-a/serial.log
 grep -R '"value":1' campaign/runs/*/services/counter/serial.log
 grep -R '"value":2' campaign/runs/*/services/counter/serial.log
 ```
 
 The command succeeds only when the named property has a retained failed
-verdict. The action names, dropped-frame count, and recovery output show that
-the partition was exercised and healed before the two counter outcomes were
-explored.
+verdict. Each worker establishes its neighbor entry before announcing startup
+readiness. Each UDP probe performs one `sendto()` and exits without waiting for
+a reply. The action names, dropped-frame count, recovery probe, and successful
+counter requests show that the partition was exercised and healed before the
+two outcomes were explored.
 
 ## 5. Inspect, minimize, and replay
 
@@ -125,18 +139,25 @@ theseus compose explore --minimize campaign \
   --output minimized
 sed -n '1,180p' minimized/minimization.json
 theseus compose replay minimized --output rerun
+theseus compose verify campaign
+theseus compose verify minimized
+theseus compose verify rerun
 grep -n 'partition\|heal' rerun/topology-result.json
 grep -E '"dropped": [1-9][0-9]*' rerun/services/*/result.json
-grep -R '"network":"recovered"' rerun/services/writer-a/serial.log
+grep -R '"network":"recovery_probe_sent"' rerun/services/writer-a/serial.log
 grep -R '"value":1' rerun/services/counter/serial.log
 ```
 
 Required actions survive minimization, so this replay includes the partition,
-dropped UDP probe, recovery, successful HTTP probe, and lost update. The replay
-uses the minimized plan and artifacts. It does not rebuild either image or
-select a new operation schedule. Its artifact paths are relative to the locked
-bundle, so the complete `minimized` directory can be moved and replayed
-elsewhere.
+dropped UDP probe, recovery probe, successful HTTP requests, and lost update.
+The replay uses the minimized plan and artifacts. It does not rebuild either
+image or select a new operation schedule. Its artifact paths are relative to
+the locked bundle, so the complete `minimized` directory can be moved and
+replayed elsewhere.
+
+`compose verify` checks locked inputs, RAM, ancestry, logs, and full execution
+hashes without KVM. It does not certify native execution. Treat retained RAM
+as sensitive: it can contain application secrets.
 
 ## 6. Clean up (optional)
 

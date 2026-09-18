@@ -28,6 +28,7 @@ size_mib = 1
 [[events]]
 when = "ready"
 data = "66696e6973680a" # finish followed by newline
+checkpoint = "finished"
 
 [[checks]]
 name = "service completed"

@@ -7,5 +7,4 @@ echo started
 echo THES:M:42
 read -r command < /dev/ttyS0
 [ "$command" = finish ] || exit 1
-echo finished
-reboot -f
+exec /bin/finish

@@ -177,6 +177,7 @@ mod tests {
                     SerialOut::new(SerialOutInner::Sink, None),
                 ),
                 input: None,
+                pending_input: std::collections::VecDeque::new(),
             })),
             i8042: Arc::new(Mutex::new(
                 I8042Device::new(EventFd::new(libc::EFD_NONBLOCK).unwrap()).unwrap(),

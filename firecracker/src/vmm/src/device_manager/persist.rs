@@ -55,6 +55,8 @@ pub struct SerialState {
     pub modem_status: u8,
     pub scratch: u8,
     pub in_buffer: Vec<u8>,
+    #[serde(default)]
+    pub pending_input: Vec<u8>,
 }
 
 impl From<vm_superio::serial::SerialState> for SerialState {
@@ -70,6 +72,7 @@ impl From<vm_superio::serial::SerialState> for SerialState {
             modem_status: s.modem_status,
             scratch: s.scratch,
             in_buffer: s.in_buffer,
+            pending_input: Vec::new(),
         }
     }
 }
@@ -241,11 +244,10 @@ impl<'a> Persist<'a> for MMIOPlatformDevices {
         #[cfg(target_arch = "aarch64")]
         {
             if let Some(device_info) = state.serial {
-                let serial_state = constructor_args.serial_state.map(Into::into);
                 let serial = crate::DeviceManager::setup_serial_device(
                     constructor_args.event_manager,
                     constructor_args.vm_resources.serial_out_path.as_ref(),
-                    serial_state.as_ref(),
+                    constructor_args.serial_state,
                     constructor_args.vm_resources.serial_rate_limiter(),
                 )?;
 

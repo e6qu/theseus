@@ -6,6 +6,7 @@
 // found in the THIRD-PARTY file.
 
 //! Implements a wrapper over an UART serial device.
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{self, Read, Stdin, Write};
@@ -73,8 +74,13 @@ pub trait RawIOHandler {
     fn raw_input(&mut self, _data: &[u8]) -> Result<(), RawIOError>;
 }
 
+// The device advertises 16550A FIFO semantics to the guest. Keep each refill
+// within that UART's 16-byte receive window even though vm-superio retains a
+// larger internal buffer; Linux may bound one interrupt service pass by the
+// advertised FIFO size.
+const UART_FIFO_REFILL_BYTES: usize = 16;
+
 impl<EV: SerialEvents + Debug, W: Write + Debug> RawIOHandler for Serial<EventFdTrigger, EV, W> {
-    // This is not used for anything and is basically just a dummy implementation for `raw_input`.
     fn raw_input(&mut self, data: &[u8]) -> Result<(), RawIOError> {
         // Fail fast if the serial is serviced with more data than it can buffer.
         if data.len() > self.fifo_capacity() {
@@ -192,9 +198,39 @@ pub struct SerialWrapper<T: Trigger, EV: SerialEvents, I: Read + AsRawFd + Send>
     pub serial: Serial<T, EV, SerialOut>,
     /// Input to the serial device (needs to be readable).
     pub input: Option<I>,
+    /// Host-injected bytes waiting behind the emulated UART receive FIFO.
+    pub pending_input: VecDeque<u8>,
 }
 
 impl<I: Read + AsRawFd + Send + Debug> SerialWrapper<EventFdTrigger, SerialEventsWrapper, I> {
+    /// Accept one logical host input without exposing the UART FIFO size to
+    /// callers. Bytes beyond current hardware capacity are fed as the guest
+    /// drains the FIFO.
+    pub fn enqueue_raw_input(&mut self, data: &[u8]) -> Result<(), RawIOError> {
+        self.pending_input.extend(data);
+        self.flush_pending_input()
+    }
+
+    fn flush_pending_input(&mut self) -> Result<(), RawIOError> {
+        let count = self
+            .serial
+            .fifo_capacity()
+            .min(UART_FIFO_REFILL_BYTES)
+            .min(self.pending_input.len());
+        if count == 0 {
+            return Ok(());
+        }
+        let bytes = self
+            .pending_input
+            .iter()
+            .take(count)
+            .copied()
+            .collect::<Vec<_>>();
+        self.serial.raw_input(&bytes)?;
+        self.pending_input.drain(..count);
+        Ok(())
+    }
+
     fn handle_ewouldblock(&self, ops: &mut EventOps) {
         let buffer_ready_fd = self.buffer_ready_evt_fd();
         let input_fd = self.serial_input_fd();
@@ -289,6 +325,7 @@ impl SerialDevice {
         Ok(SerialDevice {
             serial,
             input: serial_in,
+            pending_input: VecDeque::new(),
         })
     }
 }
@@ -410,11 +447,18 @@ fn is_fifo(fd: RawFd) -> bool {
 
 impl<I> BusDevice for SerialWrapper<EventFdTrigger, SerialEventsWrapper, I>
 where
-    I: Read + AsRawFd + Send,
+    I: Read + AsRawFd + Send + Debug,
 {
     fn read(&mut self, _base: u64, offset: u64, data: &mut [u8]) {
         if let (Ok(offset), 1) = (u8::try_from(offset), data.len()) {
             data[0] = self.serial.read(offset);
+            if offset == 0
+                && self.serial.state().in_buffer.is_empty()
+                && let Err(error) = self.flush_pending_input()
+            {
+                error!("Failed to refill serial input FIFO: {error}");
+                METRICS.error_count.inc();
+            }
         } else {
             METRICS.missed_read_count.inc();
         }
@@ -464,6 +508,7 @@ mod tests {
                 test_serial_out_sink(),
             ),
             input: None::<std::io::Stdin>,
+            pending_input: VecDeque::new(),
         };
         serial.serial.raw_input(b"abc").unwrap();
 
@@ -499,6 +544,33 @@ mod tests {
         assert_eq!(buf[0], b'b');
         restored.read(0, 0, &mut buf);
         assert_eq!(buf[0], b'c');
+    }
+
+    #[test]
+    fn test_host_input_larger_than_fifo_is_streamed_in_order() {
+        let mut serial = SerialDevice::new(None, test_serial_out_sink(), None).unwrap();
+        let input = (0..=127).collect::<Vec<u8>>();
+
+        serial.serial.write(1, 1).unwrap();
+        serial.enqueue_raw_input(&input).unwrap();
+        assert_eq!(serial.serial.state().in_buffer.len(), UART_FIFO_REFILL_BYTES);
+        assert_eq!(serial.pending_input.len(), input.len() - UART_FIFO_REFILL_BYTES);
+        assert_eq!(serial.serial.interrupt_evt().read().unwrap(), 1);
+
+        let mut actual = Vec::with_capacity(input.len());
+        for (index, expected) in input.chunks(UART_FIFO_REFILL_BYTES).enumerate() {
+            for _ in expected {
+                let mut byte = [0u8; 1];
+                serial.read(0, 0, &mut byte);
+                actual.push(byte[0]);
+            }
+            if index + 1 < input.len() / UART_FIFO_REFILL_BYTES {
+                assert_eq!(serial.serial.interrupt_evt().read().unwrap(), 1);
+            }
+        }
+        assert_eq!(actual, input);
+        assert!(serial.serial.state().in_buffer.is_empty());
+        assert!(serial.pending_input.is_empty());
     }
 
     #[test]

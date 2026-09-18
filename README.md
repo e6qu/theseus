@@ -46,11 +46,21 @@ passing unit suite alone is not treated as runtime proof.
 - Branch-aware per-vCPU ledgers plus one VM-wide ordered stream of handled KVM
   exits, emulated device effects, UART and control-channel input, and virtual
   clock jumps. UART, virtio MMIO, virtio MSI-X, ACPI notification, and keyboard
-  interrupts are injected as recorded vCPU turns. Replay rejects a changed
-  actor, input, interrupt, or exit and reports the first divergent boundary.
+  interrupts are retained as recorded vCPU turns. Fixed-run replay rejects a
+  changed actor, input, interrupt, or exit and reports the first divergent
+  boundary.
 - Single-service `test` bundles retain the complete machine stream. `replay`
-  actively admits that stream through guest exit and retains new diagnostics
-  with `--output`; it does not just rerun a seed and compare printed output.
+  defaults to admitting that exact stream through guest exit; manifests may
+  instead select `machine_replay = "host_inputs"` to reapply locked inputs and
+  verify declared outcomes while retaining intervening execution as evidence.
+- Checkpoint-backed campaigns retain the same complete exit evidence but gate
+  portable replay on its explicit host inputs. Device interrupts follow the
+  restored device state and remain evidence; Linux execution and interrupt
+  timing between host inputs are not claimed to be identical. Exported and
+  minimized plans preserve the explored cross-service host-input order and
+  evaluate their properties at the final operation checkpoint. Replay retains
+  paused kernel PCs and topology-state fingerprints as observations without
+  treating them as portable equality checks.
 - Ready-checkpoint replay retains VM state, RAM, the execution prefix, and
   pending userspace interrupts. Both the test and its replays restore that
   same state; uncontrolled kernel boot is inherited, not replayed.
@@ -78,11 +88,11 @@ passing unit suite alone is not treated as runtime proof.
   locking, and untimed condition waits/signals/broadcasts. Timed waits,
   cancellation, direct futex use, blocking I/O, and processes remain outside
   this profile.
-- The machine stream gates replayed vCPU turns and explicit host inputs, and
-  rejects divergence at hypervisor and device boundaries. It controls the
-  supported userspace device interrupt sources, but does not yet choose
-  instruction or thread order, guest interrupt-service timing, or in-kernel
-  timer delivery.
+- Fixed-run replay defaults to gating every recorded vCPU turn and explicit
+  host input. A fixed run or checkpoint-backed campaign may instead gate its
+  explicit host inputs while retaining intervening exits and userspace
+  interrupt deliveries as evidence. Neither mode chooses instruction or thread
+  order, guest interrupt-service timing, or in-kernel timer delivery.
 - Device-write payloads and read addresses/widths are checked before device
   access. Read values can only be checked after the device supplies them;
   replay stops on a mismatch but cannot undo that read. Host-timed cutoffs are

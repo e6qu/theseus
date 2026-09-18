@@ -299,21 +299,102 @@ fn apply_filesystem_contract(spec: &InitSpec) -> Result<(), String> {
             ));
         }
     }
-    if spec.read_only
-        && unsafe {
+    if spec.read_only {
+        // Linux rootfs cannot itself become read-only. Enter a separate bind
+        // mount of it instead, carrying writable virtual and tmpfs children
+        // into that tree before making only the new root mount read-only.
+        let staging = "/.theseus-root";
+        let new_root = "/.theseus-root/root";
+        fs::create_dir_all(staging)
+            .map_err(|error| format!("create read-only root staging directory: {error}"))?;
+        let staging_c = CString::new(staging).unwrap();
+        let tmpfs = CString::new("tmpfs").unwrap();
+        if unsafe {
             libc::mount(
-                std::ptr::null(),
-                b"/\0".as_ptr().cast(),
-                std::ptr::null(),
-                libc::MS_REMOUNT | libc::MS_RDONLY,
+                tmpfs.as_ptr(),
+                staging_c.as_ptr(),
+                tmpfs.as_ptr(),
+                0,
                 std::ptr::null(),
             )
         } != 0
-    {
-        return Err(format!(
-            "remount root read-only: {}",
-            std::io::Error::last_os_error()
-        ));
+        {
+            return Err(format!(
+                "mount read-only root staging filesystem: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        fs::create_dir_all(new_root)
+            .map_err(|error| format!("create bound root directory: {error}"))?;
+        let source_root = CString::new("/").unwrap();
+        let new_root_c = CString::new(new_root).unwrap();
+        if unsafe {
+            libc::mount(
+                source_root.as_ptr(),
+                new_root_c.as_ptr(),
+                std::ptr::null(),
+                libc::MS_BIND,
+                std::ptr::null(),
+            )
+        } != 0
+        {
+            return Err(format!(
+                "bind image root: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let mut writable_mounts = std::collections::BTreeSet::from([
+            "/dev".to_owned(),
+            "/proc".to_owned(),
+            "/sys".to_owned(),
+        ]);
+        writable_mounts.extend(spec.tmpfs.iter().cloned());
+        for source in writable_mounts {
+            let target = format!("{new_root}{source}");
+            let source_c = CString::new(source.as_str())
+                .map_err(|_| "writable mount path contains NUL".to_owned())?;
+            let target_c = CString::new(target.as_str())
+                .map_err(|_| "bound writable mount path contains NUL".to_owned())?;
+            if unsafe {
+                libc::mount(
+                    source_c.as_ptr(),
+                    target_c.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND | libc::MS_REC,
+                    std::ptr::null(),
+                )
+            } != 0
+            {
+                return Err(format!(
+                    "carry writable mount {source}: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+        if unsafe {
+            libc::mount(
+                std::ptr::null(),
+                new_root_c.as_ptr(),
+                std::ptr::null(),
+                libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY,
+                std::ptr::null(),
+            )
+        } != 0
+        {
+            return Err(format!(
+                "remount bound image root read-only: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if unsafe { libc::chroot(new_root_c.as_ptr()) } != 0
+            || unsafe { libc::chdir(source_root.as_ptr()) } != 0
+        {
+            return Err(format!(
+                "enter read-only image root: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
     }
     Ok(())
 }
@@ -823,6 +904,7 @@ const APPLICATION_BLOCK_COVERAGE_PREFIX: &[u8] = b"THES:COV:v1:";
 const APPLICATION_EDGE_COVERAGE_PREFIX: &[u8] = b"THES:COV:v2:";
 const THREAD_SCHEDULE_PREFIX: &[u8] = b"THES:SCHED:v1:";
 const THREAD_SCHEDULE_ERROR_PREFIX: &[u8] = b"THES:SCHED:ERROR:";
+const THREAD_SYNCHRONIZATION_PREFIX: &[u8] = b"THES:SYNC:v1:";
 const STRUCTURED_CHOICE_PREFIX: &[u8] = b"THES:CHOICE:";
 
 struct ShellOperationResult {
@@ -986,6 +1068,7 @@ fn forward_instrumentation_records(output: &[u8]) -> Vec<u8> {
             || record.starts_with(APPLICATION_EDGE_COVERAGE_PREFIX)
             || record.starts_with(THREAD_SCHEDULE_PREFIX)
             || record.starts_with(THREAD_SCHEDULE_ERROR_PREFIX)
+            || record.starts_with(THREAD_SYNCHRONIZATION_PREFIX)
             || record.starts_with(STRUCTURED_CHOICE_PREFIX)
         {
             if let Ok(record) = std::str::from_utf8(record) {
@@ -1215,8 +1298,11 @@ fn wait_for_service_contract(
 }
 
 fn power_off() -> ! {
+    // This kernel's forced-reboot path produces the deterministic reset exit
+    // consumed by Firecracker. POWER_OFF can wait forever when the minimal
+    // guest has no ACPI power-off handler.
     unsafe {
-        libc::reboot(libc::LINUX_REBOOT_CMD_POWER_OFF);
+        libc::reboot(libc::LINUX_REBOOT_CMD_RESTART);
     }
     std::process::exit(0);
 }
@@ -1241,6 +1327,75 @@ fn ipv4(value: &str) -> Result<[u8; 4], String> {
     parts
         .try_into()
         .map_err(|_| format!("invalid IPv4 address {value:?}"))
+}
+
+fn deterministic_mac(address: [u8; 4]) -> [u8; 6] {
+    [0x02, 0x00, address[0], address[1], address[2], address[3]]
+}
+
+fn interface_for_neighbor<'a>(
+    interfaces: &'a [NetworkInterface],
+    address: [u8; 4],
+) -> Result<Option<&'a NetworkInterface>, String> {
+    let peer = u32::from_be_bytes(address);
+    for interface in interfaces {
+        let local = ipv4(&interface.address)?;
+        if local == address {
+            return Ok(None);
+        }
+        let mask = if interface.prefix_len == 0 {
+            0
+        } else {
+            u32::MAX << (32 - interface.prefix_len)
+        };
+        if u32::from_be_bytes(local) & mask == peer & mask {
+            return Ok(Some(interface));
+        }
+    }
+    Ok(None)
+}
+
+fn configure_neighbor(
+    interface: &NetworkInterface,
+    address: [u8; 4],
+    mac: [u8; 6],
+) -> Result<(), String> {
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    if fd < 0 {
+        return Err(format!(
+            "cannot open neighbor control socket: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let result = (|| {
+        let mut request: libc::arpreq = unsafe { std::mem::zeroed() };
+        request.arp_pa.sa_family = libc::AF_INET as libc::sa_family_t;
+        for (target, byte) in request.arp_pa.sa_data[2..6].iter_mut().zip(address) {
+            *target = byte as libc::c_char;
+        }
+        request.arp_ha.sa_family = libc::ARPHRD_ETHER;
+        for (target, byte) in request.arp_ha.sa_data[..6].iter_mut().zip(mac) {
+            *target = byte as libc::c_char;
+        }
+        request.arp_flags = libc::ATF_COM | libc::ATF_PERM;
+        if interface.name.len() >= request.arp_dev.len() {
+            return Err(format!("invalid interface name {:?}", interface.name));
+        }
+        for (target, byte) in request.arp_dev.iter_mut().zip(interface.name.bytes()) {
+            *target = byte as libc::c_char;
+        }
+        if unsafe { libc::ioctl(fd, libc::SIOCSARP as libc::Ioctl, &request) } < 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(())
+    })();
+    unsafe { libc::close(fd) };
+    result.map_err(|error| {
+        format!(
+            "{}: cannot install deterministic neighbor {}.{}.{}.{}: {error}",
+            interface.name, address[0], address[1], address[2], address[3]
+        )
+    })
 }
 
 fn ifreq(name: &str) -> Result<IfReq, String> {
@@ -1276,6 +1431,7 @@ fn configure_interface(interface: &NetworkInterface) -> Result<(), String> {
             interface.prefix_len
         ));
     }
+    let address = ipv4(&interface.address)?;
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
     if fd < 0 {
         return Err(format!(
@@ -1284,8 +1440,15 @@ fn configure_interface(interface: &NetworkInterface) -> Result<(), String> {
         ));
     }
     let result = (|| {
+        if interface.name != "lo" {
+            let mut request = ifreq(&interface.name)?;
+            request.data[..2].copy_from_slice(&libc::ARPHRD_ETHER.to_ne_bytes());
+            request.data[2..8].copy_from_slice(&deterministic_mac(address));
+            ioctl(fd, libc::SIOCSIFHWADDR as libc::Ioctl, &mut request)?;
+        }
+
         let mut request = ifreq(&interface.name)?;
-        set_sockaddr(&mut request, ipv4(&interface.address)?);
+        set_sockaddr(&mut request, address);
         ioctl(fd, libc::SIOCSIFADDR as libc::Ioctl, &mut request)?;
 
         let mask = if interface.prefix_len == 0 {
@@ -1307,6 +1470,18 @@ fn configure_interface(interface: &NetworkInterface) -> Result<(), String> {
     result.map_err(|error| format!("{}: {error}", interface.name))
 }
 
+fn loopback_interface() -> NetworkInterface {
+    NetworkInterface {
+        name: "lo".to_owned(),
+        address: "127.0.0.1".to_owned(),
+        prefix_len: 8,
+    }
+}
+
+fn configure_loopback() -> Result<(), String> {
+    configure_interface(&loopback_interface())
+}
+
 fn configure_network(network: &ContainerNetwork) -> Result<(), String> {
     if let Some(hostname) = &network.hostname {
         let hostname =
@@ -1322,6 +1497,16 @@ fn configure_network(network: &ContainerNetwork) -> Result<(), String> {
     }
     for interface in &network.interfaces {
         configure_interface(interface)?;
+    }
+    // Compose peers have deterministic IPv4 addresses and the runner gives
+    // their virtio NICs the corresponding locally administered MACs. Install
+    // permanent neighbor entries before the image starts, avoiding an ARP
+    // retry timer in a virtual clock that advances only at deterministic exits.
+    for address in network.hosts.values() {
+        let address = ipv4(address)?;
+        if let Some(interface) = interface_for_neighbor(&network.interfaces, address)? {
+            configure_neighbor(interface, address, deterministic_mac(address))?;
+        }
     }
     if network.hosts.is_empty() {
         return Ok(());
@@ -1368,6 +1553,13 @@ fn main() {
                 .map(|service| &service.network)
                 .filter(|network| !network.is_empty())
         });
+    // The minimal guest has no distribution init system to raise `lo`.
+    // Container health checks commonly use 127.0.0.1 even when the service
+    // has no simulated Compose network, so initialize loopback unconditionally.
+    if let Err(error) = configure_loopback() {
+        eprintln!("THES:network:FAIL {error}");
+        power_off();
+    }
     if let Some(network) = network {
         if let Err(error) = configure_network(network) {
             eprintln!("THES:network:FAIL {error}");
@@ -1636,6 +1828,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn loopback_contract_uses_the_linux_local_network() {
+        let interface = loopback_interface();
+        assert_eq!(interface.name, "lo");
+        assert_eq!(ipv4(&interface.address).unwrap(), [127, 0, 0, 1]);
+        assert_eq!(interface.prefix_len, 8);
+    }
+
+    #[test]
+    fn derives_the_locked_neighbor_interface_and_mac() {
+        let interfaces = [NetworkInterface {
+            name: "eth0".to_owned(),
+            address: "10.1.0.11".to_owned(),
+            prefix_len: 24,
+        }];
+        let peer = [10, 1, 0, 10];
+        assert_eq!(
+            interface_for_neighbor(&interfaces, peer)
+                .unwrap()
+                .unwrap()
+                .name,
+            "eth0"
+        );
+        assert_eq!(deterministic_mac(peer), [0x02, 0x00, 10, 1, 0, 10]);
+        assert!(interface_for_neighbor(&interfaces, [10, 2, 0, 10])
+            .unwrap()
+            .is_none());
+        assert!(interface_for_neighbor(&interfaces, [10, 1, 0, 11])
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
     fn decodes_service_lifecycle_actions() {
         let action: CampaignServiceAction =
             serde_json::from_str(r#"{"name":"fault_write_api_kill","action":"kill"}"#).unwrap();
@@ -1662,6 +1886,12 @@ mod tests {
             forward_instrumentation_records(output),
             b"{\"balance\":22}\n"
         );
+    }
+
+    #[test]
+    fn separates_thread_synchronization_records_from_command_json() {
+        let output = b"THES:SYNC:v1:worker:condition:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:7:1:wait:condition:1:-\n{\"value\":42}\n";
+        assert_eq!(forward_instrumentation_records(output), b"{\"value\":42}\n");
     }
 
     #[test]

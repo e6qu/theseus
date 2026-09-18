@@ -10,6 +10,7 @@ image = "work/service.tar"
 
 [run]
 seed = 42
+machine_replay = "host_inputs"
 entropy_device = false # This health-check service does not use seeded entropy.
 vcpu_count = 1
 mem_size_mib = 128

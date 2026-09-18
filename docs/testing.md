@@ -78,7 +78,8 @@ three-service lost-update campaign. It verifies the required partition and
 recovery, minimizes the failure, and replays it. The same worker also executes
 Tutorials 14, 31, 33, 35, and 41 with the published runtime: an ordinary
 container, C coverage guidance, bounded thread-schedule search, pthread
-synchronization, and exact per-vCPU exit and machine-wide execution replay. It
+synchronization, host-input replay, and exact per-vCPU and machine-wide
+execution replay. It
 retains every plan, locked bundle, campaign inventory, report, minimization,
 replay result, serial log, host identity, and digest-pinned runtime identity in
 an inventoried validation archive. The released CLI also
@@ -87,9 +88,9 @@ an offline evaluation, evaluates its lock, minimizes the schedule failure, and
 replays every retained path.
 Runtime-validation version 5 also retains the single-container run and its
 named replay diagnostics. Offline verification recomputes both sets of digests
-from their complete traces and requires an identical guest-exit boundary and
-a passing `replay_machine_execution` check; a line saying “replay passed” is
-not sufficient evidence.
+from their complete traces and requires an identical guest-exit boundary, the
+declared host-input projection, and a passing `replay_machine_execution` check;
+a line saying “replay passed” is not sufficient evidence.
 
 The final hosted job validates the certificate, counterexample, and validation
 archive with the released CLI before it attests and uploads them. The index can

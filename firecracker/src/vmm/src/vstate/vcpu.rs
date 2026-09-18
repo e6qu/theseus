@@ -10,7 +10,7 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering, fence};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::sync::{Arc, Barrier, Condvar, Mutex, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::{fmt, io, thread};
 
 use kvm_bindings::{KVM_SYSTEM_EVENT_RESET, KVM_SYSTEM_EVENT_SHUTDOWN};
@@ -201,6 +201,7 @@ struct MachineExecutionControl {
     execution: MachineExecutionState,
     expected: Option<Vec<String>>,
     position: usize,
+    control_only: bool,
     divergence: Option<String>,
 }
 
@@ -212,6 +213,7 @@ pub struct MachineExecutionController {
     state: Mutex<MachineExecutionControl>,
     pending_interrupts: Mutex<VecDeque<PendingInterrupt>>,
     deterministic_interrupts: AtomicBool,
+    control_requested: AtomicBool,
     shutdown_requested: AtomicBool,
     interrupt_kickers: Mutex<Vec<Weak<Mutex<Option<VcpuInterruptKick>>>>>,
     turn_changed: Condvar,
@@ -224,10 +226,12 @@ impl Default for MachineExecutionController {
                 execution: MachineExecutionState::default(),
                 expected: None,
                 position: 0,
+                control_only: false,
                 divergence: None,
             }),
             pending_interrupts: Mutex::new(VecDeque::new()),
             deterministic_interrupts: AtomicBool::new(false),
+            control_requested: AtomicBool::new(false),
             shutdown_requested: AtomicBool::new(false),
             interrupt_kickers: Mutex::new(Vec::new()),
             turn_changed: Condvar::new(),
@@ -325,6 +329,20 @@ impl DeferredInterrupt {
 }
 
 impl MachineExecutionController {
+    fn request_vcpu_control(&self) {
+        self.control_requested.store(true, Ordering::Release);
+        self.turn_changed.notify_all();
+    }
+
+    fn resume_vcpu_execution(&self) {
+        self.control_requested.store(false, Ordering::Release);
+        self.turn_changed.notify_all();
+    }
+
+    fn vcpu_control_requested(&self) -> bool {
+        self.control_requested.load(Ordering::Acquire)
+    }
+
     /// Freeze device-effect admission after a guest terminal request.
     pub(crate) fn request_shutdown(&self) {
         if self.shutdown_requested.swap(true, Ordering::AcqRel) {
@@ -370,6 +388,7 @@ impl MachineExecutionController {
         state.position = execution.trace.len();
         state.execution = execution;
         state.expected = None;
+        state.control_only = false;
         state.divergence = None;
         let mut live_interrupts = self
             .pending_interrupts
@@ -417,10 +436,14 @@ impl MachineExecutionController {
             .expect("pending interrupt queue lock poisoned");
         // Level sources remain asserted until the guest clears their status;
         // repeated triggers before injection are not new line transitions.
-        if !coalesce || !pending.contains(&interrupt) {
+        let enqueued = !coalesce || !pending.contains(&interrupt);
+        if enqueued {
             pending.push_back(interrupt);
         }
         drop(pending);
+        if !enqueued {
+            return Ok(());
+        }
         self.turn_changed.notify_all();
         self.kick_vcpus()
     }
@@ -459,11 +482,45 @@ impl MachineExecutionController {
         vm_fd: &VmFd,
         ledger: &Arc<Mutex<ExecutionLedger>>,
     ) -> Result<bool, String> {
-        self.deliver_pending_interrupt_with(vcpu, ledger, |gsi| {
-            vm_fd.set_irq_line(gsi, true)
+        self.deliver_pending_interrupts_with(vcpu, ledger, |gsi| {
+            vm_fd
+                .set_irq_line(gsi, true)
                 .and_then(|()| vm_fd.set_irq_line(gsi, false))
                 .map_err(|error| error.to_string())
         })
+    }
+
+    fn deliver_pending_interrupts_with(
+        &self,
+        vcpu: u8,
+        ledger: &Arc<Mutex<ExecutionLedger>>,
+        mut inject: impl FnMut(u32) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        let mut delivered_any = false;
+        loop {
+            let delivered =
+                self.deliver_pending_interrupt_with(vcpu, ledger, |gsi| inject(gsi))?;
+            delivered_any |= delivered;
+            if !delivered || !self.may_deliver_another_interrupt(vcpu) {
+                return Ok(delivered_any);
+            }
+        }
+    }
+
+    fn may_deliver_another_interrupt(&self, vcpu: u8) -> bool {
+        let state = self
+            .state
+            .lock()
+            .expect("machine execution controller lock poisoned");
+        if state.control_only {
+            return true;
+        }
+        match state.expected.as_ref() {
+            None => true,
+            Some(expected) => expected
+                .get(state.position)
+                .is_some_and(|record| record.starts_with(&format!("vcpu:{vcpu}:interrupt:"))),
+        }
     }
 
     fn deliver_pending_interrupt_with(
@@ -475,13 +532,12 @@ impl MachineExecutionController {
         if !self.deterministic_interrupts_enabled() {
             return Ok(false);
         }
-        let mut interrupt_wait_started = None;
         let mut state = self
             .state
             .lock()
             .expect("machine execution controller lock poisoned");
-        let mut pending = loop {
-            if self.shutdown_requested() {
+        let (mut pending, pending_index) = loop {
+            if self.shutdown_requested() || self.vcpu_control_requested() {
                 return Ok(false);
             }
             if let Some(detail) = state.divergence.clone() {
@@ -502,39 +558,59 @@ impl MachineExecutionController {
                     // event loop after this vCPU reaches its injection turn.
                     // Wait for that producer without running more guest code.
                     drop(pending);
-                    let started = interrupt_wait_started.get_or_insert_with(Instant::now);
-                    let remaining = MACHINE_EXECUTION_TURN_TIMEOUT.saturating_sub(started.elapsed());
-                    let (next, timeout) = self.turn_changed
-                        .wait_timeout(state, remaining)
-                        .expect("machine execution controller lock poisoned while waiting for interrupt request");
-                    state = next;
-                    // Requests use a separate queue lock: recheck it even on
-                    // timeout, so a notification just before the wait cannot
-                    // turn an already-queued completion into a divergence.
-                    if timeout.timed_out() && state.divergence.is_none() && !self.shutdown_requested()
-                        && self.pending_interrupts.lock().expect("pending interrupt queue lock poisoned").is_empty()
-                    {
-                        let detail = format!(
-                            "machine execution replay expected an interrupt at decision {}, but no interrupt became pending",
-                            state.position
+                    state = self
+                        .turn_changed
+                        .wait(state)
+                        .expect(
+                            "machine execution controller lock poisoned while waiting for interrupt request",
                         );
-                        state.divergence = Some(detail.clone());
-                        self.turn_changed.notify_all();
-                        return Err(detail);
-                    }
                     continue;
                 }
                 return Ok(false);
             };
             let Some(expected) = state.expected.as_ref() else {
-                break pending;
+                break (pending, 0);
             };
+            if state.control_only {
+                // Campaign replay controls explicit host inputs. Interrupt
+                // timing depends on guest execution between those inputs, so
+                // inject restored device requests in their observed order and
+                // retain them as evidence without treating them as host turns.
+                break (pending, 0);
+            }
             let Some(expected_record) = expected.get(state.position) else {
-                break pending;
+                // Exact replay ends at a control-plane cut. Leave later
+                // interrupts queued so the vCPU can return to its control
+                // loop and be paused without extending the retained stream.
+                return Ok(false);
             };
-            if machine_record_actor(expected_record) == Some(MachineExecutionActor::Vcpu(vcpu))
-            {
-                break pending;
+            if expected_record.starts_with(&format!("vcpu:{vcpu}:interrupt:")) {
+                if let Some(index) = pending.iter().position(|interrupt| {
+                    format!(
+                        "vcpu:{vcpu}:interrupt:{}:{}",
+                        interrupt.source, interrupt.gsi
+                    ) == *expected_record
+                }) {
+                    break (pending, index);
+                }
+                // Async sources may publish in a different host order after
+                // checkpoint restore. Keep unrelated requests queued and
+                // wait for the exact interrupt selected by the replay stream.
+                drop(pending);
+                state = self
+                    .turn_changed
+                    .wait(state)
+                    .expect(
+                        "machine execution controller lock poisoned while waiting for recorded interrupt",
+                    );
+                continue;
+            }
+            if machine_record_actor(expected_record) == Some(MachineExecutionActor::Vcpu(vcpu)) {
+                // A pending interrupt may have arrived before an earlier
+                // recorded device access by this same vCPU. Let KVM produce
+                // that effect first; exact interrupt identity is the turn,
+                // not merely vCPU ownership.
+                return Ok(false);
             }
             drop(pending);
             let (next, timeout) = self
@@ -554,10 +630,12 @@ impl MachineExecutionController {
                 return Err(detail);
             }
         };
-        let interrupt = pending.front().expect("pending interrupt disappeared");
+        let interrupt = pending
+            .get(pending_index)
+            .expect("pending interrupt disappeared");
         let decision = format!("interrupt:{}:{}", interrupt.source, interrupt.gsi);
         let record = format!("vcpu:{vcpu}:{decision}");
-        if let Some(expected) = state.expected.as_ref() {
+        if !state.control_only && let Some(expected) = state.expected.as_ref() {
             let expected_record = expected.get(state.position);
             if expected_record != Some(&record) {
                 let detail = format!(
@@ -579,7 +657,7 @@ impl MachineExecutionController {
         }
         inject(interrupt.gsi)
             .map_err(|error| format!("failed to deliver {decision}: {error}"))?;
-        pending.pop_front();
+        pending.remove(pending_index);
         drop(pending);
         ledger
             .lock()
@@ -587,7 +665,9 @@ impl MachineExecutionController {
             .record(decision);
         state.execution.ledger.record(record.clone());
         state.execution.trace.push(record);
-        state.position = state.position.saturating_add(1);
+        if !state.control_only {
+            state.position = state.position.saturating_add(1);
+        }
         self.turn_changed.notify_all();
         Ok(true)
     }
@@ -609,25 +689,55 @@ impl MachineExecutionController {
     }
 
     fn enforce(&self, expected: Vec<String>) -> Result<(), String> {
+        self.enforce_with_mode(expected, false)
+    }
+
+    fn enforce_control(&self, expected: Vec<String>) -> Result<(), String> {
+        self.enforce_with_mode(expected, true)
+    }
+
+    fn enforce_with_mode(
+        &self,
+        expected: Vec<String>,
+        control_only: bool,
+    ) -> Result<(), String> {
         Self::validate_trace(&expected)?;
         let mut state = self
             .state
             .lock()
             .expect("machine execution controller lock poisoned");
-        if !expected.starts_with(&state.execution.trace) {
+        let actual = if control_only {
+            state
+                .execution
+                .trace
+                .iter()
+                .filter(|record| machine_replay_control_record(record))
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            state.execution.trace.clone()
+        };
+        let expected = if control_only {
+            expected
+                .into_iter()
+                .filter(|record| machine_replay_control_record(record))
+                .collect::<Vec<_>>()
+        } else {
+            expected
+        };
+        if !expected.starts_with(&actual) {
             return Err(format!(
                 "machine execution trace diverged before replay began at decision {}",
-                state
-                    .execution
-                    .trace
+                actual
                     .iter()
                     .zip(&expected)
                     .take_while(|(actual, expected)| actual == expected)
                     .count()
             ));
         }
-        state.position = state.execution.trace.len();
+        state.position = actual.len();
         state.expected = Some(expected);
+        state.control_only = control_only;
         state.divergence = None;
         self.turn_changed.notify_all();
         Ok(())
@@ -638,6 +748,18 @@ impl MachineExecutionController {
             .lock()
             .expect("machine execution controller lock poisoned")
             .divergence.clone()
+    }
+
+    fn replay_position(&self) -> usize {
+        let state = self
+            .state
+            .lock()
+            .expect("machine execution controller lock poisoned");
+        if state.expected.is_some() {
+            state.position
+        } else {
+            state.execution.trace.len()
+        }
     }
 
     fn replay_error(&self) -> Option<String> {
@@ -658,6 +780,63 @@ impl MachineExecutionController {
         })
     }
 
+    fn wait_for_replay_progress(
+        &self,
+        position: usize,
+        timeout: Duration,
+    ) -> Result<bool, String> {
+        let state = self
+            .state
+            .lock()
+            .expect("machine execution controller lock poisoned");
+        if state.expected.is_none() || state.position > position {
+            return Ok(true);
+        }
+        if let Some(detail) = state.divergence.clone() {
+            return Err(detail);
+        }
+        let (state, _) = self
+            .turn_changed
+            .wait_timeout_while(state, timeout, |state| {
+                state.expected.is_some()
+                    && state.divergence.is_none()
+                    && state.position <= position
+            })
+            .expect("machine execution controller lock poisoned while waiting for replay progress");
+        if let Some(detail) = state.divergence.clone() {
+            return Err(detail);
+        }
+        let progressed = state.expected.is_none() || state.position > position;
+        if !progressed
+            && let Some((_, source, gsi)) = state
+                .expected
+                .as_ref()
+                .and_then(|expected| expected.get(state.position))
+                .and_then(|record| machine_interrupt_record(record))
+        {
+            let mut pending = self
+                .pending_interrupts
+                .lock()
+                .expect("pending interrupt queue lock poisoned");
+            let interrupt = PendingInterrupt {
+                source,
+                gsi,
+                coalesce: true,
+            };
+            if !pending
+                .iter()
+                .any(|pending| pending.source == source && pending.gsi == gsi)
+            {
+                // Interrupt delivery is itself a recorded replay decision.
+                // Materialize that turn after the real source had a chance to
+                // publish, then let later device accesses verify its state.
+                pending.push_back(interrupt);
+                self.turn_changed.notify_all();
+            }
+        }
+        Ok(progressed)
+    }
+
     pub(crate) fn apply_host_effect<T, E>(
         &self,
         effect: String,
@@ -672,11 +851,11 @@ impl MachineExecutionController {
             .lock()
             .expect("machine execution controller lock poisoned");
         loop {
-            if self.shutdown_requested() {
-                return Err("machine execution rejected host input after guest shutdown".to_owned());
-            }
             if let Some(detail) = state.divergence.clone() {
                 return Err(detail);
+            }
+            if self.shutdown_requested() {
+                return Err("machine execution rejected host input after guest shutdown".to_owned());
             }
             let Some(expected) = state.expected.as_ref() else {
                 break;
@@ -750,6 +929,30 @@ fn machine_record_actor(record: &str) -> Option<MachineExecutionActor> {
     }
     let id = vcpu.parse::<u8>().ok()?;
     (vcpu == id.to_string()).then_some(MachineExecutionActor::Vcpu(id))
+}
+
+fn machine_interrupt_record(record: &str) -> Option<(u8, &'static str, u32)> {
+    let (vcpu, effect) = record.strip_prefix("vcpu:")?.split_once(':')?;
+    let id = vcpu.parse::<u8>().ok()?;
+    if vcpu != id.to_string() {
+        return None;
+    }
+    let interrupt = effect.strip_prefix("interrupt:")?;
+    let (source, gsi) = interrupt.split_once(':')?;
+    let source = match source {
+        "serial" => "serial",
+        "i8042" => "i8042",
+        "virtio-mmio" => "virtio-mmio",
+        "virtio-msix" => "virtio-msix",
+        "vmgenid" => "vmgenid",
+        "vmclock" => "vmclock",
+        _ => return None,
+    };
+    Some((id, source, gsi.parse().ok()?))
+}
+
+fn machine_replay_control_record(record: &str) -> bool {
+    record.starts_with("host:")
 }
 
 fn valid_machine_vcpu_effect(effect: &str) -> bool {
@@ -1196,7 +1399,10 @@ impl Vcpu {
                     return VcpuRunState::Paused;
                 }
                 // Emulation errors lead to vCPU exit.
-                Err(_) => return self.exit(FcExitCode::GenericError),
+                Err(error) => {
+                    error!("vCPU {} emulation failed: {error}", self.kvm_vcpu.index);
+                    return self.exit(FcExitCode::GenericError);
+                }
             }
         }
 
@@ -1396,6 +1602,9 @@ impl Vcpu {
         if self.machine_execution.shutdown_requested() {
             return Ok(VcpuEmulation::Stopped);
         }
+        if self.machine_execution.vcpu_control_requested() {
+            return Ok(VcpuEmulation::Interrupted);
+        }
         // Theseus: anchor the guest clock before the first KVM_RUN. On
         // aarch64 the counter offset is only writable after vCPU init (which
         // happens at configure time), so this is the earliest safe point.
@@ -1468,45 +1677,28 @@ fn handle_kvm_exit_recorded(
     if machine_execution.shutdown_requested() {
         return Ok(VcpuEmulation::Stopped);
     }
-    loop {
-        if machine_execution.shutdown_requested() {
-            return Ok(VcpuEmulation::Stopped);
+    if machine_execution.vcpu_control_requested() {
+        return Ok(VcpuEmulation::Interrupted);
+    }
+    if let Some(detail) = machine.divergence.clone() {
+        return Err(VcpuError::FaultyKvmExit(detail));
+    }
+    if let Some(expected) = machine.expected.as_ref() {
+        if expected.get(machine.position).is_none() && !machine.control_only {
+            // The retained stream is an exact boundary, not merely a prefix.
+            // Leave the next KVM exit pending while the control loop observes
+            // Pause or Finish.
+            return Ok(VcpuEmulation::Interrupted);
         }
-        if let Some(detail) = machine.divergence.clone() {
-            return Err(VcpuError::FaultyKvmExit(detail));
-        }
-        let Some(expected) = machine.expected.as_ref() else {
-            break;
-        };
-        let Some(expected_record) = expected.get(machine.position) else {
-            break;
-        };
-        if machine_record_actor(expected_record) == Some(MachineExecutionActor::Vcpu(vcpu)) {
-            break;
-        }
-        let (next, timeout) = machine_execution
-            .turn_changed
-            .wait_timeout(machine, MACHINE_EXECUTION_TURN_TIMEOUT)
-            .expect("machine execution controller lock poisoned while waiting for replay turn");
-        machine = next;
-        if timeout.timed_out() {
-            let expected_actor = machine
-                .expected
-                .as_ref()
-                .and_then(|expected| expected.get(machine.position))
-                .and_then(|record| machine_record_actor(record));
-            let detail = format!(
-                "machine execution replay expected {} at decision {}, but vCPU {vcpu} reached an exit",
-                match expected_actor {
-                    Some(MachineExecutionActor::Vcpu(value)) => format!("vCPU {value}"),
-                    Some(MachineExecutionActor::Host) => "a host effect".to_owned(),
-                    None => "an unknown actor".to_owned(),
-                },
-                machine.position
-            );
-            machine.divergence = Some(detail.clone());
-            machine_execution.turn_changed.notify_all();
-            return Err(VcpuError::FaultyKvmExit(detail));
+        if !machine.control_only && expected.get(machine.position).is_some_and(|record| {
+            machine_record_actor(record) != Some(MachineExecutionActor::Vcpu(vcpu))
+        }) {
+            // Leave the unhandled KVM exit pending and return to the vCPU
+            // control loop. Waiting on the replay condition variable here
+            // prevents Pause and Finish messages from being observed while a
+            // checkpoint boundary is deliberately holding this vCPU behind a
+            // recorded host or sibling-vCPU turn.
+            return Ok(VcpuEmulation::Interrupted);
         }
     }
     if machine.execution.trace.len() == MACHINE_EXECUTION_TRACE_LIMIT {
@@ -1542,7 +1734,9 @@ fn handle_kvm_exit_recorded(
         Ok(exit) => Some((format!("vcpu:{vcpu}:kvm:{exit:?}"), true)),
         Err(_) => None,
     };
-    if let (Some(expected), Some((observed, exact))) = (&machine.expected, admission) {
+    if !machine.control_only
+        && let (Some(expected), Some((observed, exact))) = (&machine.expected, admission)
+    {
         let matches = expected.get(machine.position).is_some_and(|record| {
             if exact { record == &observed } else { record.starts_with(&observed) }
         });
@@ -1599,7 +1793,7 @@ fn handle_kvm_exit_recorded(
         (&outcome, decision)
     {
         let record = format!("vcpu:{vcpu}:{decision}");
-        if let Some(expected) = machine.expected.as_ref() {
+        if !machine.control_only && let Some(expected) = machine.expected.as_ref() {
             if expected.get(machine.position) != Some(&record) {
                 let detail = format!(
                     "machine execution replay diverged at decision {}: expected {:?}, observed {record:?}",
@@ -1617,7 +1811,9 @@ fn handle_kvm_exit_recorded(
             .record(decision);
         machine.execution.ledger.record(record.clone());
         machine.execution.trace.push(record);
-        machine.position = machine.position.saturating_add(1);
+        if !machine.control_only {
+            machine.position = machine.position.saturating_add(1);
+        }
         machine_execution.turn_changed.notify_all();
     }
     outcome
@@ -1700,23 +1896,171 @@ mod execution_ledger_tests {
     }
 
     #[test]
-    fn missing_or_changed_interrupt_never_injects_or_records_a_decision() {
-        for pending in [None, Some(("serial", 4))] {
-            let controller = Arc::new(MachineExecutionController::default());
-            controller.enable_deterministic_interrupts();
-            controller.enforce(vec!["vcpu:0:interrupt:virtio-mmio:5".into()]).unwrap();
-            if let Some((source, gsi)) = pending {
-                controller.request_edge_interrupt(source, gsi).unwrap();
-            }
-            let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
-            let error = controller.deliver_pending_interrupt_with(0, &ledger, |_| {
-                panic!("unrecorded interrupt injected")
-            }).unwrap_err();
-            assert!(error.contains("decision 0"));
-            assert_eq!(controller.execution_state().trace().len(), 0);
-            assert_eq!(ledger.lock().unwrap().evidence().decisions, 0);
-            assert_eq!(controller.replay_error(), Some(error));
+    fn topology_wait_observes_asynchronous_replay_progress() {
+        let controller = Arc::new(MachineExecutionController::default());
+        controller
+            .enforce(vec!["host:serial_input:1:41".into()])
+            .unwrap();
+        let producer = controller.clone();
+        let producer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            producer
+                .apply_host_effect("serial_input:1:41".into(), || Ok::<_, ()>(()))
+                .unwrap()
+                .unwrap();
+        });
+        assert!(
+            controller
+                .wait_for_replay_progress(0, std::time::Duration::from_secs(1))
+                .unwrap()
+        );
+        producer.join().unwrap();
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
+    fn topology_wait_materializes_a_recorded_interrupt_turn() {
+        let controller = MachineExecutionController::default();
+        controller.enable_deterministic_interrupts();
+        controller
+            .enforce(vec!["vcpu:0:interrupt:virtio-mmio:5".into()])
+            .unwrap();
+        assert!(!controller
+            .wait_for_replay_progress(0, std::time::Duration::ZERO)
+            .unwrap());
+        assert_eq!(
+            controller.pending_interrupts_for_test(),
+            [("virtio-mmio", 5)]
+        );
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        assert!(controller
+            .deliver_pending_interrupt_with(0, &ledger, |gsi| {
+                assert_eq!(gsi, 5);
+                Ok(())
+            })
+            .unwrap());
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
+    fn consecutive_recorded_interrupts_are_injected_before_guest_execution() {
+        let controller = MachineExecutionController::default();
+        controller.enable_deterministic_interrupts();
+        controller
+            .enforce(vec![
+                "vcpu:0:interrupt:vmgenid:6".into(),
+                "vcpu:0:interrupt:vmclock:7".into(),
+                "host:serial_input:1:41".into(),
+            ])
+            .unwrap();
+        controller.request_edge_interrupt("vmgenid", 6).unwrap();
+        controller.request_edge_interrupt("vmclock", 7).unwrap();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let mut delivered = Vec::new();
+        while controller.may_deliver_another_interrupt(0) {
+            assert!(
+                controller
+                    .deliver_pending_interrupt_with(0, &ledger, |gsi| {
+                        delivered.push(gsi);
+                        Ok(())
+                    })
+                    .unwrap()
+            );
         }
+        assert_eq!(delivered, [6, 7]);
+        assert_eq!(
+            controller.execution_state().trace(),
+            [
+                "vcpu:0:interrupt:vmgenid:6",
+                "vcpu:0:interrupt:vmclock:7"
+            ]
+        );
+        assert_eq!(controller.replay_error(), Some("machine execution replay stopped at decision 2 of 3".into()));
+    }
+
+    #[test]
+    fn recording_drains_restored_device_interrupts_before_uart_input() {
+        let controller = MachineExecutionController::default();
+        controller.enable_deterministic_interrupts();
+        controller.request_edge_interrupt("vmclock", 8).unwrap();
+        controller.request_interrupt("serial", 4, true).unwrap();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let mut delivered = Vec::new();
+
+        assert!(
+            controller
+                .deliver_pending_interrupts_with(0, &ledger, |gsi| {
+                    delivered.push(gsi);
+                    Ok(())
+                })
+                .unwrap()
+        );
+
+        assert_eq!(delivered, [8, 4]);
+        assert_eq!(
+            controller.execution_state().trace(),
+            [
+                "vcpu:0:interrupt:vmclock:8",
+                "vcpu:0:interrupt:serial:4"
+            ]
+        );
+        assert!(controller.pending_interrupts_for_test().is_empty());
+    }
+
+    #[test]
+    fn replay_selects_the_recorded_interrupt_from_pending_requests() {
+        let controller = Arc::new(MachineExecutionController::default());
+        controller.enable_deterministic_interrupts();
+        controller
+            .enforce(vec!["vcpu:0:interrupt:virtio-mmio:5".into()])
+            .unwrap();
+        controller.request_edge_interrupt("serial", 4).unwrap();
+        let producer = controller.clone();
+        let producer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            producer.request_edge_interrupt("virtio-mmio", 5).unwrap();
+        });
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        assert!(
+            controller
+                .deliver_pending_interrupt_with(0, &ledger, |gsi| {
+                    assert_eq!(gsi, 5);
+                    Ok(())
+                })
+                .unwrap()
+        );
+        producer.join().unwrap();
+        assert_eq!(
+            controller.execution_state().trace(),
+            ["vcpu:0:interrupt:virtio-mmio:5"]
+        );
+        assert_eq!(controller.pending_interrupts_for_test(), [("serial", 4)]);
+        assert_eq!(ledger.lock().unwrap().evidence().decisions, 1);
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
+    fn pending_interrupt_waits_behind_an_earlier_same_vcpu_device_effect() {
+        let controller = MachineExecutionController::default();
+        controller.enable_deterministic_interrupts();
+        controller
+            .enforce(vec![
+                "vcpu:0:pio_write:0x3f9:1:05".into(),
+                "vcpu:0:interrupt:serial:4".into(),
+            ])
+            .unwrap();
+        controller.request_edge_interrupt("serial", 4).unwrap();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        assert!(
+            !controller
+                .deliver_pending_interrupt_with(0, &ledger, |_| {
+                    panic!("interrupt injected before the recorded device access")
+                })
+                .unwrap()
+        );
+        assert_eq!(controller.execution_state().trace().len(), 0);
+        assert_eq!(controller.pending_interrupts_for_test(), [("serial", 4)]);
+        assert_eq!(controller.replay_divergence(), None);
     }
 
     #[test]
@@ -1738,6 +2082,33 @@ mod execution_ledger_tests {
         assert_eq!(ledger.lock().unwrap().evidence().decisions, 0);
     }
 
+    #[test]
+    fn control_request_wakes_a_vcpu_waiting_for_recorded_interrupt() {
+        let controller = Arc::new(MachineExecutionController::default());
+        controller.enable_deterministic_interrupts();
+        controller
+            .enforce(vec!["vcpu:0:interrupt:virtio-mmio:5".into()])
+            .unwrap();
+        let control = controller.clone();
+        let control = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            control.request_vcpu_control();
+        });
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        assert!(
+            !controller
+                .deliver_pending_interrupt_with(0, &ledger, |_| {
+                    panic!("interrupt injected while vCPU control was pending")
+                })
+                .unwrap()
+        );
+        control.join().unwrap();
+        assert!(controller.vcpu_control_requested());
+        controller.resume_vcpu_execution();
+        assert!(!controller.vcpu_control_requested());
+        assert_eq!(controller.replay_divergence(), None);
+    }
+
     impl BusDevice for CountingDevice {
         fn read(&mut self, _: u64, _: u64, data: &mut [u8]) {
             self.reads += 1;
@@ -1756,6 +2127,65 @@ mod execution_ledger_tests {
         let mut peripherals = Peripherals::default();
         peripherals.mmio_bus = Some(bus);
         (peripherals, device)
+    }
+
+    #[test]
+    fn campaign_replay_gates_host_turns_without_requiring_identical_guest_execution() {
+        let (mut peripherals, device) = counting_device();
+        let controller = Arc::new(MachineExecutionController::default());
+        controller.enable_deterministic_interrupts();
+        controller
+            .enforce_control(vec![
+                "vcpu:0:mmio_write:0x10:1:2a".into(),
+                "host:serial_input:1:41".into(),
+                "vcpu:0:interrupt:virtio-mmio:5".into(),
+            ])
+            .unwrap();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let data = [7];
+        assert_eq!(
+            handle_kvm_exit_recorded(
+                &mut peripherals,
+                Ok(VcpuExit::MmioWrite(0x10, &data)),
+                0,
+                &ledger,
+                &controller,
+            )
+            .unwrap(),
+            VcpuEmulation::Handled
+        );
+        assert_eq!(device.lock().unwrap().writes, 1);
+        assert_eq!(controller.state.lock().unwrap().position, 0);
+        controller.request_edge_interrupt("serial", 4).unwrap();
+        controller
+            .request_edge_interrupt("virtio-mmio", 5)
+            .unwrap();
+        let mut delivered = Vec::new();
+        assert!(controller
+            .deliver_pending_interrupts_with(0, &ledger, |gsi| {
+                delivered.push(gsi);
+                Ok(())
+            })
+            .unwrap());
+        assert_eq!(delivered, [4, 5]);
+        assert_eq!(controller.replay_divergence(), None);
+        assert_eq!(controller.replay_position(), 0);
+        controller
+            .apply_host_effect("serial_input:1:41".into(), || Ok::<_, ()>(()))
+            .unwrap()
+            .unwrap();
+        let other_data = [9];
+        handle_kvm_exit_recorded(
+            &mut peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &other_data)),
+            0,
+            &ledger,
+            &controller,
+        )
+        .unwrap();
+        assert_eq!(controller.replay_position(), 1);
+        assert!(controller.pending_interrupts_for_test().is_empty());
+        assert_eq!(controller.replay_error(), None);
     }
 
     #[test]
@@ -2017,6 +2447,80 @@ mod execution_ledger_tests {
         assert_eq!(
             controller.execution_state().trace(),
             ["host:serial_input:2:2a0a"]
+        );
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
+    fn execution_ledger_host_turn_yields_to_vcpu_control_messages() {
+        let mut peripherals = Peripherals::default();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let controller = Arc::new(MachineExecutionController::default());
+        controller
+            .enforce(vec![
+                "host:serial_input:1:41".to_owned(),
+                "vcpu:0:mmio_write:0x10:1:2a".to_owned(),
+            ])
+            .unwrap();
+
+        let result = handle_kvm_exit_recorded(
+            &mut peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &[0x2a])),
+            0,
+            &ledger,
+            &controller,
+        )
+        .unwrap();
+        assert_eq!(result, VcpuEmulation::Interrupted);
+        assert!(controller.execution_state().trace().is_empty());
+        assert_eq!(controller.replay_divergence(), None);
+
+        controller
+            .apply_host_effect("serial_input:1:41".to_owned(), || Ok::<(), ()>(()))
+            .unwrap()
+            .unwrap();
+        let result = handle_kvm_exit_recorded(
+            &mut peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &[0x2a])),
+            0,
+            &ledger,
+            &controller,
+        )
+        .unwrap();
+        assert_eq!(result, VcpuEmulation::Handled);
+        assert_eq!(
+            controller.execution_state().trace(),
+            ["host:serial_input:1:41", "vcpu:0:mmio_write:0x10:1:2a"]
+        );
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
+    fn completed_replay_yields_without_extending_the_retained_stream() {
+        let (mut peripherals, device) = counting_device();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let controller = Arc::new(MachineExecutionController::default());
+        controller
+            .enforce(vec!["host:serial_input:1:41".to_owned()])
+            .unwrap();
+        controller
+            .apply_host_effect("serial_input:1:41".to_owned(), || Ok::<(), ()>(()))
+            .unwrap()
+            .unwrap();
+
+        let result = handle_kvm_exit_recorded(
+            &mut peripherals,
+            Ok(VcpuExit::MmioWrite(0x10, &[0x2a])),
+            0,
+            &ledger,
+            &controller,
+        )
+        .unwrap();
+        assert_eq!(result, VcpuEmulation::Interrupted);
+        assert_eq!(device.lock().unwrap().writes, 0);
+        assert_eq!(
+            controller.execution_state().trace(),
+            ["host:serial_input:1:41"]
         );
         assert_eq!(controller.replay_error(), None);
     }
@@ -2295,6 +2799,13 @@ impl VcpuHandle {
     ///
     /// When [`vmm_sys_util::linux::signal::Killable::kill`] errors.
     pub fn send_event(&mut self, event: VcpuEvent) -> Result<(), VcpuSendEventError> {
+        match &event {
+            VcpuEvent::Pause | VcpuEvent::Finish => {
+                self.machine_execution.request_vcpu_control();
+            }
+            VcpuEvent::Resume => self.machine_execution.resume_vcpu_execution(),
+            _ => {}
+        }
         // Use expect() to crash if the other thread closed this channel.
         self.event_sender
             .send(event)
@@ -2380,6 +2891,14 @@ impl VcpuHandle {
         self.machine_execution.enforce(trace)
     }
 
+    /// Replay only explicit host decisions.
+    pub fn enforce_machine_execution_control_trace(
+        &self,
+        trace: Vec<String>,
+    ) -> Result<(), String> {
+        self.machine_execution.enforce_control(trace)
+    }
+
     /// Return a recorded mismatch or incomplete expected suffix.
     pub fn machine_execution_replay_error(&self) -> Option<String> {
         self.machine_execution.replay_error()
@@ -2388,6 +2907,21 @@ impl VcpuHandle {
     /// Return an actual mismatch without treating an in-progress suffix as an error.
     pub fn machine_execution_replay_divergence(&self) -> Option<String> {
         self.machine_execution.replay_divergence()
+    }
+
+    /// Return the number of replay decisions admitted so far.
+    pub fn machine_execution_replay_position(&self) -> usize {
+        self.machine_execution.replay_position()
+    }
+
+    /// Briefly yield a replaying vCPU to asynchronous device completion.
+    pub fn wait_for_machine_execution_replay_progress(
+        &self,
+        position: usize,
+        timeout: Duration,
+    ) -> Result<bool, String> {
+        self.machine_execution
+            .wait_for_replay_progress(position, timeout)
     }
 
     /// Clone the controller used to serialize host and vCPU effects.

@@ -10,10 +10,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::net::Ipv4Addr;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use addr2line::Loader;
 use object::{BinaryFormat, Object, ObjectKind, ObjectSection, ObjectSymbol, SymbolKind};
@@ -33,6 +35,7 @@ use vmm::persist::{restore_from_microvm_state, VmInfo};
 use vmm::rate_limiter::RateLimiter;
 use vmm::resources::VmResources;
 use vmm::seccomp::get_empty_filters;
+use vmm::utils::net::mac::MacAddr;
 use vmm::vmm_config::boot_source::BootSourceConfig;
 use vmm::vmm_config::entropy::EntropyDeviceConfig;
 use vmm::vmm_config::instance_info::InstanceInfo;
@@ -44,6 +47,7 @@ use vmm::{
     EventManager, ExecutionLedger, ExecutionLedgerEvidence, FcExitCode, MachineExecutionState, Vmm,
 };
 
+mod checkpoint_cache;
 mod starting_state;
 
 const USAGE: &str = "Usage:
@@ -67,6 +71,26 @@ struct TopologyPlan {
     starting_checkpoint: Option<Artifact>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     checkpoint_prefixes: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "MachineReplayMode::is_exact")]
+    machine_replay: MachineReplayMode,
+    /// Global service order for plan-level events. Campaign exports need this
+    /// because per-service event arrays cannot represent cross-service order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    event_order: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum MachineReplayMode {
+    #[default]
+    Exact,
+    HostInputs,
+}
+
+impl MachineReplayMode {
+    fn is_exact(&self) -> bool {
+        *self == Self::Exact
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1008,9 +1032,12 @@ struct CampaignCheckpointEconomics {
     /// KVM dirty-page footprint sampled at capture barriers. This is a stable
     /// logical write-set measure, not host RSS accounting.
     private_dirty_pages: u64,
-    /// Always zero for in-memory branch checkpoints; retained so reports can
-    /// prove no campaign snapshot files were materialized.
+    /// In-memory prefix snapshot bytes written to files (currently zero).
+    /// Excludes durable starting-root exports and locked runtime/guest inputs.
     snapshot_file_bytes: u64,
+    /// Deterministic LRU removals from the bounded prefix RAM cache.
+    #[serde(default)]
+    prefix_evictions: usize,
 }
 
 /// Global record that the checkpoint tree and the inputs to guidance were the
@@ -1420,8 +1447,9 @@ struct StoragePlan {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct EventPlan {
     data_hex: String,
-    /// Campaign operations use an explicit serial barrier.  Ordinary manifest
-    /// events leave it absent and retain the original fire-and-forget mode.
+    /// An explicit serial barrier supplied by a manifest or campaign
+    /// operation. The next input is withheld until this complete line reaches
+    /// the host transcript.
     #[serde(default)]
     checkpoint: Option<String>,
     /// Topology mutations deliberately occur only after the event's serial
@@ -1836,8 +1864,8 @@ enum CampaignPrefixResult {
     SerialGuardRejected,
 }
 
-/// Restore a checkpoint for each distinct operation/action prefix once, then
-/// fork every leaf from its nearest materialized ancestor. This is a real tree
+/// Materialize operation/action prefixes within a bounded LRU cache, then
+/// fork every leaf from its nearest retained ancestor. This is a real tree
 /// rather than a cache keyed only by operation names: the key includes the
 /// exact serial input and barrier actions, so a faulted prefix never leaks into
 /// an ordinary sibling.
@@ -1850,6 +1878,8 @@ struct CampaignCheckpointTree {
     prefix_cow_restore_bytes: u64,
     retained_memory_bytes: u64,
     retained_private_dirty_pages: u64,
+    cache_policy: checkpoint_cache::Policy,
+    prefix_evictions: usize,
 }
 
 impl CampaignCheckpoint {
@@ -1927,6 +1957,14 @@ impl ServiceVm {
             .lock()
             .expect("VMM lock poisoned")
             .serial_input_depth()
+            .map_err(|error| error.to_string())
+    }
+
+    fn serial_input_diagnostics(&self) -> Result<String, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .serial_input_diagnostics()
             .map_err(|error| error.to_string())
     }
 
@@ -2409,6 +2447,14 @@ impl ServiceVm {
             .map_err(|error| error.to_string())
     }
 
+    fn enforce_machine_execution_control_trace(&self, trace: Vec<String>) -> Result<(), String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .enforce_machine_execution_control_trace(trace)
+            .map_err(|error| error.to_string())
+    }
+
     fn machine_execution_replay_error(&self) -> Result<Option<String>, String> {
         self.vmm
             .lock()
@@ -2422,6 +2468,22 @@ impl ServiceVm {
             .lock()
             .expect("VMM lock poisoned")
             .machine_execution_replay_divergence()
+            .map_err(|error| error.to_string())
+    }
+
+    fn machine_execution_replay_position(&self) -> Result<usize, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .machine_execution_replay_position()
+            .map_err(|error| error.to_string())
+    }
+
+    fn wait_for_machine_execution_replay_progress(&self, position: usize) -> Result<bool, String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .wait_for_machine_execution_replay_progress(position, Duration::from_millis(1))
             .map_err(|error| error.to_string())
     }
 
@@ -2591,6 +2653,8 @@ impl CampaignCheckpointTree {
             prefix_cow_restore_bytes: 0,
             retained_memory_bytes,
             retained_private_dirty_pages,
+            cache_policy: checkpoint_cache::Policy::new(checkpoint_cache::PREFIX_MEMORY_BUDGET),
+            prefix_evictions: 0,
         }
     }
 
@@ -2603,6 +2667,7 @@ impl CampaignCheckpointTree {
         campaign: &CampaignPlan,
         schedule: &CampaignSchedule,
         directory: &Path,
+        expected: Option<&BTreeMap<String, Vec<String>>>,
     ) -> Result<CampaignPrefixResult, String> {
         let mut prefix = Vec::new();
         let mut parent = CampaignPrefixCheckpoint {
@@ -2636,7 +2701,11 @@ impl CampaignCheckpointTree {
             prefix.push(event);
             let key = campaign_prefix_key(&prefix)?;
             if let Some(existing) = self.prefixes.get(&key) {
+                if let Some(expected) = expected {
+                    starting_state::check_prefix(&existing.checkpoint, expected)?;
+                }
                 self.reuses += 1;
+                self.cache_policy.touch(&key);
                 parent = existing.clone();
                 continue;
             }
@@ -2645,15 +2714,13 @@ impl CampaignCheckpointTree {
                 &parent.checkpoint,
                 &prefix[prefix.len() - 1],
                 &directory.join("prefix-work").join(&key),
+                expected,
             )?;
             self.prefix_restores += 1;
             self.prefix_captures += 1;
             self.prefix_cow_restore_bytes = self
                 .prefix_cow_restore_bytes
                 .saturating_add(parent.checkpoint.memory_bytes());
-            self.retained_memory_bytes = self
-                .retained_memory_bytes
-                .saturating_add(checkpoint.memory_bytes());
             self.retained_private_dirty_pages = self
                 .retained_private_dirty_pages
                 .saturating_add(checkpoint.private_dirty_pages());
@@ -2670,7 +2737,18 @@ impl CampaignCheckpointTree {
                 barriers,
                 boundaries,
             };
-            self.prefixes.insert(key, parent.clone());
+            let bytes = parent.checkpoint.memory_bytes();
+            let (admitted, evicted) = self.cache_policy.admit(key.clone(), bytes);
+            for key in evicted {
+                if let Some(removed) = self.prefixes.remove(&key) {
+                    self.retained_memory_bytes -= removed.checkpoint.memory_bytes();
+                    self.prefix_evictions += 1;
+                }
+            }
+            if admitted {
+                self.retained_memory_bytes = self.retained_memory_bytes.saturating_add(bytes);
+                self.prefixes.insert(key, parent.clone());
+            }
         }
         Ok(CampaignPrefixResult::Ready(parent))
     }
@@ -2704,6 +2782,7 @@ impl CampaignCheckpointTree {
                 .saturating_add(leaf_cow_restore_bytes),
             private_dirty_pages: self.retained_private_dirty_pages,
             snapshot_file_bytes: 0,
+            prefix_evictions: self.prefix_evictions,
         }
     }
 }
@@ -2723,6 +2802,7 @@ fn checkpoint_campaign_operation(
     parent: &CampaignCheckpoint,
     event: &CampaignEvent,
     directory: &Path,
+    expected: Option<&BTreeMap<String, Vec<String>>>,
 ) -> Result<
     (
         CampaignCheckpoint,
@@ -2767,6 +2847,14 @@ fn checkpoint_campaign_operation(
                 .get(name)
                 .ok_or_else(|| format!("checkpoint is missing VM state for {name}"))?,
         )?;
+        if let Some(expected) = expected {
+            vm.enforce_machine_execution_control_trace(
+                expected
+                    .get(name)
+                    .ok_or_else(|| format!("missing replay stream for {name}"))?
+                    .clone(),
+            )?;
+        }
         services.insert(
             name.clone(),
             ServiceRuntime {
@@ -2812,6 +2900,7 @@ fn checkpoint_campaign_operation(
         &mut applied,
     );
     services.insert(event.service.clone(), target);
+    reject_active_replay_divergence(&services)?;
     let barrier = injection?;
     let checkpoint =
         capture_campaign_checkpoint(directory, topology, &mut services, &switches, round)?;
@@ -2997,6 +3086,25 @@ fn execute_plan(
         (
             None, None, None, None, None, None, None, None, None, None, None, None,
         )
+    } else if topology.machine_replay == MachineReplayMode::HostInputs {
+        // Portable campaign exports promise the recorded external inputs and
+        // declared properties, not byte-identical Linux execution between
+        // those inputs. Keep comparisons for host-controlled topology effects
+        // and use the complete trace only for its host-input projection.
+        (
+            None,
+            recorded_fault_fingerprints(plan, &service_names)?,
+            recorded_network_fingerprint(plan)?,
+            recorded_campaign_actions(plan)?,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            recorded_machine_execution_traces(plan, &service_names)?,
+            recorded_lifecycle_barrier_rounds(plan)?,
+        )
     } else {
         (
             recorded_serial_fingerprints(plan, &service_names)?,
@@ -3062,24 +3170,21 @@ fn execute_plan(
             );
         }
         if minimize {
-            execute_campaign_minimized(topology, &output, Path::new(plan))
+            execute_campaign_minimized(topology, &output, Path::new(plan), retained_root)
         } else {
-            execute_campaign(topology, &output, recorded_campaign.as_ref())
+            execute_campaign(topology, &output, recorded_campaign.as_ref(), retained_root)
         }
     } else {
         if minimize {
             return Err("--minimize requires a campaign replay bundle".to_owned());
         }
         let root = if topology.replay_start == starting_state::ReplayStart::ReadyCheckpoint {
-            if let Some(root) = retained_root {
-                Some(root)
-            } else {
-                starting_state::boot_or_load(&mut topology, &output.join("checkpoint"), "")?;
-                Some(starting_state::load(
-                    &topology,
-                    topology.starting_checkpoint.as_ref().unwrap(),
-                )?)
-            }
+            Some(starting_state::boot_or_load(
+                &mut topology,
+                &output.join("checkpoint"),
+                "",
+                retained_root,
+            )?)
         } else {
             None
         };
@@ -3087,6 +3192,7 @@ fn execute_plan(
             topology,
             &output,
             root.as_ref(),
+            ExecutionCompletion::GuestExit,
             expected_serial,
             expected_faults,
             expected_network,
@@ -3386,7 +3492,11 @@ fn execute_campaign(
     mut topology: TopologyPlan,
     output: &Path,
     recorded: Option<&RecordedCampaignResult>,
+    verified_root: Option<CampaignCheckpoint>,
 ) -> Result<(), String> {
+    // Exported campaign and minimized-counterexample plans become ordinary
+    // topologies, so retain their portable replay contract in the plan itself.
+    topology.machine_replay = MachineReplayMode::HostInputs;
     let campaign = topology
         .campaign
         .take()
@@ -3410,8 +3520,12 @@ fn execute_campaign(
     if let Some(recorded) = recorded {
         verify_recorded_campaign_guidance(campaign.guidance, campaign.coverage, recorded)?;
     }
-    let checkpoint =
-        starting_state::boot_or_load(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
+    let checkpoint = starting_state::boot_or_load(
+        &mut topology,
+        &output.join("checkpoint"),
+        &campaign.driver,
+        verified_root,
+    )?;
     let instruction_symbolizer = CampaignInstructionSymbolizer::from_topology(&topology);
     let application_symbolizer = CampaignApplicationSymbolizer::from_topology(&topology);
     let base = serde_json::to_vec(&topology)
@@ -3480,9 +3594,15 @@ fn execute_campaign(
         // Guards inspect each exact restored parent checkpoint. A fault after
         // an earlier operation is visible to the next operation's guard, just
         // as it is to the guest; impossible prefixes never become leaves.
-        let prefix = match checkpoints
-            .checkpoint_for_guarded_schedule(&topology, &campaign, &schedule, output)?
-        {
+        let prefix = match checkpoints.checkpoint_for_guarded_schedule(
+            &topology,
+            &campaign,
+            &schedule,
+            output,
+            expected
+                .map(|run| &run.machine_execution_traces)
+                .filter(|traces| !traces.is_empty()),
+        )? {
             CampaignPrefixResult::Ready(prefix) => prefix,
             rejection => {
                 if expected.is_some() {
@@ -3520,6 +3640,7 @@ fn execute_campaign(
             run,
             &run_dir,
             Some(&prefix.checkpoint),
+            ExecutionCompletion::CampaignCheckpoint,
             None,
             None,
             None,
@@ -3548,9 +3669,9 @@ fn execute_campaign(
         let actions = campaign_actions(&run_dir)?;
         let program_counters = campaign_checkpoint_program_counters(&prefix.checkpoint);
         let execution_locations = campaign_checkpoint_execution_locations(&prefix.checkpoint);
-        let execution_ledgers = campaign_checkpoint_execution_ledgers(&prefix.checkpoint);
+        let execution_ledgers = campaign_result_ledgers(&run_dir, "execution_ledgers")?;
         let machine_execution_ledgers =
-            campaign_checkpoint_machine_execution_ledgers(&prefix.checkpoint);
+            campaign_result_ledgers(&run_dir, "machine_execution_ledger")?;
         let machine_execution_traces = campaign_machine_execution_traces(&run_dir)?;
         let instruction_locations = instruction_symbolizer.symbolize(&execution_locations);
         let timeline = campaign_operation_timeline(
@@ -3690,7 +3811,11 @@ fn execute_campaign(
             &mut pending,
         );
         if let Some(expected) = expected {
-            let mismatches = campaign_replay_mismatches(expected, &run);
+            let mismatches = if topology.machine_replay == MachineReplayMode::HostInputs {
+                campaign_host_input_replay_mismatches(expected, &run)
+            } else {
+                campaign_replay_mismatches(expected, &run)
+            };
             if !mismatches.is_empty() {
                 replay_mismatches.push(format!("run {index}: {}", mismatches.join(", ")));
             }
@@ -3713,7 +3838,13 @@ fn execute_campaign(
             .all(|property| property.status == "passed");
     let search_matches = recorded
         .and_then(|recorded| recorded.search.as_ref())
-        .is_none_or(|expected| expected == &search);
+        .is_none_or(|expected| {
+            if topology.machine_replay == MachineReplayMode::HostInputs {
+                campaign_host_input_search_matches(expected, &search)
+            } else {
+                expected == &search
+            }
+        });
     let replay_verified = recorded.is_none()
         || (replay_mismatches.is_empty()
             && search_matches
@@ -3915,6 +4046,34 @@ fn campaign_actions(run: &Path) -> Result<Vec<AppliedCampaignAction>, String> {
         .map_err(|error| format!("cannot parse {}: {error}", result_path.display()))
 }
 
+fn campaign_result_ledgers<T: serde::de::DeserializeOwned>(
+    run: &Path,
+    field: &str,
+) -> Result<BTreeMap<String, T>, String> {
+    let mut values = BTreeMap::new();
+    for service in fs::read_dir(run.join("services")).map_err(|error| error.to_string())? {
+        let service = service.map_err(|error| error.to_string())?;
+        if !service
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
+            continue;
+        }
+        let path = service.path().join("result.json");
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?;
+        values.insert(
+            service.file_name().to_string_lossy().into_owned(),
+            serde_json::from_value(value[field].clone()).map_err(|error| {
+                format!("invalid complete {field} in {}: {error}", path.display())
+            })?,
+        );
+    }
+    Ok(values)
+}
+
 fn campaign_machine_execution_traces(run: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
     let mut traces = BTreeMap::new();
     for service in fs::read_dir(run.join("services")).map_err(|error| error.to_string())? {
@@ -3952,7 +4111,9 @@ fn execute_campaign_minimized(
     mut topology: TopologyPlan,
     output: &Path,
     source_plan: &Path,
+    verified_root: Option<CampaignCheckpoint>,
 ) -> Result<(), String> {
+    topology.machine_replay = MachineReplayMode::HostInputs;
     let campaign = topology
         .campaign
         .take()
@@ -3967,12 +4128,17 @@ fn execute_campaign_minimized(
     )
     .map_err(|error| format!("cannot parse campaign result: {error}"))?;
     verify_recorded_campaign_guidance(campaign.guidance, campaign.coverage, &recorded)?;
-    let checkpoint =
-        starting_state::boot_or_load(&mut topology, &output.join("checkpoint"), &campaign.driver)?;
+    let checkpoint = starting_state::boot_or_load(
+        &mut topology,
+        &output.join("checkpoint"),
+        &campaign.driver,
+        verified_root,
+    )?;
     let base = serde_json::to_vec(&topology)
         .map_err(|error| format!("cannot encode campaign base plan: {error}"))?;
     let mut checkpoints = CampaignCheckpointTree::new(checkpoint);
-    let (property, mut schedule) = campaign_counterexample(&campaign, source, &recorded)?;
+    let (property, mut schedule, mut locked_machine_execution_traces) =
+        campaign_counterexample(&campaign, source, &recorded)?;
     let original_operations = schedule
         .operations
         .iter()
@@ -4001,7 +4167,7 @@ fn execute_campaign_minimized(
             }
             let directory = attempts.join(format!("{attempt:03}"));
             attempt += 1;
-            execute_campaign_minimization_attempt(
+            let reproduced = execute_campaign_minimization_attempt(
                 &topology,
                 &campaign,
                 &base,
@@ -4010,7 +4176,12 @@ fn execute_campaign_minimized(
                 &property,
                 output,
                 &directory,
-            )
+            )?;
+            if reproduced {
+                locked_machine_execution_traces =
+                    Some(campaign_machine_execution_traces(&directory)?);
+            }
+            Ok(reproduced)
         })?;
     schedule.operations = operations;
     schedule.thread_schedule_prefixes = campaign_prefixes_for_subsequence(
@@ -4046,7 +4217,7 @@ fn execute_campaign_minimized(
             };
             let directory = attempts.join(format!("{attempt:03}"));
             attempt += 1;
-            execute_campaign_minimization_attempt(
+            let reproduced = execute_campaign_minimization_attempt(
                 &topology,
                 &campaign,
                 &base,
@@ -4055,12 +4226,26 @@ fn execute_campaign_minimized(
                 &property,
                 output,
                 &directory,
-            )
+            )?;
+            if reproduced {
+                locked_machine_execution_traces =
+                    Some(campaign_machine_execution_traces(&directory)?);
+            }
+            Ok(reproduced)
         })?;
     schedule.faults = combine_faults(&optional_faults);
-    let prefix = match checkpoints
-        .checkpoint_for_guarded_schedule(&topology, &campaign, &schedule, output)?
-    {
+    // Rebuild the winning schedule from the retained ready root under the
+    // machine control stream that demonstrated the failure. Reusing a prefix
+    // from a rejected minimization candidate could silently select a sibling
+    // guest interleaving and erase the counterexample.
+    let mut final_checkpoints = CampaignCheckpointTree::new(checkpoints.root.clone());
+    let prefix = match final_checkpoints.checkpoint_for_guarded_schedule(
+        &topology,
+        &campaign,
+        &schedule,
+        output,
+        locked_machine_execution_traces.as_ref(),
+    )? {
         CampaignPrefixResult::Ready(prefix) => prefix,
         CampaignPrefixResult::MarkerGuardRejected | CampaignPrefixResult::SerialGuardRejected => {
             return Err(
@@ -4082,6 +4267,7 @@ fn execute_campaign_minimized(
         final_plan,
         output,
         Some(&prefix.checkpoint),
+        ExecutionCompletion::CampaignCheckpoint,
         None,
         None,
         None,
@@ -4092,7 +4278,7 @@ fn execute_campaign_minimized(
         None,
         None,
         None,
-        None,
+        locked_machine_execution_traces,
         None,
     );
     write_replay_plan(&output.join("replay-plan.json"), &replay)?;
@@ -4209,7 +4395,7 @@ fn execute_campaign_minimization_attempt(
     directory: &Path,
 ) -> Result<bool, String> {
     let prefix = match checkpoints
-        .checkpoint_for_guarded_schedule(topology, campaign, schedule, output)?
+        .checkpoint_for_guarded_schedule(topology, campaign, schedule, output, None)?
     {
         CampaignPrefixResult::Ready(prefix) => prefix,
         CampaignPrefixResult::MarkerGuardRejected | CampaignPrefixResult::SerialGuardRejected => {
@@ -4229,6 +4415,7 @@ fn execute_campaign_minimization_attempt(
         plan,
         directory,
         Some(&prefix.checkpoint),
+        ExecutionCompletion::CampaignCheckpoint,
         None,
         None,
         None,
@@ -4303,7 +4490,14 @@ fn campaign_counterexample(
     campaign: &CampaignPlan,
     source: &Path,
     recorded: &RecordedCampaignResult,
-) -> Result<(CampaignProperty, CampaignSchedule), String> {
+) -> Result<
+    (
+        CampaignProperty,
+        CampaignSchedule,
+        Option<BTreeMap<String, Vec<String>>>,
+    ),
+    String,
+> {
     for property in &campaign.properties {
         let matches = recorded
             .runs
@@ -4377,6 +4571,8 @@ fn campaign_counterexample(
                 operations,
                 faults,
             },
+            (!recorded_run.machine_execution_traces.is_empty())
+                .then(|| recorded_run.machine_execution_traces.clone()),
         ));
     }
     Err("campaign bundle has no failing property to minimize".to_owned())
@@ -6330,6 +6526,99 @@ fn campaign_replay_mismatches(expected: &RecordedCampaignRun, actual: &CampaignR
     mismatches
 }
 
+/// Portable checkpoint replay governs declared host inputs and application-
+/// level decisions, not the exact Linux instruction at which a vCPU happened
+/// to pause. Keep the complete low-level observations in each new result, but
+/// do not turn them into claims the host-input contract does not make.
+fn campaign_host_input_replay_mismatches(
+    expected: &RecordedCampaignRun,
+    actual: &CampaignRun,
+) -> Vec<String> {
+    let mut mismatches = campaign_replay_mismatches(expected, actual);
+    mismatches.retain(|mismatch| {
+        !matches!(
+            mismatch.as_str(),
+            "guidance ledger"
+                | "posterior guidance evidence"
+                | "operation-boundary timeline"
+                | "checkpoint program counters"
+                | "symbolized instruction locations"
+                | "instruction-location coverage"
+                | "checkpoint-PC coverage"
+                | "ordered KVM execution ledger"
+                | "machine-wide execution stream"
+                | "actively enforced machine execution trace"
+                | "topology-state coverage"
+        )
+    });
+    if !expected.timeline.is_empty()
+        && !campaign_host_input_timeline_matches(&expected.timeline, &actual.timeline)
+    {
+        mismatches.push("operation control timeline".to_owned());
+    }
+    if !expected.machine_execution_traces.is_empty()
+        && !campaign_host_input_traces_match(
+            &expected.machine_execution_traces,
+            &actual.machine_execution_traces,
+        )
+    {
+        mismatches.push("actively enforced host-input trace".to_owned());
+    }
+    mismatches
+}
+
+fn campaign_host_input_timeline_matches(
+    expected: &[CampaignTimelineBoundary],
+    actual: &[CampaignTimelineBoundary],
+) -> bool {
+    expected.len() == actual.len()
+        && expected.iter().zip(actual).all(|(expected, actual)| {
+            (expected.id.is_empty() || expected.id == actual.id)
+                && expected.operation == actual.operation
+                && expected.command == actual.command
+                && expected.test_command_path == actual.test_command_path
+                && expected.terminated_command_services == actual.terminated_command_services
+                && (expected.service.is_empty() || expected.service == actual.service)
+                && (campaign_input_is_absent(&expected.input) || expected.input == actual.input)
+                && (campaign_uart_delivery_is_absent(&expected.delivery)
+                    || (expected.delivery.recorded == actual.delivery.recorded
+                        && expected.delivery.accepted_bytes == actual.delivery.accepted_bytes
+                        && expected.delivery.checkpoint == actual.delivery.checkpoint))
+                && (campaign_uart_barrier_is_absent(&expected.barrier)
+                    || (expected.barrier.recorded == actual.barrier.recorded
+                        && expected.barrier.checkpoint == actual.barrier.checkpoint))
+                && expected.actions == actual.actions
+        })
+}
+
+fn campaign_host_input_traces_match(
+    expected: &BTreeMap<String, Vec<String>>,
+    actual: &BTreeMap<String, Vec<String>>,
+) -> bool {
+    expected.len() == actual.len()
+        && expected.iter().all(|(name, expected)| {
+            actual.get(name).is_some_and(|actual| {
+                machine_replay_control_trace(expected) == machine_replay_control_trace(actual)
+            })
+        })
+}
+
+fn campaign_host_input_search_matches(
+    expected: &CampaignSearchEvidence,
+    actual: &CampaignSearchEvidence,
+) -> bool {
+    let mut expected = expected.clone();
+    let mut actual = actual.clone();
+    // Paused RAM dirtiness and guidance hashes include ungoverned kernel PCs
+    // and topology-state fingerprints. Structural checkpoint work and the
+    // number of recorded observations remain comparable.
+    expected.checkpoint.private_dirty_pages = 0;
+    actual.checkpoint.private_dirty_pages = 0;
+    expected.guidance_sha256.clear();
+    actual.guidance_sha256.clear();
+    expected == actual
+}
+
 /// Legacy campaign results can omit the target service, stable boundary ID,
 /// input receipt, or barrier receipt. Continue to verify every older field
 /// while allowing only those absent additions; new results lock all of them
@@ -6985,6 +7274,7 @@ fn apply_campaign_schedule(
     for service in topology.services.values_mut() {
         service.run.events.clear();
     }
+    topology.event_order.clear();
     for campaign_event in events {
         if !campaign_event.recover_faults.is_empty() {
             let service = topology
@@ -6999,6 +7289,7 @@ fn apply_campaign_schedule(
             let mut quiet = campaign_shell_termination_event(&campaign_event.service);
             quiet.actions = campaign_event.recover_faults.clone();
             service.run.events.push(quiet);
+            topology.event_order.push(campaign_event.service.clone());
         }
         for service_name in &campaign_event.terminate_shell_processes {
             if !campaign_event.recover_faults.is_empty() && service_name == &campaign_event.service
@@ -7012,6 +7303,7 @@ fn apply_campaign_schedule(
                 .run
                 .events
                 .push(campaign_shell_termination_event(service_name));
+            topology.event_order.push(service_name.clone());
         }
         let service = topology
             .services
@@ -7023,6 +7315,7 @@ fn apply_campaign_schedule(
                 )
             })?;
         service.run.events.push(campaign_event.event.clone());
+        topology.event_order.push(campaign_event.service.clone());
     }
     for candidate in selected {
         if matches!(
@@ -7063,6 +7356,54 @@ fn clear_campaign_events(topology: &mut TopologyPlan) {
     for service in topology.services.values_mut() {
         service.run.events.clear();
     }
+    topology.event_order.clear();
+}
+
+/// Restore the global event stream recorded by a campaign export. Legacy and
+/// hand-written plans without an order retain the original service-grouped
+/// behavior.
+fn ordered_topology_events(topology: &TopologyPlan) -> Result<Vec<(String, EventPlan)>, String> {
+    if topology.event_order.is_empty() {
+        return Ok(topology
+            .services
+            .iter()
+            .flat_map(|(name, service)| {
+                service
+                    .run
+                    .events
+                    .iter()
+                    .cloned()
+                    .map(|event| (name.clone(), event))
+            })
+            .collect());
+    }
+
+    let mut positions = BTreeMap::<String, usize>::new();
+    let mut ordered = Vec::with_capacity(topology.event_order.len());
+    for name in &topology.event_order {
+        let service = topology
+            .services
+            .get(name)
+            .ok_or_else(|| format!("event_order names unknown service {name}"))?;
+        let position = positions.entry(name.clone()).or_default();
+        let event = service
+            .run
+            .events
+            .get(*position)
+            .ok_or_else(|| format!("event_order has too many entries for service {name}"))?;
+        ordered.push((name.clone(), event.clone()));
+        *position += 1;
+    }
+    for (name, service) in &topology.services {
+        let included = positions.get(name).copied().unwrap_or_default();
+        if included != service.run.events.len() {
+            return Err(format!(
+                "event_order includes {included} of {} events for service {name}",
+                service.run.events.len()
+            ));
+        }
+    }
+    Ok(ordered)
 }
 
 fn campaign_schedule_event(
@@ -9800,10 +10141,17 @@ fn json_condition_description(condition: &JsonCondition) -> String {
     )
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExecutionCompletion {
+    GuestExit,
+    CampaignCheckpoint,
+}
+
 fn execute(
     mut topology: TopologyPlan,
     output: &Path,
     checkpoint: Option<&CampaignCheckpoint>,
+    completion: ExecutionCompletion,
     expected_serial: Option<BTreeMap<String, Vec<String>>>,
     expected_faults: Option<BTreeMap<String, String>>,
     expected_network: Option<String>,
@@ -9817,6 +10165,25 @@ fn execute(
     expected_machine_execution_traces: Option<BTreeMap<String, Vec<String>>>,
     expected_lifecycle_rounds: Option<u64>,
 ) -> Result<(), String> {
+    // An exported campaign is a fixed-schedule plan, but its terminal state is
+    // still the final operation checkpoint. Its service entrypoints are often
+    // daemons and are not expected to exit.
+    let completion = if topology.machine_replay == MachineReplayMode::HostInputs {
+        ExecutionCompletion::CampaignCheckpoint
+    } else {
+        completion
+    };
+    let control_replay = completion == ExecutionCompletion::CampaignCheckpoint
+        || topology.machine_replay == MachineReplayMode::HostInputs;
+    // Checkpoint-backed campaign leaves skip the artifact-locking branch
+    // below, but they still need an output root before the replay plan can be
+    // made relative to it.  Create the root for both fresh and restored runs.
+    fs::create_dir_all(output).map_err(|error| {
+        format!(
+            "cannot create topology output directory {}: {error}",
+            output.display()
+        )
+    })?;
     configure_container_networks(&mut topology)?;
     if checkpoint.is_none() {
         if let Some(runner) = &mut topology.topology_runner {
@@ -9908,14 +10275,15 @@ fn execute(
                 )
             };
         if let Some(expected) = &expected_machine_execution_traces {
-            vm.enforce_machine_execution_trace(
-                expected
-                    .get(name)
-                    .ok_or_else(|| {
-                        format!("recorded machine execution trace missing service {name}")
-                    })?
-                    .clone(),
-            )?;
+            let trace = expected
+                .get(name)
+                .ok_or_else(|| format!("recorded machine execution trace missing service {name}"))?
+                .clone();
+            if control_replay {
+                vm.enforce_machine_execution_control_trace(trace)?;
+            } else {
+                vm.enforce_machine_execution_trace(trace)?;
+            }
         }
         services.insert(
             name.clone(),
@@ -9962,10 +10330,11 @@ fn execute(
     }
     let mut actions = Vec::new();
     let mut lifecycle_barrier_rounds: u64 = 0;
-    for name in &names {
-        let events = topology.services[name].run.events.clone();
-        if !events.is_empty() {
-            let serial = services[name].serial_logs[0].clone();
+    let ordered_events = ordered_topology_events(&topology)?;
+    let mut ready_services = BTreeSet::new();
+    for (name, event) in ordered_events {
+        if ready_services.insert(name.clone()) {
+            let serial = services[&name].serial_logs[0].clone();
             let remaining = max_rounds.saturating_sub(round);
             round = round.saturating_add(wait_for_serial_with_topology_rounds(
                 &serial,
@@ -9976,12 +10345,12 @@ fn execute(
                 remaining,
             )?);
         }
-        let mut driver = services.remove(name).expect("topology service missing");
+        let mut driver = services.remove(&name).expect("topology service missing");
         let serial = driver.serial_logs[0].clone();
         inject_campaign_events(
-            name,
+            &name,
             &mut driver,
-            &events,
+            std::slice::from_ref(&event),
             &serial,
             &topology,
             &mut services,
@@ -9989,9 +10358,13 @@ fn execute(
             &mut round,
             &mut actions,
         )?;
-        services.insert(name.clone(), driver);
+        services.insert(name, driver);
     }
-    while round.saturating_add(lifecycle_barrier_rounds) < max_rounds
+    // A campaign branch ends at its last operation checkpoint. Container
+    // entrypoints are usually daemons, so waiting for guest exit would only
+    // burn the complete round budget and incorrectly fail a valid branch.
+    while completion == ExecutionCompletion::GuestExit
+        && round.saturating_add(lifecycle_barrier_rounds) < max_rounds
         && services
             .values()
             .any(|service| service.vm.exited().is_none())
@@ -10018,6 +10391,24 @@ fn execute(
             services.insert(name.clone(), service);
         }
         advance_network_round(&switches, &services)?;
+    }
+    if let Some(expected) = &expected_machine_execution_traces {
+        complete_machine_execution_replay(&mut services, expected, max_rounds, control_replay)?;
+    }
+    // A campaign ends at an operation checkpoint, not at guest exit. Freeze
+    // every still-running vCPU before reading the terminal evidence so the
+    // per-vCPU ledgers and complete machine trace describe one exact cut.
+    // Pause is idempotent for services already held by a scheduled fault.
+    for service in services.values() {
+        if service.vm.exited().is_none() {
+            if let Err(error) = service.vm.pause() {
+                // A short-lived guest can exit between the state check and
+                // the pause request. Its terminal state is already stable.
+                if service.vm.exited().is_none() {
+                    return Err(error);
+                }
+            }
+        }
     }
     let network_sha256 = network_fingerprint(&switches)?;
     fs::write(
@@ -10047,13 +10438,22 @@ fn execute(
         service.record_network_traffic()?;
         service.record_network_trace()?;
         let exit = service.vm.exited();
-        let (exit_status, mut error) = match exit {
-            Some(FcExitCode::Ok) => ("passed", None),
-            Some(code) => ("failed", Some(format!("guest exited with {code:?}"))),
-            None => (
-                "failed",
-                Some("guest did not exit before the configured topology round budget".to_owned()),
+        let (exit_status, mut error, exit_detail) = match exit {
+            Some(FcExitCode::Ok) => ("passed", None, "guest exited with status 0".to_owned()),
+            Some(code) => {
+                let detail = format!("guest exited with {code:?}");
+                ("failed", Some(detail.clone()), detail)
+            }
+            None if completion == ExecutionCompletion::CampaignCheckpoint => (
+                "passed",
+                None,
+                "campaign operation checkpoint reached".to_owned(),
             ),
+            None => {
+                let detail =
+                    "guest did not exit before the configured topology round budget".to_owned();
+                ("failed", Some(detail.clone()), detail)
+            }
         };
         let mut checks = evaluate_checks(&topology.services[name].run.checks, &service.serial_logs);
         let serial_sha256 = serial_fingerprints(&service.serial_logs)?;
@@ -10070,11 +10470,13 @@ fn execute(
         checks.insert(
             0,
             CheckResult {
-                name: "guest_exit".to_owned(),
+                name: match completion {
+                    ExecutionCompletion::GuestExit => "guest_exit",
+                    ExecutionCompletion::CampaignCheckpoint => "campaign_checkpoint",
+                }
+                .to_owned(),
                 status: exit_status,
-                detail: error
-                    .clone()
-                    .unwrap_or_else(|| "guest exited with status 0".to_owned()),
+                detail: exit_detail,
             },
         );
         if let Some(expected) = &expected_serial {
@@ -10267,13 +10669,22 @@ fn execute(
             let expected = expected
                 .get(name)
                 .expect("recorded machine execution trace missing service");
-            let matches =
-                machine_execution_replay_error.is_none() && expected == &machine_execution_trace;
+            let matches = machine_execution_replay_error.is_none()
+                && if control_replay {
+                    machine_replay_control_trace(expected)
+                        == machine_replay_control_trace(&machine_execution_trace)
+                } else {
+                    expected == &machine_execution_trace
+                };
             checks.push(CheckResult {
                 name: "replay_machine_execution_trace".to_owned(),
                 status: if matches { "passed" } else { "failed" },
                 detail: if matches {
-                    "the recorded machine execution trace actively governed replay".to_owned()
+                    if control_replay {
+                        "the recorded host-input stream actively governed replay".to_owned()
+                    } else {
+                        "the recorded machine execution trace actively governed replay".to_owned()
+                    }
                 } else {
                     machine_execution_replay_error.clone().unwrap_or_else(|| {
                         "machine execution trace differs from the original replay bundle".to_owned()
@@ -10667,6 +11078,88 @@ fn reject_active_replay_divergence(
     Ok(())
 }
 
+/// Reach the retained replay cut before collecting a checkpoint-backed result.
+/// Campaigns use the portable host-input control projection; fixed runs
+/// require the complete machine trace.
+fn complete_machine_execution_replay(
+    services: &mut BTreeMap<String, ServiceRuntime>,
+    expected: &BTreeMap<String, Vec<String>>,
+    max_polls: u64,
+    control_only: bool,
+) -> Result<(), String> {
+    for poll in 0..=max_polls {
+        reject_active_replay_divergence(services)?;
+        let mut positions = BTreeMap::new();
+        let mut incomplete = false;
+        for (name, service) in services.iter() {
+            let trace = service.vm.machine_execution_trace()?;
+            let position = service.vm.machine_execution_replay_position()?;
+            let actual_decisions = machine_replay_decisions(&trace, control_only);
+            let expected_decisions = machine_replay_decisions(
+                expected.get(name).ok_or_else(|| {
+                    format!("recorded machine execution trace missing service {name}")
+                })?,
+                control_only,
+            );
+            if actual_decisions > expected_decisions {
+                return Err(format!(
+                    "service {name:?} extended its machine replay past decision {expected_decisions}"
+                ));
+            }
+            incomplete |= actual_decisions < expected_decisions;
+            positions.insert(name.clone(), position);
+        }
+        if !incomplete {
+            return Ok(());
+        }
+        if poll == max_polls {
+            break;
+        }
+        for service in services.values_mut() {
+            service.vm.pump();
+        }
+        for (name, service) in services.iter() {
+            let actual_decisions =
+                machine_replay_decisions(&service.vm.machine_execution_trace()?, control_only);
+            let expected_decisions = machine_replay_decisions(&expected[name], control_only);
+            if actual_decisions < expected_decisions {
+                service
+                    .vm
+                    .wait_for_machine_execution_replay_progress(positions[name])?;
+            }
+        }
+    }
+    let pending = services
+        .iter()
+        .map(|(name, service)| {
+            let actual =
+                machine_replay_decisions(&service.vm.machine_execution_trace()?, control_only);
+            let expected = machine_replay_decisions(&expected[name], control_only);
+            Ok(format!("{name}:{actual}/{expected}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Err(format!(
+        "machine execution replay did not reach its retained cut ({})",
+        pending.join(", ")
+    ))
+}
+
+fn machine_replay_decisions(trace: &[String], control_only: bool) -> usize {
+    if control_only {
+        machine_replay_control_trace(trace).len()
+    } else {
+        trace.len()
+    }
+}
+
+fn machine_replay_control_trace(trace: &[String]) -> Vec<&str> {
+    trace
+        .iter()
+        .filter(|record| record.starts_with("host:"))
+        .map(String::as_str)
+        .collect()
+}
+
 fn recorded_fault_fingerprints(
     plan: &Path,
     services: &[String],
@@ -10950,11 +11443,33 @@ fn advance_topology_round_with_target(
 }
 
 fn serial_marker_after(serial: &[u8], input_offset: usize, needle: &[u8]) -> bool {
-    serial.get(input_offset..).is_some_and(|response| {
-        response
-            .windows(needle.len())
-            .any(|window| window == needle)
-    })
+    serial
+        .get(input_offset..)
+        .is_some_and(|response| serial_marker_line_end(response, needle).is_some())
+}
+
+/// A marker is complete only after its line terminator has reached the host
+/// log. Observing the marker bytes alone can race the UART's trailing CR/LF,
+/// producing a result digest for a file that is still growing.
+fn serial_marker_line_end(response: &[u8], needle: &[u8]) -> Option<(usize, usize)> {
+    if needle.is_empty() {
+        return None;
+    }
+    response
+        .windows(needle.len())
+        .enumerate()
+        .find_map(|(marker_offset, window)| {
+            if window != needle {
+                return None;
+            }
+            let marker_end = marker_offset + needle.len();
+            let suffix = &response[marker_end..];
+            let newline = suffix.iter().position(|byte| *byte == b'\n')?;
+            suffix[..newline]
+                .iter()
+                .all(|byte| *byte == b'\r')
+                .then_some((marker_offset, marker_end + newline + 1))
+        })
 }
 
 fn inject_campaign_events(
@@ -11584,7 +12099,8 @@ fn apply_service_process_action(
         .len() as usize;
     let result = (|| {
         target.vm.push_serial_input(&bytes)?;
-        for step in 0..=CAMPAIGN_BARRIER_MAX_ROUNDS {
+        let max_rounds = campaign_barrier_round_limit(bytes.len());
+        for step in 0..=max_rounds {
             if fs::read(&serial).is_ok_and(|serial| {
                 serial[offset..]
                     .windows(checkpoint.len())
@@ -11597,7 +12113,7 @@ fn apply_service_process_action(
                     .then_some(())
                     .ok_or_else(|| format!("service {service_name:?} failed to {verb}"));
             }
-            if step == CAMPAIGN_BARRIER_MAX_ROUNDS || *round == u64::MAX {
+            if step == max_rounds || *round == u64::MAX {
                 break;
             }
             *round += 1;
@@ -11617,7 +12133,7 @@ fn apply_service_process_action(
             }
         }
         Err(format!(
-            "service {service_name:?} did not acknowledge {verb} within {CAMPAIGN_BARRIER_MAX_ROUNDS} topology rounds"
+            "service {service_name:?} did not acknowledge {verb} within {max_rounds} topology rounds"
         ))
     })();
     services.insert(service_name.to_owned(), target);
@@ -11648,9 +12164,47 @@ fn wait_for_serial_with_topology_rounds(
         advance_network_round(switches, services)?;
     }
     Err(format!(
-        "service did not announce {purpose} within {max_rounds} topology rounds: {}",
+        "service did not announce {purpose} within {max_rounds} topology rounds (network={}): {}",
+        network_timeout_evidence(services),
         serial_log.display()
     ))
+}
+
+fn network_timeout_evidence(services: &BTreeMap<String, ServiceRuntime>) -> String {
+    let evidence = services
+        .iter()
+        .map(|(name, service)| {
+            let traffic = service.vm.network_traffic();
+            let traces = service.vm.network_trace().map(|networks| {
+                networks
+                    .into_iter()
+                    .map(|(network, frames)| {
+                        let frames = frames
+                            .into_iter()
+                            .map(|frame| {
+                                serde_json::json!({
+                                    "round": frame.round,
+                                    "direction": frame.direction,
+                                    "drop_reason": frame.drop_reason,
+                                    "bytes": frame.data_hex.len() / 2,
+                                    "ethertype": frame.data_hex.get(24..28).unwrap_or("unknown"),
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        (network, frames)
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            });
+            (
+                name,
+                serde_json::json!({
+                    "traffic": traffic.unwrap_or_default(),
+                    "trace": traces.unwrap_or_default(),
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    serde_json::to_string(&evidence).unwrap_or_else(|error| format!("unavailable:{error}"))
 }
 
 /// Resume services in a deterministic topological order. A pivot emits its
@@ -11738,7 +12292,25 @@ fn dependency_startup_order(topology: &TopologyPlan) -> Result<Vec<String>, Stri
     Ok(order)
 }
 
-const CAMPAIGN_BARRIER_MAX_ROUNDS: u64 = 512;
+// A barrier covers two independent kinds of guest work: delivering the command
+// through the UART and running the operation that produces the checkpoint.  In
+// particular, an image-backed shell operation can consume the complete serial
+// input before it starts fork/exec, filesystem I/O, or a bounded virtual-time
+// wait.  Keep a substantial fixed execution allowance in addition to the
+// input-sized delivery allowance.
+const CAMPAIGN_BARRIER_BASE_ROUNDS: u64 = 4096;
+const CAMPAIGN_BARRIER_MAX_ROUNDS: u64 = 16384;
+const CAMPAIGN_BARRIER_ROUNDS_PER_INPUT_BYTE: u64 = 32;
+
+fn campaign_barrier_round_limit(input_bytes: usize) -> u64 {
+    CAMPAIGN_BARRIER_BASE_ROUNDS
+        .saturating_add(
+            u64::try_from(input_bytes)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(CAMPAIGN_BARRIER_ROUNDS_PER_INPUT_BYTE),
+        )
+        .min(CAMPAIGN_BARRIER_MAX_ROUNDS)
+}
 
 /// Drive every service and simulated network once.  The target is held outside
 /// the service map while a prefix operation is injected, so keep it explicit.
@@ -11747,6 +12319,7 @@ fn advance_campaign_operation_round(
     services: &mut BTreeMap<String, ServiceRuntime>,
     switches: &BTreeMap<String, SharedSimSwitch>,
 ) -> Result<(), String> {
+    let replay_position = target.vm.machine_execution_replay_position()?;
     target.vm.pump();
     target.vm.advance_simulated_networks()?;
     for service in services.values_mut() {
@@ -11759,6 +12332,13 @@ fn advance_campaign_operation_round(
             .map_err(|_| "simulated switch lock poisoned".to_owned())?
             .advance_round();
     }
+    // Exact replay can deliberately park a vCPU at an asynchronous virtio
+    // interrupt turn. Do not let the host-side round loop exhaust its entire
+    // deterministic budget before the device worker gets scheduled and
+    // publishes that completion.
+    target
+        .vm
+        .wait_for_machine_execution_replay_progress(replay_position)?;
     Ok(())
 }
 
@@ -11775,14 +12355,13 @@ fn wait_for_serial_after_rounds(
     switches: &BTreeMap<String, SharedSimSwitch>,
     round: &mut u64,
 ) -> Result<CampaignUartBarrier, String> {
-    for step in 0..=CAMPAIGN_BARRIER_MAX_ROUNDS {
+    let accepted_input = target.vm.serial_input_depth()?;
+    let max_rounds = campaign_barrier_round_limit(accepted_input);
+    for step in 0..=max_rounds {
         if let Ok(serial) = fs::read(serial_log) {
             let response = serial.get(input_offset..).unwrap_or_default();
-            if let Some(marker_offset) = response
-                .windows(needle.len())
-                .position(|window| window == needle)
-            {
-                let through_marker = &response[..marker_offset + needle.len()];
+            if let Some((marker_offset, line_end)) = serial_marker_line_end(response, needle) {
+                let through_marker = &response[..line_end];
                 return Ok(CampaignUartBarrier {
                     recorded: true,
                     checkpoint: String::from_utf8_lossy(needle).into_owned(),
@@ -11792,14 +12371,20 @@ fn wait_for_serial_after_rounds(
                 });
             }
         }
-        if step == CAMPAIGN_BARRIER_MAX_ROUNDS || *round == u64::MAX {
+        if step == max_rounds || *round == u64::MAX {
             break;
         }
         *round += 1;
         advance_campaign_operation_round(target, services, switches)?;
     }
+    let unread = target.vm.serial_input_depth()?;
+    let uart = target.vm.serial_input_diagnostics()?;
+    let trace = target.vm.machine_execution_trace()?;
+    let trace_tail = trace.iter().rev().take(8).cloned().collect::<Vec<_>>();
     Err(format!(
-        "service did not announce {purpose} within {CAMPAIGN_BARRIER_MAX_ROUNDS} topology rounds after UART input: {}",
+        "service did not announce {purpose} within {max_rounds} topology rounds after UART input ({unread} unread UART bytes; {uart}; VM exit={:?}; decisions={}; newest decisions={trace_tail:?}): {}",
+        target.vm.exited(),
+        trace.len(),
         serial_log.display()
     ))
 }
@@ -11839,10 +12424,8 @@ fn evaluate_checks(checks: &[CheckPlan], serial_logs: &[PathBuf]) -> Vec<CheckRe
                 _ => check.value.as_bytes().to_vec(),
             };
             let contains = serial_logs.iter().any(|path| {
-                fs::read(path)
-                    .unwrap_or_default()
-                    .windows(needle.len())
-                    .any(|window| window == needle)
+                let serial = fs::read(path).unwrap_or_default();
+                needle.is_empty() || serial.windows(needle.len()).any(|window| window == needle)
             });
             let serial = serial_logs
                 .iter()
@@ -11963,7 +12546,7 @@ fn build_service(
         resources.block.add_virtio_device(block.clone());
         simulated_storage.push(storage.id.clone());
     }
-    for network in &service.networks {
+    for (interface_index, network) in service.networks.iter().enumerate() {
         let switch = switches
             .get(network)
             .ok_or_else(|| format!("service {name}: unknown network {network}"))?
@@ -11988,7 +12571,7 @@ fn build_service(
                 },
                 switch,
                 endpoint.clone(),
-                None,
+                container_guest_mac(service, interface_index)?,
                 RateLimiter::default(),
                 RateLimiter::default(),
                 None,
@@ -12014,6 +12597,36 @@ fn build_service(
         networks: simulated_networks,
         network_endpoints,
     })
+}
+
+/// Container guests commonly use the same deterministic entropy seed. Letting
+/// Linux synthesize a NIC address would therefore give peers the same MAC and
+/// prevent ARP from establishing an ordinary service-to-service path. Derive
+/// a stable locally administered address from the already locked IPv4 address.
+fn container_guest_mac(
+    service: &ServicePlan,
+    interface_index: usize,
+) -> Result<Option<MacAddr>, String> {
+    let Some(network) = &service.run.container_network else {
+        return Ok(None);
+    };
+    let interface = network
+        .interfaces
+        .get(interface_index)
+        .ok_or_else(|| format!("container network is missing interface index {interface_index}"))?;
+    let octets = interface
+        .address
+        .parse::<Ipv4Addr>()
+        .map_err(|error| {
+            format!(
+                "invalid container IPv4 address {:?}: {error}",
+                interface.address
+            )
+        })?
+        .octets();
+    Ok(Some(MacAddr::from([
+        0x02, 0x00, octets[0], octets[1], octets[2], octets[3],
+    ])))
 }
 
 fn restore_service(
@@ -12679,6 +13292,56 @@ mod tests {
     }
 
     #[test]
+    fn exported_campaign_events_recover_global_service_order() {
+        let service = serde_json::json!({
+            "manifest": "theseus.toml",
+            "networks": [],
+            "run": {
+                "format": "theseus-run-plan-v1",
+                "manifest": "theseus.toml",
+                "runtime": {"firecracker": {"path": "firecracker", "sha256": "a"}},
+                "guest": {
+                    "kernel": {"path": "vmlinux", "sha256": "b"},
+                    "initramfs": {"path": "initramfs", "sha256": "c"}
+                },
+                "run": {
+                    "seed": 1, "vcpu_count": 1, "mem_size_mib": 128,
+                    "timeout_secs": 1, "virtual_time": null
+                }
+            }
+        });
+        let mut topology: TopologyPlan = serde_json::from_value(serde_json::json!({
+            "format": "theseus-compose-plan-v1",
+            "compose": "compose.yaml",
+            "services": {"alpha": service.clone(), "beta": service},
+            "networks": {},
+            "event_order": ["alpha", "beta", "alpha"]
+        }))
+        .unwrap();
+        let event = |data_hex: &str| EventPlan {
+            data_hex: data_hex.to_owned(),
+            checkpoint: None,
+            actions: Vec::new(),
+        };
+        topology.services.get_mut("alpha").unwrap().run.events = vec![event("01"), event("03")];
+        topology.services.get_mut("beta").unwrap().run.events = vec![event("02")];
+
+        let ordered = ordered_topology_events(&topology).unwrap();
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|(name, event)| (name.as_str(), event.data_hex.as_str()))
+                .collect::<Vec<_>>(),
+            [("alpha", "01"), ("beta", "02"), ("alpha", "03")]
+        );
+
+        topology.event_order.pop();
+        assert!(ordered_topology_events(&topology)
+            .unwrap_err()
+            .contains("includes 1 of 2 events for service alpha"));
+    }
+
+    #[test]
     fn locked_replay_artifacts_follow_a_moved_bundle() {
         let directory = std::env::temp_dir().join(format!(
             "theseus-topology-portable-replay-{}",
@@ -12927,6 +13590,13 @@ mod tests {
             .unwrap();
         assert_eq!(api.interfaces[0].name, "eth0");
         assert_eq!(api.interfaces[0].address, "10.1.0.10");
+        assert_eq!(
+            container_guest_mac(&topology.services["api"], 0)
+                .unwrap()
+                .unwrap()
+                .to_string(),
+            "02:00:0a:01:00:0a"
+        );
         assert_eq!(api.hosts["worker"], "10.1.0.99");
         assert_eq!(api.hosts["cache.local"], "10.9.0.7");
         assert_eq!(api.hostname.as_deref(), Some("api.local"));
@@ -12937,6 +13607,10 @@ mod tests {
             .unwrap();
         assert_eq!(worker.interfaces[0].address, "10.1.0.11");
         assert_eq!(worker.interfaces[1].address, "10.2.0.10");
+        assert_ne!(
+            container_guest_mac(&topology.services["api"], 0).unwrap(),
+            container_guest_mac(&topology.services["worker"], 0).unwrap()
+        );
         assert_eq!(worker.hosts["api"], "10.1.0.10");
         assert_eq!(
             dependency_startup_order(&topology).unwrap(),
@@ -13627,6 +14301,37 @@ mod tests {
         }))
         .unwrap();
         assert!(nested_predicate_description(&serial).contains("JSONPath"));
+    }
+
+    #[test]
+    fn compound_serial_checks_allow_an_empty_plain_text_value() {
+        let serial = std::env::temp_dir().join(format!(
+            "theseus-topology-compound-check-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&serial, b"{\"event\":\"inspect\",\"value\":1}\n").unwrap();
+        let predicate = serde_json::from_value(serde_json::json!({
+            "json": {"fields": {"/event": "inspect", "/value": 1}}
+        }))
+        .unwrap();
+        let results = evaluate_checks(
+            &[CheckPlan {
+                name: "counterexample".to_owned(),
+                kind: CheckKind::SerialPropertyMatches,
+                value: String::new(),
+                contains_all: Vec::new(),
+                contains_any: Vec::new(),
+                contains_none: Vec::new(),
+                predicate: Some(predicate),
+            }],
+            std::slice::from_ref(&serial),
+        );
+        fs::remove_file(serial).unwrap();
+
+        assert_eq!(results[0].status, "passed");
     }
 
     #[test]
@@ -15983,11 +16688,23 @@ mod tests {
     fn serial_marker_after_ignores_a_historical_matching_marker() {
         let old = b"THES:M:complete\n";
         assert!(!serial_marker_after(old, old.len(), b"THES:M:complete"));
-        assert!(serial_marker_after(
-            &[old.as_slice(), b"reply THES:M:complete"].concat(),
+        assert!(!serial_marker_after(
+            &[old.as_slice(), b"reply THES:M:complete\r"].concat(),
             old.len(),
             b"THES:M:complete"
         ));
+        assert!(serial_marker_after(
+            &[old.as_slice(), b"reply THES:M:complete\r\r\n"].concat(),
+            old.len(),
+            b"THES:M:complete"
+        ));
+    }
+
+    #[test]
+    fn campaign_uart_budget_reserves_operation_work_and_stays_bounded() {
+        assert_eq!(campaign_barrier_round_limit(0), 4096);
+        assert_eq!(campaign_barrier_round_limit(214), 10944);
+        assert_eq!(campaign_barrier_round_limit(usize::MAX), 16384);
     }
 
     #[test]
@@ -16238,6 +16955,57 @@ mod tests {
             .push("other".to_owned());
         assert!(campaign_replay_mismatches(&changed_timeline, &actual)
             .contains(&"operation-boundary timeline".to_owned()));
+        assert!(campaign_host_input_replay_mismatches(&expected, &actual).is_empty());
+        let mut ungoverned_drift = expected.clone();
+        ungoverned_drift.program_counters.get_mut("api").unwrap()[0] = "0xffffffff".to_owned();
+        ungoverned_drift.timeline[0].round += 10;
+        ungoverned_drift.timeline[0].barrier.round += 10;
+        ungoverned_drift.timeline[0]
+            .program_counters
+            .get_mut("api")
+            .unwrap()[0] = "0xffffffff".to_owned();
+        ungoverned_drift.execution_ledgers.get_mut("api").unwrap()[0].decisions += 1;
+        ungoverned_drift
+            .machine_execution_ledgers
+            .get_mut("api")
+            .unwrap()
+            .decisions += 1;
+        ungoverned_drift
+            .machine_execution_traces
+            .get_mut("api")
+            .unwrap()[0] = "vcpu:0:pio_read:0x64:1:".to_owned();
+        ungoverned_drift.state_sha256 = "different-state".to_owned();
+        assert!(campaign_host_input_replay_mismatches(&ungoverned_drift, &actual).is_empty());
+        let mut changed_control_input = expected.clone();
+        changed_control_input.timeline[0].input.sha256 = "other-input".to_owned();
+        assert!(
+            campaign_host_input_replay_mismatches(&changed_control_input, &actual)
+                .contains(&"operation control timeline".to_owned())
+        );
+        let mut changed_control_trace = expected.clone();
+        changed_control_trace
+            .machine_execution_traces
+            .get_mut("api")
+            .unwrap()
+            .push("host:serial_input:1:41".to_owned());
+        assert!(
+            campaign_host_input_replay_mismatches(&changed_control_trace, &actual)
+                .contains(&"actively enforced host-input trace".to_owned())
+        );
+        let search = CampaignSearchEvidence::default();
+        let mut ungoverned_search = search.clone();
+        ungoverned_search.checkpoint.private_dirty_pages = 42;
+        ungoverned_search.guidance_sha256 = "different-observations".to_owned();
+        assert!(campaign_host_input_search_matches(
+            &ungoverned_search,
+            &search
+        ));
+        let mut changed_search = search.clone();
+        changed_search.checkpoint.checkpoint_nodes = 1;
+        assert!(!campaign_host_input_search_matches(
+            &changed_search,
+            &search
+        ));
         let mut changed = actual;
         changed.state_sha256 = "other-state".to_owned();
         assert_eq!(
@@ -16304,6 +17072,8 @@ mod tests {
             prefix_cow_restore_bytes: 3_072,
             retained_memory_bytes: 8_192,
             retained_private_dirty_pages: 9,
+            cache_policy: checkpoint_cache::Policy::new(checkpoint_cache::PREFIX_MEMORY_BUDGET),
+            prefix_evictions: 0,
         };
 
         assert_eq!(
@@ -16321,6 +17091,7 @@ mod tests {
                 shared_cow_restore_bytes: 7_168,
                 private_dirty_pages: 9,
                 snapshot_file_bytes: 0,
+                prefix_evictions: 0,
             }
         );
     }

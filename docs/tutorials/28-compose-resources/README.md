@@ -63,9 +63,9 @@ replay does not silently select newer binaries from the container.
 
 ```sh
 theseus compose explore --output campaign compose.yaml
-grep -a '^THES:SHELL:operation:inspect_cpus:PASS$' campaign/services/api/serial.log
+grep -aF 'THES:SHELL:operation:inspect_cpus:PASS' campaign/services/api/serial.log
 theseus compose replay campaign --output rerun
-grep -a '^THES:SHELL:operation:inspect_cpus:PASS$' rerun/services/api/serial.log
+grep -aF 'THES:SHELL:operation:inspect_cpus:PASS' rerun/services/api/serial.log
 echo 'PASS: Theseus locked Compose resource limits into the VM'
 ```
 

@@ -247,7 +247,7 @@ pub enum VmmError {
     DirtyBitmap(kvm_ioctls::Error),
     /// Theseus: error reading a paused vCPU program counter. {0}
     GuestProgramCounter(kvm_ioctls::Error),
-    /// Theseus: execution-coverage vCPU count mismatch: {0}
+    /// Theseus: execution-control error: {0}
     ExecutionCoverage(String),
     /// I8042 error: {0}
     I8042Error(devices::legacy::I8042DeviceError),
@@ -587,6 +587,23 @@ impl Vmm {
             .map_err(VmmError::ExecutionCoverage)
     }
 
+    /// Install the explicit host-input replay stream.
+    pub fn enforce_machine_execution_control_trace(
+        &self,
+        trace: Vec<String>,
+    ) -> Result<(), VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        kvm_vm
+            .vcpus_handles()
+            .first()
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))?
+            .enforce_machine_execution_control_trace(trace)
+            .map_err(VmmError::ExecutionCoverage)
+    }
+
     /// Return a mismatch or an expected suffix that was not consumed.
     pub fn machine_execution_replay_error(&self) -> Result<Option<String>, VmmError> {
         let kvm_vm = self
@@ -611,6 +628,41 @@ impl Vmm {
             .first()
             .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))?
             .machine_execution_replay_divergence())
+    }
+
+    /// Return the number of active replay decisions admitted so far.
+    pub fn machine_execution_replay_position(&self) -> Result<usize, VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        Ok(kvm_vm
+            .vcpus_handles()
+            .first()
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))?
+            .machine_execution_replay_position())
+    }
+
+    /// Briefly wait for an active replay to consume another controlled decision.
+    ///
+    /// Non-replay execution returns immediately. This gives asynchronous
+    /// device workers time to publish a completion without spending thousands
+    /// of deterministic topology rounds in a tight host-side polling loop.
+    pub fn wait_for_machine_execution_replay_progress(
+        &self,
+        position: usize,
+        timeout: std::time::Duration,
+    ) -> Result<bool, VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        kvm_vm
+            .vcpus_handles()
+            .first()
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))?
+            .wait_for_machine_execution_replay_progress(position, timeout)
+            .map_err(VmmError::ExecutionCoverage)
     }
 
     fn apply_machine_host_effect<T>(
@@ -720,12 +772,11 @@ impl Vmm {
         })
     }
 
-    /// Theseus: inject bytes into the emulated UART without using the host
-    /// process stdin. Exploration uses this so sibling timelines never share
-    /// an input source.
+    /// Theseus: inject one logical input into the emulated UART without using
+    /// host process stdin. Bytes beyond the hardware FIFO are queued inside
+    /// the snapshotted serial device, so sibling timelines never share an
+    /// input source or inherit a transport-sized command limit.
     pub fn push_serial_input(&mut self, bytes: &[u8]) -> Result<(), VmmError> {
-        use devices::legacy::serial::RawIOHandler;
-
         #[cfg(target_arch = "x86_64")]
         let serial = self
             .device_manager
@@ -754,8 +805,7 @@ impl Vmm {
                 serial
                     .lock()
                     .expect("Poisoned lock")
-                    .serial
-                    .raw_input(bytes)
+                    .enqueue_raw_input(bytes)
                     .map_err(|error| VmmError::ControlChannel(error.to_string()))
             },
         )?;
@@ -763,12 +813,12 @@ impl Vmm {
         Ok(())
     }
 
-    /// Theseus: report bytes still waiting in the emulated UART receive FIFO.
+    /// Theseus: report bytes still waiting for the guest to read from UART.
     ///
     /// Campaign checkpoints use this alongside an input receipt to distinguish
-    /// bytes accepted by the UART from bytes the guest has read. The value is
-    /// part of the serial device snapshot, so it is stable while a paused VM
-    /// is captured or restored.
+    /// bytes accepted by the UART transport from bytes the guest has read. The
+    /// hardware FIFO and its pending host queue are both snapshotted, so the
+    /// value is stable while a paused VM is captured or restored.
     pub fn serial_input_depth(&self) -> Result<usize, VmmError> {
         #[cfg(target_arch = "x86_64")]
         let serial = self
@@ -788,13 +838,40 @@ impl Vmm {
             .inner
             .clone();
 
-        Ok(serial
-            .lock()
-            .expect("Poisoned lock")
+        let locked = serial.lock().expect("Poisoned lock");
+        Ok(locked.serial.state().in_buffer.len() + locked.pending_input.len())
+    }
+
+    /// Theseus: compact UART receive state for actionable delivery failures.
+    pub fn serial_input_diagnostics(&self) -> Result<String, VmmError> {
+        #[cfg(target_arch = "x86_64")]
+        let serial = self
+            .device_manager
+            .legacy_devices
+            .as_ref()
+            .ok_or(VmmError::NotSupported)?
+            .stdio_serial
+            .clone();
+        #[cfg(target_arch = "aarch64")]
+        let serial = self
+            .device_manager
+            .mmio_platform_devices
             .serial
-            .state()
-            .in_buffer
-            .len())
+            .as_ref()
+            .ok_or(VmmError::NotSupported)?
+            .inner
+            .clone();
+
+        let locked = serial.lock().expect("Poisoned lock");
+        let state = locked.serial.state();
+        Ok(format!(
+            "hardware={}, queued={}, ier=0x{:02x}, iir=0x{:02x}, lsr=0x{:02x}",
+            state.in_buffer.len(),
+            locked.pending_input.len(),
+            state.interrupt_enable,
+            state.interrupt_identification,
+            state.line_status,
+        ))
     }
 
     /// Theseus: drain guest→host control-channel events (commands/markers).

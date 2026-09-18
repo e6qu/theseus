@@ -12,8 +12,8 @@ use theseus_cli::{
     minimize_compose_campaign_expect_counterexample, minimize_exploration_path, query_campaigns,
     replay, replay_compose, replay_exploration, replay_exploration_path, replay_to, report,
     report_file, report_text, snapshot_exploration_path, test, test_compose,
-    verify_native_evidence, write_evaluation_lock, ReportFormat, CARGO_COVERAGE_USAGE,
-    GO_COVERAGE_USAGE,
+    verify_native_evidence, verify_topology_bundle, write_evaluation_lock, ReportFormat,
+    CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE,
 };
 
 const USAGE: &str = "Usage:
@@ -47,6 +47,7 @@ const USAGE: &str = "Usage:
   theseus compose explore --minimize campaign-dir [--output replay-dir]
   theseus compose explore --minimize campaign-dir --expect-counterexample property [--output replay-dir]
   theseus compose replay replay-dir [--output replay-dir]
+  theseus compose verify checkpoint-bundle-dir
 
 The manifest path defaults to ./theseus.toml. Relative artifact paths are
 resolved from the directory containing that manifest.";
@@ -386,6 +387,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 .join("theseus-exploration");
             let result = explore(&manifest, output).map_err(|error| error.to_string())?;
             println!("exploration passed: {}", result.display());
+            Ok(())
+        }
+        [command, subcommand, bundle] if command == "compose" && subcommand == "verify" => {
+            let summary = verify_topology_bundle(bundle)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&summary).map_err(|error| error.to_string())?
+            );
             Ok(())
         }
         [command, subcommand, rest @ ..] if command == "compose" && subcommand == "validate" => {

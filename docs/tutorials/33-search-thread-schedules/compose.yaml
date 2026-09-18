@@ -10,6 +10,7 @@ networks:
   test: {}
 
 x-theseus:
+  replay_start: ready_checkpoint
   campaign:
     driver: ledger
     max_runs: 123
