@@ -24,6 +24,11 @@ def main() -> None:
     assert 'sh scripts/run_native_counterexample.sh || counterexample_status=$?' in source_ci
     assert 'test "$validation_status" -eq 0' in source_ci
     assert 'test "$counterexample_status" -eq 0' in source_ci
+    assert "cargo build -p firecracker --release" in source_ci
+    for package in ("cli", "topology-runner", "image-runner"):
+        assert f"cargo build --manifest-path {package}/Cargo.toml --locked --release" in source_ci
+        assert f"{package}/target/release/" in source_ci
+    assert "firecracker/build/cargo_target/release/firecracker" in source_ci
     assert "workflow_run:" in WORKFLOW
     assert "workflows: [publish-runtime]" in WORKFLOW
     assert "default: amd64" in WORKFLOW

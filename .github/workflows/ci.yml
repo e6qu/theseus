@@ -214,13 +214,18 @@ jobs:
           THESEUS_ARCH: amd64
           THESEUS_IMAGE: ghcr.io/e6qu/theseus:8c9b9f6c82e3-amd64
         run: |
-          cargo build --manifest-path image-runner/Cargo.toml --locked
+          # Exercise optimized binaries here. Debug builds can accidentally
+          # hide host/guest liveness bugs that only reach a published image.
+          (cd firecracker && cargo build -p firecracker --release)
+          cargo build --manifest-path cli/Cargo.toml --locked --release
+          cargo build --manifest-path topology-runner/Cargo.toml --locked --release
+          cargo build --manifest-path image-runner/Cargo.toml --locked --release
           mkdir -p .native-evidence/amd64/source-runtime
           runtime="$GITHUB_WORKSPACE/.native-evidence/amd64/source-runtime"
-          cp cli/target/debug/theseus "$runtime/theseus"
-          cp topology-runner/target/debug/theseus-topology "$runtime/theseus-topology"
-          cp image-runner/target/debug/theseus-image "$runtime/theseus-image"
-          cp firecracker/build/cargo_target/debug/firecracker "$runtime/firecracker"
+          cp cli/target/release/theseus "$runtime/theseus"
+          cp topology-runner/target/release/theseus-topology "$runtime/theseus-topology"
+          cp image-runner/target/release/theseus-image "$runtime/theseus-image"
+          cp firecracker/build/cargo_target/release/firecracker "$runtime/firecracker"
           cp docs/tutorials/04-read-serial/work/guest/vmlinux "$runtime/vmlinux"
           # Hash and retain the binaries actually executed, without redundant
           # debug sections multiplying every portable root's archive size.
