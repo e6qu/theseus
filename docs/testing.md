@@ -92,6 +92,12 @@ from their complete traces and requires an identical guest-exit boundary, the
 declared host-input projection, and a passing `replay_machine_execution` check;
 a line saying “replay passed” is not sufficient evidence.
 
+PR qualification and released-runtime certification invoke the same
+counterexample driver. The workflow does not carry a second copy of Tutorial
+30's commands or expected events. This keeps the recovery assertion,
+minimization, retained-directory replay, and bundle verification identical in
+both paths.
+
 The final hosted job validates the certificate, counterexample, and validation
 archive with the released CLI before it attests and uploads them. The index can
 name one or both supported architectures, so consumers never have to infer the

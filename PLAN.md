@@ -206,6 +206,11 @@ inspect all six representative product paths offline, and replay the minimized
 counterexample without undocumented inputs. Arm64 becomes demonstrated only
 when its independently indexed native assets exist.
 
+The source and released-runtime paths must use one counterexample driver. Its
+recovery event is `recovery_probe_sent`; the released verifier must check that
+same retained event. Do not duplicate tutorial commands or stale expected
+markers in workflow YAML.
+
 ## Priority 1: deterministic execution and scheduling plane
 
 This is the largest technical gap to Antithesis and takes precedence over

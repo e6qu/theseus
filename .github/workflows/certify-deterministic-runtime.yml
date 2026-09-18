@@ -154,55 +154,22 @@ jobs:
                     -exec cat {} \;
                   exit "$status"
                 }
-              grep -F '"'"'"status"'"'": "'"'"passed"'"'"' \
-                /tutorial/certificate/certificate.json
             '
           cp docs/tutorials/11-certify-runtime/certificate/certificate.json \
             "theseus-${TAG}-runtime-certificate-${ARCH}.json"
 
       - name: Reproduce the distributed counterexample
         env:
-          ARCH: ${{ matrix.arch }}
-          IMAGE: ghcr.io/e6qu/theseus
-          TAG: ${{ needs.resolve.outputs.tag }}
+          THESEUS_ARCH: ${{ matrix.arch }}
+          THESEUS_IMAGE: ghcr.io/e6qu/theseus:${{ needs.resolve.outputs.tag }}-${{ matrix.arch }}
+          THESEUS_TAG: ${{ needs.resolve.outputs.tag }}
         run: |
+          sh scripts/run_native_counterexample.sh
+          ARCH="$THESEUS_ARCH"
+          TAG="$THESEUS_TAG"
           tutorial=docs/tutorials/30-multiservice-lost-update
-          name=theseus-multiservice-lost-update
-          mkdir -p "$tutorial/counter/work" "$tutorial/worker/work"
-          docker build --load --platform "linux/$ARCH" -t "${name}-counter" "$tutorial/counter"
-          docker build --load --platform "linux/$ARCH" -t "${name}-worker" "$tutorial/worker"
-          docker save "${name}-counter" -o "$tutorial/counter/work/counter.tar"
-          docker save "${name}-worker" -o "$tutorial/worker/work/worker.tar"
-          docker run --rm --privileged --platform "linux/$ARCH" \
-            -v "$GITHUB_WORKSPACE/$tutorial":/tutorial \
-            -w /tutorial "$IMAGE:$TAG-$ARCH" sh -ec '
-              for service in counter worker; do
-                mkdir -p "$service/work/runtime" "$service/work/guest"
-                cp /usr/local/bin/firecracker "$service/work/runtime/firecracker"
-                cp /usr/local/bin/theseus-image "$service/work/runtime/theseus-image"
-                cp /opt/theseus/vmlinux "$service/work/guest/vmlinux"
-              done
-              cp /opt/theseus/pivot.json runtime-pivot.json
-              theseus compose plan > plan.json
-              theseus compose explore \
-                --expect-counterexample distributed_lost_update_is_unreachable \
-                --output campaign compose.yaml
-              theseus compose explore --minimize campaign \
-                --expect-counterexample distributed_lost_update_is_unreachable \
-                --output minimized
-              theseus compose replay minimized --output rerun
-              grep -R "\"value\":1" campaign/runs/*/services/counter/serial.log
-              grep -R "\"value\":2" campaign/runs/*/services/counter/serial.log
-              grep -F "backplane:partition@setup" minimized/minimization.json
-              grep -F "backplane:heal@probe_partition" minimized/minimization.json
-              grep -E "\"dropped\": [1-9][0-9]*" rerun/services/*/result.json
-              grep -R "\"network\":\"recovered\"" rerun/services/writer-a/serial.log
-              grep -F "\"kind\": \"partition\"" rerun/topology-result.json
-              grep -F "\"kind\": \"heal\"" rerun/topology-result.json
-              grep -R "\"value\":1" rerun/services/counter/serial.log
-            '
           source_commit=$(git rev-parse HEAD)
-          image_digest=$(docker image inspect "$IMAGE:$TAG-$ARCH" --format '{{index .RepoDigests 0}}')
+          image_digest=$(docker image inspect "$THESEUS_IMAGE" --format '{{index .RepoDigests 0}}')
           evidence="$tutorial/minimized/evidence"
           source="$tutorial/minimized/source"
           mkdir -p "$evidence/replay/services" "$source/counter" "$source/worker" "$source/inputs/fixture"
