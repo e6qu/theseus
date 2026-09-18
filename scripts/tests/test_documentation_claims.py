@@ -32,5 +32,6 @@ for root in ACTIVE:
             "Every layer is proven",
             "P6.8 will add",
             "/dev/hwrng",
+            "rejects divergent comparisons",
         ):
             assert forbidden not in text, f"{path}: obsolete claim {forbidden!r}"
