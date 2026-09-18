@@ -1,8 +1,8 @@
-# Tutorial 41: Reject low-level execution divergence
+# Tutorial 41: Inspect low-level execution
 
 Run an ordinary BusyBox HTTP service, inspect its per-vCPU exit streams and
-machine-wide execution stream, and replay them exactly. The service uses no
-Theseus SDK or instrumentation.
+machine-wide execution stream, then compare those observations with a replay.
+The service uses no Theseus SDK or instrumentation.
 
 ## Before you start
 
@@ -60,7 +60,7 @@ repeatable fresh boot.
 theseus compose explore --output campaign compose.yaml
 ```
 
-## 5. Inspect and replay the exact path
+## 5. Inspect and replay the campaign
 
 ```sh
 grep -E '"execution_decisions": [1-9][0-9]*' campaign/campaign-result.json
@@ -75,26 +75,30 @@ theseus compose verify campaign
 theseus compose verify rerun
 grep -A2 '"replay_verification"' rerun/campaign-result.json
 theseus compare campaign rerun > comparison.json
-grep '"status": "same"' comparison.json
+grep -E '"status": "(same|diverged)"' comparison.json
 ```
 
 Each ledger contains a decision count, a SHA-256 identity for the complete
 stream, and the last 32 readable decisions. Per-vCPU ledgers preserve local
-order. The exact machine trace prefixes guest exits with `vcpu:` and the HTTP
-operation's UART command with `host:`. It preserves the complete order needed
-to drive replay. The `interrupt:serial:` and `interrupt:virtio-` records show
+order. The machine trace prefixes guest exits with `vcpu:` and the HTTP
+operation's UART command with `host:`. It preserves the complete observed
+order. The `interrupt:serial:` and `interrupt:virtio-` records show
 that UART and service-device requests were injected on recorded vCPU turns
 instead of racing through asynchronous irqfds. The machine ledger is the
 compact digest and readable tail of this stream.
 
-Before an uncached operation prefix or restored campaign leaf runs, Theseus validates its inherited
-checkpoint prefix and installs the remaining exact trace. At each emulated
-device effect it admits only the recorded vCPU and verifies the exit kind,
-address, width, and payload. Before UART input, it requires the recorded host
-event and exact bytes. Replay fails on the first wrong turn, input, or value,
-even when final HTTP and serial output might otherwise look the same. This does
-not control instruction scheduling, when the guest services an injected
-interrupt, in-kernel timer delivery, or when the guest consumes queued input.
+Checkpoint-backed campaigns use the portable `host_inputs` replay contract.
+Replay restores the retained ready state, reapplies the same UART command, and
+requires the declared operation and property to pass. It retains the new KVM
+stream as evidence, but it does not require Linux to take the same exits or
+service interrupts on the same turns. `theseus compare` reports `same` when
+the observations match and `diverged` with the first difference otherwise;
+either result is valid for this campaign contract.
+
+Exact fixed-run replay is stricter: it installs the complete retained machine
+trace, admits only the recorded vCPU at each emulated device effect, and rejects
+the first changed turn, input, or value. That still does not control guest
+instruction scheduling between KVM exits.
 
 Keep the entire `campaign` directory, including RAM and locked artifacts.
 `compose verify` checks its integrity offline; it does not certify native

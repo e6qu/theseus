@@ -127,7 +127,7 @@ def main() -> None:
         "theseus evaluate capture rerun"
     )
     assert "execution_decisions" in VALIDATION
-    assert 'status\\\": \\\"same' in VALIDATION
+    assert 'status\\\": \\\"(same|diverged)' in VALIDATION
     assert "scripts/runtime_validation_evidence.py" in VALIDATION
     assert "scripts/reproducible_tar.py" in VALIDATION
     assert " jq " not in VALIDATION

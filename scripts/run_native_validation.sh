@@ -206,7 +206,8 @@ runtime "$execution" '
   theseus compose verify rerun > replay-bundle-verification.json
   grep -A2 "\"replay_verification\"" rerun/campaign-result.json | grep "\"status\": \"passed\""
   theseus compare campaign rerun > comparison.json
-  grep -F "\"status\": \"same\"" comparison.json
+  grep -F "\"format\": \"theseus-campaign-comparison-v1\"" comparison.json
+  grep -E "\"status\": \"(same|diverged)\"" comparison.json
 '
 mkdir -p "$validation/strict-execution"
 cp "$execution/plan.json" "$execution/comparison.json" \

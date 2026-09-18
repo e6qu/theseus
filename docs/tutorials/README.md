@@ -102,9 +102,9 @@ deterministic-CRNG kernel module is shipped.
 40. [Explore test templates with automatic faults](40-compose-test-commands/) —
     package two command sets, derive service and asymmetric link faults from a
     two-service topology, then minimize and replay a lost update.
-41. [Reject low-level execution divergence](41-reject-execution-divergence/) —
-    run an uninstrumented container, inspect its per-vCPU exit streams and
-    machine-wide execution stream, and require the exact trace on replay.
+41. [Inspect low-level execution](41-reject-execution-divergence/) — run an
+    uninstrumented container, retain its per-vCPU and machine-wide execution
+    streams, and compare those observations with host-input replay.
 
 42. [Replay from a ready checkpoint](42-replay-from-ready/) — boot an RNG-backed
     guest once, retain its state, and replay serial and standard random-device

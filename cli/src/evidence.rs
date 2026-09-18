@@ -1251,6 +1251,10 @@ fn verify_runtime_validation(
             "execution_decisions",
             false,
         )?;
+        verify_host_input_campaign_plan(
+            &retained["strict-execution/campaign/replay-plan.json"],
+            "strict execution campaign",
+        )?;
         verify_campaign_execution_ledgers(
             &retained["strict-execution/campaign/campaign-result.json"],
             "strict execution",
@@ -1307,8 +1311,14 @@ fn verify_runtime_validation(
         )?;
         require(
             comparison["format"] == "theseus-campaign-comparison-v1"
-                && comparison["status"] == "same",
-            "strict execution comparison did not retain an identical replay",
+                && match comparison["status"].as_str() {
+                    Some("same") => comparison["divergence"].is_null(),
+                    Some("diverged") => comparison["divergence"]["reason"]
+                        .as_str()
+                        .is_some_and(|reason| !reason.is_empty()),
+                    _ => false,
+                },
+            "strict execution comparison has no valid observational result",
         )?;
     }
     for name in [
@@ -1742,6 +1752,16 @@ fn verify_validation_campaign(
         )?;
     }
     Ok(())
+}
+
+fn verify_host_input_campaign_plan(bytes: &[u8], scenario: &str) -> Result<(), EvidenceError> {
+    let value: serde_json::Value = parse_json_bytes(bytes, scenario)?;
+    require(
+        value["format"] == "theseus-compose-plan-v1"
+            && value["machine_replay"] == "host_inputs"
+            && value["campaign"].is_object(),
+        &format!("{scenario} does not declare its host-input replay contract"),
+    )
 }
 
 fn verify_validation_topology_replay(
@@ -2523,6 +2543,13 @@ mod tests {
             "services": {"ledger": {"run": {"run": {"vcpu_count": 1}}}}
         }))
         .unwrap();
+        let strict_campaign_plan = serde_json::to_vec(&serde_json::json!({
+            "format": "theseus-compose-plan-v1",
+            "machine_replay": "host_inputs",
+            "campaign": {},
+            "services": {"api": {"run": {"run": {"vcpu_count": 1}}}}
+        }))
+        .unwrap();
         let schedule_replay_result = serde_json::to_vec(&serde_json::json!({
             "status": "passed",
             "error": null,
@@ -2664,7 +2691,10 @@ mod tests {
                 "strict-execution/campaign/campaign-result.json",
                 campaign("execution_decisions", false),
             ),
-            ("strict-execution/campaign/replay-plan.json", b"{}".to_vec()),
+            (
+                "strict-execution/campaign/replay-plan.json",
+                strict_campaign_plan,
+            ),
             (
                 "strict-execution/report/report.md",
                 b"# Execution ledger\n".to_vec(),
@@ -2675,7 +2705,7 @@ mod tests {
             ),
             (
                 "strict-execution/comparison.json",
-                br#"{"format":"theseus-campaign-comparison-v1","status":"same"}"#.to_vec(),
+                br#"{"format":"theseus-campaign-comparison-v1","status":"diverged","divergence":{"reason":"ordered KVM execution ledger differs"}}"#.to_vec(),
             ),
             (
                 "strict-execution/source/.dockerignore",
