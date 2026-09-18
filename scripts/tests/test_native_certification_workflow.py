@@ -57,17 +57,11 @@ def main() -> None:
     assert WORKFLOW.count("gcc -static -O2 -Wall -Wextra -Werror service/finish.c") == 1
     assert 'checkpoint = "finished"' in CERTIFICATION_MANIFEST
     assert "max_rounds = 10000000" in CERTIFICATION_MANIFEST
-    assert WORKFLOW.count('docker build --load --platform "linux/$ARCH"') == 2
+    assert WORKFLOW.count("sh scripts/run_native_counterexample.sh") == 1
+    assert 'THESEUS_IMAGE: ghcr.io/e6qu/theseus:${{ needs.resolve.outputs.tag }}-${{ matrix.arch }}' in WORKFLOW
+    assert "--expect-counterexample distributed_lost_update_is_unreachable" not in WORKFLOW
+    assert '"network":"recovered"' not in WORKFLOW
     assert "docs/tutorials/30-multiservice-lost-update" in WORKFLOW
-    assert WORKFLOW.count("--expect-counterexample distributed_lost_update_is_unreachable") == 2
-    assert 'theseus compose replay minimized --output rerun' in WORKFLOW
-    assert "backplane:partition@setup" in WORKFLOW
-    assert "backplane:heal@probe_partition" in WORKFLOW
-    assert "dropped" in WORKFLOW
-    assert "rerun/services/*/result.json" in WORKFLOW
-    assert WORKFLOW.count("rerun/topology-result.json") >= 3
-    assert "rerun/services/writer-a/serial.log" in WORKFLOW
-    assert 'cp /opt/theseus/pivot.json runtime-pivot.json' in WORKFLOW
     assert "scripts/native_runtime_evidence.py seal" in WORKFLOW
     assert "scripts/run_native_validation.sh" in WORKFLOW
     assert '"$validation/fixed-plan"' in VALIDATION

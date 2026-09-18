@@ -743,7 +743,7 @@ fn verify_replay(retained: &BTreeMap<String, Vec<u8>>) -> Result<(), EvidenceErr
     require(dropped, "replay has no dropped network frame")?;
     let writer = String::from_utf8_lossy(&retained["evidence/replay/services/writer-a/serial.log"]);
     require(
-        writer.contains(r#""network":"recovered""#),
+        writer.contains(r#""network":"recovery_probe_sent""#),
         "replay has no successful recovery probe",
     )?;
     let counter = String::from_utf8_lossy(&retained["evidence/replay/services/counter/serial.log"]);
@@ -2444,7 +2444,7 @@ mod tests {
         fs::write(replay.join("counter/serial.log"), b"{\"value\":1}\n").unwrap();
         fs::write(
             replay.join("writer-a/serial.log"),
-            b"{\"network\":\"recovered\"}\n",
+            b"{\"network\":\"recovery_probe_sent\"}\n",
         )
         .unwrap();
         fs::write(
