@@ -10,12 +10,16 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use kvm_bindings::{
-    CpuId, KVM_MAX_CPUID_ENTRIES, KVM_MAX_MSR_ENTRIES, Msrs, Xsave, kvm_debugregs, kvm_lapic_state,
-    kvm_mp_state, kvm_regs, kvm_sregs, kvm_vcpu_events, kvm_xcrs, kvm_xsave, kvm_xsave2,
+    CpuId, KVMIO, KVM_MAX_CPUID_ENTRIES, KVM_MAX_MSR_ENTRIES, Msrs, Xsave, kvm_debugregs,
+    kvm_interrupt, kvm_lapic_state, kvm_mp_state, kvm_regs, kvm_sregs, kvm_vcpu_events, kvm_xcrs,
+    kvm_xsave, kvm_xsave2,
 };
 use kvm_ioctls::{VcpuExit, VcpuFd};
+use libc;
 use serde::{Deserialize, Serialize};
 use vmm_sys_util::fam::{self, FamStruct};
+use vmm_sys_util::ioctl::ioctl_with_ref;
+use vmm_sys_util::ioctl_iow_nr;
 
 use crate::arch::EntryPoint;
 use crate::arch::x86_64::generated::msr_index::{MSR_IA32_TSC, MSR_IA32_TSC_DEADLINE};
@@ -61,6 +65,8 @@ pub enum KvmVcpuError {
     VcpuGetDebugRegs(kvm_ioctls::Error),
     /// Failed to get KVM vcpu lapic: {0}
     VcpuGetLapic(kvm_ioctls::Error),
+    /// Failed to inject a LAPIC vector through KVM_INTERRUPT: {0}
+    InjectInterrupt(vmm_sys_util::errno::Error),
     /// Failed to get KVM vcpu mp state: {0}
     VcpuGetMpState(kvm_ioctls::Error),
     /// Failed to get KVM vcpu msr: {0:#x}
@@ -118,6 +124,12 @@ pub struct GetTscError(vmm_sys_util::errno::Error);
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
 #[error("{0}")]
 pub struct SetTscError(#[from] kvm_ioctls::Error);
+
+/// KVM_INTERRUPT queues one user-injected vector for the next guest entry.
+/// kvm-ioctls does not wrap this x86-only ioctl, so define the number from
+/// the Linux UAPI: `_IOW(KVMIO, 0x86, __u32)` — `kvm_interrupt` is one
+/// 32-bit field, so the encoded request size matches.
+ioctl_iow_nr!(KVM_INTERRUPT, KVMIO, 0x86, kvm_interrupt);
 
 /// APIC LVT timer register MMIO offset; each 32-bit register lives at its
 /// MMIO byte offset inside `kvm_lapic_state` (IA SDM 10.4.8, 10.9).
@@ -769,6 +781,60 @@ impl KvmVcpu {
     pub fn kernel_timer_asserted(&self) -> Result<bool, KvmVcpuError> {
         let lapic = self.fd.get_lapic().map_err(KvmVcpuError::VcpuGetLapic)?;
         Ok(lapic_timer_asserted(&lapic))
+    }
+
+    /// Hold an asserted LAPIC-timer delivery: clear the timer vector's IRR
+    /// bit so KVM does not deliver it asynchronously, and report the held
+    /// vector. Returns `None` when no delivery is asserted. Valid between
+    /// `KVM_RUN` calls on the owning vCPU thread.
+    pub fn hold_lapic_timer(&self) -> Result<Option<u8>, KvmVcpuError> {
+        let mut lapic = self.fd.get_lapic().map_err(KvmVcpuError::VcpuGetLapic)?;
+        if !lapic_timer_asserted(&lapic) {
+            return Ok(None);
+        }
+        let lvt_timer = apic_word(&lapic, APIC_OFF_LVT_TIMER);
+        let vector = (lvt_timer & 0xff) as u8;
+        let irr_word = APIC_OFF_IRR + (vector as usize / 32) * 4;
+        let cleared = apic_word(&lapic, irr_word) & !(1 << (vector % 32));
+        let bytes = cleared.to_le_bytes();
+        for (index, byte) in bytes.iter().enumerate() {
+            lapic.regs[irr_word + index] = *byte as std::os::raw::c_char;
+        }
+        self.fd.set_lapic(&lapic).map_err(KvmVcpuError::VcpuSetLapic)?;
+        Ok(Some(vector))
+    }
+
+    /// Queue `vector` for delivery on the next guest entry through
+    /// KVM_INTERRUPT. Returns `false` when KVM already holds a pending
+    /// user-injected interrupt; the held delivery then stays pending in KVM
+    /// and the caller keeps its request queued for a later turn.
+    pub fn inject_lapic_vector(&self, vector: u8) -> Result<bool, KvmVcpuError> {
+        let interrupt = kvm_interrupt {
+            irq: u32::from(vector),
+        };
+        // SAFETY: we own the vCPU descriptor and KVM only reads the u32
+        // payload of `kvm_interrupt`.
+        let ret = unsafe { ioctl_with_ref(&self.fd, KVM_INTERRUPT(), &interrupt) };
+        if ret == 0 {
+            return Ok(true);
+        }
+        let error = vmm_sys_util::errno::Error::last();
+        if error.errno() == libc::EEXIST || error.errno() == libc::EAGAIN {
+            return Ok(false);
+        }
+        Err(KvmVcpuError::InjectInterrupt(error))
+    }
+
+    /// Admit one held in-kernel timer delivery recorded as `vcpu:<id>:
+    /// interrupt:lapic-timer:<vector>`. A pending KVM_INTERRUPT counts as
+    /// delivered: the guest will take it on its next enabled window.
+    pub fn inject_held_kernel_timer(&self, vector: u32) -> Result<(), KvmVcpuError> {
+        if vector >= 256 {
+            return Err(KvmVcpuError::InjectInterrupt(vmm_sys_util::errno::Error::from(
+                libc::EINVAL,
+            )));
+        }
+        self.inject_lapic_vector(vector as u8).map(|_| ())
     }
 
     /// Use provided state to populate KVM internal state.

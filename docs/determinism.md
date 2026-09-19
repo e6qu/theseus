@@ -307,15 +307,20 @@ schedule in-kernel timer interrupts between exits.
   cannot control or explain divergence between those inputs, including guest
   interrupt servicing, in-kernel timer delivery, and guest-side input
   consumption.
-- **In-kernel timer delivery is observed, not controlled.** KVM injects the
-  x86 LAPIC timer and the aarch64 arch timer inside the irqchip without a KVM
-  exit, so those deliveries never appear in the machine stream. Under virtual
-  time, the vCPU reads the in-kernel timer state at every handled exit and
-  records each asserted delivery as observation evidence beside the execution
-  capture (`timer-observations.json`). Arming depends on guest counter reads
-  over host drift, so the observations are evidence only: replay never gates
-  them, and an episode fully contained between two exits can still be missed
-  until instruction-boundary control lands.
+- **In-kernel timer delivery is observed, and can be held on amd64.** KVM
+  injects the x86 LAPIC timer and the aarch64 arch timer inside the irqchip
+  without a KVM exit, so those deliveries never appear in the machine stream.
+  Under virtual time, the vCPU reads the in-kernel timer state at every handled
+  exit and records each asserted delivery as observation evidence beside the
+  execution capture (`timer-observations.json`). With
+  `run.virtual_time.hold_kernel_timers = true` on amd64, the vCPU also clears
+  the asserted LAPIC-timer IRR, queues the held vector, and injects it through
+  KVM_INTERRUPT at its recorded turn (`vcpu:<id>:interrupt:lapic-timer:<vector>`)
+  instead of letting KVM deliver it at a host-timed instruction boundary.
+  Arming depends on guest counter reads over host drift, so episodes can move
+  across boundaries between runs: hold mode makes such movement a replay
+  divergence instead of a silent pass, and an episode fully contained between
+  two exits can still be missed until instruction-boundary control lands.
 
 ## Replay fingerprints
 

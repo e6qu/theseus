@@ -160,6 +160,8 @@ struct Run {
 pub struct VirtualTime {
     pub tick_ns: u64,
     pub exits_per_tick: u32,
+    #[serde(default)]
+    pub hold_kernel_timers: bool,
 }
 
 #[derive(Debug, Deserialize)]

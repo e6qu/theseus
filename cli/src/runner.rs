@@ -827,6 +827,7 @@ fn configure_boot(
         machine["virtual_time"] = json!({
             "tick_ns": virtual_time.tick_ns,
             "exits_per_tick": virtual_time.exits_per_tick,
+            "hold_kernel_timers": virtual_time.hold_kernel_timers,
         });
     }
     api_put(socket, "/machine-config", machine)?;
@@ -1512,12 +1513,27 @@ fn checkpoint_metadata(base: &Path, plan: &RunPlan) -> Result<Value, RunError> {
         source,
     })?;
     let config = &metadata["machine_config"];
+    // `hold_kernel_timers = false` is the default and older retained
+    // checkpoints omit the key. Compare with it stripped from both sides
+    // when it is false, so pre-existing bundles keep replaying while a plan
+    // that actually holds timers still requires matching metadata.
+    let strip_default_hold = |value: &serde_json::Value| {
+        let mut virtual_time = value.clone();
+        if virtual_time.get("hold_kernel_timers") == Some(&serde_json::Value::Bool(false)) {
+            virtual_time
+                .as_object_mut()
+                .expect("virtual time serializes to an object")
+                .remove("hold_kernel_timers");
+        }
+        virtual_time
+    };
+    let expected_virtual_time =
+        serde_json::to_value(&plan.run.virtual_time).map_err(RunError::Serialize)?;
     if metadata["format"] != "theseus-checkpoint-v1"
         || !matches!(metadata["architecture"].as_str(), Some("amd64" | "arm64"))
         || config["vcpu_count"] != plan.run.vcpu_count
         || config["mem_size_mib"] != plan.run.mem_size_mib
-        || config["virtual_time"]
-            != serde_json::to_value(&plan.run.virtual_time).map_err(RunError::Serialize)?
+        || strip_default_hold(&config["virtual_time"]) != strip_default_hold(&expected_virtual_time)
         || (plan.run.entropy_device && metadata["entropy"]["seed"] != plan.run.seed)
         || (!plan.run.entropy_device && !metadata["entropy"].is_null())
     {
