@@ -125,10 +125,10 @@ pub struct GetTscError(vmm_sys_util::errno::Error);
 #[error("{0}")]
 pub struct SetTscError(#[from] kvm_ioctls::Error);
 
-/// KVM_INTERRUPT queues one user-injected vector for the next guest entry.
-/// kvm-ioctls does not wrap this x86-only ioctl, so define the number from
-/// the Linux UAPI: `_IOW(KVMIO, 0x86, __u32)` — `kvm_interrupt` is one
-/// 32-bit field, so the encoded request size matches.
+// KVM_INTERRUPT queues one user-injected vector for the next guest entry.
+// kvm-ioctls does not wrap this x86-only ioctl, so define the number from
+// the Linux UAPI: `_IOW(KVMIO, 0x86, __u32)` — `kvm_interrupt` is one
+// 32-bit field, so the encoded request size matches.
 ioctl_iow_nr!(KVM_INTERRUPT, KVMIO, 0x86, kvm_interrupt);
 
 /// APIC LVT timer register MMIO offset; each 32-bit register lives at its
@@ -830,7 +830,7 @@ impl KvmVcpu {
     /// delivered: the guest will take it on its next enabled window.
     pub fn inject_held_kernel_timer(&self, vector: u32) -> Result<(), KvmVcpuError> {
         if vector >= 256 {
-            return Err(KvmVcpuError::InjectInterrupt(vmm_sys_util::errno::Error::from(
+            return Err(KvmVcpuError::InjectInterrupt(vmm_sys_util::errno::Error::new(
                 libc::EINVAL,
             )));
         }
