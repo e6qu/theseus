@@ -119,6 +119,45 @@ pub struct GetTscError(vmm_sys_util::errno::Error);
 #[error("{0}")]
 pub struct SetTscError(#[from] kvm_ioctls::Error);
 
+/// APIC LVT timer register MMIO offset; each 32-bit register lives at its
+/// MMIO byte offset inside `kvm_lapic_state` (IA SDM 10.4.8, 10.9).
+const APIC_OFF_LVT_TIMER: usize = 0x320;
+/// APIC in-service register bitmap MMIO offset.
+const APIC_OFF_ISR: usize = 0x100;
+/// APIC interrupt request register bitmap MMIO offset.
+const APIC_OFF_IRR: usize = 0x200;
+/// APIC LVT masked bit.
+const APIC_LVT_MASKED: u32 = 1 << 16;
+
+fn apic_word(state: &kvm_lapic_state, offset: usize) -> u32 {
+    // `regs` is `c_char`; the cast keeps the bit pattern on every target.
+    u32::from_le_bytes([
+        state.regs[offset] as u8,
+        state.regs[offset + 1] as u8,
+        state.regs[offset + 2] as u8,
+        state.regs[offset + 3] as u8,
+    ])
+}
+
+fn apic_bitmap_bit(state: &kvm_lapic_state, bitmap: usize, vector: u8) -> bool {
+    apic_word(state, bitmap + (vector as usize / 32) * 4) & (1 << (vector % 32)) != 0
+}
+
+/// Whether the in-kernel LAPIC timer has a delivery in flight: the timer
+/// vector sits in IRR (asserted by KVM) or ISR (accepted by the guest, not
+/// yet EOIed). KVM injects the interrupt inside the irqchip without a KVM
+/// exit, so the machine stream cannot see it.
+pub(crate) fn lapic_timer_asserted(state: &kvm_lapic_state) -> bool {
+    let lvt_timer = apic_word(state, APIC_OFF_LVT_TIMER);
+    if lvt_timer & APIC_LVT_MASKED != 0 {
+        return false;
+    }
+    let vector = (lvt_timer & 0xff) as u8;
+    vector != 0
+        && (apic_bitmap_bit(state, APIC_OFF_IRR, vector)
+            || apic_bitmap_bit(state, APIC_OFF_ISR, vector))
+}
+
 /// Errors associated with configuring an x86_64 vCPU.
 #[derive(Debug, thiserror::Error, displaydoc::Display, Eq, PartialEq)]
 pub enum KvmVcpuConfigureError {
@@ -725,6 +764,13 @@ impl KvmVcpu {
         self.set_tsc(crate::vstate::vclock::VirtualClock::tsc_value(now_ns, tsc_khz))
     }
 
+    /// Read the in-kernel LAPIC and report whether the timer has a delivery
+    /// asserted. Valid between `KVM_RUN` calls, like every other vCPU ioctl.
+    pub fn kernel_timer_asserted(&self) -> Result<bool, KvmVcpuError> {
+        let lapic = self.fd.get_lapic().map_err(KvmVcpuError::VcpuGetLapic)?;
+        Ok(lapic_timer_asserted(&lapic))
+    }
+
     /// Use provided state to populate KVM internal state.
     pub fn restore_state(&self, state: &VcpuState) -> Result<(), KvmVcpuError> {
         // Ordering requirements:
@@ -895,6 +941,8 @@ impl Debug for VcpuState {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::undocumented_unsafe_blocks)]
+
+    use std::os::raw::c_char;
 
     use kvm_bindings::kvm_msr_entry;
     use kvm_ioctls::Cap;
@@ -1389,4 +1437,39 @@ mod tests {
             )
             .for_each(|(left, &right)| assert_eq!(left.index, right));
     }
+
+    #[test]
+    fn lapic_timer_assertion_follows_lvt_and_bitmaps() {
+        fn write_word(state: &mut kvm_lapic_state, offset: usize, word: u32) {
+            for (index, byte) in word.to_le_bytes().iter().enumerate() {
+                state.regs[offset + index] = *byte as c_char;
+            }
+        }
+
+        let mut state = kvm_lapic_state { regs: [0 as c_char; 1024] };
+        assert!(!lapic_timer_asserted(&state));
+
+        let vector: u8 = 0xef;
+        write_word(&mut state, APIC_OFF_LVT_TIMER, u32::from(vector));
+        assert!(!lapic_timer_asserted(&state));
+
+        let timer_bit = 1u32 << (vector % 32);
+        let irr_word = APIC_OFF_IRR + (vector as usize / 32) * 4;
+        write_word(&mut state, irr_word, timer_bit);
+        assert!(lapic_timer_asserted(&state));
+
+        let mut masked = state;
+        write_word(&mut masked, APIC_OFF_LVT_TIMER, u32::from(vector) | APIC_LVT_MASKED);
+        assert!(!lapic_timer_asserted(&masked));
+
+        let mut servicing = state;
+        write_word(&mut servicing, irr_word, 0);
+        write_word(
+            &mut servicing,
+            APIC_OFF_ISR + (vector as usize / 32) * 4,
+            timer_bit,
+        );
+        assert!(lapic_timer_asserted(&servicing));
+    }
 }
+

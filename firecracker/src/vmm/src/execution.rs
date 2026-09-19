@@ -5,11 +5,13 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::vstate::vcpu::{ExecutionLedgerEvidence, MachineExecutionController};
+use crate::vstate::vcpu::{
+    ExecutionLedgerEvidence, MachineExecutionController, TimerObservation,
+};
 use crate::{Vmm, VmmError};
 
 /// Pre-boot execution capture and optional active replay configuration.
@@ -56,6 +58,39 @@ pub struct ExecutionEvidence {
     /// Absent for legacy fresh-boot capture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<ExecutionStart>,
+}
+
+/// Sibling evidence for in-kernel timer deliveries. They stay outside
+/// `execution.json` because they depend on host drift inside a quantum, and
+/// replayed bundles must keep byte-identical execution evidence.
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimerObservationEvidence {
+    /// Evidence schema identity.
+    pub format: String,
+    /// Ordered in-kernel timer delivery observations.
+    pub observations: Vec<TimerObservation>,
+}
+
+/// Sibling file written beside one execution capture.
+pub const TIMER_OBSERVATIONS_FILE: &str = "timer-observations.json";
+
+/// Serialize the bounded observation list, or an empty list when the
+/// deterministic profile observed nothing.
+pub(crate) fn write_timer_observation_evidence(
+    path: &Path,
+    observations: Vec<TimerObservation>,
+) -> Result<(), VmmError> {
+    let evidence = TimerObservationEvidence {
+        format: "theseus-timer-observations-v1".to_owned(),
+        observations,
+    };
+    let bytes = serde_json::to_vec_pretty(&evidence)
+        .map_err(|error| VmmError::ExecutionCoverage(format!("serialize timer observations: {error}")))?;
+    std::fs::write(path, bytes).map_err(|error| {
+        VmmError::ExecutionCoverage(format!("write {}: {error}", path.display()))
+    })?;
+    Ok(())
 }
 
 impl ExecutionConfig {
@@ -134,6 +169,11 @@ impl Vmm {
             replay_error: self.machine_execution_replay_error()?,
             start: self.execution_config.as_ref().and_then(|config| config.start.clone()),
         };
+        let timer_path = self
+            .execution_config
+            .as_ref()
+            .map(|config| config.evidence_path.with_file_name(TIMER_OBSERVATIONS_FILE));
+        let timer_observations = self.machine_timer_observations()?;
         let file = self
             .execution_evidence_file
             .as_mut()
@@ -153,7 +193,11 @@ impl Vmm {
             .and_then(|()| writer.flush())
             .map_err(|error| {
                 VmmError::ExecutionCoverage(format!("write execution evidence: {error}"))
-            })
+            })?;
+        if let Some(timer_path) = timer_path {
+            write_timer_observation_evidence(&timer_path, timer_observations)?;
+        }
+        Ok(())
     }
 }
 
@@ -185,5 +229,35 @@ mod execution_ledger_tests {
         };
         assert!(config.prepare().is_err());
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn timer_observations_round_trip_and_allow_rewrites() {
+        let path = TempFile::new().unwrap().as_path().to_path_buf();
+        write_timer_observation_evidence(
+            &path,
+            vec![TimerObservation {
+                record: "vcpu:0:timer:vtimer".into(),
+                virtual_time_ns: Some(2_000_000),
+            }],
+        )
+        .unwrap();
+        let parsed: TimerObservationEvidence =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(parsed.format, "theseus-timer-observations-v1");
+        assert_eq!(
+            parsed.observations,
+            vec![TimerObservation {
+                record: "vcpu:0:timer:vtimer".into(),
+                virtual_time_ns: Some(2_000_000),
+            }]
+        );
+
+        // Every flush rewrites the complete list, including an empty one.
+        write_timer_observation_evidence(&path, Vec::new()).unwrap();
+        let parsed: TimerObservationEvidence =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(parsed.format, "theseus-timer-observations-v1");
+        assert!(parsed.observations.is_empty());
     }
 }
