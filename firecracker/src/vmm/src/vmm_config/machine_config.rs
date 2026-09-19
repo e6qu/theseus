@@ -20,9 +20,14 @@ fn default_exits_per_tick() -> u64 {
     DEFAULT_EXITS_PER_TICK
 }
 
+fn default_hold_kernel_timers() -> bool {
+    false
+}
+
 /// Theseus exit-counted virtual time on amd64 and arm64. Each configured exit
 /// quantum advances the counter by `tick_ns`; counters still free-run between
-/// boundaries, and in-kernel timers are not controlled by this setting.
+/// boundaries, and in-kernel timers fire from host time unless
+/// `hold_kernel_timers` holds them at stream boundaries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VirtualTimeConfig {
@@ -32,6 +37,12 @@ pub struct VirtualTimeConfig {
     /// Guest-visible exits per quantum.
     #[serde(default = "default_exits_per_tick")]
     pub exits_per_tick: u64,
+    /// Hold in-kernel LAPIC-timer deliveries at handled-exit boundaries and
+    /// inject them as recorded vCPU turns (amd64 only). Arming still depends
+    /// on guest counter reads over host drift, so a replay whose episodes
+    /// move across boundaries diverges instead of silently passing.
+    #[serde(default = "default_hold_kernel_timers")]
+    pub hold_kernel_timers: bool,
 }
 
 /// The default memory size of the VM, in MiB.

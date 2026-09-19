@@ -104,6 +104,8 @@ pub enum KvmVcpuError {
     ApplyVirtualTime(kvm_ioctls::Error),
     /// Failed to read the in-kernel arch timer state: {0}
     KernelTimerState(kvm_ioctls::Error),
+    /// Holding in-kernel timers is not implemented on this architecture.
+    UnsupportedHoldKernelTimers,
 }
 
 /// KVM_REG_ARM_TIMER_CNT (Linux UAPI, arch/arm64/include/uapi/asm/kvm.h):
@@ -212,6 +214,13 @@ impl KvmVcpu {
             .get_one_reg(KVM_REG_ARM_TIMER_CTL, &mut value)
             .map_err(KvmVcpuError::KernelTimerState)?;
         Ok(vtimer_asserted(u64::from_ne_bytes(value)))
+    }
+
+    /// Held in-kernel timer injection has no aarch64 implementation: the
+    /// arch-timer PPI cannot be injected from userspace, and the hold
+    /// configuration is rejected before boot.
+    pub fn inject_held_kernel_timer(&self, _vector: u32) -> Result<(), KvmVcpuError> {
+        Err(KvmVcpuError::UnsupportedHoldKernelTimers)
     }
 
     /// Constructs a new kvm vcpu with arch specific functionality.

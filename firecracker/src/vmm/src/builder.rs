@@ -85,6 +85,9 @@ pub enum StartMicrovmError {
     /// Host-backed network, block, and persistent-memory devices can observe
     /// host state and cannot be combined with virtual time (Theseus).
     HostBackedDeviceWithVirtualTime,
+    /// Holding in-kernel timers requires the amd64 LAPIC-hold path and is not
+    /// implemented for this architecture (Theseus).
+    HoldKernelTimersNotSupportedOnArch,
     /// Failed to apply virtual time: {0}
     ApplyVirtualTime(String),
     /// Error creating legacy device: {0}
@@ -194,6 +197,16 @@ fn validate_deterministic_config(
     if has_host_backed_devices {
         return Err(StartMicrovmError::HostBackedDeviceWithVirtualTime);
     }
+    // Holding in-kernel timers requires the x86 LAPIC-hold path; aarch64
+    // cannot inject the arch-timer PPI from userspace.
+    #[cfg(target_arch = "aarch64")]
+    if vm_resources
+        .machine_config
+        .virtual_time
+        .is_some_and(|virtual_time| virtual_time.hold_kernel_timers)
+    {
+        return Err(StartMicrovmError::HoldKernelTimersNotSupportedOnArch);
+    }
     Ok(())
 }
 
@@ -249,7 +262,11 @@ pub fn build_microvm_for_boot(
         #[cfg(target_arch = "x86_64")]
         vm.set_virtual_clock_ns(0).map_err(VmError::Arch)?;
         for vcpu in &mut vcpus {
-            vcpu.enable_virtual_time(virtual_time.tick_ns, virtual_time.exits_per_tick);
+            vcpu.enable_virtual_time(
+                virtual_time.tick_ns,
+                virtual_time.exits_per_tick,
+                virtual_time.hold_kernel_timers,
+            );
             // aarch64: the counter offset can only be written after the
             // KVM_ARM_VCPU_INIT ioctl, which happens at vCPU configure time —
             // so the anchor is applied by the vCPU thread on first run
@@ -595,7 +612,11 @@ pub fn build_microvm_from_snapshot(
                     virtual_time.exits_per_tick,
                 ),
                 None => {
-                    vcpu.enable_virtual_time(virtual_time.tick_ns, virtual_time.exits_per_tick)
+                    vcpu.enable_virtual_time(
+                        virtual_time.tick_ns,
+                        virtual_time.exits_per_tick,
+                        virtual_time.hold_kernel_timers,
+                    )
                 }
             }
         }
@@ -983,6 +1004,7 @@ pub(crate) mod tests {
         resources.machine_config.virtual_time = Some(VirtualTimeConfig {
             tick_ns: 1_000_000,
             exits_per_tick: 64,
+            hold_kernel_timers: false,
         });
         resources
     }

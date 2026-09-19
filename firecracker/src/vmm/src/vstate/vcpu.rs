@@ -200,6 +200,7 @@ impl CheckpointExecutionState {
             let source = match request.source.as_str() {
                 "serial" => "serial", "i8042" => "i8042", "virtio-mmio" => "virtio-mmio",
                 "virtio-msix" => "virtio-msix", "vmgenid" => "vmgenid", "vmclock" => "vmclock",
+                "lapic-timer" => "lapic-timer",
                 _ => return Err("checkpoint contains an unsupported interrupt source".into()),
             };
             if request.gsi >= 1024 {
@@ -517,30 +518,16 @@ impl MachineExecutionController {
             .clone()
     }
 
-    fn deliver_pending_interrupt(
-        &self,
-        vcpu: u8,
-        vm_fd: &VmFd,
-        ledger: &Arc<Mutex<ExecutionLedger>>,
-    ) -> Result<bool, String> {
-        self.deliver_pending_interrupts_with(vcpu, ledger, |gsi| {
-            vm_fd
-                .set_irq_line(gsi, true)
-                .and_then(|()| vm_fd.set_irq_line(gsi, false))
-                .map_err(|error| error.to_string())
-        })
-    }
-
     fn deliver_pending_interrupts_with(
         &self,
         vcpu: u8,
         ledger: &Arc<Mutex<ExecutionLedger>>,
-        mut inject: impl FnMut(u32) -> Result<(), String>,
+        mut inject: impl FnMut(&PendingInterrupt) -> Result<(), String>,
     ) -> Result<bool, String> {
         let mut delivered_any = false;
         loop {
             let delivered =
-                self.deliver_pending_interrupt_with(vcpu, ledger, |gsi| inject(gsi))?;
+                self.deliver_pending_interrupt_with(vcpu, ledger, |interrupt| inject(interrupt))?;
             delivered_any |= delivered;
             if !delivered || !self.may_deliver_another_interrupt(vcpu) {
                 return Ok(delivered_any);
@@ -568,7 +555,7 @@ impl MachineExecutionController {
         &self,
         vcpu: u8,
         ledger: &Arc<Mutex<ExecutionLedger>>,
-        inject: impl FnOnce(u32) -> Result<(), String>,
+        mut inject: impl FnMut(&PendingInterrupt) -> Result<(), String>,
     ) -> Result<bool, String> {
         if !self.deterministic_interrupts_enabled() {
             return Ok(false);
@@ -589,23 +576,33 @@ impl MachineExecutionController {
                 .lock()
                 .expect("pending interrupt queue lock poisoned");
             let Some(_) = pending.front() else {
-                if state
+                let expected_next = state
                     .expected
                     .as_ref()
                     .and_then(|expected| expected.get(state.position))
-                    .is_some_and(|record| record.starts_with(&format!("vcpu:{vcpu}:interrupt:")))
-                {
-                    // The recorded device completion can arrive on the host
-                    // event loop after this vCPU reaches its injection turn.
-                    // Wait for that producer without running more guest code.
-                    drop(pending);
-                    state = self
-                        .turn_changed
-                        .wait(state)
-                        .expect(
-                            "machine execution controller lock poisoned while waiting for interrupt request",
-                        );
-                    continue;
+                    .cloned();
+                if let Some(expected_record) = expected_next {
+                    if expected_record.starts_with(&format!("vcpu:{vcpu}:interrupt:lapic-timer:"))
+                    {
+                        // The vCPU observes its own held timers after a
+                        // handled exit. Never stall guest entry waiting for
+                        // one: run, observe, and admit it at the boundary it
+                        // actually appears on, or fail closed by divergence.
+                        return Ok(false);
+                    }
+                    if expected_record.starts_with(&format!("vcpu:{vcpu}:interrupt:")) {
+                        // The recorded device completion can arrive on the host
+                        // event loop after this vCPU reaches its injection turn.
+                        // Wait for that producer without running more guest code.
+                        drop(pending);
+                        state = self
+                            .turn_changed
+                            .wait(state)
+                            .expect(
+                                "machine execution controller lock poisoned while waiting for interrupt request",
+                            );
+                        continue;
+                    }
                 }
                 return Ok(false);
             };
@@ -625,6 +622,20 @@ impl MachineExecutionController {
                 // loop and be paused without extending the retained stream.
                 return Ok(false);
             };
+            if expected_record.starts_with(&format!("vcpu:{vcpu}:interrupt:lapic-timer:")) {
+                // A held timer is produced by this vCPU after a handled exit.
+                // Deliver it when this turn actually matches; waiting here
+                // would deadlock against the guest entry that produces it.
+                if let Some(index) = pending.iter().position(|interrupt| {
+                    format!(
+                        "vcpu:{vcpu}:interrupt:{}:{}",
+                        interrupt.source, interrupt.gsi
+                    ) == *expected_record
+                }) {
+                    break (pending, index);
+                }
+                return Ok(false);
+            }
             if expected_record.starts_with(&format!("vcpu:{vcpu}:interrupt:")) {
                 if let Some(index) = pending.iter().position(|interrupt| {
                     format!(
@@ -696,7 +707,7 @@ impl MachineExecutionController {
             self.turn_changed.notify_all();
             return Err(detail);
         }
-        inject(interrupt.gsi)
+        inject(interrupt)
             .map_err(|error| format!("failed to deliver {decision}: {error}"))?;
         pending.remove(pending_index);
         drop(pending);
@@ -994,6 +1005,7 @@ fn machine_interrupt_record(record: &str) -> Option<(u8, &'static str, u32)> {
         "virtio-msix" => "virtio-msix",
         "vmgenid" => "vmgenid",
         "vmclock" => "vmclock",
+        "lapic-timer" => "lapic-timer",
         _ => return None,
     };
     Some((id, source, gsi.parse().ok()?))
@@ -1017,6 +1029,9 @@ fn valid_machine_vcpu_effect(effect: &str) -> bool {
         source,
         "serial" | "virtio-mmio" | "virtio-msix" | "vmgenid" | "vmclock" | "i8042"
     ) && gsi_text == gsi.to_string()
+        || (source == "lapic-timer"
+            && gsi_text == gsi.to_string()
+            && gsi < 256)
 }
 
 fn valid_machine_host_effect(effect: &str) -> bool {
@@ -1148,6 +1163,9 @@ pub struct Vcpu {
     /// asserted. Owned by the vCPU thread, so episode transitions need no
     /// lock.
     kernel_timer_asserted: bool,
+    /// Hold asserted in-kernel LAPIC-timer deliveries at handled-exit
+    /// boundaries and inject them as recorded vCPU turns (amd64 only).
+    hold_kernel_timers: bool,
 }
 
 /// States of the vCPU thread's run loop.
@@ -1210,6 +1228,7 @@ impl Vcpu {
             execution_ledger: Arc::new(Mutex::new(ExecutionLedger::default())),
             machine_execution,
             kernel_timer_asserted: false,
+            hold_kernel_timers: false,
         })
     }
 
@@ -1218,12 +1237,21 @@ impl Vcpu {
     ///
     /// Quanta are exit-counted, not host-timed: every event the guest can
     /// observe flows through exits we handle, so tick boundaries land
-    /// identically on every replay of the same execution prefix.
-    pub fn enable_virtual_time(&mut self, tick_ns: u64, exits_per_tick: u64) {
+    /// identically on every replay of the same execution prefix. With
+    /// `hold_kernel_timers`, asserted in-kernel LAPIC-timer deliveries are
+    /// held at handled-exit boundaries and injected as recorded vCPU turns
+    /// (amd64 only).
+    pub fn enable_virtual_time(
+        &mut self,
+        tick_ns: u64,
+        exits_per_tick: u64,
+        hold_kernel_timers: bool,
+    ) {
         self.vclock = Some(crate::vstate::vclock::VirtualClock::new(tick_ns));
         self.exits_per_tick = exits_per_tick.max(1);
         self.exits_since_tick = 0;
         self.vclock_anchored = false;
+        self.hold_kernel_timers = hold_kernel_timers;
     }
 
     /// Current virtual-clock state, if enabled.
@@ -1328,6 +1356,32 @@ impl Vcpu {
         let record = format!("vcpu:{}:timer:lapic-timer", self.kvm_vcpu.index);
         self.machine_execution
             .record_timer_observation(record, self.virtual_time_ns());
+        #[cfg(target_arch = "x86_64")]
+        if self.hold_kernel_timers {
+            // Hold the delivery at this handled-exit boundary and queue it
+            // as a recorded vCPU turn instead of letting KVM inject it at a
+            // host-timed instruction boundary. Arming still depends on
+            // guest counter reads over host drift, so a replay whose
+            // episodes move across boundaries diverges instead of silently
+            // passing.
+            match self.kvm_vcpu.hold_lapic_timer() {
+                Ok(Some(vector)) => {
+                    if let Err(error) = self.machine_execution.request_interrupt(
+                        "lapic-timer",
+                        u32::from(vector),
+                        true,
+                    ) {
+                        error!("Failed to queue the held LAPIC-timer delivery: {error}");
+                        METRICS.vcpu.failures.inc();
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    error!("Failed to hold the LAPIC-timer delivery: {error:?}");
+                    METRICS.vcpu.failures.inc();
+                }
+            }
+        }
     }
 
     fn record_execution_location(&self) {
@@ -1704,10 +1758,20 @@ impl Vcpu {
         }
 
         self.machine_execution
-            .deliver_pending_interrupt(
+            .deliver_pending_interrupts_with(
                 self.kvm_vcpu.index,
-                &self.vm_fd,
                 &self.execution_ledger,
+                |interrupt| match interrupt.source {
+                    "lapic-timer" => self
+                        .kvm_vcpu
+                        .inject_held_kernel_timer(interrupt.gsi)
+                        .map_err(|error| error.to_string()),
+                    _ => self
+                        .vm_fd
+                        .set_irq_line(interrupt.gsi, true)
+                        .and_then(|()| self.vm_fd.set_irq_line(interrupt.gsi, false))
+                        .map_err(|error| error.to_string()),
+                },
             )
             .map_err(VcpuError::FaultyKvmExit)?;
 
@@ -1949,6 +2013,64 @@ mod execution_ledger_tests {
     }
 
     #[test]
+    fn held_lapic_timer_records_validate() {
+        MachineExecutionController::validate_trace(&["vcpu:0:interrupt:lapic-timer:239".into()])
+            .unwrap();
+        assert!(MachineExecutionController::validate_trace(&[
+            "vcpu:0:interrupt:lapic-timer:999".into()
+        ])
+        .is_err());
+        assert!(MachineExecutionController::validate_trace(&[
+            "vcpu:0:interrupt:lapic-timer:x".into()
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn held_lapic_timer_delivers_on_its_recorded_turn() {
+        let controller = MachineExecutionController::default();
+        controller.enable_deterministic_interrupts();
+        controller
+            .enforce(vec!["vcpu:0:interrupt:lapic-timer:239".into()])
+            .unwrap();
+        // The vCPU holds the asserted delivery after a handled exit.
+        controller
+            .request_interrupt("lapic-timer", 239, true)
+            .unwrap();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let mut delivered = Vec::new();
+        assert!(controller
+            .deliver_pending_interrupts_with(0, &ledger, |interrupt| {
+                delivered.push((interrupt.source, interrupt.gsi));
+                Ok(())
+            })
+            .unwrap());
+        assert_eq!(delivered, [("lapic-timer", 239)]);
+        assert_eq!(
+            controller.execution_state().trace(),
+            ["vcpu:0:interrupt:lapic-timer:239"]
+        );
+        assert_eq!(controller.replay_error(), None);
+    }
+
+    #[test]
+    fn held_lapic_timer_never_stalls_guest_entry() {
+        let controller = MachineExecutionController::default();
+        controller.enable_deterministic_interrupts();
+        // The stream expects the held timer first, but nothing is queued: the
+        // vCPU must run and observe instead of waiting on itself.
+        controller
+            .enforce(vec!["vcpu:0:interrupt:lapic-timer:239".into()])
+            .unwrap();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let delivered = controller
+            .deliver_pending_interrupts_with(0, &ledger, |_| Ok(()))
+            .unwrap();
+        assert!(!delivered);
+        assert_eq!(controller.replay_divergence(), None);
+    }
+
+    #[test]
     fn checkpoint_rebuilds_all_hashes_and_preserves_interrupt_order() {
         use super::{CheckpointExecutionState, CheckpointInterrupt};
         let checkpoint = CheckpointExecutionState {
@@ -1987,8 +2109,8 @@ mod execution_ledger_tests {
             producer.request_edge_interrupt("virtio-mmio", 5).unwrap();
         });
         let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
-        assert!(controller.deliver_pending_interrupt_with(0, &ledger, |gsi| {
-            assert_eq!(gsi, 5);
+        assert!(controller.deliver_pending_interrupt_with(0, &ledger, |interrupt| {
+            assert_eq!(interrupt.gsi, 5);
             Ok(())
         }).unwrap());
         producer.join().unwrap();
@@ -2058,8 +2180,8 @@ mod execution_ledger_tests {
         );
         let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
         assert!(controller
-            .deliver_pending_interrupt_with(0, &ledger, |gsi| {
-                assert_eq!(gsi, 5);
+            .deliver_pending_interrupt_with(0, &ledger, |interrupt| {
+                assert_eq!(interrupt.gsi, 5);
                 Ok(())
             })
             .unwrap());
@@ -2084,8 +2206,8 @@ mod execution_ledger_tests {
         while controller.may_deliver_another_interrupt(0) {
             assert!(
                 controller
-                    .deliver_pending_interrupt_with(0, &ledger, |gsi| {
-                        delivered.push(gsi);
+                    .deliver_pending_interrupt_with(0, &ledger, |interrupt| {
+                        delivered.push(interrupt.gsi);
                         Ok(())
                     })
                     .unwrap()
@@ -2113,8 +2235,8 @@ mod execution_ledger_tests {
 
         assert!(
             controller
-                .deliver_pending_interrupts_with(0, &ledger, |gsi| {
-                    delivered.push(gsi);
+                .deliver_pending_interrupts_with(0, &ledger, |interrupt| {
+                    delivered.push(interrupt.gsi);
                     Ok(())
                 })
                 .unwrap()
@@ -2147,8 +2269,8 @@ mod execution_ledger_tests {
         let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
         assert!(
             controller
-                .deliver_pending_interrupt_with(0, &ledger, |gsi| {
-                    assert_eq!(gsi, 5);
+                .deliver_pending_interrupt_with(0, &ledger, |interrupt| {
+                    assert_eq!(interrupt.gsi, 5);
                     Ok(())
                 })
                 .unwrap()
@@ -2286,8 +2408,8 @@ mod execution_ledger_tests {
             .unwrap();
         let mut delivered = Vec::new();
         assert!(controller
-            .deliver_pending_interrupts_with(0, &ledger, |gsi| {
-                delivered.push(gsi);
+            .deliver_pending_interrupts_with(0, &ledger, |interrupt| {
+                delivered.push(interrupt.gsi);
                 Ok(())
             })
             .unwrap());
