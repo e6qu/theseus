@@ -133,93 +133,50 @@ The baseline has important limits:
   copy-on-write mappings; it is not zero-copy.
 - There is no Kubernetes input, hosted campaign service, live debugger,
   temporal log query system, or broad language SDK.
-- The current public release includes Go module coverage and the earlier
-  coverage, pthread scheduling, structured-choice, and unified-search work.
-  Those capabilities remain short of product-ready until both native KVM
-  certifications complete and their retained evidence is independently
-  verified.
+- The current public release carries indexed amd64 native-KVM certification:
+  the runtime certificate, the runtime-validation archive, and the retained
+  distributed counterexample verify offline with `theseus evidence verify`.
+  Arm64 assets are published but not yet certified.
 
-## Active delivery: prove the released product
+## Released-product certification
 
-The SHA release already publishes the CLI, Linux runtime bundles, native
-architecture images, multi-architecture manifest, kernel, modules,
-instrumentation tools, SBOMs, build inputs, and attestations. Close the
-remaining evidence gap before adding another isolated runtime feature.
+Every successful SHA release starts amd64 native certification on a hosted
+KVM runner. A passing run attaches the indexed evidence set to the release:
+the fixed-plan runtime certificate, the container/coverage/schedule-search/
+pthread/ordered-replay validation archive, and the retained partition,
+recovery, minimized lost-update counterexample. The released CLI rejects an
+incomplete, renamed, or mismatched evidence set and reports the exact
+certified architecture scope.
 
-Source CI qualifies UART/reset replay, standard random devices from retained
-CRNG state, and one- and two-service whole-topology roots on amd64 KVM. Roots
-retain VM state, RAM, UART ancestry, full inherited execution prefixes,
-pending userspace interrupts, switch/NIC queues, and scheduler state. They do
-not establish deterministic boot, instruction scheduling, or in-kernel timers.
-Fresh-boot replay remains a separate contract and must never silently discard
-boot decisions or normalize variable device addresses.
+Keep the rules that produced that evidence as standing invariants:
 
-The next qualification runs ordinary containers, C coverage, thread schedule
-search, pthread synchronization, ordered execution replay, and the distributed
-partition/recovery counterexample with the current source runtime. Campaign
-and minimized roots retain their own locked inputs. Operation-prefix replay
-checks recorded execution before resuming; final campaign ledgers must hash
-complete service streams, not only their paused prefixes. A 512 MiB LRU budget
-bounds cached prefix RAM, excluding the immutable root and active working
-branches; it is not a process-RSS limit.
+- The released path executes the exact digest-pinned published binaries; it
+  never substitutes source CI or packaging success for native execution.
+- The source and released paths invoke one counterexample driver whose
+  recovery event is `recovery_probe_sent`.
+- `compare` stays observational; replay admission is decided by the declared
+  control projection and explicit replay checks.
+- Released-path containers hand generated outputs back to the invoking user,
+  and failed certification retains partial guest evidence and serial logs.
+
+Remaining in this track: certify arm64 on a labelled self-hosted KVM runner
+when one is online. Never substitute emulation or imply that packaging
+proves native execution. With the amd64 gate closed, the next work is
+Priority 1.
+
+Source CI qualifies the same portfolio against the source runtime built in
+release mode: UART/reset replay, standard random devices from retained CRNG
+state, whole-topology roots, ordinary containers, C coverage, thread-schedule
+search, pthread synchronization, ordered KVM-exit replay, and the distributed
+counterexample. Source runs record the commit and actual binary hashes and
+must not issue a publishable release index.
 
 `theseus compose verify` checks portable ready-checkpoint bundles offline:
-locked inputs, configuration identity, state/RAM/context, ancestry, UART logs,
-and full machine/vCPU execution ledgers. It does not deserialize native CPU
-state or certify execution provenance. Retained RAM may contain secrets.
-
-Source qualification records the source commit and actual binary hashes and
-labels a published compiler image as a build dependency. It must not issue a
-publishable release index. The full released portfolio remains unproven until
-the merged SHA's certification and complete indexed evidence pass. Remove this
-gate only on that evidence, not on source CI or packaging success. Restart can
-introduce another uncontrolled boot and remains separately qualified. Complete
-the portfolio below before advancing to in-kernel timer control.
-
-1. Automatically execute the released amd64 runtime on native KVM after its
-   release passes all consumer checks.
-2. Certify fixed-plan replay and retain the distributed partition, recovery,
-   minimization, and lost-update counterexample.
-3. Execute the ordinary-container, C coverage, schedule-search, pthread
-   synchronization, and ordered KVM-exit replay tutorials with that same
-   digest-pinned release.
-4. Retain exact plans, locked workloads, complete result inventories, serial
-   logs, reports, minimizations, replay results, host facts, runtime identities,
-   and a cryptographic inventory for every validation file.
-   Version-5 validation must include standalone container run/replay evidence
-   under its declared host-input contract and a retained passing replay check,
-   not only replay stdout.
-   A v5 checkpoint certificate also requires the complete fixed-plan witness
-   in that archive: locked state/RAM/context, inherited prefixes, both run
-   results and logs, and the identical indexed certificate. JSON alone is not
-   a replayable checkpoint witness.
-5. Make the released CLI reject incomplete, renamed, unsafe, mismatched, or
-   semantically empty evidence while reporting the exact certified
-   architecture set. Exercise its offline report, comparison, evaluation,
-   minimization, and replay paths against the retained release evidence.
-6. Run the same portfolio on native arm64 KVM when a labelled runner is
-   available; never substitute emulation or imply that packaging proves native
-   execution.
-
-Exit when an amd64 user can retrieve one release and its indexed evidence,
-inspect all six representative product paths offline, and replay the minimized
-counterexample without undocumented inputs. Arm64 becomes demonstrated only
-when its independently indexed native assets exist.
-
-The source and released-runtime paths must use one counterexample driver. Its
-recovery event is `recovery_probe_sent`; the released verifier must check that
-same retained event. Do not duplicate tutorial commands or stale expected
-markers in workflow YAML.
-
-Treat `compare` as an observational artifact throughout qualification. A
-well-formed `diverged` result is valid under `host_inputs`; replay admission is
-decided by the declared control projection and explicit replay checks, not by
-incidental equality of uncontrolled KVM exits.
-
-Campaign UART barriers must yield host time to the running vCPU as well as to
-active replay. A deterministic round bound is not a useful liveness bound when
-the host loop can consume every round before a release-built guest runs. Failed
-native certification must retain its partial guest evidence and serial logs.
+locked inputs, configuration identity, state/RAM/context, ancestry, UART
+logs, and full machine/vCPU execution ledgers. It does not deserialize native
+CPU state or certify execution provenance. Retained RAM may contain secrets.
+A 512 MiB LRU budget bounds cached checkpoint-prefix RAM, excluding the
+immutable root and active working branches; it is not a process-RSS limit.
 
 ## Priority 1: deterministic execution and scheduling plane
 
