@@ -66,6 +66,14 @@ at a handled-exit boundary. KVM injects those interrupts inside the irqchip
 without a KVM exit, so they never enter the machine stream; they are evidence
 only, replay never gates them, and a replayed bundle's `execution.json` stays
 byte-identical without them.
+
+Set `hold_kernel_timers = true` under `[run.virtual_time]` (amd64 only) to go
+one step further: the vCPU clears an asserted LAPIC-timer delivery, queues the
+held vector, and injects it through KVM_INTERRUPT at its recorded stream turn
+(`vcpu:<id>:interrupt:lapic-timer:<vector>`), which replay gates exactly like
+any other recorded vCPU turn. Arming still depends on guest counter reads over
+host drift, so episodes that move across boundaries between the original run
+and its replay diverge instead of silently passing.
 Version-2 plans boot with `quiet loglevel=0`, as topology runs do: kernel
 diagnostics can contain uncontrolled host-clock values. All device decisions
 made under that boot policy are still checked.
@@ -432,6 +440,7 @@ timeout_secs = 30
 [run.virtual_time]
 tick_ns = 1000000
 exits_per_tick = 1024
+hold_kernel_timers = false
 
 [[events]]
 when = "ready"

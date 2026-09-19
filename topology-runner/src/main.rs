@@ -1405,6 +1405,8 @@ struct RunConfig {
 struct VirtualTime {
     tick_ns: u64,
     exits_per_tick: u32,
+    #[serde(default)]
+    hold_kernel_timers: bool,
 }
 
 fn default_max_rounds() -> u64 {
@@ -12496,6 +12498,7 @@ fn service_resources(
                 .map(|time| VirtualTimeConfig {
                     tick_ns: time.tick_ns,
                     exits_per_tick: time.exits_per_tick as u64,
+                    hold_kernel_timers: time.hold_kernel_timers,
                 }),
             ..Default::default()
         })

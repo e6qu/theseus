@@ -466,6 +466,7 @@ mod tests {
         machine_config.virtual_time = Some(crate::vmm_config::machine_config::VirtualTimeConfig {
             tick_ns: 1_000_000,
             exits_per_tick: 10,
+            hold_kernel_timers: false,
         });
         let metadata = CheckpointMetadata {
             format: "theseus-checkpoint-v1".into(),
