@@ -544,6 +544,7 @@ mod tests {
         let vt = Some(VirtualTimeConfig {
             tick_ns: 1_000_000,
             exits_per_tick: 64,
+            hold_kernel_timers: false,
         });
         let vt_run1 = boot_and_read_vtime(vt);
         let vt_run2 = boot_and_read_vtime(vt);
