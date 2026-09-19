@@ -102,6 +102,8 @@ pub enum KvmVcpuError {
     UnsupportedPmuV3,
     /// Failed to apply virtual time (KVM_ARM_VCPU_TIMER_OFF): {0}
     ApplyVirtualTime(kvm_ioctls::Error),
+    /// Failed to read the in-kernel arch timer state: {0}
+    KernelTimerState(kvm_ioctls::Error),
 }
 
 /// KVM_REG_ARM_TIMER_CNT (Linux UAPI, arch/arm64/include/uapi/asm/kvm.h):
@@ -119,6 +121,32 @@ const KVM_REG_ARM_TIMER_CNT: u64 = 0x6000_0000_0000_0000  // KVM_REG_ARM64
     | (14 << 7)                                         // crn
     | (3 << 3)                                          // crm
     | 2; // op2
+
+/// KVM_REG_ARM_TIMER_CTL (Linux UAPI, arch/arm64/include/uapi/asm/kvm.h):
+/// ARM64_SYS_REG(3, 3, 14, 3, 1) — a KVM pseudo-register for CNTV_CTL_EL0.
+///
+/// Computed from raw UAPI primitives for the same reason as
+/// [`KVM_REG_ARM_TIMER_CNT`].
+const KVM_REG_ARM_TIMER_CTL: u64 = 0x6000_0000_0000_0000  // KVM_REG_ARM64
+    | 0x0030_0000_0000_0000                               // KVM_REG_SIZE_U64
+    | (0x0013 << 16)                                    // KVM_REG_ARM64_SYSREG
+    | (3 << 14)                                         // op0
+    | (3 << 11)                                         // op1
+    | (14 << 7)                                         // crn
+    | (3 << 3)                                          // crm
+    | 1; // op2
+
+/// CNTV_CTL_EL0: the virtual timer is enabled.
+const CNTV_CTL_ENABLE: u64 = 1 << 0;
+/// CNTV_CTL_EL0: the timer condition is met and the interrupt is asserted.
+const CNTV_CTL_ISTATUS: u64 = 1 << 2;
+
+/// Whether the in-kernel arch timer has a delivery asserted: the guest
+/// enabled the virtual timer and its condition is met. KVM injects the
+/// resulting PPI inside the irqchip without a KVM exit.
+pub(crate) fn vtimer_asserted(ctl: u64) -> bool {
+    ctl & CNTV_CTL_ENABLE != 0 && ctl & CNTV_CTL_ISTATUS != 0
+}
 
 /// Read the counter frequency (CNTFRQ_EL0), in Hz.
 fn host_counter_freq_hz() -> u64 {
@@ -173,6 +201,17 @@ impl KvmVcpu {
             .set_one_reg(KVM_REG_ARM_TIMER_CNT, &virtual_counts.to_ne_bytes())
             .map_err(KvmVcpuError::ApplyVirtualTime)?;
         Ok(())
+    }
+
+    /// Read the in-kernel arch timer state and report whether a delivery is
+    /// asserted. Valid between `KVM_RUN` calls, like every other one-reg
+    /// access.
+    pub fn kernel_timer_asserted(&self) -> Result<bool, KvmVcpuError> {
+        let mut value = [0u8; 8];
+        self.fd
+            .get_one_reg(KVM_REG_ARM_TIMER_CTL, &mut value)
+            .map_err(KvmVcpuError::KernelTimerState)?;
+        Ok(vtimer_asserted(u64::from_ne_bytes(value)))
     }
 
     /// Constructs a new kvm vcpu with arch specific functionality.
@@ -951,4 +990,17 @@ mod tests {
 
         assert!(matches!(res, Err(VcpuArchError::SetMp(_))), "{:?}", res);
     }
+
+    #[test]
+    fn vtimer_assertion_requires_enable_and_status() {
+        assert_eq!(KVM_REG_ARM_TIMER_CNT - KVM_REG_ARM_TIMER_CTL, 1);
+        assert!(!vtimer_asserted(0));
+        assert!(!vtimer_asserted(CNTV_CTL_ENABLE));
+        assert!(!vtimer_asserted(CNTV_CTL_ISTATUS));
+        assert!(vtimer_asserted(CNTV_CTL_ENABLE | CNTV_CTL_ISTATUS));
+        assert!(vtimer_asserted(
+            CNTV_CTL_ENABLE | CNTV_CTL_ISTATUS | u64::from(0x80u8)
+        ));
+    }
 }
+

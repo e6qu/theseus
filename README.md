@@ -48,7 +48,9 @@ passing unit suite alone is not treated as runtime proof.
   clock jumps. UART, virtio MMIO, virtio MSI-X, ACPI notification, and keyboard
   interrupts are retained as recorded vCPU turns. Fixed-run replay rejects a
   changed actor, input, interrupt, or exit and reports the first divergent
-  boundary.
+  boundary. Deterministic runs also record observed in-kernel timer deliveries
+  (the x86 LAPIC timer and aarch64 arch timer) as observation evidence beside
+  each execution capture; those deliveries stay uncontrolled.
 - Single-service `test` bundles retain the complete machine stream. `replay`
   defaults to admitting that exact stream through guest exit; manifests may
   instead select `machine_replay = "host_inputs"` to reapply locked inputs and

@@ -177,8 +177,8 @@ use crate::vstate::memory::{GuestMemoryMmap, GuestMemoryRegion};
 #[cfg(target_arch = "aarch64")]
 use crate::vstate::vcpu::VcpuState;
 pub use crate::vstate::vcpu::{
-    ExecutionLedger, ExecutionLedgerEvidence, MachineExecutionState, Vcpu, VcpuConfig, VcpuEvent,
-    VcpuHandle, VcpuResponse,
+    ExecutionLedger, ExecutionLedgerEvidence, MachineExecutionState, TimerObservation, Vcpu,
+    VcpuConfig, VcpuEvent, VcpuHandle, VcpuResponse,
 };
 pub use crate::vstate::vm::{StartVcpusError, Vm};
 
@@ -571,6 +571,19 @@ impl Vmm {
     /// Exact VM-wide decisions retained for active replay.
     pub fn machine_execution_trace(&self) -> Result<Vec<String>, VmmError> {
         Ok(self.machine_execution_state()?.trace().to_vec())
+    }
+
+    /// Observed in-kernel timer deliveries for the deterministic profile.
+    pub fn machine_timer_observations(&self) -> Result<Vec<TimerObservation>, VmmError> {
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        Ok(kvm_vm
+            .vcpus_handles()
+            .first()
+            .ok_or_else(|| VmmError::ExecutionCoverage("VM has no vCPU execution state".into()))?
+            .machine_execution_timer_observations())
     }
 
     /// Install the expected execution stream before the VM starts or resumes.

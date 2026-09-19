@@ -60,6 +60,12 @@ are admitted as recorded host decisions through the API. Replay installs that
 trace before boot and rejects changed device effects or a missing suffix; a
 matching printed value alone is insufficient. Older version-1 plans retain
 legacy input replay without claiming machine-stream enforcement.
+Virtual-time runs also write `timer-observations.json` beside
+`execution.json`: each in-kernel LAPIC-timer or arch-timer delivery observed
+at a handled-exit boundary. KVM injects those interrupts inside the irqchip
+without a KVM exit, so they never enter the machine stream; they are evidence
+only, replay never gates them, and a replayed bundle's `execution.json` stays
+byte-identical without them.
 Version-2 plans boot with `quiet loglevel=0`, as topology runs do: kernel
 diagnostics can contain uncontrolled host-clock values. All device decisions
 made under that boot policy are still checked.

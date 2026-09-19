@@ -195,7 +195,11 @@ Build a single ordered execution-decision stream that can control and replay:
 Completed slices serialize handled exits and emulated device effects into one
 branch-aware machine stream while retaining each vCPU's local stream, then add
 explicit UART input, control-channel input, and virtual-clock jumps to that
-same protocol. Deterministic VMs no longer hand supported userspace device
+same protocol. Deterministic runs now also observe in-kernel timer deliveries —
+the x86 LAPIC timer and the aarch64 arch timer fire inside the irqchip without
+a KVM exit — and retain them as observation evidence beside each execution
+capture; arming still depends on guest counter reads, so the observations are
+evidence, never replay decisions. Deterministic VMs no longer hand supported userspace device
 interrupts to asynchronous irqfds: they retain level and edge requests across
 checkpoints, wake a running vCPU, and inject each UART, virtio MMIO, virtio
 MSI-X, ACPI notification, or keyboard request through KVM as an exact recorded

@@ -164,6 +164,21 @@ pub struct CheckpointInterrupt {
     pub coalesce: bool,
 }
 
+/// One observed in-kernel timer delivery. KVM injects LAPIC-timer and
+/// arch-timer interrupts inside the irqchip without a KVM exit, so the
+/// machine stream cannot see them; this evidence records the handled-exit
+/// boundary where the assertion became visible. Arming depends on guest
+/// counter reads over host drift, so these entries are observations, never
+/// replay decisions.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TimerObservation {
+    /// `vcpu:<id>:timer:<source>` with source `lapic-timer` or `vtimer`.
+    pub record: String,
+    /// Virtual-clock reading at the observing boundary, when virtual time is enabled.
+    pub virtual_time_ns: Option<u64>,
+}
+
 impl CheckpointExecutionState {
     /// Validate actors and queues, then recompute local and machine hash state.
     pub fn restore(&self, vcpu_count: usize) -> Result<(MachineExecutionState, Vec<ExecutionLedger>), String> {
@@ -217,6 +232,7 @@ pub struct MachineExecutionController {
     shutdown_requested: AtomicBool,
     interrupt_kickers: Mutex<Vec<Weak<Mutex<Option<VcpuInterruptKick>>>>>,
     turn_changed: Condvar,
+    timer_observations: Mutex<Vec<TimerObservation>>,
 }
 
 impl Default for MachineExecutionController {
@@ -235,6 +251,7 @@ impl Default for MachineExecutionController {
             shutdown_requested: AtomicBool::new(false),
             interrupt_kickers: Mutex::new(Vec::new()),
             turn_changed: Condvar::new(),
+            timer_observations: Mutex::new(Vec::new()),
         }
     }
 }
@@ -474,6 +491,30 @@ impl MachineExecutionController {
             .iter()
             .map(|interrupt| (interrupt.source, interrupt.gsi))
             .collect()
+    }
+
+    /// Record one in-kernel timer observation from a vCPU thread. Bounded by
+    /// the same limit as the machine trace.
+    fn record_timer_observation(&self, record: String, virtual_time_ns: Option<u64>) {
+        let mut observations = self
+            .timer_observations
+            .lock()
+            .expect("timer observation lock poisoned");
+        if observations.len() < MACHINE_EXECUTION_TRACE_LIMIT {
+            observations.push(TimerObservation {
+                record,
+                virtual_time_ns,
+            });
+        }
+    }
+
+    /// Observed in-kernel timer deliveries, in observation order. Cloned so
+    /// every evidence flush retains the complete list.
+    pub fn timer_observations(&self) -> Vec<TimerObservation> {
+        self.timer_observations
+            .lock()
+            .expect("timer observation lock poisoned")
+            .clone()
     }
 
     fn deliver_pending_interrupt(
@@ -1103,6 +1144,10 @@ pub struct Vcpu {
     /// VM-wide ledger shared by every vCPU. Holding this lock while handling
     /// an exit gives device effects and host inputs one explicit total order.
     machine_execution: Arc<MachineExecutionController>,
+    /// Whether the previous observation saw this vCPU's in-kernel timer
+    /// asserted. Owned by the vCPU thread, so episode transitions need no
+    /// lock.
+    kernel_timer_asserted: bool,
 }
 
 /// States of the vCPU thread's run loop.
@@ -1164,6 +1209,7 @@ impl Vcpu {
             execution_location_exits: 0,
             execution_ledger: Arc::new(Mutex::new(ExecutionLedger::default())),
             machine_execution,
+            kernel_timer_asserted: false,
         })
     }
 
@@ -1249,6 +1295,39 @@ impl Vcpu {
             error!("Failed to apply virtual time: {err:?}");
             METRICS.vcpu.failures.inc();
         }
+    }
+
+    /// Record in-kernel timer deliveries as observation evidence. KVM
+    /// injects LAPIC-timer and arch-timer interrupts inside the irqchip
+    /// without a KVM exit, so the machine stream cannot see them. Watch at
+    /// every handled exit while virtual time is enabled and keep one entry
+    /// per asserted episode; arming depends on guest counter reads over host
+    /// drift, so these stay observations, never replay decisions.
+    fn observe_kernel_timer(&mut self) {
+        if self.vclock.is_none() {
+            return;
+        }
+        let asserted = match self.kvm_vcpu.kernel_timer_asserted() {
+            Ok(asserted) => asserted,
+            Err(error) => {
+                error!("Failed to observe the in-kernel timer: {error:?}");
+                METRICS.vcpu.failures.inc();
+                return;
+            }
+        };
+        if asserted == self.kernel_timer_asserted {
+            return;
+        }
+        self.kernel_timer_asserted = asserted;
+        if !asserted {
+            return;
+        }
+        #[cfg(target_arch = "aarch64")]
+        let record = format!("vcpu:{}:timer:vtimer", self.kvm_vcpu.index);
+        #[cfg(target_arch = "x86_64")]
+        let record = format!("vcpu:{}:timer:lapic-timer", self.kvm_vcpu.index);
+        self.machine_execution
+            .record_timer_observation(record, self.virtual_time_ns());
     }
 
     fn record_execution_location(&self) {
@@ -1391,6 +1470,7 @@ impl Vcpu {
                     // Every handled exit is a guest-visible event we control;
                     // counting them bounds quanta deterministically (Track B′).
                     self.maybe_tick();
+                    self.observe_kernel_timer();
                 }
                 // Emulation was interrupted, check external events.
                 Ok(VcpuEmulation::Interrupted) => break,
@@ -1851,6 +1931,22 @@ mod execution_ledger_tests {
 
     #[derive(Default)]
     struct CountingDevice { reads: usize, writes: usize }
+
+    #[test]
+    fn timer_observations_keep_order_and_survive_repeated_reads() {
+        let controller = MachineExecutionController::default();
+        assert!(controller.timer_observations().is_empty());
+        controller.record_timer_observation("vcpu:0:timer:lapic-timer".into(), Some(1_000_000));
+        controller.record_timer_observation("vcpu:1:timer:lapic-timer".into(), None);
+        let observations = controller.timer_observations();
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0].record, "vcpu:0:timer:lapic-timer");
+        assert_eq!(observations[0].virtual_time_ns, Some(1_000_000));
+        assert_eq!(observations[1].record, "vcpu:1:timer:lapic-timer");
+        assert_eq!(observations[1].virtual_time_ns, None);
+        // Reads do not drain: every evidence flush keeps the complete list.
+        assert_eq!(controller.timer_observations(), observations);
+    }
 
     #[test]
     fn checkpoint_rebuilds_all_hashes_and_preserves_interrupt_order() {
@@ -2907,6 +3003,11 @@ impl VcpuHandle {
     /// Return every retained machine decision needed for active replay.
     pub fn machine_execution_trace(&self) -> Vec<String> {
         self.machine_execution.execution_state().trace
+    }
+
+    /// Clone the observed in-kernel timer deliveries for evidence output.
+    pub fn machine_execution_timer_observations(&self) -> Vec<TimerObservation> {
+        self.machine_execution.timer_observations()
     }
 
     /// Continue a restored VM from its parent's machine-wide state.
