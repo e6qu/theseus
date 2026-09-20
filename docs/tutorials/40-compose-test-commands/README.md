@@ -60,9 +60,10 @@ grep -n 'test_templates\|fault_profile\|service_kill\|link_fault' plan.json | he
 
 `fault_profile: standard` expands the locked services, networks, and ordinary
 command boundaries into a bounded candidate catalog. It includes service
-stop, kill, and restart actions plus asymmetric partitions, latency, loss,
-duplication, corruption, bandwidth, MTU, and queue limits. It does not add
-faults to setup, completion, eventually, or finally commands.
+stop, kill, and restart actions, a bounded CPU throttle per image service,
+asymmetric partitions, latency, loss, duplication, corruption, bandwidth, MTU,
+and queue limits, and directed link clogs. It does not add faults to setup,
+completion, eventually, or finally commands.
 
 ## 4. Run the exploration
 

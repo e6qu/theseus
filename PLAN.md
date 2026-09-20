@@ -33,7 +33,7 @@ Use these labels consistently:
 | Ordinary container workloads | Partial | Image-backed services and a Compose subset work; Kubernetes and broad Compose compatibility do not. |
 | Deterministic replay | Partial | Seeds, locked inputs, schedules, faults, checkpoints, and bundles are retained, but uncontrolled kernel and application behavior can still escape the model. |
 | Feedback-guided exploration | Partial | One bounded decision-prefix policy combines coverage, properties, topology states, structured choices, runnable sets, faults, and prior outcomes; it is not yet validated at production scale. |
-| Fault injection | Partial | Explicit and topology-derived profiles cover service lifecycle, asymmetric network degradation and partitions, storage, packet, clock operations, CPU throttling, and directed link clogs. Profile-generated throttle and clog candidates and a mature custom-fault interface remain open. |
+| Fault injection | Partial | Explicit and topology-derived profiles cover service lifecycle, asymmetric network degradation and partitions, storage, packet, clock operations, CPU throttling, and directed link clogs, including generated throttle and clog candidates. A mature custom-fault interface remains open. |
 | Assertions and guidance | Partial | Always, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
 | Coverage guidance | Partial | GCC C and Go basic blocks plus LLVM C/C++/Rust edges cover native executables, shared libraries, a selected Cargo graph, and a selected Go command's imported main-module packages. Compose locks manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go external modules and CGO, Java, and production-scale validation remain open. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
@@ -295,11 +295,9 @@ Antithesis without constructing low-level campaign schedules by hand.
 
 - Let the explorer vary command ordering, parallelism, structured inputs,
   faults, and schedules while keeping lifecycle contracts intact.
-- Explicit campaign faults now include CPU throttling (a service is pumped
-  only on 1 of N rounds for a bounded window) and directed link clogs (frames
-  stall behind a bounded latency until release). Add both to the generated
-  profile candidates, then broader clock behavior and configurable custom
-  faults.
+- CPU throttling and directed link clogs are explicit campaign faults and
+  `standard`-profile candidates now. Remaining in this slice: broader clock
+  behavior and configurable custom faults in the generated profile model.
 - Generalize quiet periods and explicit fault windows beyond the current
   lifecycle roles and automatic terminal recovery.
 

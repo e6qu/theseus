@@ -148,10 +148,12 @@ x-theseus:
 
 The `standard` profile inspects the locked Compose topology. At eligible driver
 and anytime boundaries it generates service stop, kill, and restart choices
-for image services. For every ordered pair on a shared network, it also
-generates a directed partition and a directed degradation with 10% loss, 1%
+for image services, plus a bounded CPU throttle (16 rounds at 1 of every 4)
+per image service. For every ordered pair on a shared network, it also
+generates a directed partition, a directed degradation with 10% loss, 1%
 duplication, 0.1% corruption, two rounds of latency and jitter, 4096 bytes per
-round, a 1200-byte MTU, and eight-frame transmit and receive queues.
+round, a 1200-byte MTU, and eight-frame transmit and receive queues, and a
+directed link clog that stalls frames for 64 rounds.
 
 The expansion is deterministic and capped at 512 candidates. The complete
 catalog is written to the plan; `max_faults_per_run` still bounds each
