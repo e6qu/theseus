@@ -336,8 +336,9 @@ make them available as a complete product rather than a collection of CLI
 commands.
 
 - Add a stable campaign API and CI integration alongside the CLI.
-- Expose live progress, logs, properties, coverage, resource use, and retained
-  executions while a campaign is running.
+- Campaign exploration streams one structured progress line per completed
+  timeline on stderr. Remaining live surface: logs, coverage, resource use,
+  and retained executions while running.
 - Run many deterministic workers in parallel with explicit resource budgets
   and reproducible work allocation.
 - Add notifications and machine-readable result retrieval.

@@ -3514,6 +3514,47 @@ fn certification_evidence_sha256(
 /// Execute an autonomous campaign from one reusable, whole-topology branch
 /// point. Each child restores every VM, simulated NIC/switch, UART transcript,
 /// and scheduler cursor before its own operation history is injected.
+/// One structured live-progress line for a completed campaign timeline.
+/// Written to stderr while the exploration runs, so CI and wrappers can
+/// follow the search without parsing the final result file.
+fn campaign_progress_line(
+    completed: usize,
+    index: usize,
+    status: &str,
+    operations: &[String],
+    faults: &[String],
+    failed_properties: &[&str],
+    checkpoint_reuses: u64,
+) -> String {
+    let mut line = format!(
+        "{{\"format\":\"theseus-progress-v1\",\"completed\":{completed},\"index\":{index},\"status\":\"{status}\",\"operations\":[{}],\"faults\":[{}]",
+        operations
+            .iter()
+            .map(|operation| format!("\"{operation}\""))
+            .collect::<Vec<_>>()
+            .join(","),
+        faults
+            .iter()
+            .map(|fault| format!("\"{fault}\""))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    if !failed_properties.is_empty() {
+        line.push_str(&format!(
+            ",\"failed_properties\":[{}]",
+            failed_properties
+                .iter()
+                .map(|property| format!("\"{property}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+    line.push_str(&format!(
+        ",\"checkpoint_reuses\":{checkpoint_reuses}}}"
+    ));
+    line
+}
+
 fn execute_campaign(
     mut topology: TopologyPlan,
     output: &Path,
@@ -3845,6 +3886,25 @@ fn execute_campaign(
             if !mismatches.is_empty() {
                 replay_mismatches.push(format!("run {index}: {}", mismatches.join(", ")));
             }
+        }
+        if recorded.is_none() {
+            let failed_properties: Vec<&str> = if run.status == "failed" {
+                run.property_witnesses.iter().map(String::as_str).collect()
+            } else {
+                Vec::new()
+            };
+            eprintln!(
+                "{}",
+                campaign_progress_line(
+                    runs.len(),
+                    run.index,
+                    &run.status,
+                    &run.operations,
+                    &run.faults,
+                    &failed_properties,
+                    checkpoints.reuses as u64,
+                )
+            );
         }
         runs.push(run);
     }
@@ -17641,6 +17701,28 @@ mod tests {
             campaign_fault_name(&clog),
             "backplane:api->worker:link_clog@write".to_owned()
         );
+    }
+
+    #[test]
+    fn campaign_progress_lines_carry_status_and_failures() {
+        let operations = vec!["write".to_owned(), "read".to_owned()];
+        let faults = vec!["backplane:partition@write".to_owned()];
+        let line = campaign_progress_line(
+            3,
+            2,
+            "failed",
+            &operations,
+            &faults,
+            &["lost_update_is_unreachable"],
+            7,
+        );
+        assert_eq!(
+            line,
+            r#"{"format":"theseus-progress-v1","completed":3,"index":2,"status":"failed","operations":["write","read"],"faults":["backplane:partition@write"],"failed_properties":["lost_update_is_unreachable"],"checkpoint_reuses":7}"#
+        );
+        let line = campaign_progress_line(1, 0, "passed", &operations, &[], &[], 0);
+        assert!(line.contains(r#""status":"passed""#));
+        assert!(!line.contains("failed_properties"));
     }
 
     #[test]

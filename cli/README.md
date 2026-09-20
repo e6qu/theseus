@@ -591,6 +591,11 @@ campaign run directories can share a checkpoint and are not standalone exports.
 `compose test` needs Linux and KVM. macOS keeps supporting `compose validate`
 and `compose plan`; it reports a direct missing-runner error for execution.
 
+While `compose explore` runs, the executor writes one structured progress
+line per completed timeline to stderr: `theseus-progress-v1` with the
+completed count, run index, status, operations, faults, failed properties,
+and checkpoint reuses, so CI jobs and wrappers can follow the search live.
+
 Campaign operation-barrier fault entries are explored as optional choices by
 default. Add `required: true` when every generated schedule that reaches the
 fault's `after` operation must apply it. Required faults count toward
