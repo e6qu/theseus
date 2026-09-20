@@ -1614,6 +1614,13 @@ impl Vcpu {
                     )))
                     .expect("vcpu channel unexpectedly closed");
             }
+            Ok(VcpuEvent::SetVirtualTimeRate(_)) => {
+                self.response_sender
+                    .send(VcpuResponse::NotAllowed(String::from(
+                        "virtual clock rate is unavailable while running",
+                    )))
+                    .expect("vcpu channel unexpectedly closed");
+            }
             Ok(VcpuEvent::GetVirtualTime) => {
                 self.response_sender
                     .send(VcpuResponse::VirtualTime(self.virtual_time_ns()))
