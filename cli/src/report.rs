@@ -745,8 +745,20 @@ struct ReportModel {
     campaign_minimization: Option<CampaignMinimization>,
     replay_verification: Option<ReplayVerification>,
     campaign_runs: Vec<CampaignRun>,
+    campaign_futures: Vec<CampaignFuture>,
+    campaign_futures_note: &'static str,
     campaign_state: BTreeMap<String, String>,
     campaign_operations: Vec<CampaignOperation>,
+}
+
+/// One observed future: timelines grouped by their operation and fault
+/// selections, with the failure frequency measured inside this campaign.
+#[derive(Serialize)]
+struct CampaignFuture {
+    future: String,
+    timelines: usize,
+    failed: usize,
+    share: String,
 }
 
 #[derive(Serialize)]
@@ -880,6 +892,9 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
         campaign_minimization: None,
         replay_verification: result.replay_verification,
         campaign_runs: Vec::new(),
+        campaign_futures: Vec::new(),
+        campaign_futures_note: "",
+
         campaign_state: BTreeMap::new(),
         campaign_operations: Vec::new(),
     })
@@ -958,6 +973,9 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
         campaign_minimization: None,
         replay_verification: result.replay_verification,
         campaign_runs: Vec::new(),
+        campaign_futures: Vec::new(),
+        campaign_futures_note: "",
+
         campaign_state: BTreeMap::new(),
         campaign_operations: Vec::new(),
     })
@@ -1108,6 +1126,9 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
         campaign_minimization,
         replay_verification: None,
         campaign_runs: Vec::new(),
+        campaign_futures: Vec::new(),
+        campaign_futures_note: "",
+
         campaign_state: BTreeMap::new(),
         campaign_operations: Vec::new(),
     })
@@ -1231,10 +1252,68 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         minimization: None,
         campaign_minimization: None,
         replay_verification: result.replay_verification,
+        campaign_futures: campaign_futures(&result.runs),
+        campaign_futures_note: "Timelines grouped by their operation and fault selections. The failure share is the observed frequency inside this retained campaign only, not a causal or general probability.",
         campaign_runs: result.runs,
         campaign_state,
         campaign_operations,
     })
+}
+
+/// Group the retained timelines by operation and fault selection and measure
+/// each future's observed failure frequency. The selections describe what
+/// happened, not why: the share is evidence from repeated experiments, not a
+/// causal or general probability.
+fn campaign_futures(runs: &[CampaignRun]) -> Vec<CampaignFuture> {
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for run in runs {
+        let future = format!(
+            "{} | {}",
+            if run.operations.is_empty() {
+                "none".to_owned()
+            } else {
+                run.operations.join(" → ")
+            },
+            if run.faults.is_empty() && run.fault.is_none() {
+                "none".to_owned()
+            } else {
+                run.faults
+                    .iter()
+                    .chain(run.fault.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            }
+        );
+        let group = groups.entry(future.clone()).or_insert((0, 0));
+        group.0 += 1;
+        if run.status == "failed" {
+            group.1 += 1;
+        }
+        if !order.contains(&future) {
+            order.push(future);
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|future| {
+            let (timelines, failed) = groups.remove(&future)?;
+            let share = if failed == 0 {
+                "never failed".to_owned()
+            } else if failed == timelines {
+                "failed in every timeline".to_owned()
+            } else {
+                format!("{failed} of {timelines} timelines failed")
+            };
+            Some(CampaignFuture {
+                future,
+                timelines,
+                failed,
+                share,
+            })
+        })
+        .collect()
 }
 
 fn service_logs(root: &Path, directory: &Path, service: &str) -> Result<Vec<Log>, ReportError> {
@@ -1357,6 +1436,7 @@ if(m.campaign_operations.some(o=>Object.keys(o.choice_bounds||{{}}).length)){{co
 if(m.campaign_operations.some(o=>o.service)){{const s=section('Operation targets');s.append(el('p','Each operation sends its UART input to this service. Operations without a target in older bundles use the designated campaign driver.'));s.append(table(m.campaign_operations.filter(o=>o.service).map(o=>[o.name,o.service]),['Operation','Service']));}}
 if(m.campaign_runs.length){{const location=l=>{{if(typeof l==='string')return l;const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},locations=r=>Object.entries(r.program_counters).map(([service,pcs])=>service+': '+((r.instruction_locations[service]||pcs).map(location).join(' '))).join(' · ')||'none',applicationBlocks=r=>(r.application_coverage_labels.length?r.application_coverage_labels:r.application_block_novelty).join(' ')||'none',scheduling=r=>Object.values(r.thread_scheduling).reduce((n,v)=>n+v.length,0),prefixes=r=>r.thread_schedule_prefixes.filter(p=>p.length).map(p=>p.join(',')).join(' → ')||'default',ledger=r=>r.guidance_ledger&&r.guidance_ledger.sha256?r.guidance_ledger.observations+' observations · '+r.guidance_ledger.sha256:'unrecorded (legacy)',posterior=r=>{{const p=r.guidance_evidence;return p.scope+' · '+p.successes+' yield(s), '+p.misses+' miss(es) · mean '+p.mean_per_mille+'‰ + '+p.uncertainty_per_mille+'‰'}},hasPosterior=m.campaign_runs.some(r=>r.guidance_evidence),rows=m.campaign_runs.map(r=>{{const row=[String(r.index),r.test_template||'explicit',r.operations.join(' → ')||'none',prefixes(r),(r.faults.length?r.faults:(r.fault?[r.fault]:[])).join(' + ')||'none',r.selection||'canonical breadth-first seed',ledger(r)];if(hasPosterior)row.push(posterior(r));row.push(r.state_novel?'new':'seen',locations(r),applicationBlocks(r),String(scheduling(r)),r.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',r.status,r.novelty.join(' ')||'none');return row}}),heads=['Run','Template','Operations','Runnable prefix','Candidates','Selection','Guidance ledger'];if(hasPosterior)heads.push('Posterior evidence');heads.push('Topology state','Instruction locations','New application coverage','Scheduling decisions','Applied actions','Status','New markers');const s=section('Generated timelines');s.append(table(rows,heads));}}
 if(m.campaign_runs.some(r=>r.decision_trace.length)){{const rows=m.campaign_runs.filter(r=>r.decision_trace.length).map(r=>[String(r.index),r.decision_trace.join(' → ')]),s=section('Decision traces');s.append(table(rows,['Run','Replay-checked decisions']));}}
+if(m.campaign_futures.length){{const s=section('Alternative futures');s.append(el('p',m.campaign_futures_note));s.append(table(m.campaign_futures.map(f=>[f.future,String(f.timelines),String(f.failed),f.share]),['Future (operations | faults)','Timelines','Failed','Observed failure share']));}}
 if(m.campaign_runs.some(r=>Object.keys(r.structured_choices||{{}}).length)){{const rows=m.campaign_runs.flatMap(r=>Object.entries(r.structured_choices||{{}}).flatMap(([service,cs])=>cs.map(c=>[String(r.index),service,String(c.ordinal),c.name,String(c.selected),String(c.upper_exclusive)]))),s=section('Structured choices');s.append(table(rows,['Run','Service','Ordinal','Name','Selected','Exclusive bound']));}}
 if(m.campaign_runs.some(r=>r.property_witnesses.length)){{const rows=m.campaign_runs.filter(r=>r.property_witnesses.length).map(r=>[String(r.index),r.operations.join(' → ')||'none',r.property_witnesses.join(', ')]),s=section('Property witnesses');s.append(el('p','These declared properties produced useful evidence in this timeline. A reachable or sometimes match is a witness; an always or unreachable witness is a counterexample.'));s.append(table(rows,['Run','Operations','Property witnesses']));}}
 if(m.campaign_runs.some(r=>r.timeline.length)){{
@@ -2419,6 +2499,12 @@ mod tests {
         assert!(html.contains("Generated timelines"));
         assert!(html.contains("backplane:partition@write"));
         assert!(html.contains("backplane:heal@read"));
+        assert!(html.contains("Alternative futures"));
+        assert!(html.contains(
+            "The failure share is the observed frequency inside this retained campaign only, not a causal or general probability."
+        ));
+        assert!(html.contains("failed in every timeline"));
+        assert!(html.contains("write → read | backplane:partition@write + backplane:heal@read"));
         assert!(html.contains("Candidates"));
         assert!(html.contains("Applied actions"));
         assert!(html.contains("network:backplane"));
