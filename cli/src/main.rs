@@ -37,15 +37,16 @@ const USAGE: &str = "Usage:
   theseus evidence verify native-evidence.json
   theseus coverage cargo --process NAME --module NAME --bin NAME --symbols DIR --output FILE
       [--manifest-path Cargo.toml] [--package NAME] [--release] [--locked] [--offline]
+      [--no-default-features] [--features FEATURES] [--target-dir DIR]
   theseus coverage go --process NAME --module NAME --package PACKAGE --symbols DIR --output FILE
-      [--goarch amd64|arm64] [--tags TAGS] [--mod readonly|vendor] [--offline]
+      [--goarch amd64|arm64] [--tags TAGS] [--mod readonly|vendor] [--offline] [--target-dir DIR]
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
   theseus compose explore [--output campaign-dir] [compose.yaml]
   theseus compose explore --expect-counterexample property [--output campaign-dir] [compose.yaml]
-  theseus compose explore --minimize campaign-dir [--output replay-dir]
-  theseus compose explore --minimize campaign-dir --expect-counterexample property [--output replay-dir]
+  theseus compose explore --minimize campaign-dir [--output minimized-dir]
+  theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
   theseus compose replay replay-dir [--output replay-dir]
   theseus compose verify checkpoint-bundle-dir
 
