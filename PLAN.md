@@ -320,8 +320,8 @@ Antithesis reports and multiverse debugging.
   followed-by over retained event data.
 - Navigate to any retained checkpoint, change one controlled choice or fault,
   re-execute, and compare alternative futures.
-- Estimate and display failure probability from actual repeated experiments.
-  Use causal language only when a recorded intervention supports it.
+- Campaign reports display each future's observed failure frequency from the
+  retained timelines. Causal language still requires a recorded intervention.
 - Allow users to collect artifacts immediately before and after a selected
   property violation or event.
 
