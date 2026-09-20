@@ -270,6 +270,9 @@ Every generated timeline is evaluated against them, and `kind` selects the
 quantifier over the corpus:
 
 - `always` — every generated timeline must report the property.
+- `always_or_unreachable` — every timeline must report it, or none may reach
+  it at all; a corpus where only some timelines report it fails. Use it when
+  the instrumented path may legitimately never execute.
 - `sometimes` — at least one generated timeline must report it.
 - `reachable` — the campaign must reach a timeline that reports it.
 - `unreachable` — no generated timeline may report it.

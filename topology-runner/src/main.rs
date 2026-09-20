@@ -713,6 +713,7 @@ struct JsonCondition {
 #[serde(rename_all = "snake_case")]
 enum PropertyKind {
     Always,
+    AlwaysOrUnreachable,
     Sometimes,
     Reachable,
     Unreachable,
@@ -4492,13 +4493,21 @@ fn add_counterexample_check(
         || property.predicate.is_some();
     let kind = match (property.kind, compound) {
         (PropertyKind::Unreachable, false) => CheckKind::SerialContains,
-        (PropertyKind::Always | PropertyKind::Sometimes | PropertyKind::Reachable, false) => {
-            CheckKind::SerialNotContains
-        }
+        (
+            PropertyKind::Always
+            | PropertyKind::AlwaysOrUnreachable
+            | PropertyKind::Sometimes
+            | PropertyKind::Reachable,
+            false,
+        ) => CheckKind::SerialNotContains,
         (PropertyKind::Unreachable, true) => CheckKind::SerialPropertyMatches,
-        (PropertyKind::Always | PropertyKind::Sometimes | PropertyKind::Reachable, true) => {
-            CheckKind::SerialPropertyDoesNotMatch
-        }
+        (
+            PropertyKind::Always
+            | PropertyKind::AlwaysOrUnreachable
+            | PropertyKind::Sometimes
+            | PropertyKind::Reachable,
+            true,
+        ) => CheckKind::SerialPropertyDoesNotMatch,
     };
     check.run.checks.push(CheckPlan {
         name: format!("counterexample: {}", property.name),
@@ -4510,6 +4519,36 @@ fn add_counterexample_check(
         predicate: property.predicate.clone(),
     });
     Ok(())
+}
+
+/// Corpus verdict for one property: `true` when the recorded runs falsify it.
+fn property_corpus_failed(kind: PropertyKind, matches: &[bool]) -> bool {
+    match kind {
+        // Every timeline must report the property.
+        PropertyKind::Always => matches.iter().any(|matched| !matched),
+        // Every timeline must report it, or none may reach it at all; a
+        // corpus where only some timelines report it is inconsistent.
+        PropertyKind::AlwaysOrUnreachable => {
+            matches.iter().any(|matched| !matched) && matches.iter().any(|matched| *matched)
+        }
+        // No timeline may report the property.
+        PropertyKind::Unreachable => matches.iter().any(|matched| *matched),
+        // At least one timeline must report the property.
+        PropertyKind::Sometimes | PropertyKind::Reachable => {
+            matches.iter().all(|matched| !matched)
+        }
+    }
+}
+
+/// First recorded run that falsifies the property, for the counterexample.
+fn property_first_failing_run(kind: PropertyKind, matches: &[bool]) -> Option<usize> {
+    match kind {
+        PropertyKind::Always | PropertyKind::AlwaysOrUnreachable => {
+            matches.iter().position(|matched| !matched)
+        }
+        PropertyKind::Unreachable => matches.iter().position(|matched| *matched),
+        PropertyKind::Sometimes | PropertyKind::Reachable => Some(0),
+    }
 }
 
 fn campaign_counterexample(
@@ -4533,22 +4572,12 @@ fn campaign_counterexample(
                 property_matches_in_run(property, &source.join("runs").join(format!("{index:03}")))
             })
             .collect::<Vec<_>>();
-        let property_failed = match property.kind {
-            PropertyKind::Always => matches.iter().any(|matched| !matched),
-            PropertyKind::Unreachable => matches.iter().any(|matched| *matched),
-            PropertyKind::Sometimes | PropertyKind::Reachable => {
-                matches.iter().all(|matched| !matched)
-            }
-        };
+        let property_failed = property_corpus_failed(property.kind, &matches);
         if !property_failed {
             continue;
         }
-        let index = match property.kind {
-            PropertyKind::Always => matches.iter().position(|matched| !matched),
-            PropertyKind::Unreachable => matches.iter().position(|matched| *matched),
-            PropertyKind::Sometimes | PropertyKind::Reachable => Some(0),
-        }
-        .expect("failed property has a recorded run");
+        let index = property_first_failing_run(property.kind, &matches)
+            .expect("failed property has a recorded run");
         let recorded_run = &recorded.runs[index];
         let operations = recorded_run
             .operations
@@ -4607,7 +4636,7 @@ fn campaign_counterexample(
 fn property_fails_in_run(property: &CampaignProperty, run: &Path) -> bool {
     let matched = property_matches_in_run(property, run);
     match property.kind {
-        PropertyKind::Always => !matched,
+        PropertyKind::Always | PropertyKind::AlwaysOrUnreachable => !matched,
         PropertyKind::Unreachable => matched,
         PropertyKind::Sometimes | PropertyKind::Reachable => !matched,
     }
@@ -4684,7 +4713,7 @@ fn campaign_property_witnesses(campaign: &CampaignPlan, run: &Path) -> Vec<Strin
         .filter_map(|property| {
             let matched = property_matches_in_run(property, run);
             let witness = match property.kind {
-                PropertyKind::Always => !matched,
+                PropertyKind::Always | PropertyKind::AlwaysOrUnreachable => !matched,
                 PropertyKind::Sometimes | PropertyKind::Reachable | PropertyKind::Unreachable => {
                     matched
                 }
@@ -9050,11 +9079,15 @@ fn evaluate_campaign_properties(
             let found = matches.iter().filter(|matched| **matched).count();
             let passed = match property.kind {
                 PropertyKind::Always => found == runs.len(),
+                PropertyKind::AlwaysOrUnreachable => {
+                    found == runs.len() || found == 0
+                }
                 PropertyKind::Sometimes | PropertyKind::Reachable => found > 0,
                 PropertyKind::Unreachable => found == 0,
             };
             let kind = match property.kind {
                 PropertyKind::Always => "always",
+                PropertyKind::AlwaysOrUnreachable => "always_or_unreachable",
                 PropertyKind::Sometimes => "sometimes",
                 PropertyKind::Reachable => "reachable",
                 PropertyKind::Unreachable => "unreachable",
@@ -17546,6 +17579,47 @@ mod tests {
         .is_none());
     }
 
+
+    #[test]
+    fn property_corpus_verdicts_cover_every_kind() {
+        let empty: Vec<bool> = Vec::new();
+        let all = vec![true, true, true];
+        let none = vec![false, false];
+        let mixed = vec![true, false, true];
+        for kind in [
+            PropertyKind::Always,
+            PropertyKind::AlwaysOrUnreachable,
+            PropertyKind::Sometimes,
+            PropertyKind::Reachable,
+        ] {
+            assert!(!property_corpus_failed(kind, &all), "{kind:?} passes on all");
+        }
+        assert!(property_corpus_failed(PropertyKind::Always, &none));
+        assert!(!property_corpus_failed(PropertyKind::Unreachable, &none));
+        assert!(!property_corpus_failed(PropertyKind::Unreachable, &empty));
+        for kind in [PropertyKind::Always, PropertyKind::Unreachable] {
+            assert!(property_corpus_failed(kind, &mixed), "{kind:?} fails on mixed");
+        }
+        assert!(property_corpus_failed(PropertyKind::AlwaysOrUnreachable, &mixed));
+        assert!(!property_corpus_failed(
+            PropertyKind::AlwaysOrUnreachable,
+            &none
+        ));
+        assert!(!property_corpus_failed(PropertyKind::AlwaysOrUnreachable, &empty));
+        for kind in [PropertyKind::Sometimes, PropertyKind::Reachable] {
+            assert!(property_corpus_failed(kind, &none), "{kind:?} fails on none");
+            assert!(property_corpus_failed(kind, &empty), "{kind:?} fails on empty");
+            assert!(!property_corpus_failed(kind, &mixed), "{kind:?} passes on mixed");
+        }
+        assert_eq!(
+            property_first_failing_run(PropertyKind::AlwaysOrUnreachable, &mixed),
+            Some(1)
+        );
+        assert_eq!(
+            property_first_failing_run(PropertyKind::Sometimes, &none),
+            Some(0)
+        );
+    }
 
     #[test]
     fn cpu_throttles_are_incompatible_on_one_service_and_named_by_target() {

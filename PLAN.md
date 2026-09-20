@@ -34,7 +34,7 @@ Use these labels consistently:
 | Deterministic replay | Partial | Seeds, locked inputs, schedules, faults, checkpoints, and bundles are retained, but uncontrolled kernel and application behavior can still escape the model. |
 | Feedback-guided exploration | Partial | One bounded decision-prefix policy combines coverage, properties, topology states, structured choices, runnable sets, faults, and prior outcomes; it is not yet validated at production scale. |
 | Fault injection | Partial | Explicit and topology-derived profiles cover service lifecycle, asymmetric network degradation and partitions, storage, packet, clock operations, CPU throttling, and directed link clogs, including generated throttle and clog candidates. A mature custom-fault interface remains open. |
-| Assertions and guidance | Partial | Always, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
+| Assertions and guidance | Partial | Always, always-or-unreachable, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
 | Coverage guidance | Partial | GCC C and Go basic blocks plus LLVM C/C++/Rust edges cover native executables, shared libraries, a selected Cargo graph, and a selected Go command's imported main-module packages. Compose locks manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go external modules and CGO, Java, and production-scale validation remain open. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
 | Test composition | Partial | Explicit operations and discovered Antithesis-compatible image templates use all seven lifecycle roles. Each timeline selects one template, the explorer varies bounded command concurrency, eventual checks kill live commands, and final checks join them. Production-scale adaptive command scheduling remains open. |
@@ -310,8 +310,8 @@ parallelism, inputs, faults, and schedules.
 Turn retained evidence into an investigation workflow comparable to
 Antithesis reports and multiverse debugging.
 
-- Add `always_or_unreachable` and make property observations first-class search
-  feedback.
+- `always_or_unreachable` exists as a campaign property kind. Make property
+  observations first-class search feedback.
 - Provide supported assertion, event, and structured-randomness APIs for C,
   C++, Rust, Go, and Java, while retaining a language-neutral JSON event path.
 - Capture stdout, stderr, structured events, faults, decisions, coverage,
