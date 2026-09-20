@@ -162,9 +162,19 @@ killed services and directed network conditions before terminal checks.
 Use explicit `faults` alongside the profile when a test needs a different
 target or condition. The additional operation-boundary kinds are
 `service_stop`, `service_start`, `service_kill`, `service_restart`,
-`link_fault`, and `link_recover`. A link fault accepts the same packet-condition
+`link_fault`, `link_recover`, `cpu_throttle`, `cpu_release`, `link_clog`, and
+`link_unclog`. A link fault accepts the same packet-condition
 fields as `network_fault`, plus distinct `from` and `to` services on its
 network.
+
+`cpu_throttle` modulates a service's CPU at the scheduler boundary: for
+`duration_rounds` topology rounds after the named operation, the service is
+pumped only on 1 of every `every_n_rounds` (2–64) rounds, so its guest runs at
+a reduced, still-deterministic share. `cpu_release` ends the throttle early;
+terminal checks release any active throttle automatically. `link_clog` jams a
+directed link with a bounded stall: frames still enter the link, but each
+waits `latency_rounds` (1–4096) before delivery, so clogged frames queue up
+and arrive only after `link_unclog` (or terminal recovery) restores the link.
 
 ## Require a fault and recovery path
 
