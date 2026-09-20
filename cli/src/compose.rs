@@ -474,7 +474,7 @@ struct ComposeCampaignFault {
     #[serde(default)]
     duration_rounds: Option<u64>,
     #[serde(default)]
-    nanoseconds: Option<u64>,
+    nanoseconds: Option<i64>,
     #[serde(default)]
     error_ppm: Option<u32>,
     #[serde(default)]
@@ -1137,7 +1137,7 @@ struct ComposeFault {
     #[serde(default)]
     duration_rounds: Option<u64>,
     #[serde(default)]
-    nanoseconds: Option<u64>,
+    nanoseconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -1155,7 +1155,7 @@ pub struct FaultPlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_rounds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub nanoseconds: Option<u64>,
+    pub nanoseconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1500,7 +1500,7 @@ pub struct CampaignFaultPlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_rounds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub nanoseconds: Option<u64>,
+    pub nanoseconds: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_ppm: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -6724,7 +6724,12 @@ fn validate_faults(
                 })?;
                 if !has_virtual_time || nanoseconds == 0 || fault.duration_rounds.is_some() {
                     return Err(ComposeError::Invalid(format!(
-                        "service {service:?} clock_jump requires virtual_time, positive nanoseconds, and no duration_rounds"
+                        "service {service:?} clock_jump requires virtual_time, non-zero nanoseconds, and no duration_rounds"
+                    )));
+                }
+                if nanoseconds.unsigned_abs() > 3_600_000_000_000 {
+                    return Err(ComposeError::Invalid(format!(
+                        "service {service:?} clock_jump nanoseconds magnitude must be at most 3600000000000"
                     )));
                 }
                 FaultPlan {
@@ -8810,6 +8815,42 @@ mod tests {
         assert_eq!(plan.services["api"].faults.len(), 3);
         let json = serde_json::to_value(&plan).unwrap();
         assert_eq!(json["services"]["api"]["faults"][2]["kind"], "clock_jump");
+    }
+
+    #[test]
+    #[test]
+    fn accepts_backward_clock_jumps_and_rejects_the_rest() {
+        let base = r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+      faults:
+        - at_round: 2
+          kind: clock_jump
+          nanoseconds: __NS__
+    networks: [backplane]
+networks:
+  backplane: {}
+"#;
+        let directory = fixture(&base.replace("__NS__", "-500000000"));
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert_eq!(
+            plan.services["api"].faults[0].nanoseconds,
+            Some(-500_000_000)
+        );
+
+        let zero = fixture(&base.replace("__NS__", "0"));
+        let error = load_compose_plan(zero.path().join("compose.yaml")).unwrap_err();
+        assert!(error.to_string().contains("non-zero nanoseconds"), "{error}");
+
+        let huge = fixture(&base.replace("__NS__", "7200000000000"));
+        let error = load_compose_plan(huge.path().join("compose.yaml")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("magnitude must be at most 3600000000000"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -1053,7 +1053,7 @@ impl Vmm {
     /// The jump is performed while vCPUs are paused, then the prior run state
     /// is restored. It is rejected unless deterministic virtual time is
     /// enabled by the guest's machine configuration.
-    pub fn jump_virtual_time(&mut self, delta_ns: u64) -> Result<(), VmmError> {
+    pub fn jump_virtual_time(&mut self, delta_ns: i64) -> Result<(), VmmError> {
         if delta_ns == 0 {
             return Err(VmmError::VcpuMessage);
         }

@@ -389,7 +389,7 @@ struct CampaignFault {
     #[serde(default)]
     duration_rounds: Option<u64>,
     #[serde(default)]
-    nanoseconds: Option<u64>,
+    nanoseconds: Option<i64>,
     #[serde(default)]
     error_ppm: Option<u32>,
     #[serde(default)]
@@ -1344,7 +1344,7 @@ struct FaultPlan {
     #[serde(default)]
     duration_rounds: Option<u64>,
     #[serde(default)]
-    nanoseconds: Option<u64>,
+    nanoseconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -1991,7 +1991,7 @@ impl ServiceVm {
             .map_err(|error| error.to_string())
     }
 
-    fn jump_virtual_time(&self, nanoseconds: u64) -> Result<(), String> {
+    fn jump_virtual_time(&self, nanoseconds: i64) -> Result<(), String> {
         self.vmm
             .lock()
             .expect("VMM lock poisoned")
@@ -11517,7 +11517,7 @@ fn apply_scheduled_faults(
                 service.faults.push(AppliedFault {
                     round,
                     kind: "clock_jump".to_owned(),
-                    detail: format!("advanced virtual clock by {nanoseconds} ns"),
+                    detail: format!("moved virtual clock by {nanoseconds} ns"),
                     barrier_rounds: None,
                 });
             }

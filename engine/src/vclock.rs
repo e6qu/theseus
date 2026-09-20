@@ -59,16 +59,30 @@ impl VirtualClock {
         self.now_ns += self.tick_ns;
     }
 
-    /// Move time forward without adding a scheduling quantum.
+    /// Move time forward or backward without adding a scheduling quantum.
     ///
     /// This is for an explicit, recorded fault only. Normal execution must
-    /// use [`Self::advance`].
-    pub fn jump(&mut self, delta_ns: u64) {
-        assert!(delta_ns > 0, "clock jump must be non-zero");
-        self.now_ns = self
-            .now_ns
-            .checked_add(delta_ns)
-            .expect("virtual time overflow during clock jump");
+    /// use [`Self::advance`]. A negative delta moves the clock backward, the
+    /// way an NTP correction does, but never before the anchored tick count:
+    /// the saved/restore invariant `now_ns >= tick_ns * tick_count` holds on
+    /// every path.
+    pub fn jump(&mut self, delta_ns: i64) {
+        assert!(delta_ns != 0, "clock jump must be non-zero");
+        if delta_ns > 0 {
+            self.now_ns = self
+                .now_ns
+                .checked_add(delta_ns as u64)
+                .expect("virtual time overflow during clock jump");
+        } else {
+            // Backward jumps saturate at the anchored tick count instead of
+            // failing the run: the floor keeps the saved/restore invariant
+            // `now_ns >= tick_ns * tick_count` intact on every path.
+            let floor = self.tick_ns.saturating_mul(self.tick_count);
+            self.now_ns = self
+                .now_ns
+                .saturating_sub(delta_ns.unsigned_abs())
+                .max(floor);
+        }
     }
 
     /// Current virtual time in nanoseconds.
@@ -213,6 +227,31 @@ mod tests {
         assert_eq!(clock.now_ns(), 11_000);
         assert_eq!(clock.tick_count(), 1);
         assert_eq!(VirtualClock::restore(&clock.save()), clock);
+    }
+
+    #[test]
+    fn test_clock_jump_moves_backward_above_the_tick_floor() {
+        let mut clock = VirtualClock::new(1_000);
+        clock.advance();
+        clock.advance();
+        clock.jump(50_000);
+        clock.jump(-30_000);
+        assert_eq!(clock.now_ns(), 22_000);
+        assert_eq!(clock.tick_count(), 2);
+        assert_eq!(VirtualClock::restore(&clock.save()), clock);
+        // The floor is the anchored tick count: 2 ticks * 1000 ns.
+        clock.jump(-20_000);
+        assert_eq!(clock.now_ns(), 2_000);
+        clock.jump(-1);
+        assert_eq!(clock.now_ns(), 2_000, "floor clamps the backward jump");
+        assert_eq!(VirtualClock::restore(&clock.save()), clock);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_zero_jump_rejected() {
+        let mut clock = VirtualClock::new(1_000);
+        clock.jump(0);
     }
 
     #[test]
