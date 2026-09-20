@@ -173,7 +173,11 @@ network.
 `duration_rounds` topology rounds after the named operation, the service is
 pumped only on 1 of every `every_n_rounds` (2–64) rounds, so its guest runs at
 a reduced, still-deterministic share. `cpu_release` ends the throttle early;
-terminal checks release any active throttle automatically. `link_clog` jams a
+terminal checks release any active throttle automatically. `clock_rate`
+requires `virtual_time` on the target service and moves its guest clock rate
+to `rate`× (2–16) for `duration_rounds` rounds; `clock_rate_release` restores
+1× early, and terminal checks do the same. The rate is a recorded host effect
+like a clock jump, so replay gates it exactly. `link_clog` jams a
 directed link with a bounded stall: frames still enter the link, but each
 waits `latency_rounds` (1–4096) before delivery, so clogged frames queue up
 and arrive only after `link_unclog` (or terminal recovery) restores the link.

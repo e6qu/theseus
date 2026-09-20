@@ -424,6 +424,8 @@ struct CampaignFault {
     rx_queue_frames: Option<u32>,
     #[serde(default)]
     every_n_rounds: Option<u32>,
+    #[serde(default)]
+    rate: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -434,6 +436,8 @@ enum CampaignFaultKind {
     ClockJump,
     CpuThrottle,
     CpuRelease,
+    ClockRate,
+    ClockRateRelease,
     Partition,
     Heal,
     LinkPartition,
@@ -1532,6 +1536,8 @@ struct CampaignAction {
     duration_rounds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     every_n_rounds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rate: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1824,6 +1830,7 @@ struct ServiceSchedulerCheckpoint {
     next_fault: usize,
     paused_until: Option<u64>,
     throttle: Option<CpuThrottleState>,
+    rate_until: Option<u64>,
     faults: Vec<AppliedFault>,
     network_traffic: BTreeMap<String, NetworkTraffic>,
     network_trace: BTreeMap<String, Vec<NetworkFrame>>,
@@ -1988,6 +1995,14 @@ impl ServiceVm {
             .lock()
             .expect("VMM lock poisoned")
             .serial_input_diagnostics()
+            .map_err(|error| error.to_string())
+    }
+
+    fn set_virtual_time_rate(&self, rate: u32) -> Result<(), String> {
+        self.vmm
+            .lock()
+            .expect("VMM lock poisoned")
+            .set_virtual_time_rate(rate)
             .map_err(|error| error.to_string())
     }
 
@@ -2533,6 +2548,7 @@ struct ServiceRuntime {
     next_fault: usize,
     paused_until: Option<u64>,
     throttle: Option<CpuThrottleState>,
+    rate_until: Option<u64>,
     faults: Vec<AppliedFault>,
     network_traffic: BTreeMap<String, NetworkTraffic>,
     network_trace: BTreeMap<String, Vec<NetworkFrame>>,
@@ -2610,6 +2626,7 @@ fn capture_campaign_checkpoint(
                     next_fault: service.next_fault,
                     paused_until: service.paused_until,
                     throttle: service.throttle.clone(),
+                    rate_until: service.rate_until,
                     faults: service.faults.clone(),
                     network_traffic: service.network_traffic.clone(),
                     network_trace: service.network_trace.clone(),
@@ -2888,6 +2905,8 @@ fn checkpoint_campaign_operation(
                 next_fault: scheduler.next_fault,
                 paused_until: scheduler.paused_until,
                 throttle: scheduler.throttle.clone(),
+            rate_until: scheduler.rate_until,
+                rate_until: scheduler.rate_until,
                 faults: scheduler.faults.clone(),
                 network_traffic: scheduler.network_traffic.clone(),
                 network_trace: scheduler.network_trace.clone(),
@@ -4107,6 +4126,8 @@ fn boot_campaign_checkpoint(
                 next_fault: 0,
                 paused_until: None,
                 throttle: None,
+            rate_until: None,
+                rate_until: None,
                 faults: Vec::new(),
                 network_traffic: BTreeMap::new(),
                 network_trace: BTreeMap::new(),
@@ -7310,6 +7331,10 @@ fn campaign_faults_compatible(first: &CampaignFault, second: &CampaignFault) -> 
     if throttle(first) && throttle(second) && first.service == second.service {
         return false;
     }
+    let clock_rate = |fault: &CampaignFault| matches!(fault.kind, CampaignFaultKind::ClockRate);
+    if clock_rate(first) && clock_rate(second) && first.service == second.service {
+        return false;
+    }
     let lifecycle = |fault: &CampaignFault| {
         matches!(
             fault.kind,
@@ -7354,6 +7379,8 @@ fn campaign_fault_applies(
         | CampaignFaultKind::LinkUnclog
         | CampaignFaultKind::CpuThrottle
         | CampaignFaultKind::CpuRelease
+        | CampaignFaultKind::ClockRate
+        | CampaignFaultKind::ClockRateRelease
         | CampaignFaultKind::LinkFault
         | CampaignFaultKind::LinkRecover
         | CampaignFaultKind::ServiceStop
@@ -7790,6 +7817,7 @@ fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
         rx_queue_frames: fault.rx_queue_frames,
         duration_rounds: fault.duration_rounds,
         every_n_rounds: fault.every_n_rounds,
+        rate: fault.rate,
     })
 }
 
@@ -7802,6 +7830,7 @@ fn campaign_recovery_action(
         CampaignFaultKind::LinkPartition => CampaignFaultKind::LinkHeal,
         CampaignFaultKind::LinkFault => CampaignFaultKind::LinkRecover,
         CampaignFaultKind::CpuThrottle => CampaignFaultKind::CpuRelease,
+        CampaignFaultKind::ClockRate => CampaignFaultKind::ClockRateRelease,
         CampaignFaultKind::LinkClog => CampaignFaultKind::LinkUnclog,
         CampaignFaultKind::ServiceStop | CampaignFaultKind::ServiceKill => {
             CampaignFaultKind::ServiceStart
@@ -7813,6 +7842,7 @@ fn campaign_recovery_action(
         | CampaignFaultKind::Restart
         | CampaignFaultKind::ClockJump
         | CampaignFaultKind::CpuRelease
+        | CampaignFaultKind::ClockRateRelease
         | CampaignFaultKind::Heal
         | CampaignFaultKind::LinkHeal
         | CampaignFaultKind::LinkUnclog
@@ -7899,6 +7929,16 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
             match fault.kind {
                 CampaignFaultKind::CpuThrottle => "cpu_throttle",
                 CampaignFaultKind::CpuRelease => "cpu_release",
+                _ => unreachable!(),
+            },
+            campaign_fault_barrier_name(fault)
+        ),
+        CampaignFaultKind::ClockRate | CampaignFaultKind::ClockRateRelease => format!(
+            "{}:{}@{}",
+            fault.service.as_deref().expect("validated service target"),
+            match fault.kind {
+                CampaignFaultKind::ClockRate => "clock_rate",
+                CampaignFaultKind::ClockRateRelease => "clock_rate_release",
                 _ => unreachable!(),
             },
             campaign_fault_barrier_name(fault)
@@ -10471,7 +10511,7 @@ fn execute(
         let service_dir = output.join("services").join(name);
         fs::create_dir_all(&service_dir).map_err(|error| error.to_string())?;
         let serial = service_dir.join("serial.log");
-        let (vm, serial_logs, next_fault, paused_until, throttle, faults, network_traffic, network_trace) =
+        let (vm, serial_logs, next_fault, paused_until, throttle, rate_until, faults, network_traffic, network_trace) =
             if let Some(checkpoint) = checkpoint {
                 let scheduler = checkpoint
                     .scheduler
@@ -10504,6 +10544,7 @@ fn execute(
                     scheduler.next_fault,
                     scheduler.paused_until,
                     scheduler.throttle.clone(),
+                    scheduler.rate_until,
                     scheduler.faults.clone(),
                     scheduler.network_traffic.clone(),
                     scheduler.network_trace.clone(),
@@ -10521,6 +10562,7 @@ fn execute(
                     )?,
                     vec![serial],
                     0,
+                    None,
                     None,
                     None,
                     Vec::new(),
@@ -10547,6 +10589,7 @@ fn execute(
                 next_fault,
                 paused_until,
                 throttle,
+                rate_until,
                 faults,
                 network_traffic,
                 network_trace,
@@ -10640,6 +10683,18 @@ fn execute(
                     &mut switches,
                     remaining_rounds,
                 )?);
+            if let Some(until) = service.rate_until {
+                if round >= until {
+                    service.rate_until = None;
+                    service.vm.set_virtual_time_rate(1)?;
+                    service.faults.push(AppliedFault {
+                        round,
+                        kind: "clock_rate_release".to_owned(),
+                        detail: "clock rate window elapsed".to_owned(),
+                        barrier_rounds: None,
+                    });
+                }
+            }
             let throttled = service.throttle.as_ref().is_some_and(|state| {
                 state.until_round > round && round % u64::from(state.every_n_rounds) != 0
             });
@@ -12346,6 +12401,44 @@ fn apply_campaign_action(
                 detail,
             })
         }
+        CampaignFaultKind::ClockRate | CampaignFaultKind::ClockRateRelease => {
+            let service_name = action
+                .service
+                .as_deref()
+                .ok_or_else(|| "campaign clock_rate action has no service".to_owned())?;
+            let release = matches!(action.kind, CampaignFaultKind::ClockRateRelease);
+            let target = if service_name == driver_name {
+                driver
+            } else {
+                services.get_mut(service_name).ok_or_else(|| {
+                    format!("campaign clock_rate action service did not start: {service_name}")
+                })?
+            };
+            let detail = if release {
+                target.rate_until = None;
+                target.vm.set_virtual_time_rate(1)?;
+                "released the clock rate at the operation barrier".to_owned()
+            } else {
+                let duration = action
+                    .duration_rounds
+                    .ok_or_else(|| "campaign clock_rate has no duration_rounds".to_owned())?;
+                let rate = action
+                    .rate
+                    .ok_or_else(|| "campaign clock_rate has no rate".to_owned())?;
+                target
+                    .vm
+                    .set_virtual_time_rate(rate)
+                    .map_err(|error| error.to_string())?;
+                target.rate_until = Some(round.saturating_add(duration));
+                format!("moved the guest clock rate to {rate}x for {duration} rounds")
+            };
+            Ok(AppliedCampaignAction {
+                operation: action.operation.clone(),
+                kind: if release { "clock_rate_release" } else { "clock_rate" }.to_owned(),
+                target: format!("service:{service_name}"),
+                detail,
+            })
+        }
         CampaignFaultKind::Pause | CampaignFaultKind::Restart | CampaignFaultKind::ClockJump => {
             Err("campaign lifecycle fault cannot be applied at an operation barrier".to_owned())
         }
@@ -14030,6 +14123,8 @@ mod tests {
                     next_fault: 0,
                     paused_until: None,
                 throttle: None,
+            rate_until: None,
+                rate_until: None,
                     faults: Vec::new(),
                     network_traffic: BTreeMap::new(),
                     network_trace: BTreeMap::new(),
@@ -14125,6 +14220,8 @@ mod tests {
                     next_fault: 0,
                     paused_until: None,
                 throttle: None,
+            rate_until: None,
+                rate_until: None,
                     faults: Vec::new(),
                     network_traffic: BTreeMap::new(),
                     network_trace: BTreeMap::new(),
@@ -14233,6 +14330,8 @@ mod tests {
                         next_fault: 0,
                         paused_until: None,
                 throttle: None,
+            rate_until: None,
+                rate_until: None,
                         faults: Vec::new(),
                         network_traffic: BTreeMap::new(),
                         network_trace: BTreeMap::new(),
@@ -14254,6 +14353,8 @@ mod tests {
                         next_fault: 0,
                         paused_until: None,
                 throttle: None,
+            rate_until: None,
+                rate_until: None,
                         faults: Vec::new(),
                         network_traffic: BTreeMap::new(),
                         network_trace: BTreeMap::new(),
@@ -14968,6 +15069,8 @@ mod tests {
                     next_fault: 0,
                     paused_until: None,
                 throttle: None,
+            rate_until: None,
+                rate_until: None,
                     faults: Vec::new(),
                     network_traffic: BTreeMap::new(),
                     network_trace: BTreeMap::new(),
@@ -14996,6 +15099,8 @@ mod tests {
                     next_fault: 0,
                     paused_until: None,
                 throttle: None,
+            rate_until: None,
+                rate_until: None,
                     faults: Vec::new(),
                     network_traffic: BTreeMap::new(),
                     network_trace: BTreeMap::new(),
@@ -15020,6 +15125,8 @@ mod tests {
                         next_fault: 0,
                         paused_until: None,
                 throttle: None,
+            rate_until: None,
+                rate_until: None,
                         faults: Vec::new(),
                         network_traffic: BTreeMap::new(),
                         network_trace: BTreeMap::new(),
@@ -15426,6 +15533,8 @@ mod tests {
                 next_fault: 0,
                 paused_until: None,
                 throttle: None,
+            rate_until: None,
+                rate_until: None,
                 faults: Vec::new(),
                 network_traffic: BTreeMap::new(),
                 network_trace: BTreeMap::new(),
@@ -15543,6 +15652,8 @@ mod tests {
             next_fault: 0,
             paused_until: None,
                 throttle: None,
+            rate_until: None,
+                rate_until: None,
             faults: Vec::new(),
             network_traffic: BTreeMap::new(),
             network_trace: BTreeMap::new(),
@@ -16350,6 +16461,8 @@ mod tests {
                 next_fault: 0,
                 paused_until: None,
                 throttle: None,
+            rate_until: None,
+                rate_until: None,
                 faults: Vec::new(),
                 network_traffic: BTreeMap::new(),
                 network_trace: BTreeMap::new(),
@@ -17701,6 +17814,7 @@ mod tests {
             (CampaignFaultKind::LinkFault, CampaignFaultKind::LinkRecover),
             (CampaignFaultKind::LinkClog, CampaignFaultKind::LinkUnclog),
             (CampaignFaultKind::CpuThrottle, CampaignFaultKind::CpuRelease),
+            (CampaignFaultKind::ClockRate, CampaignFaultKind::ClockRateRelease),
             (
                 CampaignFaultKind::ServiceStop,
                 CampaignFaultKind::ServiceStart,
@@ -17797,6 +17911,13 @@ mod tests {
         assert_eq!(
             campaign_fault_name(&clog),
             "backplane:api->worker:link_clog@write".to_owned()
+        );
+        let mut rate = campaign_fault(CampaignFaultKind::ClockRate);
+        rate.service = Some("api".to_owned());
+        assert!(!campaign_faults_compatible(&rate, &rate));
+        assert_eq!(
+            campaign_fault_name(&rate),
+            "api:clock_rate@write".to_owned()
         );
     }
 

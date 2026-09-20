@@ -20,15 +20,21 @@ use serde::{Deserialize, Serialize};
 /// Default tick length: 1 ms of virtual time per quantum.
 pub const DEFAULT_TICK_NS: u64 = 1_000_000;
 
+/// Maximum guest-clock rate multiplier while a recorded clock-rate fault is
+/// active.
+pub const MAX_CLOCK_RATE: u32 = 16;
+
 /// A tick-stepped virtual clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VirtualClock {
     /// Current virtual time, nanoseconds since boot.
     now_ns: u64,
-    /// Virtual time advanced per quantum.
+    /// Virtual time advanced per quantum at rate 1.
     tick_ns: u64,
     /// Number of normal quanta elapsed. Explicit clock jumps do not change it.
     tick_count: u64,
+    /// Guest-clock rate multiplier applied at every quantum boundary.
+    rate: u32,
 }
 
 /// Serializable state for snapshots/branches.
@@ -40,6 +46,14 @@ pub struct VirtualClockState {
     pub tick_ns: u64,
     /// Number of quanta elapsed.
     pub tick_count: u64,
+    /// Guest-clock rate multiplier. Snapshots taken before rate faults omit
+    /// it, which means rate 1.
+    #[serde(default = "default_rate")]
+    pub rate: u32,
+}
+
+fn default_rate() -> u32 {
+    1
 }
 
 impl VirtualClock {
@@ -50,13 +64,29 @@ impl VirtualClock {
             now_ns: 0,
             tick_ns,
             tick_count: 0,
+            rate: 1,
         }
     }
 
-    /// Advance exactly one tick. Called at each quantum boundary.
+    /// The guest-clock rate multiplier applied at every quantum boundary.
+    pub fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    /// Set the guest-clock rate multiplier for later quanta.
+    pub fn set_rate(&mut self, rate: u32) {
+        assert!(
+            (1..=MAX_CLOCK_RATE).contains(&rate),
+            "clock rate must be between 1 and {MAX_CLOCK_RATE}"
+        );
+        self.rate = rate;
+    }
+
+    /// Advance exactly one quantum at the current rate. Called at each
+    /// quantum boundary.
     pub fn advance(&mut self) {
         self.tick_count += 1;
-        self.now_ns += self.tick_ns;
+        self.now_ns += self.tick_ns * u64::from(self.rate);
     }
 
     /// Move time forward or backward without adding a scheduling quantum.
@@ -125,6 +155,7 @@ impl VirtualClock {
             now_ns: self.now_ns,
             tick_ns: self.tick_ns,
             tick_count: self.tick_count,
+            rate: self.rate,
         }
     }
 
@@ -141,6 +172,7 @@ impl VirtualClock {
             now_ns: state.now_ns,
             tick_ns: state.tick_ns,
             tick_count: state.tick_count,
+            rate: state.rate,
         }
     }
 }
@@ -215,6 +247,7 @@ mod tests {
             now_ns: 999,
             tick_ns: 1000,
             tick_count: 1,
+            rate: 1,
         };
         let _ = VirtualClock::restore(&bad);
     }
@@ -227,6 +260,38 @@ mod tests {
         assert_eq!(clock.now_ns(), 11_000);
         assert_eq!(clock.tick_count(), 1);
         assert_eq!(VirtualClock::restore(&clock.save()), clock);
+    }
+
+    #[test]
+    fn test_clock_rate_multiplies_later_quanta_and_survives_round_trips() {
+        let mut clock = VirtualClock::new(1_000);
+        clock.advance();
+        clock.set_rate(4);
+        clock.advance();
+        assert_eq!(clock.now_ns(), 5_000);
+        assert_eq!(clock.tick_count(), 2);
+        assert_eq!(VirtualClock::restore(&clock.save()), clock);
+        clock.set_rate(1);
+        clock.advance();
+        assert_eq!(clock.now_ns(), 6_000);
+    }
+
+    #[test]
+    fn test_legacy_clock_state_restores_at_rate_one() {
+        let state = VirtualClockState {
+            now_ns: 2_000,
+            tick_ns: 1_000,
+            tick_count: 2,
+            rate: 1,
+        };
+        assert_eq!(VirtualClock::restore(&state).rate(), 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_rate_bounds_rejected() {
+        let mut clock = VirtualClock::new(1_000);
+        clock.set_rate(17);
     }
 
     #[test]

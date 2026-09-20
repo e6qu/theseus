@@ -1075,6 +1075,32 @@ impl Vmm {
         result
     }
 
+    /// Apply a recorded guest-clock rate to the paused vCPUs.
+    ///
+    /// Like a jump, the change is performed while vCPUs are paused and is
+    /// rejected unless deterministic virtual time is enabled.
+    pub fn set_virtual_time_rate(&mut self, rate: u32) -> Result<(), VmmError> {
+        if !(1..=16).contains(&rate) {
+            return Err(VmmError::VcpuMessage);
+        }
+        let was_running = self.instance_info.state == VmState::Running;
+        if was_running {
+            self.pause_vm()?;
+        }
+        let kvm_vm = self
+            .vm
+            .as_kvm()
+            .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
+        let result = self.apply_machine_host_effect(
+            format!("virtual_time_rate:{rate}"),
+            || kvm_vm.set_virtual_time_rate(rate),
+        );
+        if was_running {
+            self.resume_vm()?;
+        }
+        result
+    }
+
     /// Read the final deterministic virtual-clock time for every vCPU.
     pub fn virtual_time_ns(&self) -> Result<Option<Vec<u64>>, VmmError> {
         self.vm

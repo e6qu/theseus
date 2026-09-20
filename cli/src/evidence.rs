@@ -1690,12 +1690,17 @@ pub(crate) fn valid_machine_execution_record(record: &str) -> bool {
                 && bytes.len() == length.saturating_mul(2)
                 && valid_lowercase_hex(bytes);
         }
-        let Some(delta_text) = effect.strip_prefix("virtual_time_jump:") else {
-            return false;
-        };
-        return delta_text
-            .parse::<i64>()
-            .is_ok_and(|delta| delta != 0 && delta_text == delta.to_string());
+        if let Some(delta_text) = effect.strip_prefix("virtual_time_jump:") {
+            return delta_text
+                .parse::<i64>()
+                .is_ok_and(|delta| delta != 0 && delta_text == delta.to_string());
+        }
+        if let Some(rate_text) = effect.strip_prefix("virtual_time_rate:") {
+            return rate_text
+                .parse::<u32>()
+                .is_ok_and(|rate| (1..=16).contains(&rate) && rate_text == rate.to_string());
+        }
+        return false;
     }
     record
         .strip_prefix("vcpu:")

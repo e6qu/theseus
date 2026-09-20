@@ -604,12 +604,15 @@ fault's `after` operation must apply it. Required faults count toward
 fixed disruption/recovery scenarios without turning all other fault candidates
 into mandatory actions.
 
-Operation-barrier faults also cover CPU throttling and directed link clogs:
-`cpu_throttle` with `service`, `after`, `duration_rounds` (1–100000), and
-`every_n_rounds` (2–64) pumps the service on only 1 of N topology rounds for
-the window; `cpu_release` ends it early. `link_clog` with `network`, distinct
-`from`/`to`, `after`, and `latency_rounds` (1–4096) stalls frames on the
-directed link until `link_unclog`; terminal checks release both automatically.
+Operation-barrier faults also cover CPU throttling, directed link clogs, and
+guest-clock rates: `cpu_throttle` with `service`, `after`, `duration_rounds`
+(1–100000), and `every_n_rounds` (2–64) pumps the service on only 1 of N
+topology rounds for the window; `cpu_release` ends it early. `link_clog` with
+`network`, distinct `from`/`to`, `after`, and `latency_rounds` (1–4096)
+stalls frames on the directed link until `link_unclog`. `clock_rate` with
+`service`, `after`, `rate` (2–16), and `duration_rounds` moves that service's
+virtual clock rate until `clock_rate_release`; it requires `virtual_time`.
+Terminal checks release all three automatically.
 
 ## Checks
 
