@@ -5366,6 +5366,20 @@ fn standard_fault_profile(
             if generated.len() == MAX_PROFILE_CANDIDATES {
                 return generated;
             }
+            let has_virtual_time = services
+                .get(service)
+                .is_some_and(|entry| entry.run.run.virtual_time.is_some());
+            if has_virtual_time {
+                let mut clock_rate = empty_campaign_fault(CampaignFaultKind::ClockRate);
+                clock_rate.service = Some(service.clone());
+                clock_rate.after = Some(after.clone());
+                clock_rate.duration_rounds = Some(32);
+                clock_rate.rate = Some(4);
+                generated.push(clock_rate);
+                if generated.len() == MAX_PROFILE_CANDIDATES {
+                    return generated;
+                }
+            }
         }
         for (network, endpoints) in &network_services {
             for from in endpoints {
@@ -7783,7 +7797,7 @@ mod tests {
         write_docker_image(&directory.path().join("api/service.tar"), files);
         fs::write(
             directory.path().join("api/theseus.toml"),
-            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[container_service.ready]\nurl = 'http://127.0.0.1:8080/health'\n",
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n[container_service.ready]\nurl = 'http://127.0.0.1:8080/health'\n",
         )
         .unwrap();
         directory
@@ -7863,7 +7877,7 @@ mod tests {
         );
         let campaign = plan.campaign.unwrap();
         assert_eq!(campaign.fault_profile, Some(ComposeFaultProfile::Standard));
-        assert_eq!(campaign.faults.len(), 10);
+        assert_eq!(campaign.faults.len(), 11);
         assert!(campaign.faults.iter().all(|fault| fault
             .after
             .as_deref()
@@ -7884,6 +7898,14 @@ mod tests {
         assert_eq!(throttles.len(), 1);
         assert_eq!(throttles[0].duration_rounds, Some(16));
         assert_eq!(throttles[0].every_n_rounds, Some(4));
+        let rates = campaign
+            .faults
+            .iter()
+            .filter(|fault| matches!(fault.kind, CampaignFaultKind::ClockRate))
+            .collect::<Vec<_>>();
+        assert_eq!(rates.len(), 1);
+        assert_eq!(rates[0].rate, Some(4));
+        assert_eq!(rates[0].duration_rounds, Some(32));
         let links = campaign
             .faults
             .iter()
