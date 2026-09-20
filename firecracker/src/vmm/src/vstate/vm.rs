@@ -346,6 +346,28 @@ impl KvmVm {
         Ok(())
     }
 
+    /// Set every paused vCPU's guest-clock rate multiplier.
+    pub fn set_virtual_time_rate(&self, rate: u32) -> Result<(), crate::VmmError> {
+        let mut handles = self.vcpus_handles();
+        handles
+            .iter_mut()
+            .try_for_each(|handle| handle.send_event(crate::VcpuEvent::SetVirtualTimeRate(rate)))
+            .map_err(|_| crate::VmmError::VcpuMessage)?;
+
+        if handles
+            .iter()
+            .map(|handle| {
+                handle
+                    .response_receiver()
+                    .recv_timeout(crate::RECV_TIMEOUT_SEC)
+            })
+            .any(|response| !matches!(response, Ok(crate::VcpuResponse::VirtualTimeJumped)))
+        {
+            return Err(crate::VmmError::VcpuMessage);
+        }
+        Ok(())
+    }
+
     /// Advance every paused vCPU's deterministic virtual clock by `delta_ns`.
     pub fn jump_virtual_time(&self, delta_ns: i64) -> Result<(), crate::VmmError> {
         let mut handles = self.vcpus_handles();

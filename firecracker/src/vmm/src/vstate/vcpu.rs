@@ -1053,12 +1053,17 @@ fn valid_machine_host_effect(effect: &str) -> bool {
             && bytes.len() == length.saturating_mul(2)
             && valid_lowercase_hex(bytes);
     }
-    let Some(delta_text) = effect.strip_prefix("virtual_time_jump:") else {
-        return false;
-    };
-    delta_text
-        .parse::<i64>()
-        .is_ok_and(|delta| delta != 0 && delta_text == delta.to_string())
+    if let Some(delta_text) = effect.strip_prefix("virtual_time_jump:") {
+        return delta_text
+            .parse::<i64>()
+            .is_ok_and(|delta| delta != 0 && delta_text == delta.to_string());
+    }
+    if let Some(rate_text) = effect.strip_prefix("virtual_time_rate:") {
+        return rate_text
+            .parse::<u32>()
+            .is_ok_and(|rate| (1..=16).contains(&rate) && rate_text == rate.to_string());
+    }
+    false
 }
 
 fn valid_lowercase_hex(value: &str) -> bool {
@@ -1283,6 +1288,20 @@ impl Vcpu {
             VcpuError::FaultyKvmExit("virtual time is not enabled for this vCPU".to_owned())
         })?;
         clock.jump(delta_ns);
+        self.kvm_vcpu
+            .apply_virtual_time(clock.now_ns())
+            .map_err(VcpuError::VcpuResponse)?;
+        self.vclock_anchored = true;
+        Ok(())
+    }
+
+    /// Set the guest-clock rate multiplier for later quanta and re-anchor
+    /// the counter so the new rate applies from a consistent instant.
+    fn set_virtual_time_rate(&mut self, rate: u32) -> Result<(), VcpuError> {
+        let clock = self.vclock.as_mut().ok_or_else(|| {
+            VcpuError::FaultyKvmExit("virtual time is not enabled for this vCPU".to_owned())
+        })?;
+        clock.set_rate(rate);
         self.kvm_vcpu
             .apply_virtual_time(clock.now_ns())
             .map_err(VcpuError::VcpuResponse)?;
@@ -1595,6 +1614,13 @@ impl Vcpu {
                     )))
                     .expect("vcpu channel unexpectedly closed");
             }
+            Ok(VcpuEvent::SetVirtualTimeRate(_)) => {
+                self.response_sender
+                    .send(VcpuResponse::NotAllowed(String::from(
+                        "virtual clock rate is unavailable while running",
+                    )))
+                    .expect("vcpu channel unexpectedly closed");
+            }
             Ok(VcpuEvent::GetVirtualTime) => {
                 self.response_sender
                     .send(VcpuResponse::VirtualTime(self.virtual_time_ns()))
@@ -1683,6 +1709,20 @@ impl Vcpu {
             }
             Ok(VcpuEvent::JumpVirtualTime(delta_ns)) => {
                 self.jump_virtual_time(delta_ns)
+                    .map(|_| {
+                        self.response_sender
+                            .send(VcpuResponse::VirtualTimeJumped)
+                            .expect("vcpu channel unexpectedly closed");
+                    })
+                    .unwrap_or_else(|err| {
+                        self.response_sender
+                            .send(VcpuResponse::Error(err))
+                            .expect("vcpu channel unexpectedly closed");
+                    });
+                VcpuRunState::Paused
+            }
+            Ok(VcpuEvent::SetVirtualTimeRate(rate)) => {
+                self.set_virtual_time_rate(rate)
                     .map(|_| {
                         self.response_sender
                             .send(VcpuResponse::VirtualTimeJumped)
@@ -2948,6 +2988,8 @@ pub enum VcpuEvent {
     DumpCpuConfig,
     /// Advance a paused vCPU's deterministic virtual clock.
     JumpVirtualTime(i64),
+    /// Set the guest-clock rate multiplier for later quanta.
+    SetVirtualTimeRate(u32),
     /// Read a vCPU's deterministic virtual clock at its next event boundary.
     GetVirtualTime,
 }

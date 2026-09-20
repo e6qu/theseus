@@ -509,6 +509,8 @@ struct ComposeCampaignFault {
     rx_queue_frames: Option<u32>,
     #[serde(default)]
     every_n_rounds: Option<u32>,
+    #[serde(default)]
+    rate: Option<u32>,
 }
 
 /// Campaign-only faults. Lifecycle faults occur on scheduler rounds; topology
@@ -521,6 +523,8 @@ pub enum CampaignFaultKind {
     ClockJump,
     CpuThrottle,
     CpuRelease,
+    ClockRate,
+    ClockRateRelease,
     Partition,
     Heal,
     LinkPartition,
@@ -577,6 +581,7 @@ fn empty_campaign_fault(kind: CampaignFaultKind) -> ComposeCampaignFault {
         tx_queue_frames: None,
         rx_queue_frames: None,
         every_n_rounds: None,
+        rate: None,
     }
 }
 
@@ -1535,6 +1540,8 @@ pub struct CampaignFaultPlan {
     pub rx_queue_frames: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub every_n_rounds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4086,6 +4093,16 @@ fn campaign_plan(
                 "every_n_rounds belongs to cpu_throttle/cpu_release actions".to_owned(),
             ));
         }
+        if candidate.rate.is_some()
+            && !matches!(
+                candidate.kind,
+                CampaignFaultKind::ClockRate | CampaignFaultKind::ClockRateRelease
+            )
+        {
+            return Err(ComposeError::Invalid(
+                "rate belongs to clock_rate/clock_rate_release actions".to_owned(),
+            ));
+        }
         match candidate.kind {
             CampaignFaultKind::Pause
             | CampaignFaultKind::Restart
@@ -4180,6 +4197,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
+                    rate: None,
                 });
             }
             CampaignFaultKind::ServiceStop
@@ -4257,6 +4275,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
+                    rate: None,
                 });
             }
             CampaignFaultKind::Partition | CampaignFaultKind::Heal => {
@@ -4327,6 +4346,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
+                    rate: None,
                 });
             }
             CampaignFaultKind::LinkPartition | CampaignFaultKind::LinkHeal => {
@@ -4416,6 +4436,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
+                    rate: None,
                 });
             }
             CampaignFaultKind::CpuThrottle | CampaignFaultKind::CpuRelease => {
@@ -4515,6 +4536,113 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: candidate.every_n_rounds,
+                    rate: None,
+                });
+            }
+            CampaignFaultKind::ClockRate | CampaignFaultKind::ClockRateRelease => {
+                let service_name = candidate.service.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign clock_rate/clock_rate_release action requires service".to_owned(),
+                    )
+                })?;
+                let after = candidate.after.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign clock_rate/clock_rate_release action requires after".to_owned(),
+                    )
+                })?;
+                let (after, after_input) = normalize_campaign_fault_after(after, &operations)?;
+                let has_virtual_time = services
+                    .get(service_name)
+                    .map(|service| service.run.run.virtual_time.is_some())
+                    .ok_or_else(|| {
+                        ComposeError::Invalid(format!(
+                            "campaign clock_rate/clock_rate_release action references unknown service {service_name:?}"
+                        ))
+                    })?;
+                if !has_virtual_time {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign clock_rate/clock_rate_release action requires virtual_time on service {service_name:?}"
+                    )));
+                }
+                if candidate.network.is_some()
+                    || candidate.from.is_some()
+                    || candidate.to.is_some()
+                    || candidate.drive.is_some()
+                    || candidate.at_round.is_some()
+                    || candidate.nanoseconds.is_some()
+                    || candidate.error_ppm.is_some()
+                    || candidate.latency_rounds.is_some()
+                    || candidate.torn_write_bytes.is_some()
+                    || candidate.corrupt_read_xor.is_some()
+                    || candidate.ethertype.is_some()
+                    || candidate.every_n_rounds.is_some()
+                    || has_network_conditions
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign clock_rate/clock_rate_release actions accept only service, after, rate, and duration_rounds"
+                            .to_owned(),
+                    ));
+                }
+                if let Some(rate) = candidate.rate {
+                    if !(2..=16).contains(&rate) {
+                        return Err(ComposeError::Invalid(
+                            "campaign clock_rate rate must be between 2 and 16".to_owned(),
+                        ));
+                    }
+                }
+                if matches!(candidate.kind, CampaignFaultKind::ClockRate) {
+                    let duration = candidate.duration_rounds.ok_or_else(|| {
+                        ComposeError::Invalid(
+                            "campaign clock_rate requires duration_rounds".to_owned(),
+                        )
+                    })?;
+                    if duration == 0 || duration > 100_000 {
+                        return Err(ComposeError::Invalid(
+                            "campaign clock_rate duration_rounds must be between 1 and 100000"
+                                .to_owned(),
+                        ));
+                    }
+                    if candidate.rate.is_none() {
+                        return Err(ComposeError::Invalid(
+                            "campaign clock_rate requires rate".to_owned(),
+                        ));
+                    }
+                } else if candidate.duration_rounds.is_some() || candidate.rate.is_some() {
+                    return Err(ComposeError::Invalid(
+                        "campaign clock_rate_release accepts only service and after".to_owned(),
+                    ));
+                }
+                faults.push(CampaignFaultPlan {
+                    kind: candidate.kind,
+                    required: candidate.required,
+                    service: Some(service_name.to_owned()),
+                    network: None,
+                    from: None,
+                    to: None,
+                    drive: None,
+                    after,
+                    after_input,
+                    at_round: None,
+                    duration_rounds: candidate.duration_rounds,
+                    nanoseconds: None,
+                    error_ppm: None,
+                    latency_rounds: None,
+                    torn_write_bytes: None,
+                    corrupt_read_xor: None,
+                    ethertype: None,
+                    ip_protocol: None,
+                    source_port: None,
+                    destination_port: None,
+                    drop_ppm: None,
+                    duplicate_ppm: None,
+                    corrupt_ppm: None,
+                    jitter_rounds: None,
+                    tx_bytes_per_round: None,
+                    mtu_bytes: None,
+                    tx_queue_frames: None,
+                    rx_queue_frames: None,
+                    every_n_rounds: None,
+                    rate: candidate.rate,
                 });
             }
             CampaignFaultKind::LinkClog | CampaignFaultKind::LinkUnclog => {
@@ -4621,6 +4749,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
+                    rate: None,
                 });
             }
             CampaignFaultKind::StorageFault | CampaignFaultKind::StorageRecover => {
@@ -4724,6 +4853,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
+                    rate: None,
                 });
             }
             CampaignFaultKind::NetworkFault
@@ -4852,6 +4982,7 @@ fn campaign_plan(
                     tx_queue_frames: candidate.tx_queue_frames,
                     rx_queue_frames: candidate.rx_queue_frames,
                     every_n_rounds: None,
+                    rate: None,
                 });
             }
             CampaignFaultKind::PacketFault | CampaignFaultKind::PacketRecover => {
@@ -4997,6 +5128,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
+                    rate: None,
                 });
             }
         }
@@ -10230,6 +10362,65 @@ x-theseus:
         ));
         assert_eq!(campaign.faults[1].ethertype, Some(0x0800));
         assert_eq!(campaign.faults[1].drop_ppm, None);
+    }
+
+    #[test]
+    fn normalizes_and_validates_clock_rate_faults() {
+        let base = r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+      faults:
+        - at_round: 2
+          kind: clock_jump
+          nanoseconds: 1000
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input: 'write\n'
+    faults:
+      - __FAULT__
+"#;
+        let directory = fixture(
+            &base.replace(
+                "__FAULT__",
+                "kind: clock_rate\n        service: api\n        after: write\n        rate: 4\n        duration_rounds: 32",
+            ),
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        assert!(matches!(
+            campaign.faults[0].kind,
+            CampaignFaultKind::ClockRate
+        ));
+        assert_eq!(campaign.faults[0].rate, Some(4));
+        assert_eq!(campaign.faults[0].duration_rounds, Some(32));
+
+        let reject = |fault: &str, reason: &str| {
+            let fault = fault.replace("\\n", "\n");
+            let directory = fixture(&base.replace("__FAULT__", fault.trim()));
+            let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+            assert!(error.to_string().contains(reason), "{error}");
+        };
+        reject(
+            "kind: clock_rate\n        service: api\n        after: write\n        duration_rounds: 32",
+            "clock_rate requires rate",
+        );
+        reject(
+            "kind: clock_rate\n        service: api\n        after: write\n        rate: 1\n        duration_rounds: 32",
+            "rate must be between 2 and 16",
+        );
+        reject(
+            "kind: clock_rate_release\n        service: api\n        after: write\n        rate: 2",
+            "clock_rate_release accepts only service and after",
+        );
     }
 
     #[test]
