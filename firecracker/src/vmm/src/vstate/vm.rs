@@ -347,7 +347,7 @@ impl KvmVm {
     }
 
     /// Advance every paused vCPU's deterministic virtual clock by `delta_ns`.
-    pub fn jump_virtual_time(&self, delta_ns: u64) -> Result<(), crate::VmmError> {
+    pub fn jump_virtual_time(&self, delta_ns: i64) -> Result<(), crate::VmmError> {
         let mut handles = self.vcpus_handles();
         handles
             .iter_mut()

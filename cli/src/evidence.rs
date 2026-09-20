@@ -1694,8 +1694,8 @@ pub(crate) fn valid_machine_execution_record(record: &str) -> bool {
             return false;
         };
         return delta_text
-            .parse::<u64>()
-            .is_ok_and(|delta| delta > 0 && delta_text == delta.to_string());
+            .parse::<i64>()
+            .is_ok_and(|delta| delta != 0 && delta_text == delta.to_string());
     }
     record
         .strip_prefix("vcpu:")

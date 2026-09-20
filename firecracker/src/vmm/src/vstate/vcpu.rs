@@ -1057,8 +1057,8 @@ fn valid_machine_host_effect(effect: &str) -> bool {
         return false;
     };
     delta_text
-        .parse::<u64>()
-        .is_ok_and(|delta| delta > 0 && delta_text == delta.to_string())
+        .parse::<i64>()
+        .is_ok_and(|delta| delta != 0 && delta_text == delta.to_string())
 }
 
 fn valid_lowercase_hex(value: &str) -> bool {
@@ -1278,7 +1278,7 @@ impl Vcpu {
         self.vclock_anchored = false;
     }
 
-    fn jump_virtual_time(&mut self, delta_ns: u64) -> Result<(), VcpuError> {
+    fn jump_virtual_time(&mut self, delta_ns: i64) -> Result<(), VcpuError> {
         let clock = self.vclock.as_mut().ok_or_else(|| {
             VcpuError::FaultyKvmExit("virtual time is not enabled for this vCPU".to_owned())
         })?;
@@ -2947,7 +2947,7 @@ pub enum VcpuEvent {
     /// Event to dump CPU configuration of a paused Vcpu.
     DumpCpuConfig,
     /// Advance a paused vCPU's deterministic virtual clock.
-    JumpVirtualTime(u64),
+    JumpVirtualTime(i64),
     /// Read a vCPU's deterministic virtual clock at its next event boundary.
     GetVirtualTime,
 }

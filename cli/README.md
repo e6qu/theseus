@@ -577,8 +577,9 @@ time. The topology round budget is the largest `[run].max_rounds` across the
 service manifests; it defaults to 10000000. Faults are scoped to the service
 that declares them and must be strictly
 ordered. `pause` resumes after `duration_rounds`; `restart` cold-boots from
-locked artifacts; and `clock_jump` advances the guest's enabled virtual clock
-by `nanoseconds`. The replay directory contains `replay-plan.json` and, for
+locked artifacts; and `clock_jump` moves the guest's enabled virtual clock
+by `nanoseconds`; negative values jump backward, saturating at the anchored
+tick floor instead of failing the run. The replay directory contains `replay-plan.json` and, for
 each service, locked artifacts, one serial log per boot, applied faults, and
 `result.json`.
 

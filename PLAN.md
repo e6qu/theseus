@@ -296,8 +296,9 @@ Antithesis without constructing low-level campaign schedules by hand.
 - Let the explorer vary command ordering, parallelism, structured inputs,
   faults, and schedules while keeping lifecycle contracts intact.
 - CPU throttling and directed link clogs are explicit campaign faults and
-  `standard`-profile candidates now. Remaining in this slice: broader clock
-  behavior and configurable custom faults in the generated profile model.
+  `standard`-profile candidates now, and clock jumps move backward as well as
+  forward. Remaining in this slice: clock-rate behavior and configurable
+  custom faults in the generated profile model.
 - Generalize quiet periods and explicit fault windows beyond the current
   lifecycle roles and automatic terminal recovery.
 
