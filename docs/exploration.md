@@ -316,7 +316,9 @@ properties:
 ```
 
 Planning locks the complete property set, and campaign results retain each
-verdict. `--expect-counterexample` succeeds only when the named property is
+verdict. A failed verdict names the first violating timeline and a bounded
+serial excerpt around the primary needle, so a report leads directly from
+the failed property to the relevant log text. `--expect-counterexample` succeeds only when the named property is
 retained as failed, and its minimization preserves that outcome. Tutorial 30
 is the worked example. `compare` reports differing property
 verdicts between two campaigns; it remains an observation, not a causal

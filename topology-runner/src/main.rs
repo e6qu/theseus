@@ -9152,19 +9152,116 @@ fn evaluate_campaign_properties(
                 PropertyKind::Reachable => "reachable",
                 PropertyKind::Unreachable => "unreachable",
             };
+            let mut detail = format!(
+                "{} of {} retained timelines satisfied {}",
+                found,
+                runs.len(),
+                campaign_property_description(property)
+            );
+            if !passed {
+                let failing = property_first_failing_run(property.kind, &matches)
+                    .map(|index| runs[index].index)
+                    .unwrap_or_default();
+                if let Some(context) =
+                    property_violation_context(property, &output.join("runs").join(format!("{failing:03}")))
+                {
+                    detail.push_str(&format!(" — first violation: {context}"));
+                }
+            }
             Ok(CampaignPropertyResult {
                 name: property.name.clone(),
                 kind,
                 status: if passed { "passed" } else { "failed" },
-                detail: format!(
-                    "{} of {} retained timelines satisfied {}",
-                    found,
-                    runs.len(),
-                    campaign_property_description(property)
-                ),
+                detail,
             })
         })
         .collect()
+}
+
+/// The primary serial needle a property observes, for violation context.
+fn property_violation_needle(property: &CampaignProperty) -> Option<String> {
+    if let Some(contains) = property.contains.as_deref() {
+        return Some(contains.to_owned());
+    }
+    property
+        .contains_all
+        .first()
+        .or_else(|| property.contains_any.first())
+        .or_else(|| property.contains_none.first())
+        .cloned()
+        .or_else(|| {
+            property
+                .predicate
+                .as_ref()
+                .and_then(|predicate| predicate.contains.clone())
+        })
+}
+
+/// A bounded excerpt of the serial log around the first needle occurrence,
+/// or the log tail when the needle never appeared.
+fn serial_violation_excerpt(serial: &[u8], needle: Option<&str>) -> String {
+    const MAX: usize = 240;
+    let lossy = String::from_utf8_lossy(serial);
+    let offset = needle.and_then(|needle| lossy.find(needle));
+    let (start, end) = match offset {
+        Some(at) => {
+            let before = lossy[..at].rfind('\n').map(|at| at + 1).unwrap_or(0);
+            let before = lossy[..before]
+                .rfind('\n')
+                .map(|at| at + 1)
+                .unwrap_or(before);
+            let after = lossy[at..]
+                .find('\n')
+                .map(|line_end| at + line_end + 1)
+                .unwrap_or(lossy.len());
+            let after = lossy[after..]
+                .find('\n')
+                .map(|line_end| after + line_end + 1)
+                .unwrap_or(lossy.len());
+            (before, after)
+        }
+        None => (lossy.len().saturating_sub(MAX), lossy.len()),
+    };
+    let mut excerpt: String = lossy[start..end.min(lossy.len())].chars().collect();
+    if excerpt.len() > MAX {
+        excerpt = excerpt
+            .chars()
+            .skip(excerpt.len() - MAX)
+            .collect::<String>();
+    }
+    let trimmed = excerpt.trim();
+    let mut compact = trimmed.replace('\r', "");
+    if start > 0 {
+        compact.insert_str(0, "…");
+    }
+    if end < lossy.len() {
+        compact.push('…');
+    }
+    compact
+}
+
+/// Locate a failed property's first violation in one retained timeline: the
+/// service and bounded serial excerpt around the primary needle, or the log
+/// tail when the needle never appeared.
+fn property_violation_context(property: &CampaignProperty, run: &Path) -> Option<String> {
+    let needle = property_violation_needle(property);
+    let services = campaign_property_services(run, property.service.as_deref());
+    let mut fallback: Option<String> = None;
+    for service in services {
+        let serial = campaign_serial_contents(run, &service);
+        let hit = needle
+            .as_deref()
+            .is_some_and(|needle| serial_contains(&serial, needle));
+        let excerpt = serial_violation_excerpt(&serial, needle.as_deref());
+        let context = format!("service {service}: {excerpt}");
+        if hit {
+            return Some(context);
+        }
+        if fallback.is_none() {
+            fallback = Some(context);
+        }
+    }
+    fallback
 }
 
 fn campaign_serial_matches_property(
@@ -17701,6 +17798,27 @@ mod tests {
             campaign_fault_name(&clog),
             "backplane:api->worker:link_clog@write".to_owned()
         );
+    }
+
+    #[test]
+    fn violation_excerpts_bound_and_center_on_the_needle() {
+        let mut serial = Vec::new();
+        for index in 0..200 {
+            serial.extend_from_slice(format!("line {index} fillertext\n").as_bytes());
+        }
+        serial.extend_from_slice(b"counter value: 2\n");
+        for index in 0..200 {
+            serial.extend_from_slice(format!("after {index} fillertext\n").as_bytes());
+        }
+        let excerpt = serial_violation_excerpt(&serial, Some("counter value: 2"));
+        assert!(excerpt.contains("counter value: 2"));
+        assert!(excerpt.starts_with('…') && excerpt.ends_with('…'));
+        assert!(excerpt.chars().count() < 300, "{excerpt}");
+
+        // A needle that never appeared falls back to the bounded log tail.
+        let tail = serial_violation_excerpt(&serial, Some("absent needle"));
+        assert!(tail.contains("after 199 fillertext"));
+        assert!(!tail.contains("line 0 fillertext"));
     }
 
     #[test]
