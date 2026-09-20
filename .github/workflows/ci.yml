@@ -85,6 +85,24 @@ jobs:
             cmp work/replay/execution.json "work/rerun-$attempt/execution.json"
           done
           python3 -c 'import json; e = json.load(open("work/replay/execution.json")); t = e["machine_execution_trace"]; assert "host:serial_input:6:32312e35430a" in t; assert t[-1] == "vcpu:0:pio_write:0x64:1:fe", t[-10:]'
+          # Hold mode: kernel-timer deliveries become recorded, gated turns.
+          ../../../cli/target/debug/theseus test --output work/hold-replay hold.toml
+          grep -a '^sensor reading: 21.5C$' work/hold-replay/serial.log
+          test -f work/hold-replay/timer-observations.json
+          if ../../../cli/target/debug/theseus replay --output work/hold-rerun work/hold-replay; then
+            cmp work/hold-replay/execution.json work/hold-rerun/execution.json
+          else
+            # An episode moved across a handled-exit boundary between the
+            # runs; hold mode fails closed and names the moved delivery.
+            grep -aq "lapic-timer" work/hold-rerun/execution.json
+          fi
+          cp -a work/hold-replay work/hold-tampered
+          python3 forge-timer-turn.py work/hold-tampered
+          if ../../../cli/target/debug/theseus replay --output work/hold-rejected work/hold-tampered; then
+            echo "a forged kernel-timer turn must be rejected" >&2
+            exit 1
+          fi
+          python3 -c 'import json; e = json.load(open("work/hold-rejected/execution.json")); assert e["replay_error"], e'
 
       - name: Replay RNG and UART from a retained ready checkpoint on native KVM
         working-directory: docs/tutorials/42-replay-from-ready

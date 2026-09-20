@@ -1720,6 +1720,9 @@ fn valid_machine_vcpu_effect(effect: &str) -> bool {
         source,
         "serial" | "virtio-mmio" | "virtio-msix" | "vmgenid" | "vmclock" | "i8042"
     ) && gsi_text == gsi.to_string()
+        || (source == "lapic-timer"
+            && gsi_text == gsi.to_string()
+            && gsi < 256)
 }
 
 fn valid_lowercase_hex(value: &str) -> bool {
@@ -1897,6 +1900,18 @@ fn require(condition: bool, message: &str) -> Result<(), EvidenceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_lapic_timer_records_validate() {
+        assert!(valid_machine_execution_record("vcpu:0:interrupt:lapic-timer:239"));
+        assert!(!valid_machine_execution_record(
+            "vcpu:0:interrupt:lapic-timer:999"
+        ));
+        assert!(!valid_machine_execution_record(
+            "vcpu:0:interrupt:lapic-timer:x"
+        ));
+        assert!(!valid_machine_execution_record("vcpu:0:interrupt:unknown:4"));
+    }
 
     #[test]
     fn offline_checkpoint_evidence_binds_members_origin_and_prefix() {

@@ -74,7 +74,44 @@ Kernel timers and guest instruction ordering remain outside Theseus's control.
 The runner suppresses kernel boot diagnostics, which can include uncontrolled
 host-clock values; it still checks every retained device decision.
 
-## 6. Clean up (optional)
+## 6. Hold kernel timers on amd64 (optional)
+
+On an amd64 host, `hold.toml` enables held kernel timers: an asserted
+in-kernel LAPIC-timer delivery is cleared at the handled exit where it
+appears and injected at its recorded stream turn, which replay gates like
+any other vCPU turn.
+
+```sh
+theseus test --output work/hold-replay hold.toml
+grep -a '^sensor reading: 21.5C$' work/hold-replay/serial.log
+test -f work/hold-replay/timer-observations.json
+theseus replay --output work/hold-rerun work/hold-replay
+```
+
+A replay either passes exactly, or fails closed when an episode moved across
+a handled-exit boundary between the runs; the diagnostics name the
+`lapic-timer` delivery. Forging a turn is always rejected. `forge-timer-turn.py`
+inserts one forged record into a copy of the bundle and rebuilds the evidence
+digests exactly as the evidence contract defines them, so the only tampering
+is the forged turn itself. Review it before running:
+
+```sh
+sed -n '1,60p' forge-timer-turn.py
+cp -a work/hold-replay work/hold-tampered
+python3 forge-timer-turn.py work/hold-tampered
+if theseus replay --output work/hold-rejected work/hold-tampered; then
+  echo "a forged timer turn must be rejected" >&2
+  exit 1
+fi
+grep -o '"replay_error": "[^"]*' work/hold-rejected/execution.json
+```
+
+Expect the replay to fail with a divergence naming the forged turn. A short
+guest may take no timer deliveries at all; the observations file records what
+appeared. On arm64 the arch-timer PPI cannot be injected from userspace, so
+the manifest is rejected before boot there.
+
+## 7. Clean up (optional)
 
 ```sh
 rm -rf work
