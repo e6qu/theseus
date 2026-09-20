@@ -5222,6 +5222,15 @@ fn standard_fault_profile(
                     return generated;
                 }
             }
+            let mut throttled = empty_campaign_fault(CampaignFaultKind::CpuThrottle);
+            throttled.service = Some(service.clone());
+            throttled.after = Some(after.clone());
+            throttled.duration_rounds = Some(16);
+            throttled.every_n_rounds = Some(4);
+            generated.push(throttled);
+            if generated.len() == MAX_PROFILE_CANDIDATES {
+                return generated;
+            }
         }
         for (network, endpoints) in &network_services {
             for from in endpoints {
@@ -5232,6 +5241,17 @@ fn standard_fault_profile(
                     partition.to = Some(to.clone());
                     partition.after = Some(after.clone());
                     generated.push(partition);
+                    if generated.len() == MAX_PROFILE_CANDIDATES {
+                        return generated;
+                    }
+
+                    let mut clogged = empty_campaign_fault(CampaignFaultKind::LinkClog);
+                    clogged.network = Some(network.clone());
+                    clogged.from = Some(from.clone());
+                    clogged.to = Some(to.clone());
+                    clogged.after = Some(after.clone());
+                    clogged.latency_rounds = Some(64);
+                    generated.push(clogged);
                     if generated.len() == MAX_PROFILE_CANDIDATES {
                         return generated;
                     }
@@ -7703,7 +7723,7 @@ mod tests {
         );
         let campaign = plan.campaign.unwrap();
         assert_eq!(campaign.fault_profile, Some(ComposeFaultProfile::Standard));
-        assert_eq!(campaign.faults.len(), 7);
+        assert_eq!(campaign.faults.len(), 10);
         assert!(campaign.faults.iter().all(|fault| fault
             .after
             .as_deref()
@@ -7716,6 +7736,14 @@ mod tests {
                 .count(),
             1
         );
+        let throttles = campaign
+            .faults
+            .iter()
+            .filter(|fault| matches!(fault.kind, CampaignFaultKind::CpuThrottle))
+            .collect::<Vec<_>>();
+        assert_eq!(throttles.len(), 1);
+        assert_eq!(throttles[0].duration_rounds, Some(16));
+        assert_eq!(throttles[0].every_n_rounds, Some(4));
         let links = campaign
             .faults
             .iter()
@@ -7725,6 +7753,15 @@ mod tests {
         assert_eq!(links[0].drop_ppm, Some(100_000));
         assert_eq!(links[0].latency_rounds, Some(2));
         assert_eq!(links[0].mtu_bytes, Some(1_200));
+        let clogs = campaign
+            .faults
+            .iter()
+            .filter(|fault| matches!(fault.kind, CampaignFaultKind::LinkClog))
+            .collect::<Vec<_>>();
+        assert_eq!(clogs.len(), 2);
+        assert_eq!(clogs[0].latency_rounds, Some(64));
+        assert_eq!(clogs[0].from.as_deref(), Some("api"));
+        assert_eq!(clogs[0].to.as_deref(), Some("worker"));
     }
 
     #[test]
