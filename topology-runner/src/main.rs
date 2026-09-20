@@ -15732,6 +15732,7 @@ mod tests {
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
+                    rate: None,
                 }],
             },
         }];
@@ -17575,6 +17576,7 @@ mod tests {
             tx_queue_frames: None,
             rx_queue_frames: None,
             every_n_rounds: None,
+            rate: None,
         }
     }
 
