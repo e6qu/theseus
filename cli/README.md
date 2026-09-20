@@ -33,12 +33,12 @@ theseus coverage go --process NAME --module NAME --package PACKAGE --symbols DIR
 theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
-theseus compose replay replay-dir [--output replay-dir]
-theseus compose verify checkpoint-bundle-dir
 theseus compose explore [--output campaign-dir] [compose.yaml]
 theseus compose explore --expect-counterexample property [--output campaign-dir] [compose.yaml]
 theseus compose explore --minimize campaign-dir [--output minimized-dir]
 theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
+theseus compose replay replay-dir [--output replay-dir]
+theseus compose verify checkpoint-bundle-dir
 ```
 
 `validate` checks the manifest and artifacts. `test --dry-run` prints the

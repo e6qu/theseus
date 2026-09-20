@@ -52,6 +52,7 @@ jobs:
           python3 scripts/tests/test_tutorial_readmes.py
           python3 scripts/tests/test_documentation_claims.py
           python3 scripts/tests/test_documentation_links.py
+          python3 scripts/tests/test_cli_reference.py
           ! rg -n '/dev/hwrng|(^|[[:space:]])/theseus/|\.\./\.\./\.\.' docs/tutorials
 
       - name: Replay UART input and guest reset on native KVM
