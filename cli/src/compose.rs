@@ -507,6 +507,8 @@ struct ComposeCampaignFault {
     tx_queue_frames: Option<u32>,
     #[serde(default)]
     rx_queue_frames: Option<u32>,
+    #[serde(default)]
+    every_n_rounds: Option<u32>,
 }
 
 /// Campaign-only faults. Lifecycle faults occur on scheduler rounds; topology
@@ -517,10 +519,14 @@ pub enum CampaignFaultKind {
     Pause,
     Restart,
     ClockJump,
+    CpuThrottle,
+    CpuRelease,
     Partition,
     Heal,
     LinkPartition,
     LinkHeal,
+    LinkClog,
+    LinkUnclog,
     LinkFault,
     LinkRecover,
     ServiceStop,
@@ -570,6 +576,7 @@ fn empty_campaign_fault(kind: CampaignFaultKind) -> ComposeCampaignFault {
         mtu_bytes: None,
         tx_queue_frames: None,
         rx_queue_frames: None,
+        every_n_rounds: None,
     }
 }
 
@@ -1523,6 +1530,8 @@ pub struct CampaignFaultPlan {
     pub tx_queue_frames: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rx_queue_frames: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub every_n_rounds: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4064,6 +4073,16 @@ fn campaign_plan(
             || candidate.mtu_bytes.is_some()
             || candidate.tx_queue_frames.is_some()
             || candidate.rx_queue_frames.is_some();
+        if candidate.every_n_rounds.is_some()
+            && !matches!(
+                candidate.kind,
+                CampaignFaultKind::CpuThrottle | CampaignFaultKind::CpuRelease
+            )
+        {
+            return Err(ComposeError::Invalid(
+                "every_n_rounds belongs to cpu_throttle/cpu_release actions".to_owned(),
+            ));
+        }
         match candidate.kind {
             CampaignFaultKind::Pause
             | CampaignFaultKind::Restart
@@ -4157,6 +4176,7 @@ fn campaign_plan(
                     mtu_bytes: None,
                     tx_queue_frames: None,
                     rx_queue_frames: None,
+                    every_n_rounds: None,
                 });
             }
             CampaignFaultKind::ServiceStop
@@ -4233,6 +4253,7 @@ fn campaign_plan(
                     mtu_bytes: None,
                     tx_queue_frames: None,
                     rx_queue_frames: None,
+                    every_n_rounds: None,
                 });
             }
             CampaignFaultKind::Partition | CampaignFaultKind::Heal => {
@@ -4302,6 +4323,7 @@ fn campaign_plan(
                     mtu_bytes: None,
                     tx_queue_frames: None,
                     rx_queue_frames: None,
+                    every_n_rounds: None,
                 });
             }
             CampaignFaultKind::LinkPartition | CampaignFaultKind::LinkHeal => {
@@ -4390,6 +4412,212 @@ fn campaign_plan(
                     mtu_bytes: None,
                     tx_queue_frames: None,
                     rx_queue_frames: None,
+                    every_n_rounds: None,
+                });
+            }
+            CampaignFaultKind::CpuThrottle | CampaignFaultKind::CpuRelease => {
+                let service_name = candidate.service.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign cpu_throttle/cpu_release action requires service".to_owned(),
+                    )
+                })?;
+                let after = candidate.after.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign cpu_throttle/cpu_release action requires after".to_owned(),
+                    )
+                })?;
+                let (after, after_input) = normalize_campaign_fault_after(after, &operations)?;
+                if !services.contains_key(service_name) {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign cpu_throttle/cpu_release action references unknown service {service_name:?}"
+                    )));
+                }
+                if candidate.network.is_some()
+                    || candidate.from.is_some()
+                    || candidate.to.is_some()
+                    || candidate.drive.is_some()
+                    || candidate.at_round.is_some()
+                    || candidate.nanoseconds.is_some()
+                    || candidate.error_ppm.is_some()
+                    || candidate.latency_rounds.is_some()
+                    || candidate.torn_write_bytes.is_some()
+                    || candidate.corrupt_read_xor.is_some()
+                    || candidate.ethertype.is_some()
+                    || has_network_conditions
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign cpu_throttle/cpu_release actions accept only service, after, duration_rounds, and every_n_rounds"
+                            .to_owned(),
+                    ));
+                }
+                if let Some(every_n) = candidate.every_n_rounds {
+                    if every_n < 2 || every_n > 64 {
+                        return Err(ComposeError::Invalid(
+                            "campaign cpu_throttle every_n_rounds must be between 2 and 64"
+                                .to_owned(),
+                        ));
+                    }
+                }
+                if matches!(candidate.kind, CampaignFaultKind::CpuThrottle) {
+                    let duration = candidate.duration_rounds.ok_or_else(|| {
+                        ComposeError::Invalid(
+                            "campaign cpu_throttle requires duration_rounds".to_owned(),
+                        )
+                    })?;
+                    if duration == 0 || duration > 100_000 {
+                        return Err(ComposeError::Invalid(
+                            "campaign cpu_throttle duration_rounds must be between 1 and 100000"
+                                .to_owned(),
+                        ));
+                    }
+                    if candidate.every_n_rounds.is_none() {
+                        return Err(ComposeError::Invalid(
+                            "campaign cpu_throttle requires every_n_rounds".to_owned(),
+                        ));
+                    }
+                } else if candidate.duration_rounds.is_some()
+                    || candidate.every_n_rounds.is_some()
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign cpu_release accepts only service and after".to_owned(),
+                    ));
+                }
+                faults.push(CampaignFaultPlan {
+                    kind: candidate.kind,
+                    required: candidate.required,
+                    service: Some(service_name.to_owned()),
+                    network: None,
+                    from: None,
+                    to: None,
+                    drive: None,
+                    after,
+                    after_input,
+                    at_round: None,
+                    duration_rounds: candidate.duration_rounds,
+                    nanoseconds: None,
+                    error_ppm: None,
+                    latency_rounds: None,
+                    torn_write_bytes: None,
+                    corrupt_read_xor: None,
+                    ethertype: None,
+                    ip_protocol: None,
+                    source_port: None,
+                    destination_port: None,
+                    drop_ppm: None,
+                    duplicate_ppm: None,
+                    corrupt_ppm: None,
+                    jitter_rounds: None,
+                    tx_bytes_per_round: None,
+                    mtu_bytes: None,
+                    tx_queue_frames: None,
+                    rx_queue_frames: None,
+                    every_n_rounds: candidate.every_n_rounds,
+                });
+            }
+            CampaignFaultKind::LinkClog | CampaignFaultKind::LinkUnclog => {
+                let network = candidate.network.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign link_clog/link_unclog action requires network".to_owned(),
+                    )
+                })?;
+                let from = candidate.from.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign link_clog/link_unclog action requires from".to_owned(),
+                    )
+                })?;
+                let to = candidate.to.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign link_clog/link_unclog action requires to".to_owned(),
+                    )
+                })?;
+                let after = candidate.after.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid(
+                        "campaign link_clog/link_unclog action requires after".to_owned(),
+                    )
+                })?;
+                if from == to {
+                    return Err(ComposeError::Invalid(
+                        "campaign directed link action requires distinct from and to services"
+                            .to_owned(),
+                    ));
+                }
+                let (after, after_input) = normalize_campaign_fault_after(after, &operations)?;
+                for service_name in [from, to] {
+                    let service = services.get(service_name).ok_or_else(|| {
+                        ComposeError::Invalid(format!(
+                            "campaign directed link action references unknown service {service_name:?}",
+                        ))
+                    })?;
+                    if !service.networks.iter().any(|name| name == network) {
+                        return Err(ComposeError::Invalid(format!(
+                            "campaign directed link action service {service_name:?} is not on network {network:?}",
+                        )));
+                    }
+                }
+                if candidate.service.is_some()
+                    || candidate.drive.is_some()
+                    || candidate.at_round.is_some()
+                    || candidate.duration_rounds.is_some()
+                    || candidate.nanoseconds.is_some()
+                    || candidate.error_ppm.is_some()
+                    || candidate.torn_write_bytes.is_some()
+                    || candidate.corrupt_read_xor.is_some()
+                    || candidate.ethertype.is_some()
+                    || has_network_conditions
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign link_clog/link_unclog actions accept only network, from, to, after, and latency_rounds"
+                            .to_owned(),
+                    ));
+                }
+                if matches!(candidate.kind, CampaignFaultKind::LinkClog) {
+                    let latency = candidate.latency_rounds.ok_or_else(|| {
+                        ComposeError::Invalid(
+                            "campaign link_clog requires latency_rounds".to_owned(),
+                        )
+                    })?;
+                    if latency == 0 || latency > 4096 {
+                        return Err(ComposeError::Invalid(
+                            "campaign link_clog latency_rounds must be between 1 and 4096"
+                                .to_owned(),
+                        ));
+                    }
+                } else if candidate.latency_rounds.is_some() {
+                    return Err(ComposeError::Invalid(
+                        "campaign link_unclog accepts only network, from, to, and after"
+                            .to_owned(),
+                    ));
+                }
+                faults.push(CampaignFaultPlan {
+                    kind: candidate.kind,
+                    required: candidate.required,
+                    service: None,
+                    network: Some(network.to_owned()),
+                    from: Some(from.to_owned()),
+                    to: Some(to.to_owned()),
+                    drive: None,
+                    after,
+                    after_input,
+                    at_round: None,
+                    duration_rounds: None,
+                    nanoseconds: None,
+                    error_ppm: None,
+                    latency_rounds: candidate.latency_rounds,
+                    torn_write_bytes: None,
+                    corrupt_read_xor: None,
+                    ethertype: None,
+                    ip_protocol: None,
+                    source_port: None,
+                    destination_port: None,
+                    drop_ppm: None,
+                    duplicate_ppm: None,
+                    corrupt_ppm: None,
+                    jitter_rounds: None,
+                    tx_bytes_per_round: None,
+                    mtu_bytes: None,
+                    tx_queue_frames: None,
+                    rx_queue_frames: None,
+                    every_n_rounds: None,
                 });
             }
             CampaignFaultKind::StorageFault | CampaignFaultKind::StorageRecover => {
@@ -4492,6 +4720,7 @@ fn campaign_plan(
                     mtu_bytes: None,
                     tx_queue_frames: None,
                     rx_queue_frames: None,
+                    every_n_rounds: None,
                 });
             }
             CampaignFaultKind::NetworkFault
@@ -4619,6 +4848,7 @@ fn campaign_plan(
                     mtu_bytes: candidate.mtu_bytes,
                     tx_queue_frames: candidate.tx_queue_frames,
                     rx_queue_frames: candidate.rx_queue_frames,
+                    every_n_rounds: None,
                 });
             }
             CampaignFaultKind::PacketFault | CampaignFaultKind::PacketRecover => {
@@ -4763,6 +4993,7 @@ fn campaign_plan(
                     mtu_bytes: None,
                     tx_queue_frames: None,
                     rx_queue_frames: None,
+                    every_n_rounds: None,
                 });
             }
         }
@@ -9918,6 +10149,139 @@ x-theseus:
         ));
         assert_eq!(campaign.faults[1].ethertype, Some(0x0800));
         assert_eq!(campaign.faults[1].drop_ppm, None);
+    }
+
+    #[test]
+    fn normalizes_cpu_throttle_and_link_clog_faults() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+  worker:
+    x-theseus:
+      manifest: worker/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input: 'write\n'
+      - name: retry
+        input: 'retry\n'
+    faults:
+      - kind: cpu_throttle
+        service: worker
+        after: write
+        duration_rounds: 16
+        every_n_rounds: 4
+      - kind: cpu_release
+        service: worker
+        after: retry
+      - kind: link_clog
+        network: backplane
+        from: api
+        to: worker
+        after: write
+        latency_rounds: 64
+      - kind: link_unclog
+        network: backplane
+        from: api
+        to: worker
+        after: retry
+"#,
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        assert!(matches!(
+            campaign.faults[0].kind,
+            CampaignFaultKind::CpuThrottle
+        ));
+        assert_eq!(campaign.faults[0].duration_rounds, Some(16));
+        assert_eq!(campaign.faults[0].every_n_rounds, Some(4));
+        assert!(matches!(
+            campaign.faults[1].kind,
+            CampaignFaultKind::CpuRelease
+        ));
+        assert_eq!(campaign.faults[1].duration_rounds, None);
+        assert!(matches!(
+            campaign.faults[2].kind,
+            CampaignFaultKind::LinkClog
+        ));
+        assert_eq!(campaign.faults[2].latency_rounds, Some(64));
+        assert!(matches!(
+            campaign.faults[3].kind,
+            CampaignFaultKind::LinkUnclog
+        ));
+        assert_eq!(campaign.faults[3].latency_rounds, None);
+    }
+
+    #[test]
+    fn rejects_malformed_cpu_throttle_and_link_clog_faults() {
+        let base = r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+  worker:
+    x-theseus:
+      manifest: worker/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input: 'write\n'
+    faults:
+      - __FAULT__
+"#;
+        let reject = |fault: &str, reason: &str| {
+            let fault = fault.replace("\\n", "\n");
+            let directory = fixture(&base.replace("__FAULT__", fault.trim()));
+            let error = load_compose_plan(directory.path().join("compose.yaml")).unwrap_err();
+            assert!(error.to_string().contains(reason), "{error}");
+        };
+        reject(
+            "kind: cpu_throttle\n        service: worker\n        after: write\n        duration_rounds: 16",
+            "cpu_throttle requires every_n_rounds",
+        );
+        reject(
+            "kind: cpu_throttle\n        service: worker\n        after: write\n        duration_rounds: 16\n        every_n_rounds: 1",
+            "every_n_rounds must be between 2 and 64",
+        );
+        reject(
+            "kind: cpu_throttle\n        service: worker\n        after: write\n        every_n_rounds: 4",
+            "cpu_throttle requires duration_rounds",
+        );
+        reject(
+            "kind: cpu_release\n        service: worker\n        after: write\n        every_n_rounds: 4",
+            "cpu_release accepts only service and after",
+        );
+        reject(
+            "kind: cpu_throttle\n        service: worker\n        after: write\n        duration_rounds: 16\n        every_n_rounds: 4\n        at_round: 2",
+            "cpu_throttle/cpu_release actions accept only service, after, duration_rounds, and every_n_rounds",
+        );
+        reject(
+            "kind: link_clog\n        network: backplane\n        from: api\n        to: worker\n        after: write",
+            "link_clog requires latency_rounds",
+        );
+        reject(
+            "kind: link_clog\n        network: backplane\n        from: api\n        to: worker\n        after: write\n        latency_rounds: 10000",
+            "latency_rounds must be between 1 and 4096",
+        );
+        reject(
+            "kind: link_unclog\n        network: backplane\n        from: api\n        to: worker\n        after: write\n        latency_rounds: 8",
+            "link_unclog accepts only network, from, to, and after",
+        );
     }
 
     #[test]

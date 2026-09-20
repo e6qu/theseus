@@ -422,6 +422,8 @@ struct CampaignFault {
     tx_queue_frames: Option<u32>,
     #[serde(default)]
     rx_queue_frames: Option<u32>,
+    #[serde(default)]
+    every_n_rounds: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -430,10 +432,14 @@ enum CampaignFaultKind {
     Pause,
     Restart,
     ClockJump,
+    CpuThrottle,
+    CpuRelease,
     Partition,
     Heal,
     LinkPartition,
     LinkHeal,
+    LinkClog,
+    LinkUnclog,
     LinkFault,
     LinkRecover,
     ServiceStop,
@@ -1521,6 +1527,10 @@ struct CampaignAction {
     tx_queue_frames: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rx_queue_frames: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_rounds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    every_n_rounds: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1778,6 +1788,15 @@ struct AppliedFault {
     barrier_rounds: Option<u64>,
 }
 
+/// Deterministic CPU throttling: while active, the service is pumped only on
+/// global rounds that satisfy the modulus, so one throttle round is a real
+/// vCPU slice and the skipped rounds are simply not pumped.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct CpuThrottleState {
+    until_round: u64,
+    every_n_rounds: u32,
+}
+
 struct ServiceVm {
     vmm: Arc<Mutex<Vmm>>,
     event_manager: EventManager,
@@ -1803,6 +1822,7 @@ struct ServiceSchedulerCheckpoint {
     program_counters: Vec<u64>,
     next_fault: usize,
     paused_until: Option<u64>,
+    throttle: Option<CpuThrottleState>,
     faults: Vec<AppliedFault>,
     network_traffic: BTreeMap<String, NetworkTraffic>,
     network_trace: BTreeMap<String, Vec<NetworkFrame>>,
@@ -2511,6 +2531,7 @@ struct ServiceRuntime {
     serial_logs: Vec<PathBuf>,
     next_fault: usize,
     paused_until: Option<u64>,
+    throttle: Option<CpuThrottleState>,
     faults: Vec<AppliedFault>,
     network_traffic: BTreeMap<String, NetworkTraffic>,
     network_trace: BTreeMap<String, Vec<NetworkFrame>>,
@@ -2587,6 +2608,7 @@ fn capture_campaign_checkpoint(
                     program_counters: service.vm.paused_program_counters()?,
                     next_fault: service.next_fault,
                     paused_until: service.paused_until,
+                    throttle: service.throttle.clone(),
                     faults: service.faults.clone(),
                     network_traffic: service.network_traffic.clone(),
                     network_trace: service.network_trace.clone(),
@@ -2864,6 +2886,7 @@ fn checkpoint_campaign_operation(
                 serial_logs,
                 next_fault: scheduler.next_fault,
                 paused_until: scheduler.paused_until,
+                throttle: scheduler.throttle.clone(),
                 faults: scheduler.faults.clone(),
                 network_traffic: scheduler.network_traffic.clone(),
                 network_trace: scheduler.network_trace.clone(),
@@ -4022,6 +4045,7 @@ fn boot_campaign_checkpoint(
                 serial_logs: vec![serial],
                 next_fault: 0,
                 paused_until: None,
+                throttle: None,
                 faults: Vec::new(),
                 network_traffic: BTreeMap::new(),
                 network_trace: BTreeMap::new(),
@@ -7193,6 +7217,10 @@ fn campaign_faults_compatible(first: &CampaignFault, second: &CampaignFault) -> 
     if service_action(first) && service_action(second) && first.service == second.service {
         return false;
     }
+    let throttle = |fault: &CampaignFault| matches!(fault.kind, CampaignFaultKind::CpuThrottle);
+    if throttle(first) && throttle(second) && first.service == second.service {
+        return false;
+    }
     let lifecycle = |fault: &CampaignFault| {
         matches!(
             fault.kind,
@@ -7233,6 +7261,10 @@ fn campaign_fault_applies(
         | CampaignFaultKind::Heal
         | CampaignFaultKind::LinkPartition
         | CampaignFaultKind::LinkHeal
+        | CampaignFaultKind::LinkClog
+        | CampaignFaultKind::LinkUnclog
+        | CampaignFaultKind::CpuThrottle
+        | CampaignFaultKind::CpuRelease
         | CampaignFaultKind::LinkFault
         | CampaignFaultKind::LinkRecover
         | CampaignFaultKind::ServiceStop
@@ -7667,6 +7699,8 @@ fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
         mtu_bytes: fault.mtu_bytes,
         tx_queue_frames: fault.tx_queue_frames,
         rx_queue_frames: fault.rx_queue_frames,
+        duration_rounds: fault.duration_rounds,
+        every_n_rounds: fault.every_n_rounds,
     })
 }
 
@@ -7678,6 +7712,8 @@ fn campaign_recovery_action(
         CampaignFaultKind::Partition => CampaignFaultKind::Heal,
         CampaignFaultKind::LinkPartition => CampaignFaultKind::LinkHeal,
         CampaignFaultKind::LinkFault => CampaignFaultKind::LinkRecover,
+        CampaignFaultKind::CpuThrottle => CampaignFaultKind::CpuRelease,
+        CampaignFaultKind::LinkClog => CampaignFaultKind::LinkUnclog,
         CampaignFaultKind::ServiceStop | CampaignFaultKind::ServiceKill => {
             CampaignFaultKind::ServiceStart
         }
@@ -7687,8 +7723,10 @@ fn campaign_recovery_action(
         CampaignFaultKind::Pause
         | CampaignFaultKind::Restart
         | CampaignFaultKind::ClockJump
+        | CampaignFaultKind::CpuRelease
         | CampaignFaultKind::Heal
         | CampaignFaultKind::LinkHeal
+        | CampaignFaultKind::LinkUnclog
         | CampaignFaultKind::LinkRecover
         | CampaignFaultKind::ServiceStart
         | CampaignFaultKind::ServiceRestart
@@ -7742,6 +7780,18 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
             },
             campaign_fault_barrier_name(fault)
         ),
+        CampaignFaultKind::LinkClog | CampaignFaultKind::LinkUnclog => format!(
+            "{}:{}->{}:{}@{}",
+            fault.network.as_deref().expect("validated action network"),
+            fault.from.as_deref().expect("validated action source"),
+            fault.to.as_deref().expect("validated action destination"),
+            if matches!(fault.kind, CampaignFaultKind::LinkClog) {
+                "link_clog"
+            } else {
+                "link_unclog"
+            },
+            campaign_fault_barrier_name(fault)
+        ),
         CampaignFaultKind::LinkFault | CampaignFaultKind::LinkRecover => format!(
             "{}:{}->{}:{}@{}",
             fault.network.as_deref().expect("validated action network"),
@@ -7751,6 +7801,16 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
                 "link_fault"
             } else {
                 "link_recover"
+            },
+            campaign_fault_barrier_name(fault)
+        ),
+        CampaignFaultKind::CpuThrottle | CampaignFaultKind::CpuRelease => format!(
+            "{}:{}@{}",
+            fault.service.as_deref().expect("validated service target"),
+            match fault.kind {
+                CampaignFaultKind::CpuThrottle => "cpu_throttle",
+                CampaignFaultKind::CpuRelease => "cpu_release",
+                _ => unreachable!(),
             },
             campaign_fault_barrier_name(fault)
         ),
@@ -10221,7 +10281,7 @@ fn execute(
         let service_dir = output.join("services").join(name);
         fs::create_dir_all(&service_dir).map_err(|error| error.to_string())?;
         let serial = service_dir.join("serial.log");
-        let (vm, serial_logs, next_fault, paused_until, faults, network_traffic, network_trace) =
+        let (vm, serial_logs, next_fault, paused_until, throttle, faults, network_traffic, network_trace) =
             if let Some(checkpoint) = checkpoint {
                 let scheduler = checkpoint
                     .scheduler
@@ -10253,6 +10313,7 @@ fn execute(
                     serial_logs,
                     scheduler.next_fault,
                     scheduler.paused_until,
+                    scheduler.throttle.clone(),
                     scheduler.faults.clone(),
                     scheduler.network_traffic.clone(),
                     scheduler.network_trace.clone(),
@@ -10270,6 +10331,7 @@ fn execute(
                     )?,
                     vec![serial],
                     0,
+                    None,
                     None,
                     Vec::new(),
                     BTreeMap::new(),
@@ -10294,6 +10356,7 @@ fn execute(
                 serial_logs,
                 next_fault,
                 paused_until,
+                throttle,
                 faults,
                 network_traffic,
                 network_trace,
@@ -10387,7 +10450,13 @@ fn execute(
                     &mut switches,
                     remaining_rounds,
                 )?);
-            if service.paused_until.is_none() && service.vm.exited().is_none() {
+            let throttled = service.throttle.as_ref().is_some_and(|state| {
+                state.until_round > round && round % u64::from(state.every_n_rounds) != 0
+            });
+            if service.paused_until.is_none()
+                && !throttled
+                && service.vm.exited().is_none()
+            {
                 service.vm.pump();
             }
             services.insert(name.clone(), service);
@@ -11665,7 +11734,10 @@ fn apply_campaign_action(
                 ),
             })
         }
-        CampaignFaultKind::LinkFault | CampaignFaultKind::LinkRecover => {
+        CampaignFaultKind::LinkFault
+        | CampaignFaultKind::LinkRecover
+        | CampaignFaultKind::LinkClog
+        | CampaignFaultKind::LinkUnclog => {
             let network = action
                 .network
                 .as_deref()
@@ -11678,7 +11750,10 @@ fn apply_campaign_action(
                 .to
                 .as_deref()
                 .ok_or_else(|| "campaign directed link fault has no destination".to_owned())?;
-            let recover = matches!(action.kind, CampaignFaultKind::LinkRecover);
+            let recover = matches!(
+                action.kind,
+                CampaignFaultKind::LinkRecover | CampaignFaultKind::LinkUnclog
+            );
             let destination = if to == driver_name {
                 driver.vm.network_endpoint(network)?
             } else {
@@ -11710,15 +11785,21 @@ fn apply_campaign_action(
             }
             Ok(AppliedCampaignAction {
                 operation: action.operation.clone(),
-                kind: if recover {
-                    "link_recover"
-                } else {
-                    "link_fault"
+                kind: match action.kind {
+                    CampaignFaultKind::LinkRecover => "link_recover",
+                    CampaignFaultKind::LinkUnclog => "link_unclog",
+                    CampaignFaultKind::LinkClog => "link_clog",
+                    _ => "link_fault",
                 }
                 .to_owned(),
                 target: format!("network:{network}/{from}->{to}"),
                 detail: if recover {
                     "restored the directed link".to_owned()
+                } else if matches!(action.kind, CampaignFaultKind::LinkClog) {
+                    format!(
+                        "clogged the directed link with latency_rounds={}",
+                        action.latency_rounds.unwrap_or(0),
+                    )
                 } else {
                     format!(
                         "drop_ppm={}, duplicate_ppm={}, corrupt_ppm={}, latency_rounds={}, jitter_rounds={}, tx_bytes_per_round={}, mtu_bytes={}, tx_queue_frames={}, rx_queue_frames={}",
@@ -12037,6 +12118,42 @@ fn apply_campaign_action(
                 kind: format!("service_{verb}"),
                 target: format!("service:{service}"),
                 detail: format!("service process group {verb} completed at the operation barrier"),
+            })
+        }
+        CampaignFaultKind::CpuThrottle | CampaignFaultKind::CpuRelease => {
+            let service_name = action
+                .service
+                .as_deref()
+                .ok_or_else(|| "campaign cpu action has no service".to_owned())?;
+            let release = matches!(action.kind, CampaignFaultKind::CpuRelease);
+            let target = if service_name == driver_name {
+                driver
+            } else {
+                services.get_mut(service_name).ok_or_else(|| {
+                    format!("campaign cpu action service did not start: {service_name}")
+                })?
+            };
+            let detail = if release {
+                target.throttle = None;
+                "released the cpu throttle at the operation barrier".to_owned()
+            } else {
+                let duration = action
+                    .duration_rounds
+                    .ok_or_else(|| "campaign cpu_throttle has no duration_rounds".to_owned())?;
+                let every_n = action
+                    .every_n_rounds
+                    .ok_or_else(|| "campaign cpu_throttle has no every_n_rounds".to_owned())?;
+                target.throttle = Some(CpuThrottleState {
+                    until_round: round.saturating_add(duration),
+                    every_n_rounds: every_n,
+                });
+                format!("throttled to 1 of {every_n} rounds for {duration} rounds")
+            };
+            Ok(AppliedCampaignAction {
+                operation: action.operation.clone(),
+                kind: if release { "cpu_release" } else { "cpu_throttle" }.to_owned(),
+                target: format!("service:{service_name}"),
+                detail,
             })
         }
         CampaignFaultKind::Pause | CampaignFaultKind::Restart | CampaignFaultKind::ClockJump => {
@@ -13722,6 +13839,7 @@ mod tests {
                     program_counters: Vec::new(),
                     next_fault: 0,
                     paused_until: None,
+                throttle: None,
                     faults: Vec::new(),
                     network_traffic: BTreeMap::new(),
                     network_trace: BTreeMap::new(),
@@ -13816,6 +13934,7 @@ mod tests {
                     program_counters: Vec::new(),
                     next_fault: 0,
                     paused_until: None,
+                throttle: None,
                     faults: Vec::new(),
                     network_traffic: BTreeMap::new(),
                     network_trace: BTreeMap::new(),
@@ -13923,6 +14042,7 @@ mod tests {
                         program_counters: Vec::new(),
                         next_fault: 0,
                         paused_until: None,
+                throttle: None,
                         faults: Vec::new(),
                         network_traffic: BTreeMap::new(),
                         network_trace: BTreeMap::new(),
@@ -13943,6 +14063,7 @@ mod tests {
                         program_counters: Vec::new(),
                         next_fault: 0,
                         paused_until: None,
+                throttle: None,
                         faults: Vec::new(),
                         network_traffic: BTreeMap::new(),
                         network_trace: BTreeMap::new(),
@@ -14656,6 +14777,7 @@ mod tests {
                     program_counters: vec![0x8000],
                     next_fault: 0,
                     paused_until: None,
+                throttle: None,
                     faults: Vec::new(),
                     network_traffic: BTreeMap::new(),
                     network_trace: BTreeMap::new(),
@@ -14683,6 +14805,7 @@ mod tests {
                     program_counters: Vec::new(),
                     next_fault: 0,
                     paused_until: None,
+                throttle: None,
                     faults: Vec::new(),
                     network_traffic: BTreeMap::new(),
                     network_trace: BTreeMap::new(),
@@ -14706,6 +14829,7 @@ mod tests {
                         program_counters: Vec::new(),
                         next_fault: 0,
                         paused_until: None,
+                throttle: None,
                         faults: Vec::new(),
                         network_traffic: BTreeMap::new(),
                         network_trace: BTreeMap::new(),
@@ -15111,6 +15235,7 @@ mod tests {
                 program_counters: Vec::new(),
                 next_fault: 0,
                 paused_until: None,
+                throttle: None,
                 faults: Vec::new(),
                 network_traffic: BTreeMap::new(),
                 network_trace: BTreeMap::new(),
@@ -15227,6 +15352,7 @@ mod tests {
             program_counters: Vec::new(),
             next_fault: 0,
             paused_until: None,
+                throttle: None,
             faults: Vec::new(),
             network_traffic: BTreeMap::new(),
             network_trace: BTreeMap::new(),
@@ -15294,6 +15420,7 @@ mod tests {
                     operation: "ping".to_owned(),
                     kind: CampaignFaultKind::Partition,
                     service: None,
+                    duration_rounds: None,
                     network: Some("backplane".to_owned()),
                     from: None,
                     to: None,
@@ -15314,6 +15441,7 @@ mod tests {
                     mtu_bytes: None,
                     tx_queue_frames: None,
                     rx_queue_frames: None,
+                    every_n_rounds: None,
                 }],
             },
         }];
@@ -16031,6 +16159,7 @@ mod tests {
                 program_counters,
                 next_fault: 0,
                 paused_until: None,
+                throttle: None,
                 faults: Vec::new(),
                 network_traffic: BTreeMap::new(),
                 network_trace: BTreeMap::new(),
@@ -17154,6 +17283,7 @@ mod tests {
             mtu_bytes: None,
             tx_queue_frames: None,
             rx_queue_frames: None,
+            every_n_rounds: None,
         }
     }
 
@@ -17379,6 +17509,8 @@ mod tests {
                 CampaignFaultKind::LinkHeal,
             ),
             (CampaignFaultKind::LinkFault, CampaignFaultKind::LinkRecover),
+            (CampaignFaultKind::LinkClog, CampaignFaultKind::LinkUnclog),
+            (CampaignFaultKind::CpuThrottle, CampaignFaultKind::CpuRelease),
             (
                 CampaignFaultKind::ServiceStop,
                 CampaignFaultKind::ServiceStart,
@@ -17412,6 +17544,48 @@ mod tests {
         )
         .unwrap()
         .is_none());
+    }
+
+
+    #[test]
+    fn cpu_throttles_are_incompatible_on_one_service_and_named_by_target() {
+        let mut first = campaign_fault(CampaignFaultKind::CpuThrottle);
+        first.service = Some("api".to_owned());
+        let mut second = campaign_fault(CampaignFaultKind::CpuThrottle);
+        second.service = first.service.clone();
+        assert!(!campaign_faults_compatible(&first, &second));
+        second.service = Some("worker".to_owned());
+        assert!(campaign_faults_compatible(&first, &second));
+        let mut clog = campaign_fault(CampaignFaultKind::LinkClog);
+        clog.from = Some("api".to_owned());
+        clog.to = Some("worker".to_owned());
+        assert_eq!(
+            campaign_fault_name(&first),
+            "api:cpu_throttle@write".to_owned()
+        );
+        assert_eq!(
+            campaign_fault_name(&clog),
+            "backplane:api->worker:link_clog@write".to_owned()
+        );
+    }
+
+    #[test]
+    fn cpu_throttle_gate_skips_modulus_rounds_only_inside_the_window() {
+        let throttle = CpuThrottleState {
+            until_round: 10,
+            every_n_rounds: 3,
+        };
+        let skipped = |round: u64| {
+            throttle.until_round > round && round % u64::from(throttle.every_n_rounds) != 0
+        };
+        // Rounds 1, 2, 4, 5, 7, 8 skip; rounds 0, 3, 6, 9 run; the window
+        // closes at round 10 and every round runs afterwards.
+        for round in [1u64, 2, 4, 5, 7, 8] {
+            assert!(skipped(round), "round {round} should skip");
+        }
+        for round in [0u64, 3, 6, 9, 10, 11, 12] {
+            assert!(!skipped(round), "round {round} should run");
+        }
     }
 
     #[test]
