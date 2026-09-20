@@ -875,6 +875,9 @@ struct ComposeJsonCondition {
 pub enum PropertyKind {
     /// Every generated timeline must report the property.
     Always,
+    /// Every generated timeline must report the property, or none may reach
+    /// it at all; a corpus where only some timelines report it fails.
+    AlwaysOrUnreachable,
     /// At least one generated timeline must report the property.
     Sometimes,
     /// The campaign must reach a timeline that reports the property.
@@ -10186,6 +10189,39 @@ x-theseus:
         ));
         assert_eq!(campaign.faults[1].ethertype, Some(0x0800));
         assert_eq!(campaign.faults[1].drop_ppm, None);
+    }
+
+    #[test]
+    fn parses_always_or_unreachable_properties() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input: 'write\n'
+    properties:
+      - name: no_data_loss
+        kind: always_or_unreachable
+        service: api
+        contains: 'THES:ASSERT:no_data_loss:pass'
+"#,
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        assert!(matches!(
+            campaign.properties[0].kind,
+            PropertyKind::AlwaysOrUnreachable
+        ));
     }
 
     #[test]
