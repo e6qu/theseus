@@ -161,6 +161,18 @@ enum CampaignGuidance {
     Unified,
 }
 
+impl CampaignGuidance {
+    fn as_str(&self) -> &'static str {
+        match self {
+            CampaignGuidance::Coverage => "coverage",
+            CampaignGuidance::Adaptive => "adaptive",
+            CampaignGuidance::Posterior => "posterior",
+            CampaignGuidance::Property => "property",
+            CampaignGuidance::Unified => "unified",
+        }
+    }
+}
+
 /// Select one primary coverage signal when comparing scheduler strategies.
 /// Topology-state and failure evidence remains a shared secondary signal.
 /// `execution_locations` is the practical default; the other modes remain
@@ -3543,6 +3555,8 @@ fn campaign_progress_line(
     faults: &[String],
     failed_properties: &[&str],
     checkpoint_reuses: u64,
+    guidance: &str,
+    max_runs: usize,
 ) -> String {
     let mut line = format!(
         "{{\"format\":\"theseus-progress-v1\",\"completed\":{completed},\"index\":{index},\"status\":\"{status}\",\"operations\":[{}],\"faults\":[{}]",
@@ -3568,7 +3582,7 @@ fn campaign_progress_line(
         ));
     }
     line.push_str(&format!(
-        ",\"checkpoint_reuses\":{checkpoint_reuses}}}"
+        ",\"checkpoint_reuses\":{checkpoint_reuses},\"guidance\":\"{guidance}\",\"max_runs\":{max_runs}}}"
     ));
     line
 }
@@ -3921,6 +3935,8 @@ fn execute_campaign(
                     &run.faults,
                     &failed_properties,
                     checkpoints.reuses as u64,
+                    campaign.guidance.as_str(),
+                    usize::from(campaign.max_runs),
                 )
             );
         }
@@ -17944,13 +17960,16 @@ mod tests {
             &faults,
             &["lost_update_is_unreachable"],
             7,
+            "unified",
+            64,
         );
         assert_eq!(
             line,
-            r#"{"format":"theseus-progress-v1","completed":3,"index":2,"status":"failed","operations":["write","read"],"faults":["backplane:partition@write"],"failed_properties":["lost_update_is_unreachable"],"checkpoint_reuses":7}"#
+            r#"{"format":"theseus-progress-v1","completed":3,"index":2,"status":"failed","operations":["write","read"],"faults":["backplane:partition@write"],"failed_properties":["lost_update_is_unreachable"],"checkpoint_reuses":7,"guidance":"unified","max_runs":64}"#
         );
-        let line = campaign_progress_line(1, 0, "passed", &operations, &[], &[], 0);
+        let line = campaign_progress_line(1, 0, "passed", &operations, &[], &[], 0, "coverage", 8);
         assert!(line.contains(r#""status":"passed""#));
+        assert!(line.contains(r#""guidance":"coverage""#));
         assert!(!line.contains("failed_properties"));
     }
 

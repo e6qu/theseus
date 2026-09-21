@@ -595,7 +595,9 @@ and `compose plan`; it reports a direct missing-runner error for execution.
 While `compose explore` runs, the executor writes one structured progress
 line per completed timeline to stderr: `theseus-progress-v1` with the
 completed count, run index, status, operations, faults, failed properties,
-and checkpoint reuses, so CI jobs and wrappers can follow the search live.
+checkpoint reuses, and the effective guidance and budget, so CI jobs and
+wrappers can follow the search live and attribute it to the comparison arm
+that produced it.
 
 Campaign operation-barrier fault entries are explored as optional choices by
 default. Add `required: true` when every generated schedule that reaches the
