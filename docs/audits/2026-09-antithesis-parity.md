@@ -44,11 +44,11 @@ This month closed or narrowed several named gaps:
 
 ## Priority gaps and the fix for each
 
-1. **Moment-addressed event log** (`(vtime, input_hash)`). Every campaign
-   boundary already records virtual time and input digests separately;
-   binding them into one stable moment identifier makes temporal queries,
-   moment-scoped log retrieval, and cross-run comparison share one
-   address space. Lowest-cost, highest-leverage step; prerequisite for 2.
+1. **Moment-addressed event log** (`(vtime, input_hash)`). Campaign
+   boundaries now carry the moment address `<vtime_ns>@<input_sha256>`,
+   giving reports and queries one stable point per operation. The open
+   work is retrieval on that address (moment-scoped log views and
+   cross-run diffing), which prerequisites 2.
 2. **Temporal queries** (`preceded by` / `followed by` over retained
    events). The property layer already evaluates temporal relations inside
    runs; exposing them as queries over a retained bundle reuses that

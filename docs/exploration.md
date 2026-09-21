@@ -321,6 +321,11 @@ properties:
         fields: {/event: shell_operation, /name: inspect, /output/value: 1}
 ```
 
+Every operation boundary in a retained campaign carries a moment address —
+`<virtual-time-ns>@<input-sha256>` for the service that received the
+operation — so reports, queries, and cross-run comparisons can reference one
+stable point in one run's event log.
+
 Planning locks the complete property set, and campaign results retain each
 verdict. A failed verdict names the first violating timeline and a bounded
 serial excerpt around the primary needle, so a report leads directly from
