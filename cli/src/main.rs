@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use theseus_cli::{
     capture_evaluation, cargo_coverage, cargo_coverage_rustc_wrapper, compare_campaigns, evaluate,
     explore, explore_compose_with, explore_compose_expect_counterexample_with,
-    go_coverage,
+    go_coverage, query_moment,
     load_compose_plan, load_plan, minimize_compose_campaign,
     minimize_compose_campaign_expect_counterexample, minimize_exploration_path, query_campaigns,
     replay, replay_compose, replay_exploration, replay_exploration_path, replay_to, report,
@@ -33,6 +33,7 @@ const USAGE: &str = "Usage:
   theseus compare left-campaign-dir right-campaign-dir
   theseus compare --format json|markdown left-campaign-dir right-campaign-dir
   theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
+  theseus query campaign-dir --moment <vtime_ns>@<input_sha256>
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
   theseus evaluate lock [theseus-evaluation.toml]
   theseus evaluate capture campaign-dir --output evaluation-dir --name name
@@ -205,6 +206,28 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let path =
                 capture_evaluation(campaign, output, name).map_err(|error| error.to_string())?;
             println!("evaluation: {}", path.display());
+            Ok(())
+        }
+        [command, bundle, flag, moment]
+            if command == "query" && flag == "--moment" =>
+        {
+            let hit = query_moment(bundle, moment).map_err(|error| error.to_string())?;
+            println!("run: {}", hit.run);
+            println!("boundary: {}", hit.boundary);
+            println!("operation: {}", hit.operation);
+            println!("service: {}", hit.service);
+            println!("moment: {moment}");
+            println!("vtime_ns: {}", hit.vtime_ns);
+            println!("input_sha256: {}", hit.input_sha256);
+            for (service, excerpt) in &hit.excerpts {
+                println!("excerpt {service}: {excerpt}");
+            }
+            if let Some(previous) = &hit.previous {
+                println!("previous: {previous}");
+            }
+            if let Some(next) = &hit.next {
+                println!("next: {next}");
+            }
             Ok(())
         }
         [command] if command == "evaluate" => {

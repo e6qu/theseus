@@ -21,6 +21,7 @@ theseus report --format markdown|json|junit [--output file] result-dir
 theseus compare left-campaign-dir right-campaign-dir
 theseus compare --format json|markdown left-campaign-dir right-campaign-dir
 theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
+theseus query campaign-dir --moment <vtime_ns>@<input_sha256>
 theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
 theseus evaluate lock [theseus-evaluation.toml]
 theseus evaluate capture campaign-dir --output evaluation-dir --name name
@@ -622,6 +623,21 @@ override the declared budget and guidance for one exploration without editing
 the Compose file: comparing the same file across guidance modes at one fixed
 budget is the reproducible search comparison the roadmap requires, and every
 retained campaign records which mode and budget produced it.
+
+## Query a moment
+
+Every retained campaign boundary carries a moment address (see the Moment
+log in any campaign report). Resolve one address to its boundary, log
+excerpts, and neighboring moments:
+
+```sh
+theseus query theseus-compose-campaign --moment 7000@0f1c2b3d4e5f60718293a4b5c6d7e8f90112233445566778899aabbccddeeff0
+```
+
+Expect the run and boundary identities, the service and operation, the
+cumulative virtual time and input digest, the bounded serial excerpts, and
+the previous and next moment addresses for temporal navigation. An address
+that no boundary carries fails with that address in the error.
 
 ## Checks
 
