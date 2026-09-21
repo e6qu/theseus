@@ -8,6 +8,7 @@
 
 mod cargo_coverage;
 mod compare;
+mod query;
 mod compose;
 mod evaluation;
 mod evidence;
@@ -34,6 +35,7 @@ pub use compose::{
     minimize_compose_campaign_expect_counterexample, replay_compose, test_compose,
     CampaignGuidance, ComposeError, ComposePlan,
 };
+pub use query::{query_moment, MomentError, MomentHit};
 pub use evaluation::{
     capture_evaluation, evaluate, write_evaluation_lock, EvaluationError, EvaluationSummary,
 };

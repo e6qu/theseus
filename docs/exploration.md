@@ -325,8 +325,9 @@ Every operation boundary in a retained campaign carries a moment address —
 `<virtual-time-ns>@<input-sha256>` for the service that received the
 operation — so reports, queries, and cross-run comparisons can reference one
 stable point in one run's event log. The campaign report renders a moment
-log: an index from every moment address to its bounded log excerpt, so an
-address printed by a divergence or a query resolves to its log text offline.
+log: an index from every moment address to its bounded log excerpt, and
+`theseus query <campaign-dir> --moment <address>` resolves an address to its
+boundary, log excerpts, and neighboring moments for temporal navigation.
 
 Planning locks the complete property set, and campaign results retain each
 verdict. A failed verdict names the first violating timeline and a bounded
