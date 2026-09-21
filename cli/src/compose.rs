@@ -7318,13 +7318,38 @@ pub fn explore_compose(
     path: impl AsRef<Path>,
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ComposeError> {
-    let plan = load_compose_plan(&path)?;
+    explore_compose_with(path, output, None, None)
+}
+
+/// Execute the topology's declared campaign with explicit fixed-budget and
+/// guidance overrides. Comparing the same Compose file across guidance modes
+/// at one budget is the fixed-budget search comparison the roadmap requires.
+pub fn explore_compose_with(
+    path: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    max_runs: Option<u16>,
+    guidance: Option<CampaignGuidance>,
+) -> Result<PathBuf, ComposeError> {
+    let mut plan = load_compose_plan(&path)?;
     if plan.campaign.is_none() {
         return Err(ComposeError::Invalid(
             "Compose file has no x-theseus.campaign section".to_owned(),
         ));
     }
-    test_compose(path, output)
+    if let Some(campaign) = plan.campaign.as_mut() {
+        if let Some(max_runs) = max_runs {
+            campaign.max_runs = max_runs;
+        }
+        if let Some(guidance) = guidance {
+            campaign.guidance = guidance;
+        }
+    }
+    plan.topology_runner = Some(installed_runner_artifact()?);
+    let output = output.as_ref().to_path_buf();
+    let plan_file = write_temporary_topology_plan(&plan, &output)?;
+    let result = execute_topology(&plan_file, &output);
+    let _ = fs::remove_file(&plan_file);
+    result.map(|()| output)
 }
 
 /// Execute a campaign which is deliberately expected to falsify one named
@@ -7347,6 +7372,44 @@ pub fn explore_compose_expect_counterexample(
         return Err(ComposeError::Invalid(format!(
             "campaign has no property named {property:?}"
         )));
+    }
+    plan.topology_runner = Some(installed_runner_artifact()?);
+    let output = output.as_ref().to_path_buf();
+    let plan_file = write_temporary_topology_plan(&plan, &output)?;
+    let result = execute_topology_expect_counterexample(&plan_file, &output, None, property);
+    let _ = fs::remove_file(&plan_file);
+    result.map(|()| output)
+}
+
+/// Execute a campaign expected to falsify one named property, with the same
+/// fixed-budget and guidance overrides as [`explore_compose_with`].
+pub fn explore_compose_expect_counterexample_with(
+    path: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    property: &str,
+    max_runs: Option<u16>,
+    guidance: Option<CampaignGuidance>,
+) -> Result<PathBuf, ComposeError> {
+    let mut plan = load_compose_plan(&path)?;
+    let campaign = plan.campaign.as_ref().ok_or_else(|| {
+        ComposeError::Invalid("Compose file has no x-theseus.campaign section".to_owned())
+    })?;
+    if !campaign
+        .properties
+        .iter()
+        .any(|candidate| candidate.name == property)
+    {
+        return Err(ComposeError::Invalid(format!(
+            "campaign has no property named {property:?}"
+        )));
+    }
+    if let Some(campaign) = plan.campaign.as_mut() {
+        if let Some(max_runs) = max_runs {
+            campaign.max_runs = max_runs;
+        }
+        if let Some(guidance) = guidance {
+            campaign.guidance = guidance;
+        }
     }
     plan.topology_runner = Some(installed_runner_artifact()?);
     let output = output.as_ref().to_path_buf();

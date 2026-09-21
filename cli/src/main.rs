@@ -7,13 +7,15 @@ use std::process::ExitCode;
 
 use theseus_cli::{
     capture_evaluation, cargo_coverage, cargo_coverage_rustc_wrapper, compare_campaigns, evaluate,
-    explore, explore_compose, explore_compose_expect_counterexample, go_coverage,
+    explore, explore_compose_with, explore_compose_expect_counterexample_with,
+    go_coverage,
     load_compose_plan, load_plan, minimize_compose_campaign,
     minimize_compose_campaign_expect_counterexample, minimize_exploration_path, query_campaigns,
     replay, replay_compose, replay_exploration, replay_exploration_path, replay_to, report,
     report_file, report_text, snapshot_exploration_path, test, test_compose,
     verify_native_evidence, verify_topology_bundle, write_evaluation_lock, ReportFormat,
     CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE,
+    CampaignGuidance,
 };
 
 const USAGE: &str = "Usage:
@@ -43,8 +45,8 @@ const USAGE: &str = "Usage:
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
-  theseus compose explore [--output campaign-dir] [compose.yaml]
-  theseus compose explore --expect-counterexample property [--output campaign-dir] [compose.yaml]
+  theseus compose explore [--max-runs N] [--guidance MODE] [--output campaign-dir] [compose.yaml]
+  theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--output campaign-dir] [compose.yaml]
   theseus compose explore --minimize campaign-dir [--output minimized-dir]
   theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
   theseus compose replay replay-dir [--output replay-dir]
@@ -484,9 +486,15 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 && expect == "--expect-counterexample"
                 && output_flag == "--output" =>
         {
-            let compose = compose_path(rest)?;
-            let result = explore_compose_expect_counterexample(&compose, output, property)
-                .map_err(|error| error.to_string())?;
+            let (compose, (max_runs, guidance)) = compose_explore_overrides(rest)?;
+            let result = explore_compose_expect_counterexample_with(
+                &compose,
+                output,
+                property,
+                max_runs,
+                guidance,
+            )
+            .map_err(|error| error.to_string())?;
             println!("counterexample retained: {}", result.display());
             Ok(())
         }
@@ -495,31 +503,40 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 && subcommand == "explore"
                 && expect == "--expect-counterexample" =>
         {
-            let compose = compose_path(rest)?;
+            let (compose, (max_runs, guidance)) = compose_explore_overrides(rest)?;
             let output = compose
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("theseus-compose-campaign");
-            let result = explore_compose_expect_counterexample(&compose, output, property)
-                .map_err(|error| error.to_string())?;
+            let result = explore_compose_expect_counterexample_with(
+                &compose,
+                output,
+                property,
+                max_runs,
+                guidance,
+            )
+            .map_err(|error| error.to_string())?;
             println!("counterexample retained: {}", result.display());
             Ok(())
         }
         [command, subcommand, flag, output, rest @ ..]
             if command == "compose" && subcommand == "explore" && flag == "--output" =>
         {
-            let compose = compose_path(rest)?;
-            let result = explore_compose(&compose, output).map_err(|error| error.to_string())?;
+            let (compose, overrides) = compose_explore_overrides(rest)?;
+            let result =
+                explore_compose_with(&compose, output, overrides.0, overrides.1)
+                    .map_err(|error| error.to_string())?;
             println!("campaign passed: {}", result.display());
             Ok(())
         }
         [command, subcommand, rest @ ..] if command == "compose" && subcommand == "explore" => {
-            let compose = compose_path(rest)?;
+            let (compose, (max_runs, guidance)) = compose_explore_overrides(rest)?;
             let output = compose
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("theseus-compose-campaign");
-            let result = explore_compose(&compose, output).map_err(|error| error.to_string())?;
+            let result = explore_compose_with(&compose, output, max_runs, guidance)
+                .map_err(|error| error.to_string())?;
             println!("campaign passed: {}", result.display());
             Ok(())
         }
@@ -536,6 +553,50 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("topology replay passed: {}", result.display());
             Ok(())
         }
+        _ => Err(USAGE.to_owned()),
+    }
+}
+
+/// Parse `--max-runs N` and `--guidance MODE` exploration overrides from the
+/// remaining arguments, leaving the manifest path in place.
+fn compose_explore_overrides(
+    args: &[String],
+) -> Result<(PathBuf, (Option<u16>, Option<CampaignGuidance>)), String> {
+    let mut max_runs = None;
+    let mut guidance = None;
+    let mut rest: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--max-runs" => {
+                let value = args.get(index + 1).ok_or(USAGE.to_owned())?;
+                max_runs = Some(value.parse::<u16>().map_err(|_| USAGE.to_owned())?);
+                if max_runs == Some(0) {
+                    return Err(USAGE.to_owned());
+                }
+                index += 2;
+            }
+            "--guidance" => {
+                let value = args.get(index + 1).ok_or(USAGE.to_owned())?;
+                guidance = Some(parse_guidance(value)?);
+                index += 2;
+            }
+            other => {
+                rest.push(other.to_owned());
+                index += 1;
+            }
+        }
+    }
+    Ok((compose_path(&rest)?, (max_runs, guidance)))
+}
+
+fn parse_guidance(value: &str) -> Result<CampaignGuidance, String> {
+    match value {
+        "coverage" => Ok(CampaignGuidance::Coverage),
+        "adaptive" => Ok(CampaignGuidance::Adaptive),
+        "posterior" => Ok(CampaignGuidance::Posterior),
+        "property" => Ok(CampaignGuidance::Property),
+        "unified" => Ok(CampaignGuidance::Unified),
         _ => Err(USAGE.to_owned()),
     }
 }
