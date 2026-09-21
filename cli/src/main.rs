@@ -679,7 +679,8 @@ mod usage_tests {
             ("property", CampaignGuidance::Property),
             ("unified", CampaignGuidance::Unified),
         ] {
-            let (_, guidance) = overrides(&["--guidance", name, "compose.yaml"]).unwrap();
+            let (_, (_, guidance)) =
+                overrides(&["--guidance", name, "compose.yaml"]).unwrap();
             assert!(matches!(guidance, Some(mode) if mode == expected), "{name}");
         }
     }
