@@ -47,9 +47,11 @@ This month closed or narrowed several named gaps:
 1. **Moment-addressed event log** (`(vtime, input_hash)`). Campaign
    boundaries now carry the moment address `<vtime_ns>@<input_sha256>`,
    giving reports and queries one stable point per operation. The open
-   work is retrieval on that address (moment-scoped log views); cross-run
-   diffing landed — `theseus compare` reports both sides' moment
-   addresses at the diverging boundary. Retrieval prerequisites 2.
+   work is retrieval on that address: cross-run diffing landed (`theseus
+   compare` reports both sides' moments at the diverging boundary) and
+   campaign reports now carry a moment log indexing every address to its
+   bounded excerpt. The open work is the query operators themselves
+   (`preceded by` / `followed by` over retained events).
 2. **Temporal queries** (`preceded by` / `followed by` over retained
    events). The property layer already evaluates temporal relations inside
    runs; exposing them as queries over a retained bundle reuses that
