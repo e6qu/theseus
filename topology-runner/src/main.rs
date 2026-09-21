@@ -9250,7 +9250,7 @@ fn default_property_results(output: &Path, runs: &[usize]) -> Vec<CampaignProper
                         if check["name"] == *check_name {
                             checked += 1;
                             if check["status"] == "failed" && failed.is_none() {
-                                failed = Some((*run_index, service_name));
+                                failed = Some((*run_index, service_name.clone()));
                             }
                         }
                     }
