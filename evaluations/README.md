@@ -28,6 +28,12 @@ Publish a completed KVM campaign without hand-copying its replay artifacts:
 theseus evaluate capture campaign-dir --output public-evaluation --name "service failure"
 ```
 
+Comparing search policies on one workload needs no Compose-file copies:
+`theseus compose explore --guidance MODE --max-runs N` overrides both for one
+exploration, and every retained campaign records the mode and budget that
+produced it. Retain one bundle per arm and name each in the evaluation so the
+comparison itself is versioned and lockable like any other workload.
+
 Capture copies the complete replay directory, derives expected property
 outcomes from its recorded result, writes a version 2 contract, and locks every
 copied file. Add the conventional baseline only after its observation is
