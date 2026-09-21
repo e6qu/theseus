@@ -35,7 +35,10 @@ pub use compose::{
     minimize_compose_campaign_expect_counterexample, replay_compose, test_compose,
     CampaignGuidance, ComposeError, ComposePlan,
 };
-pub use query::{query_moment, MomentError, MomentHit};
+pub use query::{
+    find_moment, list_moments, next_moment, next_moment_in, previous_moment, previous_moment_in,
+    query_moment, MomentError, MomentHit, MomentSummary,
+};
 pub use evaluation::{
     capture_evaluation, evaluate, write_evaluation_lock, EvaluationError, EvaluationSummary,
 };

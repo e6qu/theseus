@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use theseus_cli::{
     capture_evaluation, cargo_coverage, cargo_coverage_rustc_wrapper, compare_campaigns, evaluate,
     explore, explore_compose_with, explore_compose_expect_counterexample_with,
-    go_coverage, query_moment,
+    find_moment, go_coverage, list_moments, next_moment_in, previous_moment_in,
     load_compose_plan, load_plan, minimize_compose_campaign,
     minimize_compose_campaign_expect_counterexample, minimize_exploration_path, query_campaigns,
     replay, replay_compose, replay_exploration, replay_exploration_path, replay_to, report,
@@ -33,7 +33,8 @@ const USAGE: &str = "Usage:
   theseus compare left-campaign-dir right-campaign-dir
   theseus compare --format json|markdown left-campaign-dir right-campaign-dir
   theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
-  theseus query campaign-dir --moment <vtime_ns>@<input_sha256>
+  theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous]
+  theseus query campaign-dir --list
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
   theseus evaluate lock [theseus-evaluation.toml]
   theseus evaluate capture campaign-dir --output evaluation-dir --name name
@@ -208,15 +209,67 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("evaluation: {}", path.display());
             Ok(())
         }
-        [command, bundle, flag, moment]
-            if command == "query" && flag == "--moment" =>
-        {
-            let hit = query_moment(bundle, moment).map_err(|error| error.to_string())?;
+        [command, bundle, rest @ ..] if command == "query" => {
+            let result: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(std::path::Path::new(bundle).join("campaign-result.json"))
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            let mut moment: Option<String> = None;
+            let mut navigation: Option<&str> = None;
+            let mut list = false;
+            let mut index = 0;
+            while index < rest.len() {
+                match rest[index].as_str() {
+                    "--moment" => {
+                        moment = Some(
+                            rest.get(index + 1)
+                                .ok_or(USAGE.to_owned())?
+                                .clone(),
+                        );
+                        index += 2;
+                    }
+                    "--next" => {
+                        navigation = Some("next");
+                        index += 1;
+                    }
+                    "--previous" => {
+                        navigation = Some("previous");
+                        index += 1;
+                    }
+                    "--list" => {
+                        list = true;
+                        index += 1;
+                    }
+                    other => {
+                        let _ = other;
+                        return Err(USAGE.to_owned().into());
+                    }
+                }
+            }
+            if list {
+                for summary in list_moments(&result).map_err(|error| error.to_string())? {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        summary.moment, summary.run, summary.boundary, summary.service
+                    );
+                }
+                return Ok(());
+            }
+            let Some(moment) = moment else {
+                return Err(USAGE.to_owned().into());
+            };
+            let hit = match navigation {
+                Some("next") => next_moment_in(&result, &moment),
+                Some("previous") => previous_moment_in(&result, &moment),
+                _ => find_moment(&result, &moment),
+            }
+            .map_err(|error| error.to_string())?;
             println!("run: {}", hit.run);
             println!("boundary: {}", hit.boundary);
             println!("operation: {}", hit.operation);
             println!("service: {}", hit.service);
-            println!("moment: {moment}");
+            println!("moment: {}", moment);
             println!("vtime_ns: {}", hit.vtime_ns);
             println!("input_sha256: {}", hit.input_sha256);
             for (service, excerpt) in &hit.excerpts {
