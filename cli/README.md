@@ -21,6 +21,7 @@ theseus report --format markdown|json|junit|github [--output file] result-dir
 theseus compare left-campaign-dir right-campaign-dir
 theseus compare --format json|markdown left-campaign-dir right-campaign-dir
 theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
+theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous]
 theseus query campaign-dir --list
 theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
@@ -150,7 +151,10 @@ theseus compare --query /runs/0/timeline/1/serial_sha256 \
 ```
 
 `--query` accepts an RFC 6901 JSON Pointer and returns that retained field from
-both `campaign-result.json` files. Use it for a specific operation boundary,
+both `campaign-result.json` files. `--at-moment` dumps both sides' complete
+boundary record at one moment address — everything that differs at that exact
+point, not just the first divergence the comparison stops at:
+`theseus compare --at-moment 7000@0f1c2b3d left right`. Use it for a specific operation boundary,
 fault action, topology hash, serial digest, coverage location, or property
 verdict. The comparison and its Markdown form contain no VM memory or external
 service dependency, so attach them with the two locked result directories.

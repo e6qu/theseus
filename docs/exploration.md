@@ -335,7 +335,9 @@ verdict. A failed verdict names the first violating timeline and a bounded
 serial excerpt around the primary needle, so a report leads directly from
 the failed property to the relevant log text. When two retained campaigns
 diverge, `theseus compare` reports both sides' moment addresses at the
-diverging boundary, so the same address retrieves either run's log point. `--expect-counterexample` succeeds only when the named property is
+diverging boundary, so the same address retrieves either run's log point;
+`compare --at-moment <address>` additionally dumps both full boundary records
+at any shared moment for point-scoped diffing. `--expect-counterexample` succeeds only when the named property is
 retained as failed, and its minimization preserves that outcome. Tutorial 30
 is the worked example. `compare` reports differing property
 verdicts between two campaigns; it remains an observation, not a causal

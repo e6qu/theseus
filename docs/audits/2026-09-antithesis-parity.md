@@ -51,8 +51,9 @@ This month closed or narrowed several named gaps:
    compare` reports both sides' moments at the diverging boundary), campaign
    reports carry a moment log indexing every address to its bounded excerpt,
    and `theseus query` resolves an address with previous/next navigation,
-   adjacent-moment walking, and full enumeration (`--list`). The open work
-   is rich value predicates across moments on top of this retrieval.
+   adjacent-moment walking, full enumeration (`--list`), and point-scoped
+   cross-run boundary diffing (`compare --at-moment`). The open work is
+   rich value predicates across moments on top of this retrieval.
 2. **Temporal queries** (`preceded by` / `followed by` over retained
    events). The property layer already evaluates temporal relations inside
    runs; exposing them as queries over a retained bundle reuses that
