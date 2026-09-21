@@ -21,3 +21,6 @@ sha2 = "0.10.9"
 theseus-engine = { path = "../engine" }
 theseus-orchestrator = { path = "../orchestrator" }
 vmm = { path = "../firecracker/src/vmm" }
+
+[dev-dependencies]
+tempfile = "3"
