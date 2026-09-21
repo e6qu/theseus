@@ -8669,6 +8669,11 @@ fn campaign_operation_timeline(
             let (changed_storage, virtual_time_delta_ns) =
                 campaign_boundary_state_delta(&previous, boundary);
             let input = campaign_input_evidence(&event.event.data_hex);
+            let moment = campaign_boundary_moment(
+                &event.service,
+                &boundary.virtual_time_ns,
+                &input.sha256,
+            );
             let delivery =
                 campaign_uart_delivery(&event.service, &event.event, &input, &previous, boundary);
             previous = boundary.clone();
@@ -8713,11 +8718,7 @@ fn campaign_operation_timeline(
                 execution_ledgers: boundary.execution_ledgers.clone(),
                 machine_execution_ledgers: boundary.machine_execution_ledgers.clone(),
                 state_sha256: campaign_boundary_state_sha256(boundary),
-                moment: campaign_boundary_moment(
-                    &event.service,
-                    &boundary.virtual_time_ns,
-                    &input.sha256,
-                ),
+                moment,
             }
         })
         .collect()
