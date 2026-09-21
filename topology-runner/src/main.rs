@@ -916,6 +916,28 @@ struct CampaignTimelineBoundary {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     machine_execution_ledgers: BTreeMap<String, ExecutionLedgerEvidence>,
     state_sha256: String,
+    /// The boundary's moment address: `<vtime_ns>@<input_sha256>` for the
+    /// service that received the operation, mirroring the moment scheme of
+    /// retained event logs. Temporal queries and moment-scoped retrieval
+    /// share this address space; results recorded before moments existed
+    /// simply omit it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    moment: String,
+}
+
+/// Bind one boundary's cumulative virtual time and input digest into a
+/// stable moment address for the service that received the operation.
+fn campaign_boundary_moment(
+    service: &str,
+    virtual_time_ns: &BTreeMap<String, Vec<u64>>,
+    input_sha256: &str,
+) -> String {
+    let vtime_ns = virtual_time_ns
+        .get(service)
+        .and_then(|times| times.first())
+        .copied()
+        .unwrap_or(0);
+    format!("{vtime_ns}@{input_sha256}")
 }
 
 /// A bounded, escaped excerpt of one service's serial bytes emitted between
@@ -8691,6 +8713,11 @@ fn campaign_operation_timeline(
                 execution_ledgers: boundary.execution_ledgers.clone(),
                 machine_execution_ledgers: boundary.machine_execution_ledgers.clone(),
                 state_sha256: campaign_boundary_state_sha256(boundary),
+                moment: campaign_boundary_moment(
+                    &event.service,
+                    &boundary.virtual_time_ns,
+                    &input.sha256,
+                ),
             }
         })
         .collect()
@@ -17924,6 +17951,20 @@ mod tests {
         assert_eq!(
             campaign_fault_name(&rate),
             "api:clock_rate@write".to_owned()
+        );
+    }
+
+    #[test]
+    fn boundary_moments_bind_vtime_and_input_hash() {
+        let mut virtual_time = BTreeMap::new();
+        virtual_time.insert("counter".to_owned(), vec![7000, 7001]);
+        let moment = campaign_boundary_moment("counter", &virtual_time, "input-hash");
+        assert_eq!(moment, "7000@input-hash");
+        // A service absent from the clock map anchors at zero rather than
+        // inventing a time.
+        assert_eq!(
+            campaign_boundary_moment("absent", &virtual_time, "input-hash"),
+            "0@input-hash"
         );
     }
 
