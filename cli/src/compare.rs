@@ -102,6 +102,10 @@ struct Run {
 struct Boundary {
     #[serde(default)]
     id: String,
+    /// `<vtime_ns>@<input_sha256>` moment address; absent in results
+    /// recorded before moments existed.
+    #[serde(default)]
+    moment: String,
     #[serde(default)]
     operation: String,
     #[serde(default)]
@@ -149,6 +153,12 @@ pub struct CampaignDivergence {
     pub reason: String,
     pub left: String,
     pub right: String,
+    /// Both sides' moment addresses at the diverging boundary,
+    /// `<vtime_ns>@<input_sha256>`, so an investigator can retrieve the
+    /// exact log points behind the divergence. Absent when the divergence
+    /// is not at a boundary or when either result predates moments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub moments: Option<(String, String)>,
 }
 
 impl CampaignComparison {
@@ -223,12 +233,14 @@ pub fn compare_campaigns(
     };
     let left = read(left.as_ref())?;
     let right = read(right.as_ref())?;
+    let mut found_position: Option<usize> = None;
     let divergence = left
         .runs
         .iter()
         .zip(&right.runs)
         .enumerate()
         .find_map(|(position, (left, right))| {
+            found_position = Some(position);
             let run = left.index.min(right.index).max(position);
             if left.operations != right.operations {
                 return Some(CampaignDivergence {
@@ -243,6 +255,7 @@ pub fn compare_campaigns(
                         "operations={:?}; state={}",
                         right.operations, right.state_sha256
                     ),
+                                    moments: None,
                 });
             }
             if left.thread_schedule_prefixes != right.thread_schedule_prefixes {
@@ -252,6 +265,7 @@ pub fn compare_campaigns(
                     reason: "selected runnable thread prefix differs".to_owned(),
                     left: format!("prefixes={:?}", left.thread_schedule_prefixes),
                     right: format!("prefixes={:?}", right.thread_schedule_prefixes),
+                                    moments: None,
                 });
             }
             if left.faults != right.faults {
@@ -261,6 +275,7 @@ pub fn compare_campaigns(
                     reason: "selected fault candidates differ".to_owned(),
                     left: format!("faults={:?}; state={}", left.faults, left.state_sha256),
                     right: format!("faults={:?}; state={}", right.faults, right.state_sha256),
+                                    moments: None,
                 });
             }
             if left.actions != right.actions {
@@ -270,6 +285,7 @@ pub fn compare_campaigns(
                     reason: "selected fault actions differ".to_owned(),
                     left: json_summary(&left.actions),
                     right: json_summary(&right.actions),
+                                    moments: None,
                 });
             }
             if left.execution_ledgers != right.execution_ledgers {
@@ -279,6 +295,7 @@ pub fn compare_campaigns(
                     reason: "ordered KVM execution ledger differs".to_owned(),
                     left: json_summary(&left.execution_ledgers),
                     right: json_summary(&right.execution_ledgers),
+                                    moments: None,
                 });
             }
             if left.machine_execution_ledgers != right.machine_execution_ledgers {
@@ -288,6 +305,7 @@ pub fn compare_campaigns(
                     reason: "machine-wide execution stream differs".to_owned(),
                     left: json_summary(&left.machine_execution_ledgers),
                     right: json_summary(&right.machine_execution_ledgers),
+                                    moments: None,
                 });
             }
             if left.machine_execution_traces != right.machine_execution_traces {
@@ -297,6 +315,7 @@ pub fn compare_campaigns(
                     reason: "actively enforced machine execution trace differs".to_owned(),
                     left: json_summary(&left.machine_execution_traces),
                     right: json_summary(&right.machine_execution_traces),
+                                    moments: None,
                 });
             }
             for (boundary, (left, right)) in left.timeline.iter().zip(&right.timeline).enumerate() {
@@ -307,6 +326,7 @@ pub fn compare_campaigns(
                         reason: "operation-boundary identities differ".to_owned(),
                         left: left.id.clone(),
                         right: right.id.clone(),
+                                            moments: None,
                     });
                 }
                 if left.actions != right.actions {
@@ -316,6 +336,7 @@ pub fn compare_campaigns(
                         reason: "first operation-boundary fault actions differ".to_owned(),
                         left: json_summary(&left.actions),
                         right: json_summary(&right.actions),
+                                            moments: None,
                     });
                 }
                 if left.execution_ledgers != right.execution_ledgers {
@@ -325,6 +346,7 @@ pub fn compare_campaigns(
                         reason: "ordered KVM execution ledger differs".to_owned(),
                         left: json_summary(&left.execution_ledgers),
                         right: json_summary(&right.execution_ledgers),
+                                            moments: None,
                     });
                 }
                 if left.machine_execution_ledgers != right.machine_execution_ledgers {
@@ -334,6 +356,7 @@ pub fn compare_campaigns(
                         reason: "machine-wide execution stream differs".to_owned(),
                         left: json_summary(&left.machine_execution_ledgers),
                         right: json_summary(&right.machine_execution_ledgers),
+                                            moments: None,
                     });
                 }
                 if left.operation != right.operation
@@ -352,6 +375,7 @@ pub fn compare_campaigns(
                             "{}@{} state={}",
                             right.operation, right.service, right.state_sha256
                         ),
+                                            moments: None,
                     });
                 }
                 if left.serial_sha256 != right.serial_sha256 || left.markers != right.markers {
@@ -367,6 +391,7 @@ pub fn compare_campaigns(
                             "markers={:?}; serial={:?}",
                             right.markers, right.serial_sha256
                         ),
+                                            moments: None,
                     });
                 }
                 if left.program_counters != right.program_counters
@@ -389,6 +414,7 @@ pub fn compare_campaigns(
                             json_summary(&right.instruction_locations),
                             json_summary(&right.application_blocks)
                         ),
+                                            moments: None,
                     });
                 }
                 if left.structured_choices != right.structured_choices {
@@ -398,6 +424,7 @@ pub fn compare_campaigns(
                         reason: "first structured choice differs".to_owned(),
                         left: json_summary(&left.structured_choices),
                         right: json_summary(&right.structured_choices),
+                                            moments: None,
                     });
                 }
                 if left.thread_scheduling != right.thread_scheduling {
@@ -407,6 +434,7 @@ pub fn compare_campaigns(
                         reason: "first thread-scheduling decision differs".to_owned(),
                         left: json_summary(&left.thread_scheduling),
                         right: json_summary(&right.thread_scheduling),
+                                            moments: None,
                     });
                 }
                 if left.thread_synchronization != right.thread_synchronization {
@@ -416,6 +444,7 @@ pub fn compare_campaigns(
                         reason: "first thread-synchronization event differs".to_owned(),
                         left: json_summary(&left.thread_synchronization),
                         right: json_summary(&right.thread_synchronization),
+                                            moments: None,
                     });
                 }
             }
@@ -428,6 +457,7 @@ pub fn compare_campaigns(
                     reason: "final topology state differs".to_owned(),
                     left: left.state_sha256.clone(),
                     right: right.state_sha256.clone(),
+                                    moments: None,
                 });
             }
             if left.property_witnesses != right.property_witnesses {
@@ -437,6 +467,7 @@ pub fn compare_campaigns(
                     reason: "property witnesses differ".to_owned(),
                     left: format!("{:?}", left.property_witnesses),
                     right: format!("{:?}", right.property_witnesses),
+                                    moments: None,
                 });
             }
             if left.structured_choices != right.structured_choices {
@@ -446,6 +477,7 @@ pub fn compare_campaigns(
                     reason: "structured choices differ".to_owned(),
                     left: json_summary(&left.structured_choices),
                     right: json_summary(&right.structured_choices),
+                                    moments: None,
                 });
             }
             if left.thread_scheduling != right.thread_scheduling {
@@ -455,6 +487,7 @@ pub fn compare_campaigns(
                     reason: "thread-scheduling decisions differ".to_owned(),
                     left: json_summary(&left.thread_scheduling),
                     right: json_summary(&right.thread_scheduling),
+                                    moments: None,
                 });
             }
             if left.thread_synchronization != right.thread_synchronization {
@@ -464,6 +497,7 @@ pub fn compare_campaigns(
                     reason: "thread-synchronization events differ".to_owned(),
                     left: json_summary(&left.thread_synchronization),
                     right: json_summary(&right.thread_synchronization),
+                                    moments: None,
                 });
             }
             if left.program_counters != right.program_counters
@@ -479,6 +513,7 @@ pub fn compare_campaigns(
                     reason: "accumulated campaign coverage differs".to_owned(),
                     left: coverage_summary(left),
                     right: coverage_summary(right),
+                                    moments: None,
                 });
             }
             if (!left.decision_trace.is_empty() || !right.decision_trace.is_empty())
@@ -490,6 +525,7 @@ pub fn compare_campaigns(
                     reason: "decision trace differs".to_owned(),
                     left: format!("{:?}", left.decision_trace),
                     right: format!("{:?}", right.decision_trace),
+                                    moments: None,
                 });
             }
             None
@@ -501,6 +537,7 @@ pub fn compare_campaigns(
                 reason: "campaign property verdicts differ".to_owned(),
                 left: json_summary(&left.properties),
                 right: json_summary(&right.properties),
+                            moments: None,
             })
         })
         .or_else(|| {
@@ -510,8 +547,28 @@ pub fn compare_campaigns(
                 reason: "campaign run count differs".to_owned(),
                 left: left.runs.len().to_string(),
                 right: right.runs.len().to_string(),
+                            moments: None,
             })
         });
+    let divergence = divergence.map(|mut divergence| {
+        divergence.moments = found_position.and_then(|position| {
+            let boundary = divergence.boundary?;
+            let moment = |runs: &[Run], position: usize, boundary: usize| -> String {
+                runs.get(position)
+                    .and_then(|run| run.timeline.get(boundary))
+                    .map(|boundary| boundary.moment.clone())
+                    .unwrap_or_default()
+            };
+            let left_moment = moment(&left.runs, position, boundary);
+            let right_moment = moment(&right.runs, position, boundary);
+            if left_moment.is_empty() && right_moment.is_empty() {
+                None
+            } else {
+                Some((left_moment, right_moment))
+            }
+        });
+        divergence
+    });
     Ok(CampaignComparison {
         format: "theseus-campaign-comparison-v1",
         status: if divergence.is_some() {
@@ -558,6 +615,25 @@ mod tests {
         fs::write(left.path().join("campaign-result.json"), left_contents).unwrap();
         fs::write(right.path().join("campaign-result.json"), right_contents).unwrap();
         (left, right)
+    }
+
+    #[test]
+    fn boundary_divergences_report_both_moment_addresses() {
+        let baseline = r#"[{"index":0,"operations":["write"],"faults":["partition"],"state_sha256":"final","timeline":[{"operation":"write","service":"api","state_sha256":"state","moment":"7000@input-hash","actions":[{"kind":"partition"}],"markers":["42"],"serial_sha256":{"api":"serial"},"program_counters":{"api":["0x10"]}}]}]"#;
+        // Same shape but a different state at the same boundary, with the
+        // right side carrying its own moment.
+        let right = baseline
+            .replace(r#""state_sha256":"state""#, r#""state_sha256":"changed""#)
+            .replace("7000@input-hash", "9000@input-hash");
+        let (left, right) = write_pair(&result(baseline, "[]"), &result(&right, "[]"));
+        let divergence = compare_campaigns(left.path(), right.path())
+            .unwrap()
+            .divergence
+            .unwrap();
+        assert_eq!(
+            divergence.moments,
+            Some(("7000@input-hash".to_owned(), "9000@input-hash".to_owned()))
+        );
     }
 
     #[test]

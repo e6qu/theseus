@@ -329,7 +329,9 @@ stable point in one run's event log.
 Planning locks the complete property set, and campaign results retain each
 verdict. A failed verdict names the first violating timeline and a bounded
 serial excerpt around the primary needle, so a report leads directly from
-the failed property to the relevant log text. `--expect-counterexample` succeeds only when the named property is
+the failed property to the relevant log text. When two retained campaigns
+diverge, `theseus compare` reports both sides' moment addresses at the
+diverging boundary, so the same address retrieves either run's log point. `--expect-counterexample` succeeds only when the named property is
 retained as failed, and its minimization preserves that outcome. Tutorial 30
 is the worked example. `compare` reports differing property
 verdicts between two campaigns; it remains an observation, not a causal
