@@ -223,6 +223,7 @@ runtime-validation paths.
 - [Exploration and coverage](docs/exploration.md)
 - [CLI and test-directory reference](cli/README.md)
 - [Comparison with Antithesis and related tools](docs/comparison.md)
+- [Gating CI on a campaign](docs/ci-gating.md)
 - [Tutorials](docs/tutorials/)
 
 ## License

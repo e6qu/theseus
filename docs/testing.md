@@ -136,6 +136,13 @@ exact replay through the recorded i8042 reset three times, retaining logs on
 failure. This is a source regression, not certification of a published runtime
 or native arm64 execution.
 
+## Gate CI on a campaign
+
+The [CI gating recipe](ci-gating.md) runs a retained workload on a
+self-hosted KVM runner, publishes the `github` report format as a step
+summary (`::error` annotations for every failed check), and uploads the
+locked bundle so the failure is replayable from the artifact.
+
 ## Publish a failure from CI
 
 Keep the failed replay directory as the durable reproduction artifact, then

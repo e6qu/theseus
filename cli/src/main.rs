@@ -29,7 +29,7 @@ const USAGE: &str = "Usage:
   theseus explore --minimize exploration-dir --seed-path seed,... [--output exploration-dir]
   theseus explore --snapshot exploration-dir --seed-path seed,... [--output snapshot-dir]
   theseus report [--output report-dir] result-dir
-  theseus report --format markdown|json|junit [--output file] result-dir
+  theseus report --format markdown|json|junit|github [--output file] result-dir
   theseus compare left-campaign-dir right-campaign-dir
   theseus compare --format json|markdown left-campaign-dir right-campaign-dir
   theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
