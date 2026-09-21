@@ -349,6 +349,12 @@ at the decision point and emit `THES:CHOICE:<name>:<upper-bound>:<value>`
 immediately before using it. The Linux SDK's `TtyChannel::choice` implements
 the same protocol, but any language can emit the line directly.
 
+`theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
+overrides the declared budget and guidance for one exploration without
+editing the Compose file. Comparing one file across guidance modes at one
+fixed budget — retaining every campaign — is the reproducible search
+comparison the roadmap requires.
+
 The `unified` policy is the default for newly planned Compose campaigns. It
 ranks a common decision-prefix tree using application and VM coverage,
 property witnesses, topology novelty, structured-choice novelty, runnable-set

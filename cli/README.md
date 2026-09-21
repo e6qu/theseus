@@ -33,8 +33,8 @@ theseus coverage go --process NAME --module NAME --package PACKAGE --symbols DIR
 theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
-theseus compose explore [--output campaign-dir] [compose.yaml]
-theseus compose explore --expect-counterexample property [--output campaign-dir] [compose.yaml]
+theseus compose explore [--max-runs N] [--guidance MODE] [--output campaign-dir] [compose.yaml]
+theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--output campaign-dir] [compose.yaml]
 theseus compose explore --minimize campaign-dir [--output minimized-dir]
 theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
 theseus compose replay replay-dir [--output replay-dir]
@@ -613,6 +613,13 @@ stalls frames on the directed link until `link_unclog`. `clock_rate` with
 `service`, `after`, `rate` (2–16), and `duration_rounds` moves that service's
 virtual clock rate until `clock_rate_release`; it requires `virtual_time`.
 Terminal checks release all three automatically.
+
+Pass `--max-runs N` and `--guidance
+coverage|adaptive|posterior|property|unified` to `compose explore` to
+override the declared budget and guidance for one exploration without editing
+the Compose file: comparing the same file across guidance modes at one fixed
+budget is the reproducible search comparison the roadmap requires, and every
+retained campaign records which mode and budget produced it.
 
 ## Checks
 
