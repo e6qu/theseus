@@ -57,8 +57,10 @@ This month closed or narrowed several named gaps:
    recorded choice or fault, re-execute, and diff the futures. Checkpoints,
    prefix reuse, and host-input replay exist; the missing piece is the
    plan-level override-and-diff workflow on top.
-4. **Default properties** — automatic crash, hang, and OOM verdicts per
-   run, recorded beside declared properties without user declaration.
+4. **Default properties** — automatic crash and completion verdicts per
+   run (`theseus:crash`, `theseus:completed`) are recorded beside declared
+   properties without user declaration. The open work is OOM detection and
+   cross-run property history keyed by assertion identity.
 5. **Custom fault interface** — a user-declared fault action (command +
    condition + duration) inside the generated profile model.
 6. **CI surface** — a versioned campaign API over the existing evidence
