@@ -17,7 +17,7 @@ theseus explore --replay exploration-dir [--seed-path seed,...] [--output explor
 theseus explore --minimize exploration-dir --seed-path seed,... [--output exploration-dir]
 theseus explore --snapshot exploration-dir --seed-path seed,... [--output snapshot-dir]
 theseus report [--output report-dir] result-dir
-theseus report --format markdown|json|junit [--output file] result-dir
+theseus report --format markdown|json|junit|github [--output file] result-dir
 theseus compare left-campaign-dir right-campaign-dir
 theseus compare --format json|markdown left-campaign-dir right-campaign-dir
 theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
@@ -368,8 +368,10 @@ services. See Tutorial 40.
 
 The same locked result can be rendered without a browser. `markdown` writes a
 short bug report with the replay command, failed properties, minimized input,
-and logs; use it directly in a GitHub Actions job summary. `junit` emits one
-test case per Theseus property for CI systems. `json` emits the versioned
+and logs; use it directly in a GitHub Actions job summary. `github` writes
+`::error`/`::warning` workflow annotations for every failed check plus the
+replay command, aimed at `$GITHUB_STEP_SUMMARY`. `junit` emits one test case
+per Theseus property for CI systems. `json` emits the versioned
 `theseus-report-v1` model for issue bots and other tools. Non-HTML formats go
 to stdout unless `--output` names a new file.
 

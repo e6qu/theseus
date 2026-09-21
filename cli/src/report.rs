@@ -21,6 +21,7 @@ pub enum ReportFormat {
     Markdown,
     Json,
     Junit,
+    Github,
 }
 
 impl ReportFormat {
@@ -30,6 +31,7 @@ impl ReportFormat {
             "markdown" | "md" => Some(Self::Markdown),
             "json" => Some(Self::Json),
             "junit" | "junit-xml" => Some(Self::Junit),
+            "github" => Some(Self::Github),
             _ => None,
         }
     }
@@ -40,6 +42,7 @@ impl ReportFormat {
             Self::Markdown => "markdown",
             Self::Json => "json",
             Self::Junit => "junit",
+            Self::Github => "github",
         }
     }
 }
@@ -1475,6 +1478,7 @@ fn render_format(model: &ReportModel, format: ReportFormat) -> Result<String, Re
     match format {
         ReportFormat::Html => render(model),
         ReportFormat::Markdown => Ok(render_markdown(model)),
+        ReportFormat::Github => Ok(render_github(model)),
         ReportFormat::Json => serde_json::to_string_pretty(&MachineReport::new(model))
             .map_err(|error| ReportError::Invalid(format!("cannot encode report data: {error}"))),
         ReportFormat::Junit => Ok(render_junit(model)),
@@ -2053,6 +2057,49 @@ fn markdown_fence(value: &str) -> String {
     "`".repeat(width.max(3))
 }
 
+/// GitHub Actions step-summary rendering: `::error` annotations for failed
+/// checks so the run flags the failing lines, plus the replay command and a
+/// compact checks table. Non-failing checks render as notices.
+fn render_github(model: &ReportModel) -> String {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "::warning title=Theseus {}::status {} - {}\n",
+        model.title, model.status, model.kind
+    ));
+    for check in &model.checks {
+        if check.status == "passed" {
+            continue;
+        }
+        let command = match check.status.as_str() {
+            "failed" => "error",
+            _ => "notice",
+        };
+        // GitHub collapses multiline messages; keep the detail on one line.
+        let detail = check.detail.replace('\n', " ");
+        output.push_str(&format!(
+            "::{command} title=Theseus check {}::{}\n",
+            check.name, detail
+        ));
+    }
+    if let Some(error) = &model.error {
+        output.push_str(&format!("::error title=Theseus execution error::{}\n", error.replace('\n', " ")));
+    }
+    output.push_str(&format!(
+        "\n## Reproduce\n\n```sh\n{}\n```\n\n| Check | Kind | Status | Detail |\n| --- | --- | --- | --- |\n",
+        model.command
+    ));
+    for check in &model.checks {
+        output.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            markdown_cell(&check.name),
+            markdown_cell(&check.kind),
+            markdown_cell(&check.status),
+            markdown_cell(&check.detail)
+        ));
+    }
+    output
+}
+
 fn render_markdown(model: &ReportModel) -> String {
     let mut output = format!(
         "# Theseus failure report: {}\n\n**Status:** {}  \n**Kind:** {}\n\n## Reproduce\n\n```sh\n{}\n```\n",
@@ -2435,6 +2482,12 @@ mod tests {
         assert!(junit.contains("tests=\"1\" failures=\"1\" errors=\"0\""));
         assert!(junit.contains("&lt;panic&gt;"));
         assert!(junit.contains("<failure"));
+
+        let github = report_text(directory.path(), ReportFormat::Github).unwrap();
+        assert!(github.contains("::error title=Theseus check no panic::"));
+        assert!(github.contains("found <panic>"));
+        assert!(github.contains("## Reproduce"));
+        assert!(github.contains("theseus replay"));
     }
 
     #[test]
