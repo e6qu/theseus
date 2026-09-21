@@ -17254,6 +17254,7 @@ mod tests {
                 execution_ledgers: BTreeMap::new(),
                 machine_execution_ledgers: BTreeMap::new(),
                 state_sha256: "state".to_owned(),
+                moment: "7000@input-hash".to_owned(),
             }],
             program_counters: BTreeMap::from([("api".to_owned(), vec!["0x8000".to_owned()])]),
             instruction_locations: BTreeMap::from([(
