@@ -9205,6 +9205,81 @@ fn evaluate_campaign_properties(
     output: &Path,
     runs: &[CampaignRun],
 ) -> Result<Vec<CampaignPropertyResult>, String> {
+    let mut results = evaluate_declared_campaign_properties(campaign, output, runs)?;
+    let run_indices = runs.iter().map(|run| run.index).collect::<Vec<_>>();
+    results.extend(default_property_results(output, &run_indices));
+    Ok(results)
+}
+
+/// Automatic verdicts every campaign carries without declaration: no service
+/// crashed (`theseus:crash`) and every service finished inside its budget
+/// (`theseus:completed`). They read the per-service result checks directly
+/// and never participate in minimization or expect-counterexample matching,
+/// which stay bound to declared properties.
+fn default_property_results(output: &Path, runs: &[usize]) -> Vec<CampaignPropertyResult> {
+    let defaults = [
+        ("theseus:crash", "guest_exit", "a service exited nonzero or crashed"),
+        (
+            "theseus:completed",
+            "completion",
+            "a service did not finish inside its timeout",
+        ),
+    ];
+    defaults
+        .iter()
+        .map(|(name, check_name, failure_description)| {
+            let mut failed: Option<(usize, String)> = None;
+            let mut checked = 0usize;
+            for run_index in runs {
+                let run_dir = output.join("runs").join(format!("{run_index:03}"));
+                let services = match fs::read_dir(run_dir.join("services")) {
+                    Ok(services) => services,
+                    Err(_) => continue,
+                };
+                for service in services.flatten() {
+                    let path = service.path().join("result.json");
+                    let Ok(bytes) = fs::read(&path) else {
+                        continue;
+                    };
+                    let Ok(result) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                        continue;
+                    };
+                    let service_name =
+                        service.file_name().to_string_lossy().into_owned();
+                    for check in result["checks"].as_array().unwrap_or(&Vec::new()) {
+                        if check["name"] == *check_name {
+                            checked += 1;
+                            if check["status"] == "failed" && failed.is_none() {
+                                failed = Some((*run_index, service_name.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+            let detail = match (&failed, checked) {
+                (Some((run_index, service)), _) => format!(
+                    "first failure: run {run_index:03}, service {service} — {failure_description}"
+                ),
+                (None, 0) => "no retained service checks carried this verdict".to_owned(),
+                (None, _) => {
+                    format!("all {} retained service checks passed", checked)
+                }
+            };
+            CampaignPropertyResult {
+                name: (*name).to_owned(),
+                kind: "always",
+                status: if failed.is_some() { "failed" } else { "passed" },
+                detail,
+            }
+        })
+        .collect()
+}
+
+fn evaluate_declared_campaign_properties(
+    campaign: &CampaignPlan,
+    output: &Path,
+    runs: &[CampaignRun],
+) -> Result<Vec<CampaignPropertyResult>, String> {
     campaign
         .properties
         .iter()
@@ -17954,6 +18029,50 @@ mod tests {
             campaign_fault_name(&rate),
             "api:clock_rate@write".to_owned()
         );
+    }
+
+    #[test]
+    fn default_properties_detect_crashes_and_completions() {
+        let directory = tempfile::tempdir().unwrap();
+        let write_run = |index: usize, status: &str| {
+            let run = directory.path().join("runs").join(format!("{index:03}"));
+            fs::create_dir_all(run.join("services/api")).unwrap();
+            let result = serde_json::json!({
+                "checks": [
+                    {"name": "guest_exit", "status": status, "detail": ""},
+                    {"name": "completion", "status": "passed", "detail": ""}
+                ]
+            });
+            fs::write(
+                run.join("services/api/result.json"),
+                serde_json::to_vec(&result).unwrap(),
+            )
+            .unwrap();
+        };
+        write_run(0, "passed");
+        write_run(1, "failed");
+
+        let results = default_property_results(directory.path(), &[0, 1]);
+        let crash = results.iter().find(|r| r.name == "theseus:crash").unwrap();
+        assert_eq!(crash.status, "failed");
+        assert!(crash.detail.contains("run 001, service api"), "{}", crash.detail);
+        let completed = results
+            .iter()
+            .find(|r| r.name == "theseus:completed")
+            .unwrap();
+        assert_eq!(completed.status, "passed");
+
+        // An all-pass corpus passes both defaults and says how many checks
+        // backed the verdict.
+        write_run(2, "passed");
+        let results = default_property_results(directory.path(), &[0, 2]);
+        let crash = results.iter().find(|r| r.name == "theseus:crash").unwrap();
+        assert_eq!(crash.status, "passed");
+        assert!(crash.detail.contains("all 2 retained service checks"));
+
+        // A run directory without service results is skipped, not fatal.
+        let empty = default_property_results(directory.path(), &[9]);
+        assert!(empty.iter().all(|r| r.status == "passed"));
     }
 
     #[test]
