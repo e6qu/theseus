@@ -10,7 +10,7 @@ has no independent head-to-head evaluation with Antithesis.
 | Capability | Antithesis | Theseus today |
 |---|---|---|
 | Workload packaging | Container-based test environment | Container images or explicit Firecracker guest inputs |
-| Test interface | Test templates and SDK assertions | Compose lifecycle commands, UART/image operations, serial properties, optional SDK |
+| Test interface | Test templates and SDK assertions | Compose lifecycle commands, UART/image operations, serial and JSON properties in five quantifiers, optional SDK |
 | Determinism | Custom deterministic hypervisor | KVM plus seeded devices, simulated I/O, and exit-counted virtual time |
 | Replay | Instruction-level deterministic reproduction | Locked-input replay through recorded guest exit. Fixed runs default to the complete KVM/device stream and may select explicit-host-input replay; checkpoint-backed campaigns use the host-input contract while retaining intervening exits and interrupt deliveries as evidence. Instruction execution, interrupt timing and servicing, and in-kernel timers remain uncontrolled; host-timed cutoffs are not replayable exits. |
 | Search guidance | Coverage-guided autonomous exploration | One bounded decision-prefix policy combines structured choices, C/Go application blocks, LLVM edges, runnable selections, faults, properties, topology states, and sampled guest PCs |
@@ -18,7 +18,8 @@ has no independent head-to-head evaluation with Antithesis.
 | Faults | Network partitions, degradation, clogs, and restoration; node stop, kill, pause, and CPU throttling; clock and custom user-defined faults | Simulated network/storage plus Compose lifecycle, clock jumps and rate windows, packet actions, CPU throttling, and directed link clogs |
 | Concurrency | Controlled thread/process scheduling | Operation overlap plus bounded GCC C pthread basic-block scheduling, runnable-set feedback, default mutexes, and untimed condition variables; no general Linux scheduler control |
 | Structured choices | SDK choices consumed at the point of use | Language-neutral bounded shell-operation choices and a Rust SDK helper, retained and replay-checked at the operation boundary |
-| Debugging | Time-travel and causality analysis | Static reports, replay, minimization, bundle comparison, snapshot export |
+| Debugging | Time-travel and causality analysis | Static reports, replay, minimization, bundle comparison, snapshot export, violation context, alternative-futures frequencies |
+| Event logs | JSONL moments addressed by `(vtime, input_hash)`, temporal operators, event sets | Ordered decision traces, serial deltas, violation excerpts | Moment addressing and preceded-by/followed-by queries |
 | Causality | Counterfactual re-exploration from checkpoints | Not implemented; comparison only finds recorded differences |
 | Delivery | Hosted commercial product with a versioned REST API, webhooks, CLI, and CI triggers | Open source, self-operated Linux/KVM runtime |
 
@@ -133,3 +134,6 @@ meaningful.
 These tools are complementary. Choose based on the system boundary and the
 evidence required, not by treating the word “deterministic” as one uniform
 guarantee.
+
+A working gap analysis with a prioritized fix list lives in
+[the September 2026 parity analysis](audits/2026-09-antithesis-parity.md).

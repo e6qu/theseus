@@ -14,6 +14,9 @@ missing Antithesis capability, and the roadmap must not prioritize novelty or
 differentiation ahead of parity.
 
 Measure progress by user-visible behavior demonstrated with released artifacts.
+The current gap-by-gap position against Antithesis, with a prioritized fix
+list, is maintained in
+[the parity analysis](docs/audits/2026-09-antithesis-parity.md).
 Implemented types, accepted configuration, generated reports, and unit tests do
 not by themselves establish product capability.
 
@@ -33,7 +36,7 @@ Use these labels consistently:
 | Ordinary container workloads | Partial | Image-backed services and a Compose subset work; Kubernetes and broad Compose compatibility do not. |
 | Deterministic replay | Partial | Seeds, locked inputs, schedules, faults, checkpoints, and bundles are retained, but uncontrolled kernel and application behavior can still escape the model. |
 | Feedback-guided exploration | Partial | One bounded decision-prefix policy combines coverage, properties, topology states, structured choices, runnable sets, faults, and prior outcomes; it is not yet validated at production scale. |
-| Fault injection | Partial | Explicit and topology-derived profiles cover service lifecycle, asymmetric network degradation and partitions, storage, packet, clock operations, CPU throttling, and directed link clogs, including generated throttle and clog candidates. A mature custom-fault interface remains open. |
+| Fault injection | Partial | Explicit and topology-derived profiles cover service lifecycle, asymmetric network degradation and partitions, storage, packet, clock operations including backward jumps and rate windows, CPU throttling, and directed link clogs, including generated candidates. A custom-fault interface remains open. |
 | Assertions and guidance | Partial | Always, always-or-unreachable, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
 | Coverage guidance | Partial | GCC C and Go basic blocks plus LLVM C/C++/Rust edges cover native executables, shared libraries, a selected Cargo graph, and a selected Go command's imported main-module packages. Compose locks manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go external modules and CGO, Java, and production-scale validation remain open. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |

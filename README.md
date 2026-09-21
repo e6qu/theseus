@@ -110,9 +110,11 @@ passing unit suite alone is not treated as runtime proof.
 - A runtime certificate applies only to the exact recorded plan, artifacts,
   architecture, and supported simulated-I/O profile.
 
-See [PLAN.md](PLAN.md) for the current roadmap and
-[the claim audit](docs/audits/2026-09-runtime-and-docs.md) for the documentation
-review.
+See [PLAN.md](PLAN.md) for the current roadmap,
+[the parity analysis](docs/audits/2026-09-antithesis-parity.md) for the
+current Antithesis gap list, and
+[the claim audit](docs/audits/2026-09-runtime-and-docs.md) for the
+documentation review.
 
 ## Start with the tutorials
 
