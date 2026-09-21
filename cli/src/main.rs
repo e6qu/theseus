@@ -639,3 +639,53 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    fn overrides(args: &[&str]) -> Result<(PathBuf, (Option<u16>, Option<CampaignGuidance>)), String> {
+        compose_explore_overrides(
+            &args
+                .iter()
+                .map(|argument| argument.to_string())
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    #[test]
+    fn explore_overrides_parse_budget_guidance_and_path() {
+        let (path, (max_runs, guidance)) =
+            overrides(&["--max-runs", "64", "--guidance", "unified", "compose.yaml"]).unwrap();
+        assert_eq!(path, PathBuf::from("compose.yaml"));
+        assert_eq!(max_runs, Some(64));
+        assert!(matches!(guidance, Some(CampaignGuidance::Unified)));
+
+        let (path, (max_runs, guidance)) =
+            overrides(&["--guidance", "coverage", "--max-runs", "8", "work/compose.yaml"]).unwrap();
+        assert_eq!(path, PathBuf::from("work/compose.yaml"));
+        assert_eq!(max_runs, Some(8));
+        assert!(matches!(guidance, Some(CampaignGuidance::Coverage)));
+
+        // Interleaving keeps the manifest path in place.
+        let (path, _) = overrides(&["compose.yaml", "--max-runs", "3"]).unwrap();
+        assert_eq!(path, PathBuf::from("compose.yaml"));
+    }
+
+    #[test]
+    fn explore_overrides_pass_the_manifest_through_untouched() {
+        let (path, (max_runs, guidance)) = overrides(&["compose.yaml"]).unwrap();
+        assert_eq!(path, PathBuf::from("compose.yaml"));
+        assert_eq!(max_runs, None);
+        assert_eq!(guidance, None);
+    }
+
+    #[test]
+    fn explore_overrides_reject_malformed_values() {
+        assert!(overrides(&["--max-runs", "0", "compose.yaml"]).is_err());
+        assert!(overrides(&["--max-runs", "many", "compose.yaml"]).is_err());
+        assert!(overrides(&["--max-runs"]).is_err());
+        assert!(overrides(&["--guidance", "sometimes", "compose.yaml"]).is_err());
+        assert!(overrides(&["--guidance"]).is_err());
+    }
+}
