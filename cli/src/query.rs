@@ -175,6 +175,100 @@ pub fn query_moment(
     find_moment(&result, moment)
 }
 
+/// One row of the full moment index over a retained campaign.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct MomentSummary {
+    /// Index of the retained timeline (0-based).
+    pub run: usize,
+    /// `op-NNN-<operation>` boundary identity.
+    pub boundary: String,
+    /// The service that received the operation.
+    pub service: String,
+    /// The operation name.
+    pub operation: String,
+    /// The moment address.
+    pub moment: String,
+}
+
+/// List every moment address in a retained campaign, in timeline order.
+pub fn list_moments(result: &serde_json::Value) -> Result<Vec<MomentSummary>, MomentError> {
+    let runs = result["runs"]
+        .as_array()
+        .ok_or_else(|| MomentError::NotFound("result has no runs".to_owned()))?;
+    let mut summaries = Vec::new();
+    for (run_index, run) in runs.iter().enumerate() {
+        let timeline = run["timeline"].as_array().ok_or_else(|| {
+            MomentError::NotFound(format!("run {run_index} has no timeline"))
+        })?;
+        for boundary in timeline {
+            summaries.push(MomentSummary {
+                run: run_index,
+                boundary: boundary["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                service: boundary["service"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                operation: boundary["operation"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                moment: boundary["moment"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            });
+        }
+    }
+    Ok(summaries)
+}
+
+/// Resolve the moment immediately following `moment` in the same timeline.
+pub fn next_moment_in(
+    result: &serde_json::Value,
+    moment: &str,
+) -> Result<MomentHit, MomentError> {
+    let hit = find_moment(result, moment)?;
+    let next = hit.next.ok_or_else(|| {
+        MomentError::NotFound(format!("moment {moment:?} has no following moment"))
+    })?;
+    find_moment(result, &next)
+}
+
+/// Resolve the moment immediately preceding `moment` in the same timeline.
+pub fn previous_moment_in(
+    result: &serde_json::Value,
+    moment: &str,
+) -> Result<MomentHit, MomentError> {
+    let hit = find_moment(result, moment)?;
+    let previous = hit.previous.ok_or_else(|| {
+        MomentError::NotFound(format!("moment {moment:?} has no preceding moment"))
+    })?;
+    find_moment(result, &previous)
+}
+
+/// Load a bundle's campaign result and resolve the following moment.
+pub fn next_moment(
+    bundle: impl AsRef<Path>,
+    moment: &str,
+) -> Result<MomentHit, MomentError> {
+    let path = bundle.as_ref().join("campaign-result.json");
+    let result: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+    next_moment_in(&result, moment)
+}
+
+/// Load a bundle's campaign result and resolve the preceding moment.
+pub fn previous_moment(
+    bundle: impl AsRef<Path>,
+    moment: &str,
+) -> Result<MomentHit, MomentError> {
+    let path = bundle.as_ref().join("campaign-result.json");
+    let result: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+    previous_moment_in(&result, moment)
+}
+
 /// Validate a bundle directory the same way the planner does, so a query
 /// against a non-bundle fails with the planner's own wording.
 pub fn load_bundle_plan(bundle: impl AsRef<Path>) -> Result<ComposePlan, MomentError> {
@@ -222,6 +316,30 @@ mod tests {
         assert_eq!(second.previous, Some("7000@input-hash".to_owned()));
         assert_eq!(second.next, None);
         assert_eq!(second.vtime_ns, 9000);
+    }
+
+    #[test]
+    fn navigation_walks_neighbors_and_enumeration_lists_every_moment() {
+        let result = fixture();
+        let next = next_moment_in(&result, "7000@input-hash").unwrap();
+        assert_eq!(next.boundary, "op-001-read");
+        let previous = previous_moment_in(&result, "9000@read-hash").unwrap();
+        assert_eq!(previous.boundary, "op-000-write");
+        assert!(next_moment_in(&result, "9000@read-hash")
+            .unwrap_err()
+            .to_string()
+            .contains("no following moment"));
+        assert!(previous_moment_in(&result, "7000@input-hash")
+            .unwrap_err()
+            .to_string()
+            .contains("no preceding moment"));
+
+        let summaries = list_moments(&result).unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].moment, "7000@input-hash");
+        assert_eq!(summaries[0].operation, "write");
+        assert_eq!(summaries[1].service, "counter");
+        assert_eq!(summaries[1].moment, "9000@read-hash");
     }
 
     #[test]

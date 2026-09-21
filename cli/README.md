@@ -21,7 +21,8 @@ theseus report --format markdown|json|junit [--output file] result-dir
 theseus compare left-campaign-dir right-campaign-dir
 theseus compare --format json|markdown left-campaign-dir right-campaign-dir
 theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
-theseus query campaign-dir --moment <vtime_ns>@<input_sha256>
+theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous]
+theseus query campaign-dir --list
 theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
 theseus evaluate lock [theseus-evaluation.toml]
 theseus evaluate capture campaign-dir --output evaluation-dir --name name
@@ -637,7 +638,13 @@ theseus query theseus-compose-campaign --moment 7000@0f1c2b3d4e5f60718293a4b5c6d
 Expect the run and boundary identities, the service and operation, the
 cumulative virtual time and input digest, the bounded serial excerpts, and
 the previous and next moment addresses for temporal navigation. An address
-that no boundary carries fails with that address in the error.
+that no boundary carries fails with that address in the error. Walk the
+timeline temporally from any address, or list every moment in the bundle:
+
+
+`--next` and `--previous` resolve the adjacent boundary as a full hit;
+`--list` prints every moment address in timeline order with its run,
+boundary, and service.
 
 ## Checks
 
