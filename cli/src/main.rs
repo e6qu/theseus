@@ -670,6 +670,18 @@ mod usage_tests {
         // Interleaving keeps the manifest path in place.
         let (path, _) = overrides(&["compose.yaml", "--max-runs", "3"]).unwrap();
         assert_eq!(path, PathBuf::from("compose.yaml"));
+
+        // Every documented guidance mode parses to its enum variant.
+        for (name, expected) in [
+            ("coverage", CampaignGuidance::Coverage),
+            ("adaptive", CampaignGuidance::Adaptive),
+            ("posterior", CampaignGuidance::Posterior),
+            ("property", CampaignGuidance::Property),
+            ("unified", CampaignGuidance::Unified),
+        ] {
+            let (_, guidance) = overrides(&["--guidance", name, "compose.yaml"]).unwrap();
+            assert!(matches!(guidance, Some(mode) if mode == expected), "{name}");
+        }
     }
 
     #[test]
