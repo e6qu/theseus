@@ -253,7 +253,10 @@ search system modeled on the workflow Antithesis exposes.
   virtual-clock inputs already use the machine stream.
 - Reuse checkpoints at common prefixes and explore alternative suffixes.
 - Combine coverage novelty, property progress, rare states, fault outcomes,
-  schedule outcomes, and execution cost in the search policy.
+  schedule outcomes, and execution cost in the search policy. The
+  \`--max-runs\`/\`--guidance\` exploration overrides now make fixed-budget
+  cross-policy comparisons a one-command affair; retained side-by-side
+  comparisons on the public workloads remain the open evidence.
 - Add structured choice APIs with immediate-use semantics so the engine can
   learn which generated values matter.
 - Make every discovered execution replayable from an exact decision prefix;
