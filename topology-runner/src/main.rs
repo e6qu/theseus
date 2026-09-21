@@ -9266,7 +9266,7 @@ fn default_property_results(output: &Path, runs: &[usize]) -> Vec<CampaignProper
                 }
             };
             CampaignPropertyResult {
-                name: name.to_owned(),
+                name: (*name).to_owned(),
                 kind: "always",
                 status: if failed.is_some() { "failed" } else { "passed" },
                 detail,
