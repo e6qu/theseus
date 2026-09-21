@@ -18068,7 +18068,7 @@ mod tests {
         let results = default_property_results(directory.path(), &[0, 2]);
         let crash = results.iter().find(|r| r.name == "theseus:crash").unwrap();
         assert_eq!(crash.status, "passed");
-        assert!(crash.detail.contains("all 4 retained service checks"));
+        assert!(crash.detail.contains("all 2 retained service checks"));
 
         // A run directory without service results is skipped, not fatal.
         let empty = default_property_results(directory.path(), &[9]);
