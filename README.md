@@ -17,8 +17,10 @@ passing unit suite alone is not treated as runtime proof.
   Ready checkpoints retain CRNG state for `/dev/random` and `/dev/urandom`
   replay without a random-device module, including on amd64.
 - Exit-counted virtual-time quanta on amd64 and arm64.
-- Deterministic simulated network and memory-backed storage faults, including
-  a topology-derived profile for service lifecycle and asymmetric links.
+- Deterministic simulated network and memory-backed storage faults, plus
+  service lifecycle, CPU throttling, directed link clogs, clock jumps, and
+  bounded clock-rate windows — including a topology-derived profile that
+  composes them autonomously.
 - UART operations for unmodified Linux services and an optional guest SDK.
 - Compose campaigns with bounded operations, faults, serial properties,
   minimization, replay, and offline reports.
