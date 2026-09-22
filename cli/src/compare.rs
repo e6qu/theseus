@@ -10,6 +10,7 @@ type Coverage = std::collections::BTreeMap<String, Vec<Value>>;
 pub enum CompareError {
     Read(std::io::Error),
     Parse(serde_json::Error),
+    Invalid(String),
 }
 
 impl std::fmt::Display for CompareError {
@@ -17,6 +18,7 @@ impl std::fmt::Display for CompareError {
         match self {
             Self::Read(error) => write!(formatter, "cannot read campaign result: {error}"),
             Self::Parse(error) => write!(formatter, "cannot parse campaign result: {error}"),
+            Self::Invalid(reason) => write!(formatter, "invalid comparison input: {reason}"),
         }
     }
 }
@@ -618,6 +620,28 @@ mod tests {
     }
 
     #[test]
+    fn at_moment_dumps_both_boundary_records() {
+        let baseline = r#"[{"index":0,"operations":["write"],"state_sha256":"final","timeline":[{"id":"op-000-write","operation":"write","service":"api","state_sha256":"state","moment":"7000@input-hash","actions":[{"kind":"partition"}],"markers":["42"],"serial_sha256":{"api":"serial"},"program_counters":{"api":["0x10"]}}]}]"#;
+        let right = baseline
+            .replace("\"state_sha256\":\"state\"", "\"state_sha256\":\"changed\"")
+            .replace("7000@input-hash", "7000@input-hash");
+        let (left, right) = write_pair(&result(baseline, "[]"), &result(&right, "[]"));
+        let diff = boundary_at_moment(left.path(), right.path(), "7000@input-hash").unwrap();
+        assert_eq!(diff.run, 0);
+        assert_eq!(diff.boundary, "op-000-write");
+        assert!(!diff.identical);
+        assert_eq!(diff.left["state_sha256"], "state");
+        assert_eq!(diff.right["state_sha256"], "changed");
+
+        // An address only one side carries is an error naming the mismatch.
+        let drifted = baseline.replace("7000@input-hash", "9000@other-hash");
+        let (left, right) = write_pair(&result(baseline, "[]"), &result(&drifted, "[]"));
+        let error = boundary_at_moment(left.path(), right.path(), "7000@input-hash")
+            .unwrap_err();
+        assert!(error.to_string().contains("no boundary carries"), "{error}");
+    }
+
+    #[test]
     fn boundary_divergences_report_both_moment_addresses() {
         let baseline = r#"[{"index":0,"operations":["write"],"faults":["partition"],"state_sha256":"final","timeline":[{"operation":"write","service":"api","state_sha256":"state","moment":"7000@input-hash","actions":[{"kind":"partition"}],"markers":["42"],"serial_sha256":{"api":"serial"},"program_counters":{"api":["0x10"]}}]}]"#;
         // Same shape but a different state at the same boundary, with the
@@ -856,4 +880,82 @@ mod tests {
         assert_eq!(query.left, Some(Value::String("passed".to_owned())));
         assert_eq!(query.right, Some(Value::String("failed".to_owned())));
     }
+}
+
+/// Dump both sides' full boundary record at one moment address, so an
+/// investigator can diff everything that differs at that exact point -
+/// not just the first divergence the comparison stops at.
+pub fn boundary_at_moment(
+    left: impl AsRef<Path>,
+    right: impl AsRef<Path>,
+    moment: &str,
+) -> Result<BoundaryMomentDiff, CompareError> {
+    let read = |root: &Path| -> Result<serde_json::Value, CompareError> {
+        Ok(serde_json::from_slice(&fs::read(
+            root.join("campaign-result.json"),
+        )?)?)
+    };
+    let left_result = read(left.as_ref())?;
+    let right_result = read(right.as_ref())?;
+    let left_boundary = find_boundary_moment(&left_result, moment)?;
+    let right_boundary = find_boundary_moment(&right_result, moment)?;
+    if left_boundary.run != right_boundary.run {
+        return Err(CompareError::Invalid(format!(
+            "moment {moment:?} resolves to run {} on the left and run {} on the right",
+            left_boundary.run, right_boundary.run
+        )));
+    }
+    Ok(BoundaryMomentDiff {
+        run: left_boundary.run,
+        boundary: left_boundary.boundary_id.clone(),
+        moment: moment.to_owned(),
+        identical: left_boundary.record == right_boundary.record,
+        left: left_boundary.record,
+        right: right_boundary.record,
+    })
+}
+
+struct BoundaryRecord {
+    run: usize,
+    boundary_id: String,
+    record: serde_json::Value,
+}
+
+fn find_boundary_moment(
+    result: &serde_json::Value,
+    moment: &str,
+) -> Result<BoundaryRecord, CompareError> {
+    let runs = result["runs"]
+        .as_array()
+        .ok_or_else(|| CompareError::Invalid("result has no runs".to_owned()))?;
+    for (run_index, run) in runs.iter().enumerate() {
+        let timeline = run["timeline"]
+            .as_array()
+            .ok_or_else(|| CompareError::Invalid(format!("run {run_index} has no timeline")))?;
+        for boundary in timeline {
+            if boundary["moment"] == *moment {
+                return Ok(BoundaryRecord {
+                    run: run_index,
+                    boundary_id: boundary["id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    record: boundary.clone(),
+                });
+            }
+        }
+    }
+    Err(CompareError::Invalid(format!(
+        "no boundary carries moment {moment:?}"
+    )))
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct BoundaryMomentDiff {
+    pub run: usize,
+    pub boundary: String,
+    pub moment: String,
+    pub identical: bool,
+    pub left: serde_json::Value,
+    pub right: serde_json::Value,
 }

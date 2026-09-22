@@ -27,7 +27,8 @@ pub use cargo_coverage::{
     CARGO_COVERAGE_USAGE,
 };
 pub use compare::{
-    compare_campaigns, query_campaigns, CampaignComparison, CampaignQuery, CompareError,
+    boundary_at_moment, compare_campaigns, query_campaigns, BoundaryMomentDiff,
+    CampaignComparison, CampaignQuery, CompareError,
 };
 pub use compose::{
     explore_compose, explore_compose_expect_counterexample, explore_compose_with,

@@ -8,7 +8,8 @@ use std::process::ExitCode;
 use theseus_cli::{
     capture_evaluation, cargo_coverage, cargo_coverage_rustc_wrapper, compare_campaigns, evaluate,
     explore, explore_compose_with, explore_compose_expect_counterexample_with,
-    find_moment, go_coverage, list_moments, next_moment_in, previous_moment_in,
+    boundary_at_moment, find_moment, go_coverage, list_moments, next_moment_in,
+    previous_moment_in,
     load_compose_plan, load_plan, minimize_compose_campaign,
     minimize_compose_campaign_expect_counterexample, minimize_exploration_path, query_campaigns,
     replay, replay_compose, replay_exploration, replay_exploration_path, replay_to, report,
@@ -33,6 +34,7 @@ const USAGE: &str = "Usage:
   theseus compare left-campaign-dir right-campaign-dir
   theseus compare --format json|markdown left-campaign-dir right-campaign-dir
   theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
+  theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous]
   theseus query campaign-dir --list
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
@@ -294,6 +296,19 @@ fn run(args: Vec<String>) -> Result<(), String> {
         [command, flag, format, input] if command == "evaluate" && flag == "--format" => {
             let summary = evaluate(input).map_err(|error| error.to_string())?;
             print_evaluation(summary, format)
+        }
+        [command, flag, moment, left, right]
+            if command == "compare" && flag == "--at-moment" =>
+        {
+            let diff = boundary_at_moment(left, right, moment)
+                .map_err(|error| error.to_string())?;
+            println!("run: {}", diff.run);
+            println!("boundary: {}", diff.boundary);
+            println!("moment: {}", diff.moment);
+            println!("identical: {}", diff.identical);
+            println!("left: {}", serde_json::to_string(&diff.left).unwrap_or_default());
+            println!("right: {}", serde_json::to_string(&diff.right).unwrap_or_default());
+            Ok(())
         }
         [command, left, right] if command == "compare" => {
             let comparison = compare_campaigns(left, right).map_err(|error| error.to_string())?;
