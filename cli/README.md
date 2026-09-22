@@ -19,7 +19,7 @@ theseus explore --snapshot exploration-dir --seed-path seed,... [--output snapsh
 theseus report [--output report-dir] result-dir
 theseus report --format markdown|json|junit|github [--output file] result-dir
 theseus compare left-campaign-dir right-campaign-dir
-theseus compare --format json|markdown left-campaign-dir right-campaign-dir
+theseus compare --format json|markdown|github left-campaign-dir right-campaign-dir
 theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
 theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]

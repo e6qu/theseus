@@ -73,7 +73,9 @@ jobs:
   retained as failed; drop it to require the campaign to pass instead.
 - The `github` report format emits `::error`/`::warning` annotations for
   every failed check, so the violating property and its first violating
-  timeline appear directly on the workflow run summary.
+  timeline appear directly on the workflow run summary. `theseus compare
+  --format github` produces the same annotations for cross-run divergences,
+  with both sides' moment addresses for temporal navigation.
 - The uploaded bundle is the locked replay directory: anyone with the
   artifact can run the replay command printed in the report against the
   same published runtime, without re-running the exploration.

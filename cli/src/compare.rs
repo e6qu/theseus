@@ -189,6 +189,36 @@ impl CampaignComparison {
         }
         report
     }
+
+    /// GitHub Actions step-summary rendering: `::error` annotation for the
+    /// divergence with both sides' evidence and moment addresses, so a
+    /// cross-run comparison in CI flags the run directly.
+    pub fn github(&self) -> String {
+        let mut output = format!(
+            "::warning title=Theseus comparison::status {} - left {} runs, right {} runs\n",
+            self.status, self.left_runs, self.right_runs
+        );
+        if let Some(divergence) = &self.divergence {
+            let boundary = divergence
+                .boundary
+                .map(|boundary| format!(" at boundary {boundary}"))
+                .unwrap_or_default();
+            output.push_str(&format!(
+                "::error title=Theseus divergence{}::{}\n",
+                boundary, divergence.reason
+            ));
+            output.push_str(&format!("left: {}\n", divergence.left));
+            output.push_str(&format!("right: {}\n", divergence.right));
+            if let Some((left_moment, right_moment)) = &divergence.moments {
+                output.push_str(&format!(
+                    "moments: left {left_moment} / right {right_moment}\n"
+                ));
+            }
+        } else {
+            output.push_str("The retained campaign evidence is identical.\n");
+        }
+        output
+    }
 }
 
 /// Read the same RFC 6901 JSON Pointer from two locked campaign results.
@@ -617,6 +647,22 @@ mod tests {
         fs::write(left.path().join("campaign-result.json"), left_contents).unwrap();
         fs::write(right.path().join("campaign-result.json"), right_contents).unwrap();
         (left, right)
+    }
+
+    #[test]
+    fn github_format_annotations_report_divergence_and_moments() {
+        let baseline = r#"[{"index":0,"operations":["write"],"state_sha256":"final","timeline":[{"id":"op-000-write","operation":"write","service":"api","state_sha256":"state","moment":"7000@input-hash","actions":[{"kind":"partition"}],"markers":["42"],"serial_sha256":{"api":"serial"},"program_counters":{"api":["0x10"]}}]}]"#;
+        let right = baseline
+            .replace(r#""state_sha256":"state""#, r#""state_sha256":"changed""#)
+            .replace("7000@input-hash", "9000@input-hash");
+        let (left, right) = write_pair(&result(baseline, "[]"), &result(&right, "[]"));
+        let comparison = compare_campaigns(left.path(), right.path()).unwrap();
+        let output = comparison.github();
+        assert!(output.contains("::warning title=Theseus comparison::"), "{output}");
+        assert!(output.contains("::error title=Theseus divergence"), "{output}");
+        assert!(output.contains("moments: left 7000@input-hash / right 9000@input-hash"), "{output}");
+        assert!(output.contains("left: "), "{output}");
+        assert!(output.contains("right: "), "{output}");
     }
 
     #[test]
