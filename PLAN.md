@@ -319,6 +319,45 @@ Antithesis reports and multiverse debugging.
 
 - `always_or_unreachable` exists as a campaign property kind. Make property
   observations first-class search feedback.
+
+## Immediate next work
+
+### 1. Counterfactual re-execution
+
+Fork a retained campaign run, change one recorded decision (operation input
+or fault selection), re-execute from the shared checkpoint prefix, and
+retain both futures for diffing.
+
+- CLI: `theseus compose explore --fork-run N --replace-fault OLD=NEW`
+- Plan: `CounterfactualPlan` in the replay plan records the forked run
+  index, replaced fault name, and replacement, locked like any override.
+- Runner: `apply_campaign_schedule` selects the recorded schedule and
+  applies the substitution before execution.
+- Diff: `theseus compare --forked` reports the diverging boundary and both
+  sides' moment addresses.
+- Tests: compose validation (unknown fault name, unchanged replacement);
+  runner test that the forked schedule carries the substitution.
+
+### 2. Custom fault interface
+
+User-declared fault actions executed inside image-backed services at
+operation barriers.
+
+- CLI: `kind: custom` campaign fault with `service`, `after`, and
+  `command` (argv via the image pivot shell protocol). No automatic
+  inverse; terminal checks record completion without restoring.
+- Plan: passes through `ComposeCampaignFault` -> `CampaignFaultPlan` ->
+  `CampaignFault` -> `CampaignAction` like every other barrier fault.
+- Runner: apply arm sends the command through the same UART protocol as
+  shell operations; records an `AppliedCampaignAction` with exit status
+  and bounded output.
+- Compat: two custom faults on one service are compatible. Custom faults
+  never participate in terminal recovery.
+- Tests: compose validation (command required, service must be
+  image-backed with container_service); runner naming and compat tests.
+
+Land counterfactual first (higher leverage, reuses the schedule-rebuild
+machinery), then custom faults. Both in one PR if context allows.
 - Provide supported assertion, event, and structured-randomness APIs for C,
   C++, Rust, Go, and Java, while retaining a language-neutral JSON event path.
 - Capture stdout, stderr, structured events, faults, decisions, coverage,
