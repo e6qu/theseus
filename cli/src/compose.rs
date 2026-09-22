@@ -4499,8 +4499,7 @@ fn campaign_plan(
                             "campaign cpu_throttle requires every_n_rounds".to_owned(),
                         ));
                     }
-                } else if candidate.duration_rounds.is_some()
-                    || candidate.every_n_rounds.is_some()
+                } else if candidate.duration_rounds.is_some() || candidate.every_n_rounds.is_some()
                 {
                     return Err(ComposeError::Invalid(
                         "campaign cpu_release accepts only service and after".to_owned(),
@@ -4715,8 +4714,7 @@ fn campaign_plan(
                     }
                 } else if candidate.latency_rounds.is_some() {
                     return Err(ComposeError::Invalid(
-                        "campaign link_unclog accepts only network, from, to, and after"
-                            .to_owned(),
+                        "campaign link_unclog accepts only network, from, to, and after".to_owned(),
                     ));
                 }
                 faults.push(CampaignFaultPlan {
@@ -7504,6 +7502,217 @@ pub fn minimize_compose_campaign_expect_counterexample(
     Ok(output)
 }
 
+/// Fork one recorded campaign run as a counterfactual experiment: re-execute
+/// the recorded schedule of `run` with its recorded `fault` decision replaced
+/// by the declared `replace` fault, reusing the deterministic shared prefix,
+/// into a fresh campaign directory beside the untouched original.
+///
+/// The substitution is locked into the forked replay plan like any override,
+/// so the forked future records its own provenance and pairs with `theseus
+/// compare --forked` against the retained base campaign.
+pub fn explore_compose_forked(
+    bundle: impl AsRef<Path>,
+    run: usize,
+    fault: &str,
+    replace: &str,
+    output: impl AsRef<Path>,
+) -> Result<PathBuf, ComposeError> {
+    let bundle = fs::canonicalize(bundle.as_ref()).map_err(|source| ComposeError::Read {
+        path: bundle.as_ref().to_path_buf(),
+        source,
+    })?;
+    if !bundle.join("replay-plan.json").is_file() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign bundle has no replay-plan.json: {}",
+            bundle.display()
+        )));
+    }
+    if !bundle.join("campaign-result.json").is_file() {
+        return Err(ComposeError::Invalid(format!(
+            "campaign bundle has no campaign-result.json: {}",
+            bundle.display()
+        )));
+    }
+    let output = output.as_ref().to_path_buf();
+    if output.exists() {
+        return Err(ComposeError::Invalid(format!(
+            "forked output already exists: {}",
+            output.display()
+        )));
+    }
+    let plan = forked_counterfactual_plan(&bundle, run, fault, replace)?;
+    // The runner reads the recorded campaign result and resolves relative
+    // artifact paths beside its plan file, so the substituted plan is staged
+    // next to the output with artifact paths rewritten to their retained
+    // bundle locations. The bundle itself is never modified.
+    let staging = output.with_extension("counterfactual-plan");
+    if staging.exists() {
+        return Err(ComposeError::Invalid(format!(
+            "counterfactual staging directory already exists: {}",
+            staging.display()
+        )));
+    }
+    fs::create_dir_all(&staging).map_err(|source| ComposeError::Read {
+        path: staging.clone(),
+        source,
+    })?;
+    let staged_plan = staging.join("replay-plan.json");
+    let staged_result = staging.join("campaign-result.json");
+    let staged = (|| {
+        fs::write(
+            &staged_plan,
+            serde_json::to_vec_pretty(&plan).map_err(|error| {
+                ComposeError::Invalid(format!("cannot encode forked plan: {error}"))
+            })?,
+        )
+        .map_err(|source| ComposeError::Read {
+            path: staged_plan.clone(),
+            source,
+        })?;
+        fs::copy(bundle.join("campaign-result.json"), &staged_result).map_err(|source| {
+            ComposeError::Read {
+                path: bundle.join("campaign-result.json"),
+                source,
+            }
+        })?;
+        Ok(())
+    })();
+    let result = staged.and_then(|()| execute_topology(&staged_plan, &output));
+    let _ = fs::remove_dir_all(&staging);
+    result.map(|()| output)
+}
+
+/// Validate one counterfactual fork against the retained bundle and return
+/// the bundle's replay plan with the locked substitution injected. The
+/// replaced fault must be one the recorded run selected and the replacement
+/// must differ from it; the replacement's existence is resolved against the
+/// plan's declared faults by the runner, which owns the fault-naming
+/// contract.
+fn forked_counterfactual_plan(
+    bundle: &Path,
+    run: usize,
+    fault: &str,
+    replace: &str,
+) -> Result<serde_json::Value, ComposeError> {
+    let result = read_bundle_json(bundle, "campaign-result.json")?;
+    let mut plan = read_bundle_json(bundle, "replay-plan.json")?;
+    if fault == replace {
+        return Err(ComposeError::Invalid(
+            "counterfactual replacement must differ from the replaced fault".to_owned(),
+        ));
+    }
+    let recorded_faults = recorded_run_faults(&result, run)?;
+    if !recorded_faults.iter().any(|name| name == fault) {
+        return Err(ComposeError::Invalid(format!(
+            "recorded run {run} does not select fault {fault:?}"
+        )));
+    }
+    if plan
+        .get("campaign")
+        .map(serde_json::Value::is_null)
+        .unwrap_or(true)
+    {
+        return Err(ComposeError::Invalid(
+            "campaign bundle plan has no campaign section".to_owned(),
+        ));
+    }
+    absolutize_artifact_paths(&mut plan, bundle)?;
+    plan["campaign"]["counterfactual"] = serde_json::json!({
+        "run": run,
+        "fault": fault,
+        "replace": replace,
+    });
+    Ok(plan)
+}
+
+fn read_bundle_json(bundle: &Path, name: &str) -> Result<serde_json::Value, ComposeError> {
+    let path = bundle.join(name);
+    let bytes = fs::read(&path).map_err(|source| ComposeError::Read {
+        path: path.clone(),
+        source,
+    })?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| ComposeError::Invalid(format!("cannot parse {}: {error}", path.display())))
+}
+
+/// The fault decisions one recorded run selected, accepting both the current
+/// `faults` list and the legacy single-fault field.
+fn recorded_run_faults(
+    result: &serde_json::Value,
+    run: usize,
+) -> Result<Vec<String>, ComposeError> {
+    let runs = result
+        .get("runs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| ComposeError::Invalid("recorded campaign result has no runs".to_owned()))?;
+    let run = runs.get(run).ok_or_else(|| {
+        ComposeError::Invalid(format!(
+            "recorded campaign has no run {run} ({} runs)",
+            runs.len()
+        ))
+    })?;
+    let mut names = run
+        .get("faults")
+        .and_then(serde_json::Value::as_array)
+        .map(|faults| {
+            faults
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if names.is_empty() {
+        if let Some(fault) = run.get("fault").and_then(serde_json::Value::as_str) {
+            names.push(fault.to_owned());
+        }
+    }
+    Ok(names)
+}
+
+/// Rewrite every locked `{sha256, path}` artifact in a bundle replay plan to
+/// its absolute retained location. The runner leaves absolute paths alone, so
+/// the staged counterfactual plan keeps consuming the bundle's inputs rather
+/// than looking for them beside the forked output. This mirrors the runner's
+/// own relative-path rewriting when it writes a replay plan.
+fn absolutize_artifact_paths(
+    value: &mut serde_json::Value,
+    parent: &Path,
+) -> Result<(), ComposeError> {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                absolutize_artifact_paths(value, parent)?;
+            }
+        }
+        serde_json::Value::Object(object) => {
+            if object
+                .get("sha256")
+                .is_some_and(serde_json::Value::is_string)
+            {
+                if let Some(serde_json::Value::String(path)) = object.get_mut("path") {
+                    let target = PathBuf::from(path.as_str());
+                    if target.is_relative() {
+                        *path = fs::canonicalize(parent.join(&target))
+                            .map_err(|source| ComposeError::Read {
+                                path: target.clone(),
+                                source,
+                            })?
+                            .display()
+                            .to_string();
+                    }
+                }
+            } else {
+                for value in object.values_mut() {
+                    absolutize_artifact_paths(value, parent)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn write_temporary_topology_plan(
     plan: &ComposePlan,
     output: &Path,
@@ -9035,7 +9244,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn accepts_backward_clock_jumps_and_rejects_the_rest() {
         let base = r#"services:
   api:
@@ -9058,7 +9266,10 @@ networks:
 
         let zero = fixture(&base.replace("__NS__", "0"));
         let error = load_compose_plan(zero.path().join("compose.yaml")).unwrap_err();
-        assert!(error.to_string().contains("non-zero nanoseconds"), "{error}");
+        assert!(
+            error.to_string().contains("non-zero nanoseconds"),
+            "{error}"
+        );
 
         let huge = fixture(&base.replace("__NS__", "7200000000000"));
         let error = load_compose_plan(huge.path().join("compose.yaml")).unwrap_err();
@@ -10954,6 +11165,107 @@ x-theseus:
         assert_eq!(
             verified_runner(&artifact, &moved.join("replay-plan.json")).unwrap(),
             fs::canonicalize(moved.join("artifacts/theseus-topology")).unwrap()
+        );
+    }
+
+    fn counterfactual_bundle() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("campaign-result.json"),
+            r#"{"format":"theseus-compose-campaign-result-v1","runs":[
+                {"index":0,"operations":["write"],"faults":["backplane:partition@write"]},
+                {"index":1,"operations":["read"],"fault":"backplane:heal@read"}
+            ]}"#,
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("replay-plan.json"),
+            r#"{"format":"theseus-compose-plan-v1","campaign":{
+                "driver":"api","max_runs":2,"max_faults_per_run":1,"max_operations_per_run":1,
+                "operations":[],"faults":[],"properties":[]
+            }}"#,
+        )
+        .unwrap();
+        directory
+    }
+
+    #[test]
+    fn injects_the_locked_counterfactual_into_the_forked_plan() {
+        let directory = counterfactual_bundle();
+        let plan = forked_counterfactual_plan(
+            directory.path(),
+            1,
+            "backplane:heal@read",
+            "backplane:partition@write",
+        )
+        .unwrap();
+        assert_eq!(
+            plan["campaign"]["counterfactual"],
+            serde_json::json!({
+                "run": 1,
+                "fault": "backplane:heal@read",
+                "replace": "backplane:partition@write",
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_counterfactual_faults_that_are_unknown_unchanged_or_unselected() {
+        let directory = counterfactual_bundle();
+
+        // The replaced fault must be one the recorded run selected.
+        let error = forked_counterfactual_plan(
+            directory.path(),
+            0,
+            "backplane:heal@read",
+            "backplane:partition@write",
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("run 0 does not select fault \"backplane:heal@read\""),
+            "{error}"
+        );
+
+        // The replacement must differ from the replaced fault.
+        let error = forked_counterfactual_plan(
+            directory.path(),
+            0,
+            "backplane:partition@write",
+            "backplane:partition@write",
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("replacement must differ from the replaced fault"),
+            "{error}"
+        );
+
+        // The forked run index must exist in the retained result.
+        let error = forked_counterfactual_plan(
+            directory.path(),
+            7,
+            "backplane:partition@write",
+            "backplane:heal@read",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("no run 7"), "{error}");
+
+        // The legacy single-fault field also validates.
+        let error = forked_counterfactual_plan(
+            directory.path(),
+            1,
+            "backplane:partition@write",
+            "backplane:heal@read",
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("run 1 does not select fault \"backplane:partition@write\""),
+            "{error}"
         );
     }
 }

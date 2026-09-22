@@ -6,17 +6,16 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use theseus_cli::{
-    capture_evaluation, cargo_coverage, cargo_coverage_rustc_wrapper, compare_campaigns, evaluate,
-    explore, explore_compose_with, explore_compose_expect_counterexample_with,
-    boundary_at_moment, find_moment, go_coverage, list_moments, next_moment_in,
-    previous_moment_in,
-    load_compose_plan, load_plan, minimize_compose_campaign,
-    minimize_compose_campaign_expect_counterexample, minimize_exploration_path, query_campaigns,
-    replay, replay_compose, replay_exploration, replay_exploration_path, replay_to, report,
-    report_file, report_text, snapshot_exploration_path, test, test_compose,
-    verify_native_evidence, verify_topology_bundle, write_evaluation_lock, ReportFormat,
+    boundary_at_moment, capture_evaluation, cargo_coverage, cargo_coverage_rustc_wrapper,
+    compare_campaigns, compare_forked_campaigns, evaluate, explore,
+    explore_compose_expect_counterexample_with, explore_compose_forked, explore_compose_with,
+    find_moment, go_coverage, list_moments, load_compose_plan, load_plan,
+    minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
+    minimize_exploration_path, next_moment_in, previous_moment_in, query_campaigns, replay,
+    replay_compose, replay_exploration, replay_exploration_path, replay_to, report, report_file,
+    report_text, snapshot_exploration_path, test, test_compose, verify_native_evidence,
+    verify_topology_bundle, write_evaluation_lock, CampaignGuidance, ReportFormat,
     CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE,
-    CampaignGuidance,
 };
 
 const USAGE: &str = "Usage:
@@ -35,6 +34,7 @@ const USAGE: &str = "Usage:
   theseus compare --format json|markdown|github left-campaign-dir right-campaign-dir
   theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
   theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
+  theseus compare --forked base-campaign-dir forked-campaign-dir
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
   theseus query campaign-dir --list [--service NAME] [--format json]
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
@@ -53,6 +53,7 @@ const USAGE: &str = "Usage:
   theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--output campaign-dir] [compose.yaml]
   theseus compose explore --minimize campaign-dir [--output minimized-dir]
   theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
+  theseus compose explore --fork-run N --replace-fault OLD=NEW campaign-dir [--output forked-dir]
   theseus compose replay replay-dir [--output replay-dir]
   theseus compose verify checkpoint-bundle-dir
 
@@ -226,11 +227,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             while index < rest.len() {
                 match rest[index].as_str() {
                     "--moment" => {
-                        moment = Some(
-                            rest.get(index + 1)
-                                .ok_or(USAGE.to_owned())?
-                                .clone(),
-                        );
+                        moment = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
                         index += 2;
                     }
                     "--next" => {
@@ -246,11 +243,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         index += 1;
                     }
                     "--service" => {
-                        service_filter = Some(
-                            rest.get(index + 1)
-                                .ok_or(USAGE.to_owned())?
-                                .clone(),
-                        );
+                        service_filter = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
                         index += 2;
                     }
                     "--format" => {
@@ -268,9 +261,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 }
             }
             if list {
-                let summaries =
-                    list_moments(&result, service_filter.as_deref())
-                        .map_err(|error| error.to_string())?;
+                let summaries = list_moments(&result, service_filter.as_deref())
+                    .map_err(|error| error.to_string())?;
                 if format == "json" {
                     println!(
                         "{}",
@@ -333,14 +325,22 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let summary = evaluate(input).map_err(|error| error.to_string())?;
             print_evaluation(summary, format)
         }
-        [command, flag, moment, left, right]
-            if command == "compare" && flag == "--at-moment" =>
-        {
-            let diff = boundary_at_moment(left, right, moment)
-                .map_err(|error| error.to_string())?;
+        [command, flag, moment, left, right] if command == "compare" && flag == "--at-moment" => {
+            let diff =
+                boundary_at_moment(left, right, moment).map_err(|error| error.to_string())?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&diff).map_err(|error| error.to_string())?
+            );
+            Ok(())
+        }
+        [command, flag, left, right] if command == "compare" && flag == "--forked" => {
+            let comparison =
+                compare_forked_campaigns(left, right).map_err(|error| error.to_string())?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&comparison)
+                    .map_err(|error| format!("cannot encode comparison: {error}"))?
             );
             Ok(())
         }
@@ -363,11 +363,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 ),
                 "markdown" => print!("{}", comparison.markdown()),
                 "github" => print!("{}", comparison.github()),
-                _ => {
-                    return Err(
-                        "compare format must be json, markdown, or github".to_owned()
-                    )
-                }
+                _ => return Err("compare format must be json, markdown, or github".to_owned()),
             }
             Ok(())
         }
@@ -610,6 +606,39 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("minimized campaign counterexample: {}", result.display());
             Ok(())
         }
+        [command, subcommand, fork, run, replace, pair, bundle, output_flag, output]
+            if command == "compose"
+                && subcommand == "explore"
+                && fork == "--fork-run"
+                && replace == "--replace-fault"
+                && output_flag == "--output" =>
+        {
+            let run = run.parse::<usize>().map_err(|_| USAGE.to_owned())?;
+            let (fault, replacement) = parse_replace_fault(pair)?;
+            let result = explore_compose_forked(bundle, run, fault, replacement, output)
+                .map_err(|error| error.to_string())?;
+            println!("counterfactual fork retained: {}", result.display());
+            Ok(())
+        }
+        [command, subcommand, fork, run, replace, pair, bundle]
+            if command == "compose"
+                && subcommand == "explore"
+                && fork == "--fork-run"
+                && replace == "--replace-fault" =>
+        {
+            let run = run.parse::<usize>().map_err(|_| USAGE.to_owned())?;
+            let (fault, replacement) = parse_replace_fault(pair)?;
+            let result = explore_compose_forked(
+                bundle,
+                run,
+                fault,
+                replacement,
+                format!("{bundle}-forked"),
+            )
+            .map_err(|error| error.to_string())?;
+            println!("counterfactual fork retained: {}", result.display());
+            Ok(())
+        }
         [command, subcommand, expect, property, output_flag, output, rest @ ..]
             if command == "compose"
                 && subcommand == "explore"
@@ -618,11 +647,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         {
             let (compose, (max_runs, guidance)) = compose_explore_overrides(rest)?;
             let result = explore_compose_expect_counterexample_with(
-                &compose,
-                output,
-                property,
-                max_runs,
-                guidance,
+                &compose, output, property, max_runs, guidance,
             )
             .map_err(|error| error.to_string())?;
             println!("counterexample retained: {}", result.display());
@@ -639,11 +664,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("theseus-compose-campaign");
             let result = explore_compose_expect_counterexample_with(
-                &compose,
-                output,
-                property,
-                max_runs,
-                guidance,
+                &compose, output, property, max_runs, guidance,
             )
             .map_err(|error| error.to_string())?;
             println!("counterexample retained: {}", result.display());
@@ -653,9 +674,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
             if command == "compose" && subcommand == "explore" && flag == "--output" =>
         {
             let (compose, overrides) = compose_explore_overrides(rest)?;
-            let result =
-                explore_compose_with(&compose, output, overrides.0, overrides.1)
-                    .map_err(|error| error.to_string())?;
+            let result = explore_compose_with(&compose, output, overrides.0, overrides.1)
+                .map_err(|error| error.to_string())?;
             println!("campaign passed: {}", result.display());
             Ok(())
         }
@@ -731,6 +751,12 @@ fn parse_guidance(value: &str) -> Result<CampaignGuidance, String> {
     }
 }
 
+/// Split a `--replace-fault OLD=NEW` argument into the recorded fault name
+/// and its declared replacement. Retained fault names never contain `=`.
+fn parse_replace_fault(value: &str) -> Result<(&str, &str), String> {
+    value.split_once('=').ok_or_else(|| USAGE.to_owned())
+}
+
 fn compose_path(args: &[String]) -> Result<PathBuf, String> {
     match args {
         [] => Ok(PathBuf::from("compose.yaml")),
@@ -774,7 +800,9 @@ fn main() -> ExitCode {
 mod usage_tests {
     use super::*;
 
-    fn overrides(args: &[&str]) -> Result<(PathBuf, (Option<u16>, Option<CampaignGuidance>)), String> {
+    fn overrides(
+        args: &[&str],
+    ) -> Result<(PathBuf, (Option<u16>, Option<CampaignGuidance>)), String> {
         compose_explore_overrides(
             &args
                 .iter()
@@ -791,8 +819,14 @@ mod usage_tests {
         assert_eq!(max_runs, Some(64));
         assert!(matches!(guidance, Some(CampaignGuidance::Unified)));
 
-        let (path, (max_runs, guidance)) =
-            overrides(&["--guidance", "coverage", "--max-runs", "8", "work/compose.yaml"]).unwrap();
+        let (path, (max_runs, guidance)) = overrides(&[
+            "--guidance",
+            "coverage",
+            "--max-runs",
+            "8",
+            "work/compose.yaml",
+        ])
+        .unwrap();
         assert_eq!(path, PathBuf::from("work/compose.yaml"));
         assert_eq!(max_runs, Some(8));
         assert!(matches!(guidance, Some(CampaignGuidance::Coverage)));
@@ -809,8 +843,7 @@ mod usage_tests {
             ("property", CampaignGuidance::Property),
             ("unified", CampaignGuidance::Unified),
         ] {
-            let (_, (_, guidance)) =
-                overrides(&["--guidance", name, "compose.yaml"]).unwrap();
+            let (_, (_, guidance)) = overrides(&["--guidance", name, "compose.yaml"]).unwrap();
             assert!(matches!(guidance, Some(mode) if mode == expected), "{name}");
         }
     }
@@ -830,5 +863,15 @@ mod usage_tests {
         assert!(overrides(&["--max-runs"]).is_err());
         assert!(overrides(&["--guidance", "sometimes", "compose.yaml"]).is_err());
         assert!(overrides(&["--guidance"]).is_err());
+    }
+
+    #[test]
+    fn replace_fault_parses_one_old_new_pair() {
+        assert_eq!(
+            parse_replace_fault("backplane:partition@write=backplane:heal@write").unwrap(),
+            ("backplane:partition@write", "backplane:heal@write")
+        );
+        assert!(parse_replace_fault("missing-separator").is_err());
+        assert!(parse_replace_fault("").is_err());
     }
 }

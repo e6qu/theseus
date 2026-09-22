@@ -472,6 +472,39 @@ fn compare_queries_and_reports_campaign_evidence_without_kvm() {
     let query: serde_json::Value = serde_json::from_slice(&query.stdout).unwrap();
     assert_eq!(query["left"]["api"][0], "0x8010");
     assert_eq!(query["right"]["api"][0], "0x8020");
+
+    let forked = directory.path().join("forked");
+    fs::create_dir(&forked).unwrap();
+    fs::write(
+        forked.join("campaign-result.json"),
+        r#"{"counterfactual":{"run":0,"fault":"backplane:partition@read","replace":"backplane:heal@read"},"runs":[{"index":0,"operations":["read"],"faults":["backplane:heal@read"],"state_sha256":"forked-state","timeline":[{"operation":"read","service":"api","state_sha256":"forked-state","moment":"9000@fork-hash","program_counters":{"api":["0x8010"]}}]}],"properties":[{"name":"consistent_read","kind":"always","status":"passed"}]}"#,
+    )
+    .unwrap();
+    let comparison = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["compare", "--forked", "before", "forked"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(comparison.status.success(), "{comparison:?}");
+    let comparison: serde_json::Value = serde_json::from_slice(&comparison.stdout).unwrap();
+    assert_eq!(comparison["status"], "diverged");
+    assert_eq!(comparison["forked_run"], 0);
+    assert_eq!(comparison["replaced_fault"], "backplane:partition@read");
+    assert_eq!(comparison["replacement_fault"], "backplane:heal@read");
+    assert_eq!(
+        comparison["divergence"]["reason"],
+        "operation-boundary state diverges"
+    );
+    assert_eq!(comparison["divergence"]["moments"][0], "");
+    assert_eq!(comparison["divergence"]["moments"][1], "9000@fork-hash");
+
+    // A comparison between two forks is rejected instead of guessed.
+    let ambiguous = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["compare", "--forked", "forked", "forked"])
+        .current_dir(directory.path())
+        .status()
+        .unwrap();
+    assert!(!ambiguous.success(), "{ambiguous:?}");
 }
 
 #[test]
@@ -639,6 +672,8 @@ fn help_lists_bundle_local_replay_commands() {
     assert!(help.contains("compose replay replay-dir"));
     assert!(help.contains("report --format markdown|json|junit"));
     assert!(help.contains("compare --query /json/pointer"));
+    assert!(help.contains("compare --forked base-campaign-dir forked-campaign-dir"));
+    assert!(help.contains("--fork-run N --replace-fault OLD=NEW campaign-dir"));
     assert!(help.contains("evaluate [--format json|markdown]"));
     assert!(help.contains("evaluate lock [theseus-evaluation.toml]"));
     assert!(help.contains("evaluate capture campaign-dir --output evaluation-dir --name name"));
