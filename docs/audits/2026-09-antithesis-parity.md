@@ -38,7 +38,7 @@ This month closed or narrowed several named gaps:
 | Faults | Network partition/slow/jam/clog/restore; node stop/kill/pause/throttle; CPU modulation; clock; custom user-defined faults | Service lifecycle; partitions; degradation; clogs; storage; packet selectors; clock jumps backward/forward; clock-rate windows; CPU throttling | Custom user-defined fault interface; clock-rate reduction below 1x |
 | Concurrency | Deep thread/process scheduling | Bounded instrumented GCC C pthread path | General Linux thread/process scheduling |
 | Structured randomness | SDKs for Go, Java, C, C++, JavaScript, Python, Rust, .NET + JSONL | Bounded shell choices; Rust helper; language-neutral protocol | SDK breadth; immediate-use guidance feedback from generated values |
-| Debugging | Time travel, multiverse map, causality analysis, streaming reports | Reports, replay, minimization, checkpoint export, violation context, alternative-futures frequencies | Interactive time travel; counterfactual re-execution; moment-addressed logs |
+| Debugging | Time travel, multiverse map, causality analysis, streaming reports | Reports, replay, minimization, checkpoint export, violation context, alternative-futures frequencies, one-decision counterfactual forks with moment-addressed diffs | Interactive time travel; fork at an arbitrary checkpoint or choice; temporal queries beyond moment addressing |
 | Event logs | JSONL with `(vtime, input_hash)` moments; temporal operators; event sets | Ordered decision traces; serial deltas; violation excerpts | `(vtime, input_hash)` moment addressing; preceded-by/followed-by queries |
 | Delivery | Hosted SaaS; REST API v0/v1; webhooks; Snouty CLI; CI triggers; integrations | Self-hosted CLI; markdown/JSON/JUnit reports; structured progress streams | Campaign API; notifications; parallel workers; live log/coverage view |
 
@@ -59,9 +59,13 @@ This month closed or narrowed several named gaps:
    runs; exposing them as queries over a retained bundle reuses that
    matcher.
 3. **Counterfactual re-execution** — fork a retained checkpoint, change one
-   recorded choice or fault, re-execute, and diff the futures. Checkpoints,
-   prefix reuse, and host-input replay exist; the missing piece is the
-   plan-level override-and-diff workflow on top.
+   recorded choice or fault, re-execute, and diff the futures. Landed for
+   fault decisions: `compose explore --fork-run N --replace-fault OLD=NEW`
+   locks the substitution into the forked replay plan and re-executes the
+   recorded schedule from the shared prefix, and `compare --forked` reports
+   the first diverging boundary with both sides' moments. Forking at an
+   arbitrary retained checkpoint or on an arbitrary recorded choice
+   (operation inputs, schedules, structured choices) remains open.
 4. **Default properties** — automatic crash and completion verdicts per
    run (`theseus:crash`, `theseus:completed`) are recorded beside declared
    properties without user declaration. The open work is OOM detection and

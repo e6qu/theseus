@@ -94,9 +94,17 @@ Reference: [Antithesis test templates](https://antithesis.com/docs/product/writi
 ### Counterfactual causality analysis
 
 Antithesis describes re-executing from checkpoints while changing one event to
-test whether it caused a later behavior. Theseus `compare` reads two completed
-histories and reports their first retained difference. It does not run those
-counterfactual experiments and its output must not be called a causal result.
+test whether it caused a later behavior. Theseus runs that experiment for one
+recorded decision: `theseus compose explore --fork-run N --replace-fault
+OLD=NEW campaign-dir` locks the substitution into a forked replay plan,
+re-executes the recorded schedule of run N from the shared deterministic
+prefix, and retains both futures. `theseus compare --forked` then reports the
+first diverging operation boundary with both sides' moment addresses, so the
+same address retrieves either future's evidence. The fork names exactly the
+decision it changed; arbitrary interventions and interactive time travel do
+not exist, and because uncontrolled kernel and guest behavior can still
+escape the model, a divergence supports - but does not by itself prove - a
+causal claim.
 
 Reference: [Antithesis causality analysis](https://antithesis.com/docs/product/debugging/causality_analysis/).
 

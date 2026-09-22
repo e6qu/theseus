@@ -102,8 +102,11 @@ passing unit suite alone is not treated as runtime proof.
   access. Read values can only be checked after the device supplies them;
   replay stops on a mismatch but cannot undo that read. Host-timed cutoffs are
   diagnostic pause boundaries, not deterministic guest exits.
-- `compare` finds the first difference in two recorded histories. It does not
-  perform counterfactual re-exploration or prove causality.
+- `compare` finds the first difference in two recorded histories, and
+  `compare --forked` diffs a counterfactual future (one recorded fault
+  decision replaced, re-executed from the shared prefix) against the run it
+  forked. Neither proves causality: uncontrolled kernel and guest behavior
+  can still escape the model.
 - Capturing a branch copies guest RAM into a memfd. Restored children then use
   private copy-on-write mappings; the complete capture/restore path is not
   zero-copy.

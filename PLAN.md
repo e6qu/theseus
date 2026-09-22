@@ -41,7 +41,7 @@ Use these labels consistently:
 | Coverage guidance | Partial | GCC C and Go basic blocks plus LLVM C/C++/Rust edges cover native executables, shared libraries, a selected Cargo graph, and a selected Go command's imported main-module packages. Compose locks manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go external modules and CGO, Java, and production-scale validation remain open. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
 | Test composition | Partial | Explicit operations and discovered Antithesis-compatible image templates use all seven lifecycle roles. Each timeline selects one template, the explorer varies bounded command concurrency, eventual checks kill live commands, and final checks join them. Production-scale adaptive command scheduling remains open. |
-| Failure investigation | Early | Replay, minimization, checkpoints, reports, and history comparison exist; interactive time travel, interventions, alternative futures, temporal queries, and causal evidence do not. |
+| Failure investigation | Early | Replay, minimization, checkpoints, reports, history comparison, and one-decision counterfactual forks with retained, diffable futures exist; interactive time travel, general interventions, temporal queries, and causal evidence do not. |
 | Product operation | Early | Theseus is primarily a local/self-hosted CLI; it lacks a comparable API, CI workflow, live campaign view, scalable parallel service, notification surface, and web debugger. |
 
 ## Verified implementation baseline
@@ -106,6 +106,13 @@ Theseus currently has:
   image services, and shared networks. It generates bounded service
   stop/kill/restart, directed partition, and directed packet-condition
   candidates, then recovers active faults before terminal checks.
+- Counterfactual re-execution of one retained campaign run:
+  `theseus compose explore --fork-run N --replace-fault OLD=NEW campaign-dir`
+  locks the substitution into the forked replay plan, re-executes the
+  recorded schedule from the shared deterministic prefix with the replaced
+  fault decision, and retains both futures. The fork records its provenance,
+  and `theseus compare --forked` reports the first diverging operation
+  boundary with both sides' moment addresses.
 
 The baseline has important limits:
 
@@ -257,7 +264,7 @@ search system modeled on the workflow Antithesis exposes.
 - Reuse checkpoints at common prefixes and explore alternative suffixes.
 - Combine coverage novelty, property progress, rare states, fault outcomes,
   schedule outcomes, and execution cost in the search policy. The
-  \`--max-runs\`/\`--guidance\` exploration overrides now make fixed-budget
+  `--max-runs`/`--guidance` exploration overrides now make fixed-budget
   cross-policy comparisons a one-command affair; retained side-by-side
   comparisons on the public workloads remain the open evidence.
 - Add structured choice APIs with immediate-use semantics so the engine can
@@ -319,26 +326,28 @@ Antithesis reports and multiverse debugging.
 
 - `always_or_unreachable` exists as a campaign property kind. Make property
   observations first-class search feedback.
+- Provide supported assertion, event, and structured-randomness APIs for C,
+  C++, Rust, Go, and Java, while retaining a language-neutral JSON event path.
+- Capture stdout, stderr, structured events, faults, decisions, coverage,
+  properties, and user artifacts on one ordered timeline.
+- Add textual, structured, and temporal queries such as preceded-by and
+  followed-by over retained event data.
+- Navigate to any retained checkpoint, change one controlled choice or fault,
+  re-execute, and compare alternative futures. Fault-decision forks exist now
+  (`compose explore --fork-run` with `compare --forked`); navigating to an
+  arbitrary retained checkpoint and changing arbitrary choices remain open.
+- Campaign reports display each future's observed failure frequency from the
+  retained timelines. Causal language still requires a recorded intervention.
+- Allow users to collect artifacts immediately before and after a selected
+  property violation or event.
+
+Exit when a user can move from a failed property to its relevant logs and
+decisions, fork an earlier state, test an alternative, and share the complete
+reproducible investigation.
 
 ## Immediate next work
 
-### 1. Counterfactual re-execution
-
-Fork a retained campaign run, change one recorded decision (operation input
-or fault selection), re-execute from the shared checkpoint prefix, and
-retain both futures for diffing.
-
-- CLI: `theseus compose explore --fork-run N --replace-fault OLD=NEW`
-- Plan: `CounterfactualPlan` in the replay plan records the forked run
-  index, replaced fault name, and replacement, locked like any override.
-- Runner: `apply_campaign_schedule` selects the recorded schedule and
-  applies the substitution before execution.
-- Diff: `theseus compare --forked` reports the diverging boundary and both
-  sides' moment addresses.
-- Tests: compose validation (unknown fault name, unchanged replacement);
-  runner test that the forked schedule carries the substitution.
-
-### 2. Custom fault interface
+### 1. Custom fault interface
 
 User-declared fault actions executed inside image-backed services at
 operation barriers.
@@ -356,24 +365,10 @@ operation barriers.
 - Tests: compose validation (command required, service must be
   image-backed with container_service); runner naming and compat tests.
 
-Land counterfactual first (higher leverage, reuses the schedule-rebuild
-machinery), then custom faults. Both in one PR if context allows.
-- Provide supported assertion, event, and structured-randomness APIs for C,
-  C++, Rust, Go, and Java, while retaining a language-neutral JSON event path.
-- Capture stdout, stderr, structured events, faults, decisions, coverage,
-  properties, and user artifacts on one ordered timeline.
-- Add textual, structured, and temporal queries such as preceded-by and
-  followed-by over retained event data.
-- Navigate to any retained checkpoint, change one controlled choice or fault,
-  re-execute, and compare alternative futures.
-- Campaign reports display each future's observed failure frequency from the
-  retained timelines. Causal language still requires a recorded intervention.
-- Allow users to collect artifacts immediately before and after a selected
-  property violation or event.
-
-Exit when a user can move from a failed property to its relevant logs and
-decisions, fork an earlier state, test an alternative, and share the complete
-reproducible investigation.
+Counterfactual re-execution landed and is described in the verified
+baseline; its schedule-rebuild machinery (`recorded_campaign_schedules`,
+checkpoint-prefix reuse, and the forked recorded view) is the model the
+custom fault interface should follow for plan-to-runner pass-through.
 
 ## Priority 6: product surface and workload compatibility
 

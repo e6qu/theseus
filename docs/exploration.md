@@ -347,6 +347,35 @@ is the worked example. `compare` reports differing property
 verdicts between two campaigns; it remains an observation, not a causal
 result.
 
+## Fork one decision and diff the futures
+
+When a retained run's fault schedule is a hypothesis to test, fork it:
+replace one recorded fault decision, re-execute from the shared
+deterministic prefix, and keep both futures.
+
+```sh
+theseus compose explore --fork-run 4 \
+  --replace-fault 'backplane:partition@verify=backplane:heal@verify' \
+  campaign --output campaign-forked
+theseus compare --forked campaign campaign-forked
+```
+
+The fork locks the substitution into its replay plan (`run`, `fault`,
+`replace`), re-executes the recorded schedule of run 4 with the replacement
+fault in the replaced fault's position, and writes a normal campaign bundle.
+A failing forked future is retained evidence, not a command failure: the
+experiment's outcome is what `compare --forked` diffed afterwards. The
+comparison locates the base run by the fork's recorded provenance, skips the
+decision records that are expected to differ, and reports the first
+diverging operation boundary with both sides' moment addresses — the same
+addresses `theseus query` resolves. Identical boundary evidence reports
+`"same"`: the substitution did not change anything the campaign retained.
+
+Forked futures replay like any campaign bundle, and the fork differs from
+its recording in exactly that one locked decision. The fork still shares
+the model's limits: guest behavior between controlled boundaries can drift,
+so a divergence supports, but does not by itself prove, a causal claim.
+
 ## Structured choices and unified guidance
 
 Declare bounded choices on a Compose shell operation:
