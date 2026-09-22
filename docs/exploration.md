@@ -328,7 +328,9 @@ stable point in one run's event log. The campaign report renders a moment
 log: an index from every moment address to its bounded log excerpt, and
 `theseus query <campaign-dir> --moment <address>` resolves an address to its
 boundary, log excerpts, and neighboring moments for temporal navigation, and
-`--next`, `--previous`, and `--list` walk and enumerate the address space.
+`--next`, `--previous`, and `--list` walk and enumerate the address space
+(`--service` filters the enumeration; `--format json` emits
+machine-readable output).
 
 Planning locks the complete property set, and campaign results retain each
 verdict. A failed verdict names the first violating timeline and a bounded

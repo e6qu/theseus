@@ -191,7 +191,12 @@ pub struct MomentSummary {
 }
 
 /// List every moment address in a retained campaign, in timeline order.
-pub fn list_moments(result: &serde_json::Value) -> Result<Vec<MomentSummary>, MomentError> {
+/// A `service` filter narrows the index to boundaries that service
+/// received.
+pub fn list_moments(
+    result: &serde_json::Value,
+    service: Option<&str>,
+) -> Result<Vec<MomentSummary>, MomentError> {
     let runs = result["runs"]
         .as_array()
         .ok_or_else(|| MomentError::NotFound("result has no runs".to_owned()))?;
@@ -201,16 +206,22 @@ pub fn list_moments(result: &serde_json::Value) -> Result<Vec<MomentSummary>, Mo
             MomentError::NotFound(format!("run {run_index} has no timeline"))
         })?;
         for boundary in timeline {
+            let boundary_service = boundary["service"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            if let Some(filter) = service {
+                if boundary_service != filter {
+                    continue;
+                }
+            }
             summaries.push(MomentSummary {
                 run: run_index,
                 boundary: boundary["id"]
                     .as_str()
                     .unwrap_or_default()
                     .to_owned(),
-                service: boundary["service"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned(),
+                service: boundary_service,
                 operation: boundary["operation"]
                     .as_str()
                     .unwrap_or_default()
@@ -334,12 +345,17 @@ mod tests {
             .to_string()
             .contains("no preceding moment"));
 
-        let summaries = list_moments(&result).unwrap();
+        let summaries = list_moments(&result, None).unwrap();
         assert_eq!(summaries.len(), 2);
         assert_eq!(summaries[0].moment, "7000@input-hash");
         assert_eq!(summaries[0].operation, "write");
         assert_eq!(summaries[1].service, "counter");
         assert_eq!(summaries[1].moment, "9000@read-hash");
+
+        let filtered = list_moments(&result, Some("counter")).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].service, "counter");
+        assert_eq!(filtered[0].moment, "9000@read-hash");
     }
 
     #[test]
