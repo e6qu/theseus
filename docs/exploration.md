@@ -339,7 +339,9 @@ the failed property to the relevant log text. When two retained campaigns
 diverge, `theseus compare` reports both sides' moment addresses at the
 diverging boundary, so the same address retrieves either run's log point;
 `compare --at-moment <address>` additionally dumps both full boundary records
-at any shared moment for point-scoped diffing. `--expect-counterexample` succeeds only when the named property is
+at any shared moment for point-scoped diffing, and `compare --format github`
+emits `::error` annotations with both sides' moment addresses for CI step
+summaries. `--expect-counterexample` succeeds only when the named property is
 retained as failed, and its minimization preserves that outcome. Tutorial 30
 is the worked example. `compare` reports differing property
 verdicts between two campaigns; it remains an observation, not a causal

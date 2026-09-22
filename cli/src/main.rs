@@ -32,7 +32,7 @@ const USAGE: &str = "Usage:
   theseus report [--output report-dir] result-dir
   theseus report --format markdown|json|junit|github [--output file] result-dir
   theseus compare left-campaign-dir right-campaign-dir
-  theseus compare --format json|markdown left-campaign-dir right-campaign-dir
+  theseus compare --format json|markdown|github left-campaign-dir right-campaign-dir
   theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
   theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
@@ -362,7 +362,12 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         .map_err(|error| format!("cannot encode comparison: {error}"))?
                 ),
                 "markdown" => print!("{}", comparison.markdown()),
-                _ => return Err("compare format must be json or markdown".to_owned()),
+                "github" => print!("{}", comparison.github()),
+                _ => {
+                    return Err(
+                        "compare format must be json, markdown, or github".to_owned()
+                    )
+                }
             }
             Ok(())
         }
