@@ -2066,6 +2066,16 @@ fn render_github(model: &ReportModel) -> String {
         "::warning title=Theseus {}::status {} - {}\n",
         model.title, model.status, model.kind
     ));
+    if !model.campaign_futures.is_empty() {
+        for future in &model.campaign_futures {
+            if future.failed > 0 {
+                output.push_str(&format!(
+                    "::error title=Alternative future::{} - {} of {} timelines failed ({})\n",
+                    future.future, future.failed, future.timelines, future.share
+                ));
+            }
+        }
+    }
     for check in &model.checks {
         if check.status == "passed" {
             continue;
@@ -2488,6 +2498,7 @@ mod tests {
         assert!(github.contains("found <panic>"));
         assert!(github.contains("## Reproduce"));
         assert!(github.contains("theseus replay"));
+
     }
 
     #[test]
