@@ -35,8 +35,8 @@ const USAGE: &str = "Usage:
   theseus compare --format json|markdown left-campaign-dir right-campaign-dir
   theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
   theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
-  theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous]
-  theseus query campaign-dir --list
+  theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
+  theseus query campaign-dir --list [--service NAME] [--format json]
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
   theseus evaluate lock [theseus-evaluation.toml]
   theseus evaluate capture campaign-dir --output evaluation-dir --name name
@@ -220,6 +220,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let mut moment: Option<String> = None;
             let mut navigation: Option<&str> = None;
             let mut list = false;
+            let mut format = "text";
+            let mut service_filter: Option<String> = None;
             let mut index = 0;
             while index < rest.len() {
                 match rest[index].as_str() {
@@ -243,6 +245,22 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         list = true;
                         index += 1;
                     }
+                    "--service" => {
+                        service_filter = Some(
+                            rest.get(index + 1)
+                                .ok_or(USAGE.to_owned())?
+                                .clone(),
+                        );
+                        index += 2;
+                    }
+                    "--format" => {
+                        format = match rest.get(index + 1).map(String::as_str) {
+                            Some("json") => "json",
+                            Some("text") => "text",
+                            _ => return Err(USAGE.to_owned().into()),
+                        };
+                        index += 2;
+                    }
                     other => {
                         let _ = other;
                         return Err(USAGE.to_owned().into());
@@ -250,11 +268,22 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 }
             }
             if list {
-                for summary in list_moments(&result).map_err(|error| error.to_string())? {
+                let summaries =
+                    list_moments(&result, service_filter.as_deref())
+                        .map_err(|error| error.to_string())?;
+                if format == "json" {
                     println!(
-                        "{}\t{}\t{}\t{}",
-                        summary.moment, summary.run, summary.boundary, summary.service
+                        "{}",
+                        serde_json::to_string_pretty(&summaries)
+                            .map_err(|error| error.to_string())?
                     );
+                } else {
+                    for summary in summaries {
+                        println!(
+                            "{}\t{}\t{}\t{}",
+                            summary.moment, summary.run, summary.boundary, summary.service
+                        );
+                    }
                 }
                 return Ok(());
             }
@@ -267,6 +296,13 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 _ => find_moment(&result, &moment),
             }
             .map_err(|error| error.to_string())?;
+            if format == "json" {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&hit).map_err(|error| error.to_string())?
+                );
+                return Ok(());
+            }
             println!("run: {}", hit.run);
             println!("boundary: {}", hit.boundary);
             println!("operation: {}", hit.operation);
@@ -302,12 +338,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
         {
             let diff = boundary_at_moment(left, right, moment)
                 .map_err(|error| error.to_string())?;
-            println!("run: {}", diff.run);
-            println!("boundary: {}", diff.boundary);
-            println!("moment: {}", diff.moment);
-            println!("identical: {}", diff.identical);
-            println!("left: {}", serde_json::to_string(&diff.left).unwrap_or_default());
-            println!("right: {}", serde_json::to_string(&diff.right).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&diff).map_err(|error| error.to_string())?
+            );
             Ok(())
         }
         [command, left, right] if command == "compare" => {

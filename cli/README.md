@@ -22,8 +22,8 @@ theseus compare left-campaign-dir right-campaign-dir
 theseus compare --format json|markdown left-campaign-dir right-campaign-dir
 theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
 theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
-theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous]
-theseus query campaign-dir --list
+theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
+theseus query campaign-dir --list [--service NAME] [--format json]
 theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
 theseus evaluate lock [theseus-evaluation.toml]
 theseus evaluate capture campaign-dir --output evaluation-dir --name name
@@ -650,7 +650,10 @@ timeline temporally from any address, or list every moment in the bundle:
 
 `--next` and `--previous` resolve the adjacent boundary as a full hit;
 `--list` prints every moment address in timeline order with its run,
-boundary, and service.
+boundary, and service, and `--service NAME` narrows the index to one
+service. `--format json` emits machine-readable output for both modes —
+for issue bots and CI triage piping the moment index or a resolved hit
+straight into other tooling.
 
 ## Checks
 
