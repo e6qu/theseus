@@ -16220,6 +16220,7 @@ mod tests {
                     from: None,
                     to: None,
                     drive: None,
+                    command: None,
                     error_ppm: None,
                     latency_rounds: None,
                     torn_write_bytes: None,
