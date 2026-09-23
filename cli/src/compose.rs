@@ -7506,7 +7506,7 @@ pub fn explore_compose(
     path: impl AsRef<Path>,
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ComposeError> {
-    explore_compose_with(path, output, None, None)
+    explore_compose_with(path, output, None, None, None)
 }
 
 /// Execute the topology's declared campaign with explicit fixed-budget and
@@ -7517,6 +7517,7 @@ pub fn explore_compose_with(
     output: impl AsRef<Path>,
     max_runs: Option<u16>,
     guidance: Option<CampaignGuidance>,
+    notify: Option<&str>,
 ) -> Result<PathBuf, ComposeError> {
     let mut plan = load_compose_plan(&path)?;
     if plan.campaign.is_none() {
@@ -7537,7 +7538,58 @@ pub fn explore_compose_with(
     let plan_file = write_temporary_topology_plan(&plan, &output)?;
     let result = execute_topology(&plan_file, &output);
     let _ = fs::remove_file(&plan_file);
+    notify_campaign_completion(notify, &output);
     result.map(|()| output)
+}
+
+/// The completion evidence a notification hook observes: the retained
+/// campaign status and the names of every property retained as failed.
+fn campaign_completion_status(output: &Path) -> (String, Vec<String>) {
+    let Ok(result) = fs::read(output.join("campaign-result.json")) else {
+        return ("unknown".to_owned(), Vec::new());
+    };
+    let Ok(result) = serde_json::from_slice::<serde_json::Value>(&result) else {
+        return ("unknown".to_owned(), Vec::new());
+    };
+    let status = result["status"].as_str().unwrap_or("unknown").to_owned();
+    let failed = result["properties"]
+        .as_array()
+        .map(|properties| {
+            properties
+                .iter()
+                .filter(|property| property["status"] == "failed")
+                .filter_map(|property| property["name"].as_str())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    (status, failed)
+}
+
+/// Run a campaign completion hook once, after the runner has retained its
+/// results. The hook is a `sh` command string with `THESEUS_CAMPAIGN_DIR`,
+/// `THESEUS_CAMPAIGN_STATUS`, and the comma-separated
+/// `THESEUS_FAILED_PROPERTIES` in its environment, so a webhook curl or a
+/// CI step can react without a hosted service. The hook never changes
+/// verdicts or evidence: its output streams to stderr and its failure is
+/// reported without failing the campaign.
+fn notify_campaign_completion(notify: Option<&str>, output: &Path) {
+    let Some(command) = notify else {
+        return;
+    };
+    let (status, failed) = campaign_completion_status(output);
+    let hook = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .env("THESEUS_CAMPAIGN_DIR", output)
+        .env("THESEUS_CAMPAIGN_STATUS", &status)
+        .env("THESEUS_FAILED_PROPERTIES", failed.join(","))
+        .status();
+    match hook {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!("theseus: notification hook failed: {status}"),
+        Err(error) => eprintln!("theseus: notification hook cannot start: {error}"),
+    }
 }
 
 /// Execute a campaign which is deliberately expected to falsify one named
@@ -7577,6 +7629,7 @@ pub fn explore_compose_expect_counterexample_with(
     property: &str,
     max_runs: Option<u16>,
     guidance: Option<CampaignGuidance>,
+    notify: Option<&str>,
 ) -> Result<PathBuf, ComposeError> {
     let mut plan = load_compose_plan(&path)?;
     let campaign = plan.campaign.as_ref().ok_or_else(|| {
@@ -7604,6 +7657,7 @@ pub fn explore_compose_expect_counterexample_with(
     let plan_file = write_temporary_topology_plan(&plan, &output)?;
     let result = execute_topology_expect_counterexample(&plan_file, &output, None, property);
     let _ = fs::remove_file(&plan_file);
+    notify_campaign_completion(notify, &output);
     result.map(|()| output)
 }
 
@@ -7706,6 +7760,7 @@ pub fn explore_compose_forked(
     fault: &str,
     replace: &str,
     output: impl AsRef<Path>,
+    notify: Option<&str>,
 ) -> Result<PathBuf, ComposeError> {
     let bundle = fs::canonicalize(bundle.as_ref()).map_err(|source| ComposeError::Read {
         path: bundle.as_ref().to_path_buf(),
@@ -7769,6 +7824,7 @@ pub fn explore_compose_forked(
     })();
     let result = staged.and_then(|()| execute_topology(&staged_plan, &output));
     let _ = fs::remove_dir_all(&staging);
+    notify_campaign_completion(notify, &output);
     result.map(|()| output)
 }
 
@@ -11686,5 +11742,66 @@ x-theseus:
             error.to_string().contains("duplicates a custom fault"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn notification_hooks_observe_retained_status_and_failed_properties() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("campaign");
+        fs::create_dir_all(&output).unwrap();
+        let result = br#"{"status":"failed","properties":[
+            {"name":"lost_update","kind":"always","status":"failed"},
+            {"name":"reachable","kind":"reachable","status":"passed"}
+        ]}"#;
+        fs::write(output.join("campaign-result.json"), result).unwrap();
+
+        let hook = format!("env > {}/hook-env", output.display());
+        notify_campaign_completion(Some(&hook), &output);
+
+        let environment = fs::read_to_string(output.join("hook-env")).unwrap();
+        assert!(
+            environment.contains(&format!("THESEUS_CAMPAIGN_DIR={}", output.display())),
+            "{environment}"
+        );
+        assert!(
+            environment.contains("THESEUS_CAMPAIGN_STATUS=failed"),
+            "{environment}"
+        );
+        assert!(
+            environment.contains("THESEUS_FAILED_PROPERTIES=lost_update"),
+            "{environment}"
+        );
+
+        // The hook never changes the retained evidence.
+        assert_eq!(
+            fs::read(output.join("campaign-result.json")).unwrap(),
+            result
+        );
+    }
+
+    #[test]
+    fn notification_hooks_report_failures_without_failing_the_campaign() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("campaign");
+        fs::create_dir_all(&output).unwrap();
+
+        // A failing hook writes its marker, reports on stderr, and returns.
+        let hook = format!("touch {}/hook-ran; exit 3", output.display());
+        notify_campaign_completion(Some(&hook), &output);
+        assert!(output.join("hook-ran").is_file());
+
+        // Without retained results the status is unknown rather than an error.
+        let hook = format!("env > {}/hook-env", output.display());
+        notify_campaign_completion(Some(&hook), &output);
+        let environment = fs::read_to_string(output.join("hook-env")).unwrap();
+        assert!(
+            environment.contains("THESEUS_CAMPAIGN_STATUS=unknown"),
+            "{environment}"
+        );
+
+        // Without --notify nothing runs at all.
+        let hook = format!("touch {}/hook-quiet", output.display());
+        notify_campaign_completion(None, &output);
+        assert!(!output.join("hook-quiet").is_file());
     }
 }
