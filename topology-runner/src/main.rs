@@ -12923,7 +12923,7 @@ fn custom_command_output_excerpt(window: &[u8], name: &str) -> String {
                     .map(str::to_owned)
                     .or_else(|| {
                         let output = value.get("output")?;
-                        output.is_null().not().then(|| output.to_string())
+                        (!output.is_null()).then(|| output.to_string())
                     })
                     .unwrap_or_default();
                 let excerpt: String = text.chars().take(CAMPAIGN_CUSTOM_OUTPUT_EXCERPT).collect();
