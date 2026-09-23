@@ -15325,6 +15325,7 @@ mod tests {
             max_runs: 8,
             max_faults_per_run: 1,
             max_operations_per_run: 2,
+            counterfactual: None,
         };
         let checkpoint = CampaignCheckpoint {
             switches: BTreeMap::new(),
