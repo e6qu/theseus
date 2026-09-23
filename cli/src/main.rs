@@ -628,14 +628,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
         {
             let run = run.parse::<usize>().map_err(|_| USAGE.to_owned())?;
             let (fault, replacement) = parse_replace_fault(pair)?;
-            let result = explore_compose_forked(
-                bundle,
-                run,
-                fault,
-                replacement,
-                format!("{bundle}-forked"),
-            )
-            .map_err(|error| error.to_string())?;
+            let result =
+                explore_compose_forked(bundle, run, fault, replacement, format!("{bundle}-forked"))
+                    .map_err(|error| error.to_string())?;
             println!("counterfactual fork retained: {}", result.display());
             Ok(())
         }

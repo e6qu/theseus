@@ -469,6 +469,10 @@ struct ComposeCampaignFault {
     drive: Option<String>,
     #[serde(default)]
     after: Option<String>,
+    /// The argv a `custom` fault runs inside the image at its barrier. It is
+    /// passed to execve unchanged, like every shell operation.
+    #[serde(default)]
+    command: Option<Vec<String>>,
     #[serde(default)]
     at_round: Option<u64>,
     #[serde(default)]
@@ -543,6 +547,10 @@ pub enum CampaignFaultKind {
     NetworkRecover,
     PacketFault,
     PacketRecover,
+    /// A user-declared argv command run inside an image-backed service at an
+    /// operation barrier. It has no automatic inverse and never participates
+    /// in terminal recovery.
+    Custom,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -561,6 +569,7 @@ fn empty_campaign_fault(kind: CampaignFaultKind) -> ComposeCampaignFault {
         to: None,
         drive: None,
         after: None,
+        command: None,
         at_round: None,
         duration_rounds: None,
         nanoseconds: None,
@@ -1500,6 +1509,9 @@ pub struct CampaignFaultPlan {
     pub after: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after_input: Option<OperationInputReferencePlan>,
+    /// The argv a `custom` fault runs inside its image-backed service.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at_round: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -4129,6 +4141,7 @@ fn campaign_plan(
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
                     || candidate.ethertype.is_some()
+                    || candidate.command.is_some()
                     || has_network_conditions
                 {
                     return Err(ComposeError::Invalid(
@@ -4177,6 +4190,7 @@ fn campaign_plan(
                     drive: None,
                     after: None,
                     after_input: None,
+                    command: None,
                     at_round: Some(fault.at_round),
                     duration_rounds: fault.duration_rounds,
                     nanoseconds: fault.nanoseconds,
@@ -4238,6 +4252,7 @@ fn campaign_plan(
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
                     || candidate.ethertype.is_some()
+                    || candidate.command.is_some()
                     || has_network_conditions
                 {
                     return Err(ComposeError::Invalid(
@@ -4255,6 +4270,103 @@ fn campaign_plan(
                     drive: None,
                     after,
                     after_input,
+                    command: None,
+                    at_round: None,
+                    duration_rounds: None,
+                    nanoseconds: None,
+                    error_ppm: None,
+                    latency_rounds: None,
+                    torn_write_bytes: None,
+                    corrupt_read_xor: None,
+                    ethertype: None,
+                    ip_protocol: None,
+                    source_port: None,
+                    destination_port: None,
+                    drop_ppm: None,
+                    duplicate_ppm: None,
+                    corrupt_ppm: None,
+                    jitter_rounds: None,
+                    tx_bytes_per_round: None,
+                    mtu_bytes: None,
+                    tx_queue_frames: None,
+                    rx_queue_frames: None,
+                    every_n_rounds: None,
+                    rate: None,
+                });
+            }
+            CampaignFaultKind::Custom => {
+                let service_name = candidate.service.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid("campaign custom fault requires service".to_owned())
+                })?;
+                let after = candidate.after.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid("campaign custom fault requires after".to_owned())
+                })?;
+                let command = candidate.command.as_deref().ok_or_else(|| {
+                    ComposeError::Invalid("campaign custom fault requires command".to_owned())
+                })?;
+                if command.is_empty()
+                    || command
+                        .iter()
+                        .any(|entry| entry.is_empty() || entry.contains('\0'))
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign custom fault command must be a non-empty argv with no empty or NUL arguments"
+                            .to_owned(),
+                    ));
+                }
+                let (after, after_input) = normalize_campaign_fault_after(after, &operations)?;
+                let service = services.get_mut(service_name).ok_or_else(|| {
+                    ComposeError::Invalid(format!(
+                        "campaign custom fault references unknown service {service_name:?}"
+                    ))
+                })?;
+                let Some(contract) = service.run.container_service.as_mut() else {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign custom fault requires image-backed service {service_name:?} with a container_service contract"
+                    )));
+                };
+                contract.campaign = true;
+                if candidate.network.is_some()
+                    || candidate.from.is_some()
+                    || candidate.to.is_some()
+                    || candidate.drive.is_some()
+                    || candidate.at_round.is_some()
+                    || candidate.duration_rounds.is_some()
+                    || candidate.nanoseconds.is_some()
+                    || candidate.error_ppm.is_some()
+                    || candidate.latency_rounds.is_some()
+                    || candidate.torn_write_bytes.is_some()
+                    || candidate.corrupt_read_xor.is_some()
+                    || candidate.ethertype.is_some()
+                    || has_network_conditions
+                {
+                    return Err(ComposeError::Invalid(
+                        "campaign custom faults accept only service, after, and command".to_owned(),
+                    ));
+                }
+                let duplicate = faults.iter().any(|fault| {
+                    fault.kind == CampaignFaultKind::Custom
+                        && fault.service.as_deref() == Some(service_name)
+                        && fault.after == after
+                        && fault.after_input == after_input
+                        && fault.command.as_deref() == Some(command)
+                });
+                if duplicate {
+                    return Err(ComposeError::Invalid(format!(
+                        "campaign duplicates a custom fault for service {service_name:?} at {after:?}"
+                    )));
+                }
+                faults.push(CampaignFaultPlan {
+                    kind: candidate.kind,
+                    required: candidate.required,
+                    service: Some(service_name.to_owned()),
+                    network: None,
+                    from: None,
+                    to: None,
+                    drive: None,
+                    after,
+                    after_input,
+                    command: Some(command.to_owned()),
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -4310,6 +4422,7 @@ fn campaign_plan(
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
                     || candidate.ethertype.is_some()
+                    || candidate.command.is_some()
                     || has_network_conditions
                 {
                     return Err(ComposeError::Invalid(
@@ -4326,6 +4439,7 @@ fn campaign_plan(
                     drive: None,
                     after,
                     after_input,
+                    command: None,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -4399,6 +4513,7 @@ fn campaign_plan(
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
                     || candidate.ethertype.is_some()
+                    || candidate.command.is_some()
                     || has_network_conditions
                 {
                     return Err(ComposeError::Invalid(
@@ -4416,6 +4531,7 @@ fn campaign_plan(
                     drive: None,
                     after,
                     after_input,
+                    command: None,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -4467,6 +4583,7 @@ fn campaign_plan(
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
                     || candidate.ethertype.is_some()
+                    || candidate.command.is_some()
                     || has_network_conditions
                 {
                     return Err(ComposeError::Invalid(
@@ -4515,6 +4632,7 @@ fn campaign_plan(
                     drive: None,
                     after,
                     after_input,
+                    command: None,
                     at_round: None,
                     duration_rounds: candidate.duration_rounds,
                     nanoseconds: None,
@@ -4574,6 +4692,7 @@ fn campaign_plan(
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
                     || candidate.ethertype.is_some()
+                    || candidate.command.is_some()
                     || candidate.every_n_rounds.is_some()
                     || has_network_conditions
                 {
@@ -4621,6 +4740,7 @@ fn campaign_plan(
                     drive: None,
                     after,
                     after_input,
+                    command: None,
                     at_round: None,
                     duration_rounds: candidate.duration_rounds,
                     nanoseconds: None,
@@ -4693,6 +4813,7 @@ fn campaign_plan(
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
                     || candidate.ethertype.is_some()
+                    || candidate.command.is_some()
                     || has_network_conditions
                 {
                     return Err(ComposeError::Invalid(
@@ -4727,6 +4848,7 @@ fn campaign_plan(
                     drive: None,
                     after,
                     after_input,
+                    command: None,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -4803,6 +4925,7 @@ fn campaign_plan(
                     || candidate.nanoseconds.is_some()
                     || has_network_conditions
                     || candidate.ethertype.is_some()
+                    || candidate.command.is_some()
                 {
                     return Err(ComposeError::Invalid(
                         "campaign storage_fault accepts service, drive, after, error_ppm, latency_rounds, torn_write_bytes, and corrupt_read_xor"
@@ -4830,6 +4953,7 @@ fn campaign_plan(
                     drive: Some(drive.to_owned()),
                     after,
                     after_input,
+                    command: None,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -4914,6 +5038,7 @@ fn campaign_plan(
                     || candidate.torn_write_bytes.is_some()
                     || candidate.corrupt_read_xor.is_some()
                     || candidate.ethertype.is_some()
+                    || candidate.command.is_some()
                 {
                     return Err(ComposeError::Invalid(
                         "campaign network/link fault actions accept network, after, optional directed from/to, and packet-condition fields"
@@ -4960,6 +5085,7 @@ fn campaign_plan(
                     drive: None,
                     after,
                     after_input,
+                    command: None,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -5105,6 +5231,7 @@ fn campaign_plan(
                     drive: None,
                     after,
                     after_input,
+                    command: None,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -11265,6 +11392,104 @@ x-theseus:
             error
                 .to_string()
                 .contains("run 1 does not select fault \"backplane:partition@write\""),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn normalizes_a_custom_fault_and_marks_its_service_campaign() {
+        let directory = image_fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: request\n        input: 'request\\n'\n    faults:\n      - kind: custom\n        service: api\n        after: request\n        command: [/usr/local/bin/probe, '--flag']\n",
+            &[],
+        );
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        assert!(
+            plan.services["api"]
+                .run
+                .container_service
+                .as_ref()
+                .unwrap()
+                .campaign
+        );
+        let campaign = plan.campaign.unwrap();
+        assert_eq!(campaign.faults.len(), 1);
+        let fault = &campaign.faults[0];
+        assert!(matches!(fault.kind, CampaignFaultKind::Custom));
+        assert_eq!(fault.service.as_deref(), Some("api"));
+        assert_eq!(fault.after.as_deref(), Some("request"));
+        assert_eq!(
+            fault.command.as_deref(),
+            Some(&["/usr/local/bin/probe".to_owned(), "--flag".to_owned()][..])
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_custom_faults() {
+        let base = "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: request\n        input: 'request\\n'\n    faults:\n";
+        let case = |faults: &str| {
+            let directory = image_fixture(&format!("{base}{faults}"), &[]);
+            load_compose_plan(directory.path().join("compose.yaml")).unwrap_err()
+        };
+
+        let error = case("      - kind: custom\n        service: api\n        after: request\n");
+        assert!(error.to_string().contains("requires command"), "{error}");
+
+        let error = case("      - kind: custom\n        service: api\n        command: [probe]\n");
+        assert!(error.to_string().contains("requires after"), "{error}");
+
+        let error =
+            case("      - kind: custom\n        after: request\n        command: [probe]\n");
+        assert!(error.to_string().contains("requires service"), "{error}");
+
+        let error = case(
+            "      - kind: custom\n        service: ghost\n        after: request\n        command: [probe]\n",
+        );
+        assert!(
+            error.to_string().contains("unknown service \"ghost\""),
+            "{error}"
+        );
+
+        // worker is manifest-backed and has no container_service contract.
+        let error = case(
+            "      - kind: custom\n        service: worker\n        after: request\n        command: [probe]\n",
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("requires image-backed service \"worker\""),
+            "{error}"
+        );
+
+        let error = case(
+            "      - kind: custom\n        service: api\n        after: request\n        command: []\n",
+        );
+        assert!(error.to_string().contains("non-empty argv"), "{error}");
+
+        let error = case(
+            "      - kind: custom\n        service: api\n        after: request\n        command: [probe]\n        network: backplane\n",
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("accept only service, after, and command"),
+            "{error}"
+        );
+
+        // A command stays rejected on every other fault kind.
+        let error = case(
+            "      - kind: partition\n        network: backplane\n        after: request\n        command: [probe]\n",
+        );
+        assert!(
+            error.to_string().contains("accept only network and after"),
+            "{error}"
+        );
+
+        let error = case(
+            "      - kind: custom\n        service: api\n        after: request\n        command: [probe]\n      - kind: custom\n        service: api\n        after: request\n        command: [probe]\n",
+        );
+        assert!(
+            error.to_string().contains("duplicates a custom fault"),
             "{error}"
         );
     }

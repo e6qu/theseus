@@ -1246,12 +1246,7 @@ mod tests {
         assert_eq!(query.right, Some(Value::String("failed".to_owned())));
     }
 
-    fn forked_result(
-        runs: &str,
-        run: usize,
-        fault: &str,
-        replace: &str,
-    ) -> String {
+    fn forked_result(runs: &str, run: usize, fault: &str, replace: &str) -> String {
         format!(
             r#"{{"counterfactual":{{"run":{run},"fault":"{fault}","replace":"{replace}"}},"runs":{runs},"properties":[]}}"#
         )
@@ -1282,10 +1277,7 @@ mod tests {
         let comparison = compare_forked_campaigns(base.path(), forked.path()).unwrap();
         assert_eq!(comparison.status, "diverged");
         assert_eq!(comparison.forked_run, 0);
-        assert_eq!(
-            comparison.replaced_fault,
-            "backplane:partition@write"
-        );
+        assert_eq!(comparison.replaced_fault, "backplane:partition@write");
         assert_eq!(comparison.replacement_fault, "backplane:heal@write");
         let divergence = comparison.divergence.unwrap();
         assert_eq!(divergence.boundary, Some(0));
@@ -1329,7 +1321,9 @@ mod tests {
             &result(FORKED_BASE_RUN, "[]"),
         );
         let comparison = compare_forked_campaigns(forked.path(), base.path()).unwrap();
-        let divergence = comparison.divergence.expect("the futures diverge at the barrier");
+        let divergence = comparison
+            .divergence
+            .expect("the futures diverge at the barrier");
         assert_eq!(divergence.boundary, Some(0));
         assert_eq!(divergence.left, r#"[{"kind":"heal"}]"#);
         assert_eq!(divergence.right, r#"[{"kind":"partition"}]"#);
@@ -1341,9 +1335,11 @@ mod tests {
 
     #[test]
     fn forked_comparison_requires_counterfactual_provenance() {
-        let (left, right) = write_pair(&result(FORKED_BASE_RUN, "[]"), &result(FORKED_BASE_RUN, "[]"));
-        let error =
-            compare_forked_campaigns(left.path(), right.path()).unwrap_err();
+        let (left, right) = write_pair(
+            &result(FORKED_BASE_RUN, "[]"),
+            &result(FORKED_BASE_RUN, "[]"),
+        );
+        let error = compare_forked_campaigns(left.path(), right.path()).unwrap_err();
         assert!(
             error
                 .to_string()

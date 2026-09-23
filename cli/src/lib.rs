@@ -31,10 +31,10 @@ pub use compare::{
     BoundaryMomentDiff, CampaignComparison, CampaignQuery, CompareError, ForkedComparison,
 };
 pub use compose::{
-    explore_compose, explore_compose_expect_counterexample, explore_compose_with,
-    explore_compose_expect_counterexample_with, explore_compose_forked, load_compose_plan,
-    minimize_compose_campaign, minimize_compose_campaign_expect_counterexample, replay_compose,
-    test_compose, CampaignGuidance, ComposeError, ComposePlan,
+    explore_compose, explore_compose_expect_counterexample,
+    explore_compose_expect_counterexample_with, explore_compose_forked, explore_compose_with,
+    load_compose_plan, minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
+    replay_compose, test_compose, CampaignGuidance, ComposeError, ComposePlan,
 };
 pub use evaluation::{
     capture_evaluation, evaluate, write_evaluation_lock, EvaluationError, EvaluationSummary,
