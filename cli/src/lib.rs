@@ -8,7 +8,6 @@
 
 mod cargo_coverage;
 mod compare;
-mod query;
 mod compose;
 mod evaluation;
 mod evidence;
@@ -16,6 +15,7 @@ mod execution;
 mod explore;
 mod go_coverage;
 mod manifest;
+mod query;
 mod report;
 mod runner;
 mod topology_evidence;
@@ -27,18 +27,14 @@ pub use cargo_coverage::{
     CARGO_COVERAGE_USAGE,
 };
 pub use compare::{
-    boundary_at_moment, compare_campaigns, query_campaigns, BoundaryMomentDiff,
-    CampaignComparison, CampaignQuery, CompareError,
+    boundary_at_moment, compare_campaigns, compare_forked_campaigns, query_campaigns,
+    BoundaryMomentDiff, CampaignComparison, CampaignQuery, CompareError, ForkedComparison,
 };
 pub use compose::{
     explore_compose, explore_compose_expect_counterexample, explore_compose_with,
-    explore_compose_expect_counterexample_with, load_compose_plan, minimize_compose_campaign,
-    minimize_compose_campaign_expect_counterexample, replay_compose, test_compose,
-    CampaignGuidance, ComposeError, ComposePlan,
-};
-pub use query::{
-    find_moment, list_moments, next_moment, next_moment_in, previous_moment, previous_moment_in,
-    query_moment, MomentError, MomentHit, MomentSummary,
+    explore_compose_expect_counterexample_with, explore_compose_forked, load_compose_plan,
+    minimize_compose_campaign, minimize_compose_campaign_expect_counterexample, replay_compose,
+    test_compose, CampaignGuidance, ComposeError, ComposePlan,
 };
 pub use evaluation::{
     capture_evaluation, evaluate, write_evaluation_lock, EvaluationError, EvaluationSummary,
@@ -52,6 +48,10 @@ pub use go_coverage::{go_coverage, GoCoverageOutput, GO_COVERAGE_USAGE};
 pub use manifest::{
     load_plan, ArtifactPlan, CheckKind, CheckPlan, ExplorePlan, LoadError, Novelty,
     ReplayFingerprint, ReplayTreeNode, RunPlan,
+};
+pub use query::{
+    find_moment, list_moments, next_moment, next_moment_in, previous_moment, previous_moment_in,
+    query_moment, MomentError, MomentHit, MomentSummary,
 };
 pub use report::{report, report_file, report_text, ReportError, ReportFormat};
 pub use runner::{replay, replay_to, test, ReplayResult, RunError, TestResult};

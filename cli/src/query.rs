@@ -15,7 +15,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::{ComposeError, ComposePlan};
+use crate::ComposeError;
 
 /// One resolved moment: the boundary an address identifies, with its log
 /// excerpts and the neighboring addresses for temporal navigation.
@@ -99,31 +99,22 @@ impl From<ComposeError> for MomentError {
 }
 
 /// Resolve one moment address inside a retained campaign result.
-pub fn find_moment(
-    result: &serde_json::Value,
-    moment: &str,
-) -> Result<MomentHit, MomentError> {
+pub fn find_moment(result: &serde_json::Value, moment: &str) -> Result<MomentHit, MomentError> {
     let runs = result["runs"]
         .as_array()
         .ok_or_else(|| MomentError::NotFound("result has no runs".to_owned()))?;
     for (run_index, run) in runs.iter().enumerate() {
-        let timeline = run["timeline"].as_array().ok_or_else(|| {
-            MomentError::NotFound(format!("run {run_index} has no timeline"))
-        })?;
+        let timeline = run["timeline"]
+            .as_array()
+            .ok_or_else(|| MomentError::NotFound(format!("run {run_index} has no timeline")))?;
         for (boundary_index, boundary) in timeline.iter().enumerate() {
             if boundary["moment"] == *moment {
-                let service = boundary["service"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned();
+                let service = boundary["service"].as_str().unwrap_or_default().to_owned();
                 let (vtime_text, input_sha256) = moment
                     .split_once('@')
                     .map(|(vtime, hash)| (vtime.to_owned(), hash.to_owned()))
                     .unzip();
-                let vtime_ns = vtime_text
-                    .unwrap_or_default()
-                    .parse()
-                    .unwrap_or_default();
+                let vtime_ns = vtime_text.unwrap_or_default().parse().unwrap_or_default();
                 let mut excerpts = Vec::new();
                 if let Some(deltas) = boundary["serial_delta"].as_object() {
                     for (service, delta) in deltas {
@@ -142,10 +133,7 @@ pub fn find_moment(
                     .map(str::to_owned);
                 return Ok(MomentHit {
                     run: run_index,
-                    boundary: boundary["id"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned(),
+                    boundary: boundary["id"].as_str().unwrap_or_default().to_owned(),
                     service,
                     operation: boundary["operation"]
                         .as_str()
@@ -166,10 +154,7 @@ pub fn find_moment(
 }
 
 /// Load the campaign result from a bundle directory and resolve the moment.
-pub fn query_moment(
-    bundle: impl AsRef<Path>,
-    moment: &str,
-) -> Result<MomentHit, MomentError> {
+pub fn query_moment(bundle: impl AsRef<Path>, moment: &str) -> Result<MomentHit, MomentError> {
     let path = bundle.as_ref().join("campaign-result.json");
     let result: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
     find_moment(&result, moment)
@@ -202,14 +187,11 @@ pub fn list_moments(
         .ok_or_else(|| MomentError::NotFound("result has no runs".to_owned()))?;
     let mut summaries = Vec::new();
     for (run_index, run) in runs.iter().enumerate() {
-        let timeline = run["timeline"].as_array().ok_or_else(|| {
-            MomentError::NotFound(format!("run {run_index} has no timeline"))
-        })?;
+        let timeline = run["timeline"]
+            .as_array()
+            .ok_or_else(|| MomentError::NotFound(format!("run {run_index} has no timeline")))?;
         for boundary in timeline {
-            let boundary_service = boundary["service"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
+            let boundary_service = boundary["service"].as_str().unwrap_or_default().to_owned();
             if let Some(filter) = service {
                 if boundary_service != filter {
                     continue;
@@ -217,19 +199,13 @@ pub fn list_moments(
             }
             summaries.push(MomentSummary {
                 run: run_index,
-                boundary: boundary["id"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned(),
+                boundary: boundary["id"].as_str().unwrap_or_default().to_owned(),
                 service: boundary_service,
                 operation: boundary["operation"]
                     .as_str()
                     .unwrap_or_default()
                     .to_owned(),
-                moment: boundary["moment"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned(),
+                moment: boundary["moment"].as_str().unwrap_or_default().to_owned(),
             });
         }
     }
@@ -237,10 +213,7 @@ pub fn list_moments(
 }
 
 /// Resolve the moment immediately following `moment` in the same timeline.
-pub fn next_moment_in(
-    result: &serde_json::Value,
-    moment: &str,
-) -> Result<MomentHit, MomentError> {
+pub fn next_moment_in(result: &serde_json::Value, moment: &str) -> Result<MomentHit, MomentError> {
     let hit = find_moment(result, moment)?;
     let next = hit.next.ok_or_else(|| {
         MomentError::NotFound(format!("moment {moment:?} has no following moment"))
@@ -261,30 +234,17 @@ pub fn previous_moment_in(
 }
 
 /// Load a bundle's campaign result and resolve the following moment.
-pub fn next_moment(
-    bundle: impl AsRef<Path>,
-    moment: &str,
-) -> Result<MomentHit, MomentError> {
+pub fn next_moment(bundle: impl AsRef<Path>, moment: &str) -> Result<MomentHit, MomentError> {
     let path = bundle.as_ref().join("campaign-result.json");
     let result: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
     next_moment_in(&result, moment)
 }
 
 /// Load a bundle's campaign result and resolve the preceding moment.
-pub fn previous_moment(
-    bundle: impl AsRef<Path>,
-    moment: &str,
-) -> Result<MomentHit, MomentError> {
+pub fn previous_moment(bundle: impl AsRef<Path>, moment: &str) -> Result<MomentHit, MomentError> {
     let path = bundle.as_ref().join("campaign-result.json");
     let result: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
     previous_moment_in(&result, moment)
-}
-
-/// Validate a bundle directory the same way the planner does, so a query
-/// against a non-bundle fails with the planner's own wording.
-pub fn load_bundle_plan(bundle: impl AsRef<Path>) -> Result<ComposePlan, MomentError> {
-    let path = bundle.as_ref().join("compose.yaml");
-    Ok(crate::load_compose_plan(&path)?)
 }
 
 #[cfg(test)]

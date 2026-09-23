@@ -43,6 +43,20 @@ struct ResultFile {
     runs: Vec<Run>,
     #[serde(default)]
     properties: Vec<Property>,
+    /// The locked fork decision a counterfactual re-execution carried, so
+    /// the forked future can be paired with the retained base run it forked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    counterfactual: Option<CounterfactualProvenance>,
+}
+
+#[derive(Clone, Deserialize)]
+struct CounterfactualProvenance {
+    #[serde(default)]
+    run: usize,
+    #[serde(default)]
+    fault: String,
+    #[serde(default)]
+    replace: String,
 }
 #[derive(Deserialize, PartialEq, Serialize)]
 struct Property {
@@ -147,7 +161,7 @@ pub struct CampaignComparison {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub divergence: Option<CampaignDivergence>,
 }
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct CampaignDivergence {
     pub run: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -287,7 +301,7 @@ pub fn compare_campaigns(
                         "operations={:?}; state={}",
                         right.operations, right.state_sha256
                     ),
-                                    moments: None,
+                    moments: None,
                 });
             }
             if left.thread_schedule_prefixes != right.thread_schedule_prefixes {
@@ -297,7 +311,7 @@ pub fn compare_campaigns(
                     reason: "selected runnable thread prefix differs".to_owned(),
                     left: format!("prefixes={:?}", left.thread_schedule_prefixes),
                     right: format!("prefixes={:?}", right.thread_schedule_prefixes),
-                                    moments: None,
+                    moments: None,
                 });
             }
             if left.faults != right.faults {
@@ -307,7 +321,7 @@ pub fn compare_campaigns(
                     reason: "selected fault candidates differ".to_owned(),
                     left: format!("faults={:?}; state={}", left.faults, left.state_sha256),
                     right: format!("faults={:?}; state={}", right.faults, right.state_sha256),
-                                    moments: None,
+                    moments: None,
                 });
             }
             if left.actions != right.actions {
@@ -317,7 +331,7 @@ pub fn compare_campaigns(
                     reason: "selected fault actions differ".to_owned(),
                     left: json_summary(&left.actions),
                     right: json_summary(&right.actions),
-                                    moments: None,
+                    moments: None,
                 });
             }
             if left.execution_ledgers != right.execution_ledgers {
@@ -327,7 +341,7 @@ pub fn compare_campaigns(
                     reason: "ordered KVM execution ledger differs".to_owned(),
                     left: json_summary(&left.execution_ledgers),
                     right: json_summary(&right.execution_ledgers),
-                                    moments: None,
+                    moments: None,
                 });
             }
             if left.machine_execution_ledgers != right.machine_execution_ledgers {
@@ -337,7 +351,7 @@ pub fn compare_campaigns(
                     reason: "machine-wide execution stream differs".to_owned(),
                     left: json_summary(&left.machine_execution_ledgers),
                     right: json_summary(&right.machine_execution_ledgers),
-                                    moments: None,
+                    moments: None,
                 });
             }
             if left.machine_execution_traces != right.machine_execution_traces {
@@ -347,7 +361,7 @@ pub fn compare_campaigns(
                     reason: "actively enforced machine execution trace differs".to_owned(),
                     left: json_summary(&left.machine_execution_traces),
                     right: json_summary(&right.machine_execution_traces),
-                                    moments: None,
+                    moments: None,
                 });
             }
             for (boundary, (left, right)) in left.timeline.iter().zip(&right.timeline).enumerate() {
@@ -358,7 +372,7 @@ pub fn compare_campaigns(
                         reason: "operation-boundary identities differ".to_owned(),
                         left: left.id.clone(),
                         right: right.id.clone(),
-                                            moments: None,
+                        moments: None,
                     });
                 }
                 if left.actions != right.actions {
@@ -368,7 +382,7 @@ pub fn compare_campaigns(
                         reason: "first operation-boundary fault actions differ".to_owned(),
                         left: json_summary(&left.actions),
                         right: json_summary(&right.actions),
-                                            moments: None,
+                        moments: None,
                     });
                 }
                 if left.execution_ledgers != right.execution_ledgers {
@@ -378,7 +392,7 @@ pub fn compare_campaigns(
                         reason: "ordered KVM execution ledger differs".to_owned(),
                         left: json_summary(&left.execution_ledgers),
                         right: json_summary(&right.execution_ledgers),
-                                            moments: None,
+                        moments: None,
                     });
                 }
                 if left.machine_execution_ledgers != right.machine_execution_ledgers {
@@ -388,7 +402,7 @@ pub fn compare_campaigns(
                         reason: "machine-wide execution stream differs".to_owned(),
                         left: json_summary(&left.machine_execution_ledgers),
                         right: json_summary(&right.machine_execution_ledgers),
-                                            moments: None,
+                        moments: None,
                     });
                 }
                 if left.operation != right.operation
@@ -407,7 +421,7 @@ pub fn compare_campaigns(
                             "{}@{} state={}",
                             right.operation, right.service, right.state_sha256
                         ),
-                                            moments: None,
+                        moments: None,
                     });
                 }
                 if left.serial_sha256 != right.serial_sha256 || left.markers != right.markers {
@@ -423,7 +437,7 @@ pub fn compare_campaigns(
                             "markers={:?}; serial={:?}",
                             right.markers, right.serial_sha256
                         ),
-                                            moments: None,
+                        moments: None,
                     });
                 }
                 if left.program_counters != right.program_counters
@@ -446,7 +460,7 @@ pub fn compare_campaigns(
                             json_summary(&right.instruction_locations),
                             json_summary(&right.application_blocks)
                         ),
-                                            moments: None,
+                        moments: None,
                     });
                 }
                 if left.structured_choices != right.structured_choices {
@@ -456,7 +470,7 @@ pub fn compare_campaigns(
                         reason: "first structured choice differs".to_owned(),
                         left: json_summary(&left.structured_choices),
                         right: json_summary(&right.structured_choices),
-                                            moments: None,
+                        moments: None,
                     });
                 }
                 if left.thread_scheduling != right.thread_scheduling {
@@ -466,7 +480,7 @@ pub fn compare_campaigns(
                         reason: "first thread-scheduling decision differs".to_owned(),
                         left: json_summary(&left.thread_scheduling),
                         right: json_summary(&right.thread_scheduling),
-                                            moments: None,
+                        moments: None,
                     });
                 }
                 if left.thread_synchronization != right.thread_synchronization {
@@ -476,7 +490,7 @@ pub fn compare_campaigns(
                         reason: "first thread-synchronization event differs".to_owned(),
                         left: json_summary(&left.thread_synchronization),
                         right: json_summary(&right.thread_synchronization),
-                                            moments: None,
+                        moments: None,
                     });
                 }
             }
@@ -489,7 +503,7 @@ pub fn compare_campaigns(
                     reason: "final topology state differs".to_owned(),
                     left: left.state_sha256.clone(),
                     right: right.state_sha256.clone(),
-                                    moments: None,
+                    moments: None,
                 });
             }
             if left.property_witnesses != right.property_witnesses {
@@ -499,7 +513,7 @@ pub fn compare_campaigns(
                     reason: "property witnesses differ".to_owned(),
                     left: format!("{:?}", left.property_witnesses),
                     right: format!("{:?}", right.property_witnesses),
-                                    moments: None,
+                    moments: None,
                 });
             }
             if left.structured_choices != right.structured_choices {
@@ -509,7 +523,7 @@ pub fn compare_campaigns(
                     reason: "structured choices differ".to_owned(),
                     left: json_summary(&left.structured_choices),
                     right: json_summary(&right.structured_choices),
-                                    moments: None,
+                    moments: None,
                 });
             }
             if left.thread_scheduling != right.thread_scheduling {
@@ -519,7 +533,7 @@ pub fn compare_campaigns(
                     reason: "thread-scheduling decisions differ".to_owned(),
                     left: json_summary(&left.thread_scheduling),
                     right: json_summary(&right.thread_scheduling),
-                                    moments: None,
+                    moments: None,
                 });
             }
             if left.thread_synchronization != right.thread_synchronization {
@@ -529,7 +543,7 @@ pub fn compare_campaigns(
                     reason: "thread-synchronization events differ".to_owned(),
                     left: json_summary(&left.thread_synchronization),
                     right: json_summary(&right.thread_synchronization),
-                                    moments: None,
+                    moments: None,
                 });
             }
             if left.program_counters != right.program_counters
@@ -545,7 +559,7 @@ pub fn compare_campaigns(
                     reason: "accumulated campaign coverage differs".to_owned(),
                     left: coverage_summary(left),
                     right: coverage_summary(right),
-                                    moments: None,
+                    moments: None,
                 });
             }
             if (!left.decision_trace.is_empty() || !right.decision_trace.is_empty())
@@ -557,7 +571,7 @@ pub fn compare_campaigns(
                     reason: "decision trace differs".to_owned(),
                     left: format!("{:?}", left.decision_trace),
                     right: format!("{:?}", right.decision_trace),
-                                    moments: None,
+                    moments: None,
                 });
             }
             None
@@ -569,7 +583,7 @@ pub fn compare_campaigns(
                 reason: "campaign property verdicts differ".to_owned(),
                 left: json_summary(&left.properties),
                 right: json_summary(&right.properties),
-                            moments: None,
+                moments: None,
             })
         })
         .or_else(|| {
@@ -579,7 +593,7 @@ pub fn compare_campaigns(
                 reason: "campaign run count differs".to_owned(),
                 left: left.runs.len().to_string(),
                 right: right.runs.len().to_string(),
-                            moments: None,
+                moments: None,
             })
         });
     let divergence = divergence.map(|mut divergence| {
@@ -616,6 +630,303 @@ pub fn compare_campaigns(
 
 fn json_summary(value: &impl Serialize) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "<unencodable evidence>".to_owned())
+}
+
+/// The diff of one counterfactual future against the retained base run it
+/// forked. The two futures are expected to differ at the substituted
+/// decision; this comparison locates the first diverging operation boundary
+/// and reports both sides' moment addresses, so the same address retrieves
+/// either future's retained evidence.
+#[derive(Debug, Serialize)]
+pub struct ForkedComparison {
+    pub format: &'static str,
+    pub status: &'static str,
+    /// Run index in the base campaign whose recorded future was re-executed.
+    pub forked_run: usize,
+    pub replaced_fault: String,
+    pub replacement_fault: String,
+    pub left_runs: usize,
+    pub right_runs: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub divergence: Option<CampaignDivergence>,
+}
+
+struct ForkedDivergence {
+    boundary: Option<usize>,
+    reason: String,
+    base: String,
+    fork: String,
+    /// `(base, fork)` moment addresses at the diverging boundary.
+    moments: Option<(String, String)>,
+}
+
+fn forked_boundary_divergence(
+    boundary: usize,
+    reason: &str,
+    base: String,
+    fork: String,
+    base_boundary: &Boundary,
+    fork_boundary: &Boundary,
+) -> ForkedDivergence {
+    let moments = if base_boundary.moment.is_empty() && fork_boundary.moment.is_empty() {
+        None
+    } else {
+        Some((base_boundary.moment.clone(), fork_boundary.moment.clone()))
+    };
+    ForkedDivergence {
+        boundary: Some(boundary),
+        reason: reason.to_owned(),
+        base,
+        fork,
+        moments,
+    }
+}
+
+/// Walk the forked future against its base run and report the first
+/// operation-boundary divergence. The substituted fault decision itself is
+/// expected to differ, so run-level decision records (faults, actions,
+/// decision trace, machine traces, accumulated coverage) are not divergences:
+/// the retained boundaries are where the futures become distinguishable.
+fn forked_divergence(base: &Run, fork: &Run) -> Option<ForkedDivergence> {
+    if base.operations != fork.operations {
+        return Some(ForkedDivergence {
+            boundary: None,
+            reason: "the fork left its recorded operation history".to_owned(),
+            base: format!("operations={:?}", base.operations),
+            fork: format!("operations={:?}", fork.operations),
+            moments: None,
+        });
+    }
+    if base.thread_schedule_prefixes != fork.thread_schedule_prefixes {
+        return Some(ForkedDivergence {
+            boundary: None,
+            reason: "the fork left its recorded runnable thread prefixes".to_owned(),
+            base: format!("prefixes={:?}", base.thread_schedule_prefixes),
+            fork: format!("prefixes={:?}", fork.thread_schedule_prefixes),
+            moments: None,
+        });
+    }
+    for (boundary, (base, fork)) in base.timeline.iter().zip(&fork.timeline).enumerate() {
+        if !base.id.is_empty() && !fork.id.is_empty() && base.id != fork.id {
+            return Some(forked_boundary_divergence(
+                boundary,
+                "operation-boundary identities diverge",
+                base.id.clone(),
+                fork.id.clone(),
+                base,
+                fork,
+            ));
+        }
+        if base.actions != fork.actions {
+            return Some(forked_boundary_divergence(
+                boundary,
+                "operation-boundary fault actions diverge",
+                json_summary(&base.actions),
+                json_summary(&fork.actions),
+                base,
+                fork,
+            ));
+        }
+        if base.execution_ledgers != fork.execution_ledgers {
+            return Some(forked_boundary_divergence(
+                boundary,
+                "ordered KVM execution ledger diverges",
+                json_summary(&base.execution_ledgers),
+                json_summary(&fork.execution_ledgers),
+                base,
+                fork,
+            ));
+        }
+        if base.machine_execution_ledgers != fork.machine_execution_ledgers {
+            return Some(forked_boundary_divergence(
+                boundary,
+                "machine-wide execution stream diverges",
+                json_summary(&base.machine_execution_ledgers),
+                json_summary(&fork.machine_execution_ledgers),
+                base,
+                fork,
+            ));
+        }
+        if base.operation != fork.operation
+            || base.service != fork.service
+            || base.state_sha256 != fork.state_sha256
+        {
+            return Some(forked_boundary_divergence(
+                boundary,
+                "operation-boundary state diverges",
+                format!(
+                    "{}@{} state={}",
+                    base.operation, base.service, base.state_sha256
+                ),
+                format!(
+                    "{}@{} state={}",
+                    fork.operation, fork.service, fork.state_sha256
+                ),
+                base,
+                fork,
+            ));
+        }
+        if base.serial_sha256 != fork.serial_sha256 || base.markers != fork.markers {
+            return Some(forked_boundary_divergence(
+                boundary,
+                "operation-boundary evidence diverges",
+                format!(
+                    "markers={:?}; serial={:?}",
+                    base.markers, base.serial_sha256
+                ),
+                format!(
+                    "markers={:?}; serial={:?}",
+                    fork.markers, fork.serial_sha256
+                ),
+                base,
+                fork,
+            ));
+        }
+        if base.program_counters != fork.program_counters
+            || base.instruction_locations != fork.instruction_locations
+            || base.application_blocks != fork.application_blocks
+        {
+            return Some(forked_boundary_divergence(
+                boundary,
+                "operation-boundary coverage diverges",
+                format!(
+                    "program_counters={}; instruction_locations={}; application_blocks={}",
+                    json_summary(&base.program_counters),
+                    json_summary(&base.instruction_locations),
+                    json_summary(&base.application_blocks)
+                ),
+                format!(
+                    "program_counters={}; instruction_locations={}; application_blocks={}",
+                    json_summary(&fork.program_counters),
+                    json_summary(&fork.instruction_locations),
+                    json_summary(&fork.application_blocks)
+                ),
+                base,
+                fork,
+            ));
+        }
+        if base.structured_choices != fork.structured_choices {
+            return Some(forked_boundary_divergence(
+                boundary,
+                "structured choices diverge",
+                json_summary(&base.structured_choices),
+                json_summary(&fork.structured_choices),
+                base,
+                fork,
+            ));
+        }
+        if base.thread_scheduling != fork.thread_scheduling {
+            return Some(forked_boundary_divergence(
+                boundary,
+                "thread-scheduling decisions diverge",
+                json_summary(&base.thread_scheduling),
+                json_summary(&fork.thread_scheduling),
+                base,
+                fork,
+            ));
+        }
+        if base.thread_synchronization != fork.thread_synchronization {
+            return Some(forked_boundary_divergence(
+                boundary,
+                "thread-synchronization events diverge",
+                json_summary(&base.thread_synchronization),
+                json_summary(&fork.thread_synchronization),
+                base,
+                fork,
+            ));
+        }
+    }
+    if base.timeline.len() != fork.timeline.len() {
+        return Some(ForkedDivergence {
+            boundary: None,
+            reason: "operation-boundary timelines diverge in length".to_owned(),
+            base: base.timeline.len().to_string(),
+            fork: fork.timeline.len().to_string(),
+            moments: None,
+        });
+    }
+    None
+}
+
+/// Diff a counterfactual future against the retained base campaign it forked.
+/// Exactly one side must carry the fork's counterfactual provenance; the
+/// comparison locates the base run by that provenance rather than by
+/// position, reports the first diverging operation boundary in argument
+/// order, and attaches both sides' moment addresses.
+pub fn compare_forked_campaigns(
+    left: impl AsRef<Path>,
+    right: impl AsRef<Path>,
+) -> Result<ForkedComparison, CompareError> {
+    let read = |root: &Path| -> Result<ResultFile, CompareError> {
+        Ok(serde_json::from_slice(&fs::read(
+            root.join("campaign-result.json"),
+        )?)?)
+    };
+    let left = read(left.as_ref())?;
+    let right = read(right.as_ref())?;
+    let (base, fork, provenance, fork_is_right) = match (
+        left.counterfactual.clone(),
+        right.counterfactual.clone(),
+    ) {
+        (None, Some(provenance)) => (&left, &right, provenance, true),
+        (Some(provenance), None) => (&right, &left, provenance, false),
+        (Some(_), Some(_)) => {
+            return Err(CompareError::Invalid(
+                "both results record counterfactual provenance; compare the forked future against its unmodified base campaign".to_owned(),
+            ));
+        }
+        (None, None) => {
+            return Err(CompareError::Invalid(
+                "neither result records counterfactual provenance; fork a future with `theseus compose explore --fork-run N --replace-fault OLD=NEW` first".to_owned(),
+            ));
+        }
+    };
+    let base_run = base.runs.get(provenance.run).ok_or_else(|| {
+        CompareError::Invalid(format!(
+            "forked run index {} is outside the base campaign ({} runs)",
+            provenance.run,
+            base.runs.len()
+        ))
+    })?;
+    let fork_run = fork
+        .runs
+        .first()
+        .ok_or_else(|| CompareError::Invalid("forked campaign has no runs".to_owned()))?;
+    let divergence = forked_divergence(base_run, fork_run).map(|divergence| {
+        let (left, right, moments) = if fork_is_right {
+            (divergence.base, divergence.fork, divergence.moments)
+        } else {
+            (
+                divergence.fork,
+                divergence.base,
+                divergence
+                    .moments
+                    .map(|(base_moment, fork_moment)| (fork_moment, base_moment)),
+            )
+        };
+        CampaignDivergence {
+            run: provenance.run,
+            boundary: divergence.boundary,
+            reason: divergence.reason,
+            left,
+            right,
+            moments,
+        }
+    });
+    Ok(ForkedComparison {
+        format: "theseus-campaign-forked-comparison-v1",
+        status: if divergence.is_some() {
+            "diverged"
+        } else {
+            "same"
+        },
+        forked_run: provenance.run,
+        replaced_fault: provenance.fault,
+        replacement_fault: provenance.replace,
+        left_runs: left.runs.len(),
+        right_runs: right.runs.len(),
+        divergence,
+    })
 }
 
 fn coverage_summary(run: &Run) -> String {
@@ -658,9 +969,18 @@ mod tests {
         let (left, right) = write_pair(&result(baseline, "[]"), &result(&right, "[]"));
         let comparison = compare_campaigns(left.path(), right.path()).unwrap();
         let output = comparison.github();
-        assert!(output.contains("::warning title=Theseus comparison::"), "{output}");
-        assert!(output.contains("::error title=Theseus divergence"), "{output}");
-        assert!(output.contains("moments: left 7000@input-hash / right 9000@input-hash"), "{output}");
+        assert!(
+            output.contains("::warning title=Theseus comparison::"),
+            "{output}"
+        );
+        assert!(
+            output.contains("::error title=Theseus divergence"),
+            "{output}"
+        );
+        assert!(
+            output.contains("moments: left 7000@input-hash / right 9000@input-hash"),
+            "{output}"
+        );
         assert!(output.contains("left: "), "{output}");
         assert!(output.contains("right: "), "{output}");
     }
@@ -682,8 +1002,7 @@ mod tests {
         // An address only one side carries is an error naming the mismatch.
         let drifted = baseline.replace("7000@input-hash", "9000@other-hash");
         let (left, right) = write_pair(&result(baseline, "[]"), &result(&drifted, "[]"));
-        let error = boundary_at_moment(left.path(), right.path(), "7000@input-hash")
-            .unwrap_err();
+        let error = boundary_at_moment(left.path(), right.path(), "7000@input-hash").unwrap_err();
         assert!(error.to_string().contains("no boundary carries"), "{error}");
     }
 
@@ -926,6 +1245,125 @@ mod tests {
         assert_eq!(query.left, Some(Value::String("passed".to_owned())));
         assert_eq!(query.right, Some(Value::String("failed".to_owned())));
     }
+
+    fn forked_result(
+        runs: &str,
+        run: usize,
+        fault: &str,
+        replace: &str,
+    ) -> String {
+        format!(
+            r#"{{"counterfactual":{{"run":{run},"fault":"{fault}","replace":"{replace}"}},"runs":{runs},"properties":[]}}"#
+        )
+    }
+
+    const FORKED_BASE_RUN: &str = r#"[{"index":0,"operations":["write"],"faults":["backplane:partition@write"],"state_sha256":"base-final","timeline":[
+            {"id":"op-000-write","operation":"write","service":"api","state_sha256":"state","moment":"7000@input-hash","actions":[{"kind":"partition"}],"markers":["42"],"serial_sha256":{"api":"serial"},"program_counters":{"api":["0x10"]}},
+            {"id":"op-001-read","operation":"read","service":"api","state_sha256":"state","moment":"7200@second-hash","actions":[],"markers":[],"serial_sha256":{"api":"serial"}}
+        ]}]"#;
+
+    #[test]
+    fn forked_comparison_reports_the_substituted_decision_boundary_with_both_moments() {
+        // The fork reuses the recorded operation history and prefix, but the
+        // replacement fault takes the replaced fault's place at the first
+        // barrier and its future moves to its own moment.
+        let fork_runs = FORKED_BASE_RUN
+            .replace(r#""kind":"partition""#, r#""kind":"heal""#)
+            .replace("7000@input-hash", "7100@fork-hash");
+        let (base, forked) = write_pair(
+            &result(FORKED_BASE_RUN, "[]"),
+            &forked_result(
+                &fork_runs,
+                0,
+                "backplane:partition@write",
+                "backplane:heal@write",
+            ),
+        );
+        let comparison = compare_forked_campaigns(base.path(), forked.path()).unwrap();
+        assert_eq!(comparison.status, "diverged");
+        assert_eq!(comparison.forked_run, 0);
+        assert_eq!(
+            comparison.replaced_fault,
+            "backplane:partition@write"
+        );
+        assert_eq!(comparison.replacement_fault, "backplane:heal@write");
+        let divergence = comparison.divergence.unwrap();
+        assert_eq!(divergence.boundary, Some(0));
+        assert_eq!(
+            divergence.reason,
+            "operation-boundary fault actions diverge"
+        );
+        assert_eq!(
+            divergence.moments,
+            Some(("7000@input-hash".to_owned(), "7100@fork-hash".to_owned()))
+        );
+    }
+
+    #[test]
+    fn forked_comparison_reports_identical_boundary_evidence_as_same() {
+        // A substitution whose effects are invisible at every retained
+        // boundary - for example a lifecycle pause - keeps both futures
+        // indistinguishable in the retained evidence.
+        let (base, forked) = write_pair(
+            &result(FORKED_BASE_RUN, "[]"),
+            &forked_result(
+                FORKED_BASE_RUN,
+                0,
+                "guest:pause@write",
+                "guest:restart@write",
+            ),
+        );
+        let comparison = compare_forked_campaigns(base.path(), forked.path()).unwrap();
+        assert_eq!(comparison.status, "same");
+        assert!(comparison.divergence.is_none());
+    }
+
+    #[test]
+    fn forked_comparison_accepts_the_fork_on_either_side_and_reports_in_argument_order() {
+        let fork_runs = FORKED_BASE_RUN
+            .replace(r#""kind":"partition""#, r#""kind":"heal""#)
+            .replace("7000@input-hash", "7100@fork-hash");
+        // Fork on the left: its evidence is reported first.
+        let (forked, base) = write_pair(
+            &forked_result(&fork_runs, 0, "guest:pause@write", "guest:restart@write"),
+            &result(FORKED_BASE_RUN, "[]"),
+        );
+        let comparison = compare_forked_campaigns(forked.path(), base.path()).unwrap();
+        let divergence = comparison.divergence.expect("the futures diverge at the barrier");
+        assert_eq!(divergence.boundary, Some(0));
+        assert_eq!(divergence.left, r#"[{"kind":"heal"}]"#);
+        assert_eq!(divergence.right, r#"[{"kind":"partition"}]"#);
+        assert_eq!(
+            divergence.moments,
+            Some(("7100@fork-hash".to_owned(), "7000@input-hash".to_owned()))
+        );
+    }
+
+    #[test]
+    fn forked_comparison_requires_counterfactual_provenance() {
+        let (left, right) = write_pair(&result(FORKED_BASE_RUN, "[]"), &result(FORKED_BASE_RUN, "[]"));
+        let error =
+            compare_forked_campaigns(left.path(), right.path()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("neither result records counterfactual provenance"),
+            "{error}"
+        );
+
+        // A fork index outside the base campaign names the mismatch.
+        let forked = write_pair(
+            &result(FORKED_BASE_RUN, "[]"),
+            &forked_result(FORKED_BASE_RUN, 3, "a", "b"),
+        );
+        let error = compare_forked_campaigns(forked.0.path(), forked.1.path()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("forked run index 3 is outside the base campaign"),
+            "{error}"
+        );
+    }
 }
 
 /// Dump both sides' full boundary record at one moment address, so an
@@ -982,10 +1420,7 @@ fn find_boundary_moment(
             if boundary["moment"] == *moment {
                 return Ok(BoundaryRecord {
                     run: run_index,
-                    boundary_id: boundary["id"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned(),
+                    boundary_id: boundary["id"].as_str().unwrap_or_default().to_owned(),
                     record: boundary.clone(),
                 });
             }

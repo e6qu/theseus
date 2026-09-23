@@ -22,6 +22,7 @@ theseus compare left-campaign-dir right-campaign-dir
 theseus compare --format json|markdown|github left-campaign-dir right-campaign-dir
 theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
 theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
+theseus compare --forked base-campaign-dir forked-campaign-dir
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
 theseus query campaign-dir --list [--service NAME] [--format json]
 theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
@@ -40,6 +41,7 @@ theseus compose explore [--max-runs N] [--guidance MODE] [--output campaign-dir]
 theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--output campaign-dir] [compose.yaml]
 theseus compose explore --minimize campaign-dir [--output minimized-dir]
 theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
+theseus compose explore --fork-run N --replace-fault OLD=NEW campaign-dir [--output forked-dir]
 theseus compose replay replay-dir [--output replay-dir]
 theseus compose verify checkpoint-bundle-dir
 ```
@@ -158,6 +160,21 @@ point, not just the first divergence the comparison stops at:
 fault action, topology hash, serial digest, coverage location, or property
 verdict. The comparison and its Markdown form contain no VM memory or external
 service dependency, so attach them with the two locked result directories.
+
+`--forked` diffs a counterfactual future against the run it forked. Fork the
+future first: `theseus compose explore --fork-run N --replace-fault
+OLD=NEW campaign-dir` re-executes the recorded schedule of run N with the
+recorded fault OLD replaced by the declared fault NEW, from the shared
+deterministic prefix, into `campaign-dir-forked` (or `--output`). The
+substitution is locked into the forked replay plan, and the fork records its
+provenance, so `theseus compare --forked campaign-dir campaign-dir-forked`
+locates the base run without positional guessing, skips the decision records
+expected to differ, and reports the first diverging operation boundary with
+both sides' moment addresses — the same addresses `theseus query` resolves.
+Identical boundary evidence reports `"same"`: the substitution changed
+nothing the campaign retained. A failing forked future is retained evidence,
+not a command failure. The fork still shares the model's limits, so a
+divergence supports, but does not by itself prove, a causal claim.
 
 ### Summarize a public evaluation
 
@@ -630,6 +647,10 @@ override the declared budget and guidance for one exploration without editing
 the Compose file: comparing the same file across guidance modes at one fixed
 budget is the reproducible search comparison the roadmap requires, and every
 retained campaign records which mode and budget produced it.
+
+`--fork-run` and `--replace-fault` operate on a retained campaign directory
+instead of a Compose file; see
+[Investigate two campaign results](#investigate-two-campaign-results).
 
 ## Query a moment
 

@@ -126,6 +126,22 @@ struct CampaignPlan {
     max_faults_per_run: u8,
     #[serde(default = "default_campaign_operations_per_run")]
     max_operations_per_run: u8,
+    /// Counterfactual re-execution override. When present, the campaign runs
+    /// exactly one timeline: the recorded schedule of `run` with the recorded
+    /// `fault` decision replaced by the declared `replace` fault. The recorded
+    /// campaign result next to the replay plan supplies that schedule, and the
+    /// shared checkpoint prefix is reused up to the substituted barrier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    counterfactual: Option<CounterfactualPlan>,
+}
+
+/// One locked counterfactual decision, recorded in the replay plan like any
+/// other override so a forked future documents its own provenance.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct CounterfactualPlan {
+    run: usize,
+    fault: String,
+    replace: String,
 }
 
 fn default_campaign_faults_per_run() -> u8 {
@@ -767,6 +783,11 @@ struct CampaignResult {
     /// A compact, deterministic account of the search work. This is separate
     /// from wall-clock timing: host scheduling must never affect a replay.
     search: CampaignSearchEvidence,
+    /// The fork decision a counterfactual future re-executed, so `compare
+    /// --forked` can locate the original timeline in the retained base
+    /// campaign without positional guessing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    counterfactual: Option<CounterfactualPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     replay_verification: Option<CampaignReplayVerification>,
     runs: Vec<CampaignRun>,
@@ -3641,6 +3662,25 @@ fn execute_campaign(
     if let Some(recorded) = recorded {
         verify_recorded_campaign_guidance(campaign.guidance, campaign.coverage, recorded)?;
     }
+    // A counterfactual fork borrows the recorded corpus only as its schedule
+    // source. The forked future is allowed - expected - to diverge from the
+    // recording after the substituted decision, so it must not inherit the
+    // recorded machine-stream gating, corpus bounds, or search evidence.
+    let counterfactual = campaign.counterfactual.clone();
+    let recorded_view;
+    let recorded = match (recorded, counterfactual.as_ref()) {
+        (Some(recorded), Some(fork)) => {
+            recorded_view = Some(counterfactual_recorded_view(recorded, fork)?);
+            recorded_view.as_ref()
+        }
+        (None, Some(_)) => {
+            return Err(
+                "counterfactual re-execution requires the recorded campaign result next to the replay plan"
+                    .to_owned(),
+            );
+        }
+        (recorded, None) => recorded,
+    };
     let checkpoint = starting_state::boot_or_load(
         &mut topology,
         &output.join("checkpoint"),
@@ -3656,9 +3696,12 @@ fn execute_campaign(
     if schedules.is_empty() {
         return Err("campaign produced no schedules".to_owned());
     }
-    let replay_schedules = recorded
+    let mut replay_schedules = recorded
         .map(|recorded| recorded_campaign_schedules(&campaign, recorded))
         .transpose()?;
+    if let (Some(fork), Some(schedules)) = (&counterfactual, replay_schedules.as_mut()) {
+        apply_counterfactual_substitution(&campaign, fork, &mut schedules[0])?;
+    }
     fs::create_dir_all(output.join("runs")).map_err(|error| error.to_string())?;
     let mut runs = Vec::new();
     let mut seen_markers = std::collections::BTreeSet::new();
@@ -3683,17 +3726,29 @@ fn execute_campaign(
     {
         let index = runs.len();
         let (schedule, selection, expected) = if let Some(replay_schedules) = &replay_schedules {
-            let expected = &recorded
-                .expect("replay schedules have recorded evidence")
-                .runs[index];
+            let recorded = recorded.expect("replay schedules have recorded evidence");
+            let expected = recorded.runs.get(index);
+            let selection = match (&counterfactual, expected) {
+                (Some(fork), _) => format!(
+                    "counterfactual fork of run {} replacing {} with {}",
+                    fork.run, fork.fault, fork.replace
+                ),
+                (None, Some(expected)) if !expected.selection.is_empty() => {
+                    expected.selection.clone()
+                }
+                (None, _) => "recorded campaign schedule".to_owned(),
+            };
             (
                 replay_schedules[index].clone(),
-                if expected.selection.is_empty() {
-                    "recorded campaign schedule".to_owned()
+                selection,
+                if counterfactual.is_some() {
+                    // The substituted decision legitimately changes the
+                    // machine stream after its barrier; recorded-trace
+                    // admission would reject the forked future outright.
+                    None
                 } else {
-                    expected.selection.clone()
+                    expected
                 },
-                Some(expected),
             )
         } else {
             let (pending_index, selection) = select_campaign_schedule(
@@ -3726,7 +3781,10 @@ fn execute_campaign(
         )? {
             CampaignPrefixResult::Ready(prefix) => prefix,
             rejection => {
-                if expected.is_some() {
+                if expected.is_some() || counterfactual.is_some() {
+                    // A fork has no fallback corpus; if its borrowed prefix
+                    // cannot be re-materialized, that is a hard error rather
+                    // than an exploration rejection.
                     return Err(format!(
                         "recorded campaign history no longer satisfies its operation guards: {}",
                         schedule
@@ -4045,7 +4103,13 @@ fn execute_campaign(
             coverage,
             checkpoint_nodes: checkpoints.nodes(),
             checkpoint_reuses: checkpoints.reuses,
-            generated_candidates: schedules.len(),
+            // A fork generated no candidates; it re-executed one recorded
+            // schedule with a locked substitution.
+            generated_candidates: if counterfactual.is_some() {
+                0
+            } else {
+                schedules.len()
+            },
             marker_guard_rejections,
             serial_guard_rejections,
             unique_topology_states: seen_topology_states.len(),
@@ -4073,10 +4137,18 @@ fn execute_campaign(
                 .map(Vec::len)
                 .sum(),
             search,
+            counterfactual: counterfactual.clone(),
             replay_verification: recorded.map(|recorded| CampaignReplayVerification {
                 status: if replay_verified { "passed" } else { "failed" },
                 detail: if replay_verified {
-                    format!("{} recorded campaign timelines reproduced", runs.len())
+                    if let Some(fork) = &counterfactual {
+                        format!(
+                            "counterfactual fork of recorded run {} re-executed with {} replaced by {}",
+                            fork.run, fork.fault, fork.replace
+                        )
+                    } else {
+                        format!("{} recorded campaign timelines reproduced", runs.len())
+                    }
                 } else {
                     let mut detail = replay_mismatches.clone();
                     if recorded.generated_candidates != 0
@@ -4102,6 +4174,16 @@ fn execute_campaign(
             output.display()
         ))
     } else if passed {
+        Ok(())
+    } else if let Some(fork) = &counterfactual {
+        // A forked future is an experiment, not a verdict about the campaign:
+        // whether the substitution avoided or reproduced the failure is
+        // exactly the evidence `compare --forked` diffed afterwards.
+        eprintln!(
+            "counterfactual fork of run {} retained a failing future; inspect {}",
+            fork.run,
+            output.display()
+        );
         Ok(())
     } else {
         Err(format!(
@@ -6467,6 +6549,80 @@ where
         frontier = next;
     }
     histories
+}
+
+/// Slice the recorded campaign down to the forked run so the ordinary replay
+/// loop executes exactly that schedule. The fork must not inherit the
+/// original corpus bounds or search evidence: it is one deliberately
+/// substituted timeline, not a reproduction of the recorded corpus.
+fn counterfactual_recorded_view(
+    recorded: &RecordedCampaignResult,
+    fork: &CounterfactualPlan,
+) -> Result<RecordedCampaignResult, String> {
+    let run = recorded.runs.get(fork.run).ok_or_else(|| {
+        format!(
+            "counterfactual run index {} is outside the recorded campaign ({} runs)",
+            fork.run,
+            recorded.runs.len()
+        )
+    })?;
+    Ok(RecordedCampaignResult {
+        starting_checkpoint_sha256: recorded.starting_checkpoint_sha256.clone(),
+        guidance: recorded.guidance,
+        coverage: recorded.coverage,
+        generated_candidates: 0,
+        search: None,
+        runs: vec![run.clone()],
+    })
+}
+
+/// Resolve one declared fault by its recorded name. Ambiguity is an error
+/// because the substitution must name exactly one locked decision.
+fn campaign_fault_index_by_name(campaign: &CampaignPlan, name: &str) -> Result<usize, String> {
+    let matches = campaign
+        .faults
+        .iter()
+        .enumerate()
+        .filter_map(|(index, fault)| (campaign_fault_name(fault) == name).then_some(index))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(format!("fault is not declared: {name}")),
+        _ => Err(format!("fault is ambiguous: {name}")),
+    }
+}
+
+/// Replace one recorded fault decision in the forked schedule. Both sides of
+/// the substitution resolve against the locked plan's declared faults, and
+/// the replacement keeps the replaced fault's position, so the fork differs
+/// from its recording in exactly that one decision.
+fn apply_counterfactual_substitution(
+    campaign: &CampaignPlan,
+    fork: &CounterfactualPlan,
+    schedule: &mut CampaignSchedule,
+) -> Result<(), String> {
+    let replaced = campaign_fault_index_by_name(campaign, &fork.fault)
+        .map_err(|error| format!("counterfactual replaced {error}"))?;
+    let replacement = campaign_fault_index_by_name(campaign, &fork.replace)
+        .map_err(|error| format!("counterfactual replacement {error}"))?;
+    if replaced == replacement {
+        return Err(format!(
+            "counterfactual replacement must differ from the replaced fault: {}",
+            fork.fault
+        ));
+    }
+    let position = schedule
+        .faults
+        .iter()
+        .position(|index| *index == replaced)
+        .ok_or_else(|| {
+            format!(
+                "recorded run does not select the replaced fault: {}",
+                fork.fault
+            )
+        })?;
+    schedule.faults[position] = replacement;
+    Ok(())
 }
 
 fn recorded_campaign_schedules(
@@ -15169,6 +15325,7 @@ mod tests {
             max_runs: 8,
             max_faults_per_run: 1,
             max_operations_per_run: 2,
+            counterfactual: None,
         };
         let checkpoint = CampaignCheckpoint {
             switches: BTreeMap::new(),
@@ -17774,6 +17931,157 @@ mod tests {
                 thread_schedule_prefixes: Vec::new(),
             }
         ));
+    }
+
+    fn counterfactual_campaign() -> CampaignPlan {
+        serde_json::from_value(serde_json::json!({
+            "driver": "api",
+            "operations": [{"name": "write", "inputs": [{"name": "default", "input_hex": ""}]}],
+            "faults": [
+                {"kind": "partition", "network": "backplane", "after": "write"},
+                {
+                    "kind": "link_partition",
+                    "network": "backplane",
+                    "from": "api",
+                    "to": "worker",
+                    "after": "write"
+                }
+            ],
+            "max_runs": 1
+        }))
+        .unwrap()
+    }
+
+    fn counterfactual_plan(fault: &str, replace: &str) -> CounterfactualPlan {
+        CounterfactualPlan {
+            run: 0,
+            fault: fault.to_owned(),
+            replace: replace.to_owned(),
+        }
+    }
+
+    #[test]
+    fn counterfactual_substitution_replaces_the_recorded_fault_decision() {
+        let campaign = counterfactual_campaign();
+        let mut schedule = CampaignSchedule {
+            operations: vec![choice(0)],
+            faults: vec![0],
+            thread_schedule_prefixes: vec![Vec::new()],
+        };
+        apply_counterfactual_substitution(
+            &campaign,
+            &counterfactual_plan(
+                "backplane:partition@write",
+                "backplane:api->worker:link_partition@write",
+            ),
+            &mut schedule,
+        )
+        .unwrap();
+        assert_eq!(schedule.faults, vec![1]);
+    }
+
+    #[test]
+    fn counterfactual_substitution_rejects_unknown_unchanged_and_unselected_faults() {
+        let campaign = counterfactual_campaign();
+        let mut schedule = CampaignSchedule {
+            operations: vec![choice(0)],
+            faults: vec![0],
+            thread_schedule_prefixes: vec![Vec::new()],
+        };
+
+        let error = apply_counterfactual_substitution(
+            &campaign,
+            &counterfactual_plan(
+                "backplane:partition@write",
+                "backplane:partition@write",
+            ),
+            &mut schedule,
+        )
+        .unwrap_err();
+        assert!(error.contains("must differ"), "{error}");
+
+        let error = apply_counterfactual_substitution(
+            &campaign,
+            &counterfactual_plan(
+                "backplane:heal@write",
+                "backplane:api->worker:link_partition@write",
+            ),
+            &mut schedule,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("replaced fault is not declared"),
+            "{error}"
+        );
+
+        let error = apply_counterfactual_substitution(
+            &campaign,
+            &counterfactual_plan("undeclared", "backplane:partition@write"),
+            &mut schedule,
+        )
+        .unwrap_err();
+        assert!(error.contains("replaced fault is not declared"), "{error}");
+
+        let mut unselected = CampaignSchedule {
+            operations: vec![choice(0)],
+            faults: vec![1],
+            thread_schedule_prefixes: vec![Vec::new()],
+        };
+        let error = apply_counterfactual_substitution(
+            &campaign,
+            &counterfactual_plan(
+                "backplane:partition@write",
+                "backplane:api->worker:link_partition@write",
+            ),
+            &mut unselected,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("does not select the replaced fault"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn counterfactual_recorded_view_slices_one_run_without_corpus_evidence() {
+        let recorded: RecordedCampaignResult = serde_json::from_value(serde_json::json!({
+            "generated_candidates": 7,
+            "runs": [
+                {
+                    "operations": ["write"],
+                    "faults": ["backplane:partition@write"]
+                },
+                {
+                    "operations": ["read"],
+                    "faults": ["backplane:api->worker:link_partition@write"]
+                }
+            ]
+        }))
+        .unwrap();
+        let view = counterfactual_recorded_view(
+            &recorded,
+            &CounterfactualPlan {
+                run: 1,
+                fault: "backplane:partition@write".to_owned(),
+                replace: "backplane:api->worker:link_partition@write".to_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(view.runs.len(), 1);
+        assert_eq!(view.runs[0].operations, vec!["read".to_owned()]);
+        assert_eq!(view.generated_candidates, 0);
+        assert!(view.search.is_none());
+
+        let error = counterfactual_recorded_view(
+            &recorded,
+            &CounterfactualPlan {
+                run: 2,
+                fault: "backplane:partition@write".to_owned(),
+                replace: "backplane:api->worker:link_partition@write".to_owned(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("outside the recorded campaign"), "{error}");
     }
 
     #[test]

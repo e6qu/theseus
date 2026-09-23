@@ -2092,7 +2092,10 @@ fn render_github(model: &ReportModel) -> String {
         ));
     }
     if let Some(error) = &model.error {
-        output.push_str(&format!("::error title=Theseus execution error::{}\n", error.replace('\n', " ")));
+        output.push_str(&format!(
+            "::error title=Theseus execution error::{}\n",
+            error.replace('\n', " ")
+        ));
     }
     output.push_str(&format!(
         "\n## Reproduce\n\n```sh\n{}\n```\n\n| Check | Kind | Status | Detail |\n| --- | --- | --- | --- |\n",
@@ -2498,7 +2501,6 @@ mod tests {
         assert!(github.contains("found <panic>"));
         assert!(github.contains("## Reproduce"));
         assert!(github.contains("theseus replay"));
-
     }
 
     #[test]
