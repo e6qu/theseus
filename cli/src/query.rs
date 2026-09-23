@@ -9,11 +9,13 @@
 //! navigation to the preceding and following moments, so a divergence
 //! report's address resolves to log text offline.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::Path;
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::ComposeError;
 
@@ -420,6 +422,298 @@ pub fn query_temporal(
     temporal_query(&result, relation, needle, service)
 }
 
+/// One file inside a collected artifact bundle, with the digest that makes
+/// the bundle auditable without the original campaign.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct CollectedFile {
+    /// Path relative to the collected directory.
+    pub path: String,
+    pub sha256: String,
+}
+
+/// The manifest of one moment collected into a self-contained artifact
+/// bundle: the boundary's full record with its neighbors, the decision-trace
+/// slice that produced it, serial-log slices when the retained run directory
+/// is available, and the digest of every collected file.
+#[derive(Debug, Serialize)]
+pub struct CollectedMoment {
+    pub format: &'static str,
+    /// The canonicalized source bundle directory.
+    pub source: String,
+    pub run: usize,
+    /// The moment address the collection was scoped to.
+    pub moment: String,
+    pub boundary: String,
+    pub operation: String,
+    /// The service that received the operation.
+    pub service: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_moment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_moment: Option<String>,
+    /// How many decision-trace entries the slice retains.
+    pub decision_trace_entries: usize,
+    /// `collected`, `unverified`, or `unavailable`: whether every service's
+    /// cumulative serial slice was reconstructed and digest-verified from
+    /// the retained run directory.
+    pub serial_slices: &'static str,
+    /// Every collected file except the manifest itself.
+    pub files: Vec<CollectedFile>,
+}
+
+/// One located boundary plus its position, so collection can slice the
+/// surrounding evidence.
+struct LocatedBoundary<'a> {
+    run: usize,
+    index: usize,
+    boundary: &'a serde_json::Value,
+    timeline: &'a [serde_json::Value],
+    previous: Option<&'a serde_json::Value>,
+    next: Option<&'a serde_json::Value>,
+}
+
+fn locate_boundary<'a>(
+    result: &'a serde_json::Value,
+    moment: &str,
+) -> Result<LocatedBoundary<'a>, MomentError> {
+    let runs = result["runs"]
+        .as_array()
+        .ok_or_else(|| MomentError::NotFound("result has no runs".to_owned()))?;
+    for (run_index, run) in runs.iter().enumerate() {
+        let timeline = run["timeline"]
+            .as_array()
+            .ok_or_else(|| MomentError::NotFound(format!("run {run_index} has no timeline")))?;
+        for (boundary_index, boundary) in timeline.iter().enumerate() {
+            if boundary["moment"] == *moment {
+                let previous = boundary_index
+                    .checked_sub(1)
+                    .and_then(|index| timeline.get(index));
+                let next = timeline.get(boundary_index + 1);
+                return Ok(LocatedBoundary {
+                    run: run_index,
+                    index: boundary_index,
+                    boundary,
+                    timeline,
+                    previous,
+                    next,
+                });
+            }
+        }
+    }
+    Err(MomentError::NotFound(format!(
+        "no boundary carries moment {moment:?}"
+    )))
+}
+
+fn write_collected_file(
+    output: &Path,
+    relative: &str,
+    bytes: &[u8],
+    files: &mut Vec<CollectedFile>,
+) -> Result<(), MomentError> {
+    let path = output.join(relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| {
+            MomentError::Read(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("cannot create {}: {source}", parent.display()),
+            ))
+        })?;
+    }
+    fs::write(&path, bytes).map_err(|source| {
+        MomentError::Read(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("cannot write {}: {source}", path.display()),
+        ))
+    })?;
+    files.push(CollectedFile {
+        path: relative.to_owned(),
+        sha256: format!("{:x}", Sha256::digest(bytes)),
+    });
+    Ok(())
+}
+
+/// Collect the evidence window around one moment into a self-contained,
+/// read-only-auditable artifact directory: the boundary's full record, its
+/// neighbors, the decision-trace slice that produced it, and digest-verified
+/// cumulative serial-log slices from the retained run directory when it is
+/// available. The source bundle is never modified.
+pub fn collect_moment(
+    bundle: impl AsRef<Path>,
+    moment: &str,
+    output: impl AsRef<Path>,
+) -> Result<CollectedMoment, MomentError> {
+    let bundle = fs::canonicalize(bundle.as_ref()).map_err(MomentError::Read)?;
+    let path = bundle.join("campaign-result.json");
+    let result: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+    let located = locate_boundary(&result, moment)?;
+    let boundary = located.boundary;
+    let boundary_id = boundary["id"].as_str().unwrap_or_default().to_owned();
+    let boundary_service = boundary["service"].as_str().unwrap_or_default().to_owned();
+    let boundary_operation = boundary["operation"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let previous_moment = located
+        .previous
+        .and_then(|boundary| boundary["moment"].as_str())
+        .map(str::to_owned);
+    let next_moment = located
+        .next
+        .and_then(|boundary| boundary["moment"].as_str())
+        .map(str::to_owned);
+
+    let output = output.as_ref().to_path_buf();
+    if output.exists() {
+        return Err(MomentError::NotFound(format!(
+            "collected output already exists: {}",
+            output.display()
+        )));
+    }
+    fs::create_dir_all(&output).map_err(MomentError::Read)?;
+    let mut files = Vec::new();
+
+    let encoded =
+        |value: &serde_json::Value| serde_json::to_vec_pretty(value).map_err(MomentError::Parse);
+    write_collected_file(&output, "boundary.json", &encoded(boundary)?, &mut files)?;
+    if let Some(previous) = located.previous {
+        write_collected_file(&output, "previous.json", &encoded(previous)?, &mut files)?;
+    }
+    if let Some(next) = located.next {
+        write_collected_file(&output, "next.json", &encoded(next)?, &mut files)?;
+    }
+
+    // The decision trace interleaves template headers with
+    // `boundary:<position>:` entries; the slice keeps everything up to and
+    // including this boundary's decisions.
+    let trace = result["runs"][located.run]["decision_trace"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let trace_slice: Vec<&serde_json::Value> = trace
+        .iter()
+        .filter(|entry| {
+            entry
+                .as_str()
+                .and_then(|entry| entry.strip_prefix("boundary:"))
+                .and_then(|rest| rest.split(':').next())
+                .and_then(|position| position.parse::<usize>().ok())
+                .map(|position| position <= located.index)
+                .unwrap_or(true)
+        })
+        .collect();
+    let trace_record = serde_json::json!({
+        "format": "theseus-collected-decision-trace-v1",
+        "run": located.run,
+        "boundary": boundary_id,
+        "boundary_index": located.index,
+        "entries": trace_slice,
+    });
+    write_collected_file(
+        &output,
+        "decision-trace.json",
+        &encoded(&trace_record)?,
+        &mut files,
+    )?;
+
+    // Cumulative serial slices: each boundary's delta bytes accumulate to
+    // the transcript length at that moment, verified against the boundary's
+    // cumulative digest. Missing or mismatching evidence degrades the
+    // collection instead of failing it.
+    let run_dir = bundle.join("runs").join(format!("{:03}", located.run));
+    let mut serial_slices = "unavailable";
+    if run_dir.is_dir() {
+        serial_slices = "collected";
+        let cumulative_hashes: BTreeMap<String, String> = boundary["serial_sha256"]
+            .as_object()
+            .map(|hashes| {
+                hashes
+                    .iter()
+                    .map(|(service, hash)| {
+                        (
+                            service.clone(),
+                            hash.as_str().unwrap_or_default().to_owned(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (service, expected) in &cumulative_hashes {
+            let mut length = 0_usize;
+            for earlier in located.timeline.iter().take(located.index + 1) {
+                length += earlier["serial_delta"][service]["bytes"]
+                    .as_u64()
+                    .unwrap_or_default() as usize;
+            }
+            let transcript = run_serial_contents(&run_dir, service);
+            let verified = transcript.len() >= length
+                && format!("{:x}", Sha256::digest(&transcript[..length])) == *expected;
+            if verified {
+                write_collected_file(
+                    &output,
+                    &format!("serial/{service}.log"),
+                    &transcript[..length],
+                    &mut files,
+                )?;
+            } else {
+                serial_slices = "unverified";
+            }
+        }
+    }
+
+    let collected = CollectedMoment {
+        format: "theseus-collected-artifacts-v1",
+        source: bundle.display().to_string(),
+        run: located.run,
+        moment: moment.to_owned(),
+        boundary: boundary_id,
+        operation: boundary_operation,
+        service: boundary_service,
+        previous_moment,
+        next_moment,
+        decision_trace_entries: trace_slice.len(),
+        serial_slices,
+        files,
+    };
+    write_collected_file(
+        &output,
+        "manifest.json",
+        &encoded(&serde_json::to_value(&collected).map_err(MomentError::Parse)?)?,
+        &mut Vec::new(),
+    )?;
+    Ok(collected)
+}
+
+/// Reconstruct one service's complete serial transcript from a retained run
+/// directory, in the same rotation order the runner writes and reads it.
+fn run_serial_contents(run: &Path, service: &str) -> Vec<u8> {
+    let mut logs = fs::read_dir(run.join("services").join(service))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name == "serial.log" || (name.starts_with("serial-") && name.ends_with(".log"))
+        })
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    logs.sort_by_key(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| {
+                name.strip_prefix("serial-")
+                    .and_then(|suffix| suffix.strip_suffix(".log"))
+                    .and_then(|index| index.parse::<usize>().ok())
+            })
+            .map(|index| index + 1)
+            .unwrap_or(0)
+    });
+    logs.into_iter()
+        .flat_map(|path| fs::read(path).unwrap_or_default())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,5 +902,152 @@ mod tests {
         let error = temporal_query(&temporal_fixture(), TemporalRelation::PrecededBy, "", None)
             .unwrap_err();
         assert!(error.to_string().contains("non-empty needle"), "{error}");
+    }
+
+    /// A one-run bundle whose second boundary carries a verified cumulative
+    /// serial hash and a decision trace with a template header.
+    fn collect_fixture(bundle: &Path, transcript: &[u8]) {
+        use sha2::{Digest, Sha256};
+        let cumulative = format!("{:x}", Sha256::digest(transcript));
+        let early = format!("{:x}", Sha256::digest(&transcript[..5]));
+        let directory = bundle;
+        fs::create_dir_all(directory.join("runs/000/services/counter")).unwrap();
+        fs::write(directory.join("campaign-result.json"), format!(r#"{{"runs":[{{"index":0,"decision_trace":["test_template:main","boundary:0:operation:write","boundary:1:operation:read"],"timeline":[
+            {{"id":"op-000-write","operation":"write","service":"counter","moment":"7000@input-hash",
+             "serial_sha256":{{"counter":"{early}"}},
+             "serial_delta":{{"counter":{{"bytes":5,"sha256":"d0","excerpt":"READY","omitted_bytes":0}}}}}},
+            {{"id":"op-001-read","operation":"read","service":"counter","moment":"9000@read-hash",
+             "serial_sha256":{{"counter":"{cumulative}"}},
+             "serial_delta":{{"counter":{{"bytes":{after},"sha256":"d1","excerpt":"log output","omitted_bytes":0}}}}}}
+        ]}}]}}"#, after = transcript.len() - 5)).unwrap();
+        fs::write(
+            directory
+                .join("runs/000/services/counter")
+                .join("serial.log"),
+            transcript,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn collection_copies_the_boundary_window_and_verifies_serial_slices() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("bundle");
+        let transcript = b"READYlog output\n".to_vec();
+        collect_fixture(&bundle, &transcript);
+        let source_files: std::collections::BTreeSet<String> = fs::read_dir(&bundle)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+
+        let output = directory.path().join("collected");
+        let collected = collect_moment(&bundle, "9000@read-hash", &output).unwrap();
+        assert_eq!(collected.format, "theseus-collected-artifacts-v1");
+        assert_eq!(collected.run, 0);
+        assert_eq!(collected.boundary, "op-001-read");
+        assert_eq!(
+            collected.previous_moment,
+            Some("7000@input-hash".to_owned())
+        );
+        assert_eq!(collected.next_moment, None);
+        assert_eq!(collected.serial_slices, "collected");
+        assert_eq!(collected.decision_trace_entries, 3);
+
+        // Every manifest entry matches the bytes on disk, and the manifest
+        // lists everything except itself.
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["format"], "theseus-collected-artifacts-v1");
+        let listed = manifest["files"].as_array().unwrap();
+        assert_eq!(listed.len(), collected.files.len());
+        for entry in listed {
+            let bytes = fs::read(output.join(entry["path"].as_str().unwrap())).unwrap();
+            assert_eq!(
+                entry["sha256"],
+                format!("{:x}", Sha256::digest(&bytes)),
+                "{}",
+                entry["path"]
+            );
+        }
+        for name in ["boundary.json", "previous.json", "decision-trace.json"] {
+            assert!(output.join(name).is_file(), "{name}");
+        }
+        assert_eq!(collected.files.len(), 4);
+        assert!(!output.join("next.json").exists());
+
+        // The serial slice is exactly the cumulative transcript at the
+        // boundary, and the source bundle is untouched.
+        assert_eq!(
+            fs::read(output.join("serial/counter.log")).unwrap(),
+            transcript
+        );
+        assert_eq!(
+            source_files,
+            fs::read_dir(&bundle)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect::<std::collections::BTreeSet<String>>()
+        );
+
+        // The decision-trace slice keeps the header and both boundaries'
+        // entries for the last boundary, and stops earlier for the first.
+        let trace: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("decision-trace.json")).unwrap()).unwrap();
+        assert_eq!(trace["boundary_index"], 1);
+        assert_eq!(trace["entries"].as_array().unwrap().len(), 3);
+
+        let first = directory.path().join("first");
+        collect_moment(&bundle, "7000@input-hash", &first).unwrap();
+        let trace: serde_json::Value =
+            serde_json::from_slice(&fs::read(first.join("decision-trace.json")).unwrap()).unwrap();
+        assert_eq!(trace["entries"].as_array().unwrap().len(), 2);
+        assert!(!first.join("previous.json").exists());
+        assert!(first.join("next.json").exists());
+        // Only the first five transcript bytes were visible at that moment.
+        assert_eq!(
+            fs::read(first.join("serial/counter.log")).unwrap(),
+            &transcript[..5]
+        );
+    }
+
+    #[test]
+    fn collection_degrades_without_serial_evidence_and_refuses_existing_outputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("bundle");
+        collect_fixture(&bundle, b"READYlog output\n");
+        fs::remove_dir_all(bundle.join("runs")).unwrap();
+
+        let output = directory.path().join("collected");
+        let collected = collect_moment(&bundle, "9000@read-hash", &output).unwrap();
+        assert_eq!(collected.serial_slices, "unavailable");
+        assert!(!output.join("serial").exists());
+        assert_eq!(collected.files.len(), 3);
+
+        let error = collect_moment(&bundle, "9000@read-hash", &output).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("collected output already exists"),
+            "{error}"
+        );
+
+        let error = collect_moment(&bundle, "1@missing", &output).unwrap_err();
+        assert!(error.to_string().contains("1@missing"), "{error}");
+    }
+
+    #[test]
+    fn collection_reports_unverifiable_serial_slices() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("bundle");
+        collect_fixture(&bundle, b"READYlog output\n");
+        fs::write(
+            bundle.join("runs/000/services/counter/serial.log"),
+            b"tampered contents",
+        )
+        .unwrap();
+        let output = directory.path().join("collected");
+        let collected = collect_moment(&bundle, "9000@read-hash", &output).unwrap();
+        assert_eq!(collected.serial_slices, "unverified");
+        assert!(!output.join("serial").exists());
     }
 }

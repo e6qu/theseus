@@ -580,6 +580,108 @@ fn query_resolves_temporal_relations_over_retained_moments() {
 }
 
 #[test]
+fn query_collects_a_self_contained_artifact_bundle_for_one_moment() {
+    use sha2::{Digest, Sha256};
+    let directory = tempfile::tempdir().unwrap();
+    let bundle = directory.path().join("campaign");
+    let serial = b"READYlog output\n";
+    fs::create_dir_all(bundle.join("runs/000/services/api")).unwrap();
+    let result = serde_json::json!({
+        "runs": [{"index": 0, "decision_trace": [
+            "test_template:main",
+            "boundary:0:operation:write",
+            "boundary:1:operation:verify"
+        ], "timeline": [
+            {"id": "op-000-write", "operation": "write", "service": "api",
+             "moment": "7000@input-hash",
+             "serial_sha256": {"api": format!("{:x}", Sha256::digest(&serial[..5]))},
+             "serial_delta": {"api": {"bytes": 5, "sha256": "d0", "excerpt": "READY", "omitted_bytes": 0}}},
+            {"id": "op-002-verify", "operation": "verify", "service": "api",
+             "moment": "12000@verify-hash",
+             "serial_sha256": {"api": format!("{:x}", Sha256::digest(serial))},
+             "serial_delta": {"api": {"bytes": serial.len() - 5, "sha256": "d1", "excerpt": "log output", "omitted_bytes": 0}},
+             "actions": [{"kind": "custom"}]}
+        ]}]
+    });
+    fs::write(
+        bundle.join("campaign-result.json"),
+        serde_json::to_string(&result).unwrap(),
+    )
+    .unwrap();
+    fs::write(bundle.join("runs/000/services/api/serial.log"), serial).unwrap();
+
+    let collected = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            "campaign",
+            "--moment",
+            "12000@verify-hash",
+            "--collect",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(collected.status.success(), "{collected:?}");
+    let text = String::from_utf8(collected.stdout).unwrap();
+    assert!(text.contains("collected: campaign-collected"), "{text}");
+    assert!(text.contains("boundary: op-002-verify"), "{text}");
+    assert!(text.contains("serial_slices: collected"), "{text}");
+
+    // The default output sits beside the untouched source bundle, and the
+    // manifest digest-matches every file it lists.
+    let output = directory.path().join("campaign-collected");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["format"], "theseus-collected-artifacts-v1");
+    assert!(manifest["source"].as_str().unwrap().ends_with("/campaign"));
+    for entry in manifest["files"].as_array().unwrap() {
+        let bytes = fs::read(output.join(entry["path"].as_str().unwrap())).unwrap();
+        assert_eq!(
+            entry["sha256"],
+            format!("{:x}", Sha256::digest(&bytes)),
+            "{}",
+            entry["path"]
+        );
+    }
+    assert_eq!(fs::read(output.join("serial/api.log")).unwrap(), serial);
+    let boundary: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("boundary.json")).unwrap()).unwrap();
+    assert_eq!(boundary["actions"][0]["kind"], "custom");
+    assert_eq!(
+        fs::read_dir(&bundle).unwrap().count(),
+        2,
+        "runs/ and campaign-result.json only: the source stays read-only"
+    );
+
+    // An existing output refuses collection, and flag combinations fail.
+    let again = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            "campaign",
+            "--moment",
+            "12000@verify-hash",
+            "--collect",
+        ])
+        .current_dir(directory.path())
+        .status()
+        .unwrap();
+    assert!(!again.success(), "{again:?}");
+    let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            "campaign",
+            "--moment",
+            "12000@verify-hash",
+            "--collect",
+            "--list",
+        ])
+        .current_dir(directory.path())
+        .status()
+        .unwrap();
+    assert!(!bad.success(), "{bad:?}");
+}
+
+#[test]
 fn evaluate_summarizes_a_locked_public_corpus_without_kvm() {
     let directory = tempfile::tempdir().unwrap();
     let bundle = directory.path().join("bundle");

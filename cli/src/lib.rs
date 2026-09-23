@@ -50,9 +50,10 @@ pub use manifest::{
     ReplayFingerprint, ReplayTreeNode, RunPlan,
 };
 pub use query::{
-    find_moment, list_moments, next_moment, next_moment_in, previous_moment, previous_moment_in,
-    query_moment, query_temporal, temporal_query, MomentError, MomentHit, MomentSummary,
-    NeedleOccurrence, TemporalQuery, TemporalRelation,
+    collect_moment, find_moment, list_moments, next_moment, next_moment_in, previous_moment,
+    previous_moment_in, query_moment, query_temporal, temporal_query, CollectedFile,
+    CollectedMoment, MomentError, MomentHit, MomentSummary, NeedleOccurrence, TemporalQuery,
+    TemporalRelation,
 };
 pub use report::{report, report_file, report_text, ReportError, ReportFormat};
 pub use runner::{replay, replay_to, test, ReplayResult, RunError, TestResult};

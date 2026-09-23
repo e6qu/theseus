@@ -24,6 +24,7 @@ theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
 theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
 theseus compare --forked base-campaign-dir forked-campaign-dir
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
+theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
 theseus query campaign-dir --list [--service NAME] [--format json]
 theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
 theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
@@ -724,6 +725,26 @@ only exists beyond an excerpt's 512-byte cut does not match, and the full
 nested property predicates still evaluate inside the runner over complete
 transcripts. `--service NAME` scopes both where the needle is searched and
 which moments are listed.
+
+`--collect` turns one moment into a self-contained, digest-auditable
+artifact bundle without exporting the whole run:
+
+```sh
+theseus query theseus-compose-campaign --moment 12000@0f1c2b3d --collect --output verify-artifacts
+```
+
+The collected directory contains the boundary's full record
+(`boundary.json`), its neighboring boundaries when present, the
+decision-trace slice that produced it (`decision-trace.json`), and
+cumulative serial-log slices per service reconstructed from the retained
+run directory and verified against the boundary's serial digests
+(`serial/<service>.log`). `manifest.json` names the source bundle, run,
+moment, and the SHA-256 of every collected file, so a recipient can audit
+the bundle offline without the original campaign. Collection is read-only
+against the source, refuses an existing output, and degrades honestly:
+when the run directory is absent the manifest records `serial_slices:
+"unavailable"`, and when a transcript no longer matches its recorded
+digest it records `unverified` instead of collecting unverified bytes.
 
 ## Checks
 

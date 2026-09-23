@@ -372,7 +372,11 @@ serial evidence in the same timeline contains the needle, `--followed-by
 NEEDLE` every moment whose following evidence does — the same strict
 before/after semantics the property guards use, evaluated over the same
 bounded excerpts the moment log shows, with the answer recording where the
-needle printed and every moment it influenced. Tutorial 30
+needle printed and every moment it influenced. `theseus query --moment
+<address> --collect` turns one moment into a self-contained,
+digest-auditable artifact bundle — the boundary's full record, its
+neighbors, the decision-trace slice that produced it, and verified
+cumulative serial-log slices — without exporting the whole run. Tutorial 30
 is the worked example. `compare` reports differing property
 verdicts between two campaigns; it remains an observation, not a causal
 result.
