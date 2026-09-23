@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use theseus_cli::{
     boundary_at_moment, capture_evaluation, cargo_coverage, cargo_coverage_rustc_wrapper,
-    compare_campaigns, compare_forked_campaigns, evaluate, explore,
+    collect_moment, compare_campaigns, compare_forked_campaigns, evaluate, explore,
     explore_compose_expect_counterexample_with, explore_compose_forked, explore_compose_with,
     find_moment, go_coverage, list_moments, load_compose_plan, load_plan,
     minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
@@ -36,6 +36,7 @@ const USAGE: &str = "Usage:
   theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
   theseus compare --forked base-campaign-dir forked-campaign-dir
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
+  theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
   theseus query campaign-dir --list [--service NAME] [--format json]
   theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
   theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
@@ -226,6 +227,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let mut format = "text";
             let mut service_filter: Option<String> = None;
             let mut needle: Option<(TemporalRelation, String)> = None;
+            let mut collect = false;
+            let mut output: Option<String> = None;
             let mut index = 0;
             while index < rest.len() {
                 match rest[index].as_str() {
@@ -244,6 +247,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     "--list" => {
                         list = true;
                         index += 1;
+                    }
+                    "--collect" => {
+                        collect = true;
+                        index += 1;
+                    }
+                    "--output" => {
+                        output = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
+                        index += 2;
                     }
                     "--preceded-by" | "--followed-by" => {
                         if needle.is_some() {
@@ -280,7 +291,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 }
             }
             if let Some((relation, needle)) = needle {
-                if list || moment.is_some() || navigation.is_some() {
+                if list || collect || moment.is_some() || navigation.is_some() {
                     return Err(USAGE.to_owned().into());
                 }
                 let query = temporal_query(&result, relation, &needle, service_filter.as_deref())
@@ -306,6 +317,33 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         summary.moment, summary.run, summary.boundary, summary.service
                     );
                 }
+                return Ok(());
+            }
+            if collect {
+                if list || needle.is_some() || navigation.is_some() {
+                    return Err(USAGE.to_owned().into());
+                }
+                let Some(moment) = moment else {
+                    return Err(USAGE.to_owned().into());
+                };
+                let output = output.unwrap_or_else(|| format!("{bundle}-collected"));
+                let collected =
+                    collect_moment(bundle, &moment, &output).map_err(|error| error.to_string())?;
+                if format == "json" {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&collected)
+                            .map_err(|error| error.to_string())?
+                    );
+                    return Ok(());
+                }
+                println!("collected: {output}");
+                println!("source: {}", collected.source);
+                println!("run: {}", collected.run);
+                println!("boundary: {}", collected.boundary);
+                println!("moment: {}", collected.moment);
+                println!("serial_slices: {}", collected.serial_slices);
+                println!("files: {}", collected.files.len());
                 return Ok(());
             }
             if list {
