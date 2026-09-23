@@ -1363,6 +1363,10 @@ pub struct OperationPlan {
     pub shell_phase: Option<ComposeShellPhase>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell_process: Option<String>,
+    /// The argv this shell operation runs, retained so the standard fault
+    /// profile can propose custom candidates from a service's own commands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_command: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thread_schedule: Vec<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3584,6 +3588,10 @@ fn campaign_plan(
         let http = operation.http;
         let grpc_health = operation.grpc_health;
         let shell = operation.shell;
+        let shell_command = shell
+            .as_ref()
+            .map(|shell| shell.command.clone())
+            .filter(|command| !command.is_empty());
         let input_forms = usize::from(operation.input.is_some())
             + usize::from(operation.input_template.is_some())
             + usize::from(!operation.inputs.is_empty())
@@ -4055,6 +4063,7 @@ fn campaign_plan(
             test_command_path: operation.test_command_path,
             shell_phase,
             shell_process,
+            shell_command,
             thread_schedule,
             thread_schedule_search,
             thread_schedule_exploration,
@@ -4082,11 +4091,13 @@ fn campaign_plan(
     validate_campaign_operation_rules(&operations, &campaign.stages, &initial_state)?;
     validate_test_command_model(&operations, &campaign.stages)?;
     let mut campaign_faults = campaign.faults;
+    let declared_fault_count = campaign_faults.len();
     if campaign.fault_profile == Some(ComposeFaultProfile::Standard) {
         campaign_faults.extend(standard_fault_profile(&operations, services));
     }
     let mut faults = Vec::with_capacity(campaign_faults.len());
-    for candidate in campaign_faults {
+    for (fault_index, candidate) in campaign_faults.into_iter().enumerate() {
+        let generated_by_profile = fault_index >= declared_fault_count;
         let has_network_conditions = candidate.drop_ppm.is_some()
             || candidate.duplicate_ppm.is_some()
             || candidate.corrupt_ppm.is_some()
@@ -4352,6 +4363,13 @@ fn campaign_plan(
                         && fault.command.as_deref() == Some(command)
                 });
                 if duplicate {
+                    if generated_by_profile {
+                        // A generated candidate that restates a fault the
+                        // user already declared (or an earlier candidate
+                        // derived from the same command) is redundant, not
+                        // an authoring mistake.
+                        continue;
+                    }
                     return Err(ComposeError::Invalid(format!(
                         "campaign duplicates a custom fault for service {service_name:?} at {after:?}"
                     )));
@@ -5421,6 +5439,29 @@ fn campaign_plan(
 /// Build a useful failure catalog from facts already locked in the plan. The
 /// cap is deliberately applied while expanding each stable, sorted topology so
 /// a wide Compose file cannot turn one profile into an unbounded search input.
+/// Whether an operation is an ordinary work boundary the standard fault
+/// profile may target: never setup, completion, assertion, or recovery
+/// phases, and never the lifecycle-protected first, eventually, or finally
+/// commands.
+fn profile_eligible_operation(operation: &OperationPlan) -> bool {
+    !matches!(
+        operation.command,
+        Some(
+            ComposeTestCommand::First
+                | ComposeTestCommand::Eventually
+                | ComposeTestCommand::Finally
+        )
+    ) && !matches!(
+        operation.shell_phase,
+        Some(
+            ComposeShellPhase::Setup
+                | ComposeShellPhase::Completion
+                | ComposeShellPhase::Assertion
+                | ComposeShellPhase::Recovery
+        )
+    )
+}
+
 fn standard_fault_profile(
     operations: &[OperationPlan],
     services: &mut BTreeMap<String, ComposeServicePlan>,
@@ -5428,24 +5469,7 @@ fn standard_fault_profile(
     const MAX_PROFILE_CANDIDATES: usize = 512;
     let boundaries = operations
         .iter()
-        .filter(|operation| {
-            !matches!(
-                operation.command,
-                Some(
-                    ComposeTestCommand::First
-                        | ComposeTestCommand::Eventually
-                        | ComposeTestCommand::Finally
-                )
-            ) && !matches!(
-                operation.shell_phase,
-                Some(
-                    ComposeShellPhase::Setup
-                        | ComposeShellPhase::Completion
-                        | ComposeShellPhase::Assertion
-                        | ComposeShellPhase::Recovery
-                )
-            )
-        })
+        .filter(|operation| profile_eligible_operation(operation))
         .map(|operation| operation.name.clone())
         .collect::<Vec<_>>();
     let lifecycle_services = services
@@ -5467,7 +5491,7 @@ fn standard_fault_profile(
         }
     }
     let mut generated = Vec::new();
-    for after in boundaries {
+    for after in &boundaries {
         for service in &lifecycle_services {
             for kind in [
                 CampaignFaultKind::ServiceStop,
@@ -5548,6 +5572,45 @@ fn standard_fault_profile(
                     if generated.len() == MAX_PROFILE_CANDIDATES {
                         return generated;
                     }
+                }
+            }
+        }
+    }
+    // Custom candidates re-run a service's own declared commands at eligible
+    // barriers - the classic duplicate-delivery and concurrent-invocation
+    // faults - so exploration exercises user commands without hand-declaring
+    // every fault. Sources are the eligible shell argvs of image-backed
+    // services; the argv reaches execve unchanged, and like every custom
+    // fault a generated candidate records completion without restoring.
+    let mut declared_commands: BTreeMap<String, Vec<Vec<String>>> = BTreeMap::new();
+    for operation in operations {
+        if !profile_eligible_operation(operation) {
+            continue;
+        }
+        let (Some(service), Some(command)) = (
+            Some(operation.service.as_str()),
+            operation.shell_command.as_deref(),
+        ) else {
+            continue;
+        };
+        if !lifecycle_services.iter().any(|name| name == service) {
+            continue;
+        }
+        let commands = declared_commands.entry(service.to_owned()).or_default();
+        if !commands.iter().any(|candidate| candidate == command) {
+            commands.push(command.to_owned());
+        }
+    }
+    for (service, commands) in &declared_commands {
+        for command in commands {
+            for after in &boundaries {
+                let mut fault = empty_campaign_fault(CampaignFaultKind::Custom);
+                fault.service = Some(service.clone());
+                fault.after = Some(after.clone());
+                fault.command = Some(command.clone());
+                generated.push(fault);
+                if generated.len() == MAX_PROFILE_CANDIDATES {
+                    return generated;
                 }
             }
         }
@@ -8202,6 +8265,124 @@ mod tests {
         directory
     }
 
+    /// Both services image-backed with a container_service contract, so the
+    /// standard profile can propose custom candidates for either.
+    fn two_image_fixture(compose: &str) -> tempfile::TempDir {
+        let directory = image_fixture(compose, &[]);
+        for service in ["worker"] {
+            fs::write(
+                directory.path().join(service).join("runtime/theseus-image"),
+                b"adapter",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(
+                directory.path().join(service).join("runtime/theseus-image"),
+                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+            )
+            .unwrap();
+            write_docker_image(&directory.path().join(service).join("service.tar"), &[]);
+            fs::write(
+                directory.path().join(service).join("theseus.toml"),
+                "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n[container_service.ready]\nurl = 'http://127.0.0.1:8081/health'\n",
+            )
+            .unwrap();
+        }
+        directory
+    }
+
+    #[test]
+    fn standard_fault_profile_generates_custom_candidates_from_declared_commands() {
+        let directory = two_image_fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        service: api\n        shell: {command: [/work/write]}\n      - name: rewrite\n        service: api\n        shell: {command: [/work/write]}\n      - name: read\n        service: worker\n        shell: {command: [/work/read]}\n    fault_profile: standard\n",
+        );
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let campaign = plan.campaign.unwrap();
+        let customs = campaign
+            .faults
+            .iter()
+            .filter(|fault| matches!(fault.kind, CampaignFaultKind::Custom))
+            .collect::<Vec<_>>();
+        // Two distinct commands (api's write argv is deduplicated across the
+        // write and rewrite operations), each proposed at all three eligible
+        // boundaries, including the other service's.
+        assert_eq!(customs.len(), 6);
+        let mut pairs = customs
+            .iter()
+            .map(|fault| {
+                (
+                    fault.service.clone().unwrap(),
+                    fault.after.clone().unwrap(),
+                    fault.command.clone().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![
+                (
+                    "api".to_owned(),
+                    "read".to_owned(),
+                    vec!["/work/write".to_owned()]
+                ),
+                (
+                    "api".to_owned(),
+                    "rewrite".to_owned(),
+                    vec!["/work/write".to_owned()]
+                ),
+                (
+                    "api".to_owned(),
+                    "write".to_owned(),
+                    vec!["/work/write".to_owned()]
+                ),
+                (
+                    "worker".to_owned(),
+                    "read".to_owned(),
+                    vec!["/work/read".to_owned()]
+                ),
+                (
+                    "worker".to_owned(),
+                    "rewrite".to_owned(),
+                    vec!["/work/read".to_owned()]
+                ),
+                (
+                    "worker".to_owned(),
+                    "write".to_owned(),
+                    vec!["/work/read".to_owned()]
+                ),
+            ]
+        );
+        // Generated customs are optional search choices like declared ones.
+        assert!(customs.iter().all(|fault| !fault.required));
+    }
+
+    #[test]
+    fn standard_fault_profile_skips_generated_duplicates_of_declared_faults() {
+        let directory = two_image_fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\n  worker:\n    x-theseus:\n      manifest: worker/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        service: api\n        shell: {command: [/work/write]}\n      - name: read\n        service: worker\n        shell: {command: [/work/read]}\n    fault_profile: standard\n    faults:\n      - kind: custom\n        service: api\n        after: write\n        command: [/work/write]\n",
+        );
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let campaign = plan.campaign.unwrap();
+        // The declared fault restates one generated candidate exactly; the
+        // redundant generated copy is skipped, not rejected, and the
+        // declared one stays first.
+        let customs = campaign
+            .faults
+            .iter()
+            .filter(|fault| matches!(fault.kind, CampaignFaultKind::Custom))
+            .collect::<Vec<_>>();
+        assert_eq!(customs.len(), 4);
+        assert_eq!(customs[0].service.as_deref(), Some("api"));
+        assert_eq!(customs[0].after.as_deref(), Some("write"));
+        assert_eq!(
+            customs[0].command.as_deref(),
+            Some(&["/work/write".to_owned()][..])
+        );
+    }
+
     #[test]
     fn locks_service_artifacts_and_links() {
         let directory = fixture(
@@ -8276,11 +8457,24 @@ mod tests {
         );
         let campaign = plan.campaign.unwrap();
         assert_eq!(campaign.fault_profile, Some(ComposeFaultProfile::Standard));
-        assert_eq!(campaign.faults.len(), 11);
+        assert_eq!(campaign.faults.len(), 12);
         assert!(campaign.faults.iter().all(|fault| fault
             .after
             .as_deref()
             .is_some_and(|after| after.contains("start"))));
+        // The profile re-runs the service's own parallel-write command as a
+        // custom candidate at every eligible barrier.
+        let customs = campaign
+            .faults
+            .iter()
+            .filter(|fault| matches!(fault.kind, CampaignFaultKind::Custom))
+            .collect::<Vec<_>>();
+        assert_eq!(customs.len(), 1);
+        assert_eq!(customs[0].service.as_deref(), Some("api"));
+        assert_eq!(
+            customs[0].command.as_deref(),
+            Some(&["/opt/antithesis/test/v1/main/parallel_driver_write".to_owned()][..])
+        );
         assert_eq!(
             campaign
                 .faults
