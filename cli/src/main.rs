@@ -13,9 +13,9 @@ use theseus_cli::{
     minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
     minimize_exploration_path, next_moment_in, previous_moment_in, query_campaigns, replay,
     replay_compose, replay_exploration, replay_exploration_path, replay_to, report, report_file,
-    report_text, snapshot_exploration_path, test, test_compose, verify_native_evidence,
-    verify_topology_bundle, write_evaluation_lock, CampaignGuidance, ReportFormat,
-    CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE,
+    report_text, snapshot_exploration_path, temporal_query, test, test_compose,
+    verify_native_evidence, verify_topology_bundle, write_evaluation_lock, CampaignGuidance,
+    ReportFormat, TemporalRelation, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE,
 };
 
 const USAGE: &str = "Usage:
@@ -37,6 +37,8 @@ const USAGE: &str = "Usage:
   theseus compare --forked base-campaign-dir forked-campaign-dir
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
   theseus query campaign-dir --list [--service NAME] [--format json]
+  theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
+  theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
   theseus evaluate lock [theseus-evaluation.toml]
   theseus evaluate capture campaign-dir --output evaluation-dir --name name
@@ -223,6 +225,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let mut list = false;
             let mut format = "text";
             let mut service_filter: Option<String> = None;
+            let mut needle: Option<(TemporalRelation, String)> = None;
             let mut index = 0;
             while index < rest.len() {
                 match rest[index].as_str() {
@@ -242,6 +245,22 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         list = true;
                         index += 1;
                     }
+                    "--preceded-by" | "--followed-by" => {
+                        if needle.is_some() {
+                            return Err(USAGE.to_owned().into());
+                        }
+                        let relation = if rest[index] == "--preceded-by" {
+                            TemporalRelation::PrecededBy
+                        } else {
+                            TemporalRelation::FollowedBy
+                        };
+                        let value = rest.get(index + 1).ok_or(USAGE.to_owned())?.clone();
+                        if value.is_empty() {
+                            return Err(USAGE.to_owned().into());
+                        }
+                        needle = Some((relation, value));
+                        index += 2;
+                    }
                     "--service" => {
                         service_filter = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
                         index += 2;
@@ -259,6 +278,35 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         return Err(USAGE.to_owned().into());
                     }
                 }
+            }
+            if let Some((relation, needle)) = needle {
+                if list || moment.is_some() || navigation.is_some() {
+                    return Err(USAGE.to_owned().into());
+                }
+                let query = temporal_query(&result, relation, &needle, service_filter.as_deref())
+                    .map_err(|error| error.to_string())?;
+                if format == "json" {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&query).map_err(|error| error.to_string())?
+                    );
+                    return Ok(());
+                }
+                println!("relation: {}", query.relation);
+                println!("needle: {}", query.needle);
+                for occurrence in &query.occurrences {
+                    println!(
+                        "occurrence\t{}\t{}\t{}\t{}",
+                        occurrence.moment, occurrence.run, occurrence.boundary, occurrence.service
+                    );
+                }
+                for summary in &query.matches {
+                    println!(
+                        "match\t{}\t{}\t{}\t{}",
+                        summary.moment, summary.run, summary.boundary, summary.service
+                    );
+                }
+                return Ok(());
             }
             if list {
                 let summaries = list_moments(&result, service_filter.as_deref())

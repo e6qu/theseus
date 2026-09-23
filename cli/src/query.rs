@@ -247,6 +247,179 @@ pub fn previous_moment(bundle: impl AsRef<Path>, moment: &str) -> Result<MomentH
     previous_moment_in(&result, moment)
 }
 
+/// The temporal relation a query evaluates over the retained moment space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalRelation {
+    /// The needle's serial evidence occurs strictly before the moment,
+    /// mirroring the property layer's `requires_serial_*` guard semantics:
+    /// what the service had already printed when the boundary was taken.
+    PrecededBy,
+    /// The needle's serial evidence occurs strictly after the moment.
+    FollowedBy,
+}
+
+impl TemporalRelation {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PrecededBy => "preceded_by",
+            Self::FollowedBy => "followed_by",
+        }
+    }
+}
+
+/// One place the queried needle printed: the boundary whose retained serial
+/// delta contains it, and the service that printed it. The boundary's
+/// receiving service may differ from the printing service.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct NeedleOccurrence {
+    /// Index of the retained timeline (0-based).
+    pub run: usize,
+    /// `op-NNN-<operation>` boundary identity.
+    pub boundary: String,
+    /// The operation name.
+    pub operation: String,
+    /// The service whose serial delta contains the needle.
+    pub service: String,
+    /// The moment address of the boundary where the needle printed.
+    pub moment: String,
+}
+
+/// The answer to one temporal query over a retained campaign: where the
+/// needle printed, and every moment satisfying the relation. Relations are
+/// evaluated inside each run's timeline, over the same bounded serial
+/// excerpts the campaign report's moment log shows.
+#[derive(Debug, Serialize)]
+pub struct TemporalQuery {
+    pub format: &'static str,
+    pub relation: &'static str,
+    /// The needle as matched: ASCII-escaped exactly like the retained
+    /// excerpts, so the query answers over the retained bytes verbatim.
+    pub needle: String,
+    /// The service scope filter, echoed back when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    /// Every boundary whose serial delta contains the needle.
+    pub occurrences: Vec<NeedleOccurrence>,
+    /// Every moment satisfying the relation against those occurrences.
+    pub matches: Vec<MomentSummary>,
+}
+
+/// Evaluate a `preceded-by`/`followed-by` relation between one needle and
+/// every retained moment. The needle matches a boundary when it occurs in
+/// that boundary's retained serial delta (for the scoped service, or any
+/// service); a moment then matches `preceded_by` when some occurrence lies
+/// strictly before it in the same run, and `followed_by` when some
+/// occurrence lies strictly after it.
+pub fn temporal_query(
+    result: &serde_json::Value,
+    relation: TemporalRelation,
+    needle: &str,
+    service: Option<&str>,
+) -> Result<TemporalQuery, MomentError> {
+    if needle.is_empty() {
+        return Err(MomentError::NotFound(
+            "temporal query requires a non-empty needle".to_owned(),
+        ));
+    }
+    let escaped_needle = String::from_utf8(
+        needle
+            .bytes()
+            .flat_map(std::ascii::escape_default)
+            .collect::<Vec<u8>>(),
+    )
+    .expect("escaped needles are ASCII");
+    let runs = result["runs"]
+        .as_array()
+        .ok_or_else(|| MomentError::NotFound("result has no runs".to_owned()))?;
+    let mut occurrences = Vec::new();
+    let mut matches = Vec::new();
+    for (run_index, run) in runs.iter().enumerate() {
+        let timeline = run["timeline"]
+            .as_array()
+            .ok_or_else(|| MomentError::NotFound(format!("run {run_index} has no timeline")))?;
+        // The timeline indices whose serial delta contains the needle.
+        let mut occurrence_indices = Vec::new();
+        for (boundary_index, boundary) in timeline.iter().enumerate() {
+            let mut delta_matches = false;
+            if let Some(deltas) = boundary["serial_delta"].as_object() {
+                for (delta_service, delta) in deltas {
+                    if let Some(filter) = service {
+                        if delta_service != filter {
+                            continue;
+                        }
+                    }
+                    let excerpt = delta["excerpt"].as_str().unwrap_or_default();
+                    if excerpt.contains(escaped_needle.as_str()) {
+                        delta_matches = true;
+                        occurrences.push(NeedleOccurrence {
+                            run: run_index,
+                            boundary: boundary["id"].as_str().unwrap_or_default().to_owned(),
+                            operation: boundary["operation"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned(),
+                            service: delta_service.clone(),
+                            moment: boundary["moment"].as_str().unwrap_or_default().to_owned(),
+                        });
+                    }
+                }
+            }
+            if delta_matches {
+                occurrence_indices.push(boundary_index);
+            }
+        }
+        for (boundary_index, boundary) in timeline.iter().enumerate() {
+            let related = match relation {
+                TemporalRelation::PrecededBy => occurrence_indices
+                    .iter()
+                    .any(|occurrence| *occurrence < boundary_index),
+                TemporalRelation::FollowedBy => occurrence_indices
+                    .iter()
+                    .any(|occurrence| *occurrence > boundary_index),
+            };
+            if !related {
+                continue;
+            }
+            let boundary_service = boundary["service"].as_str().unwrap_or_default().to_owned();
+            if let Some(filter) = service {
+                if boundary_service != filter {
+                    continue;
+                }
+            }
+            matches.push(MomentSummary {
+                run: run_index,
+                boundary: boundary["id"].as_str().unwrap_or_default().to_owned(),
+                service: boundary_service,
+                operation: boundary["operation"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                moment: boundary["moment"].as_str().unwrap_or_default().to_owned(),
+            });
+        }
+    }
+    Ok(TemporalQuery {
+        format: "theseus-query-temporal-v1",
+        relation: relation.as_str(),
+        needle: escaped_needle,
+        service: service.map(str::to_owned),
+        occurrences,
+        matches,
+    })
+}
+
+/// Load a bundle's campaign result and evaluate the temporal query.
+pub fn query_temporal(
+    bundle: impl AsRef<Path>,
+    relation: TemporalRelation,
+    needle: &str,
+    service: Option<&str>,
+) -> Result<TemporalQuery, MomentError> {
+    let path = bundle.as_ref().join("campaign-result.json");
+    let result: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+    temporal_query(&result, relation, needle, service)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +495,118 @@ mod tests {
     fn unknown_moments_fail_with_the_address() {
         let error = find_moment(&fixture(), "1@2").unwrap_err();
         assert!(error.to_string().contains("1@2"), "{error}");
+    }
+
+    /// Retained excerpts are ASCII-escaped, so the fixture stores literal
+    /// backslash-n sequences exactly like a campaign result does.
+    fn temporal_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "runs": [
+                {"index": 0, "timeline": [
+                    {"id": "op-000-write", "operation": "write", "service": "api",
+                     "moment": "7000@input-hash",
+                     "serial_delta": {"api": {"bytes": 16, "sha256": "h0", "excerpt": "write\\ncomplete\\n", "omitted_bytes": 0}}},
+                    {"id": "op-001-read", "operation": "read", "service": "counter",
+                     "moment": "9000@read-hash",
+                     "serial_delta": {"counter": {"bytes": 11, "sha256": "h1", "excerpt": "THES:M:stale\\n", "omitted_bytes": 0}}},
+                    {"id": "op-002-verify", "operation": "verify", "service": "api",
+                     "moment": "12000@verify-hash",
+                     "serial_delta": {"api": {"bytes": 8, "sha256": "h2", "excerpt": "done\\n", "omitted_bytes": 0}}}
+                ]},
+                {"index": 1, "timeline": [
+                    {"id": "op-000-write", "operation": "write", "service": "api",
+                     "moment": "7000@other-hash",
+                     "serial_delta": {"api": {"bytes": 4, "sha256": "h3", "excerpt": "done\\n", "omitted_bytes": 0}}}
+                ]}
+            ]
+        })
+    }
+
+    #[test]
+    fn temporal_relations_split_moments_around_their_occurrence() {
+        let result = temporal_fixture();
+        let preceded =
+            temporal_query(&result, TemporalRelation::PrecededBy, "stale", None).unwrap();
+        assert_eq!(preceded.relation, "preceded_by");
+        assert_eq!(preceded.occurrences.len(), 1);
+        assert_eq!(preceded.occurrences[0].service, "counter");
+        assert_eq!(preceded.occurrences[0].boundary, "op-001-read");
+        assert_eq!(preceded.occurrences[0].moment, "9000@read-hash");
+        // Strictly before: the stale marker's own boundary and the unrelated
+        // second run's timeline satisfy nothing.
+        assert_eq!(preceded.matches.len(), 1);
+        assert_eq!(preceded.matches[0].boundary, "op-002-verify");
+        assert_eq!(preceded.matches[0].moment, "12000@verify-hash");
+
+        let followed =
+            temporal_query(&result, TemporalRelation::FollowedBy, "stale", None).unwrap();
+        assert_eq!(followed.matches.len(), 1);
+        assert_eq!(followed.matches[0].boundary, "op-000-write");
+        assert_eq!(followed.matches[0].moment, "7000@input-hash");
+
+        // The needle's own boundary satisfies neither relation.
+        for query in [preceded, followed] {
+            assert!(query
+                .matches
+                .iter()
+                .all(|summary| summary.boundary != "op-001-read"));
+        }
+    }
+
+    #[test]
+    fn temporal_queries_match_escaped_serial_bytes() {
+        let result = temporal_fixture();
+        let query = temporal_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            "write\ncomplete",
+            None,
+        )
+        .unwrap();
+        assert_eq!(query.needle, "write\\ncomplete");
+        assert_eq!(query.occurrences.len(), 1);
+        assert_eq!(query.occurrences[0].run, 0);
+        assert_eq!(query.occurrences[0].boundary, "op-000-write");
+        assert_eq!(query.matches.len(), 2);
+        assert_eq!(query.matches[0].boundary, "op-001-read");
+        assert_eq!(query.matches[1].boundary, "op-002-verify");
+    }
+
+    #[test]
+    fn temporal_service_filter_scopes_needle_and_matches() {
+        let result = temporal_fixture();
+        // Scoped to api, the needle prints at op-000-write; the only api
+        // boundary strictly after it is op-002-verify.
+        let query = temporal_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            "write\ncomplete",
+            Some("api"),
+        )
+        .unwrap();
+        assert_eq!(query.service.as_deref(), Some("api"));
+        assert_eq!(query.occurrences.len(), 1);
+        assert_eq!(query.occurrences[0].service, "api");
+        assert_eq!(query.matches.len(), 1);
+        assert_eq!(query.matches[0].boundary, "op-002-verify");
+
+        // Unfiltered, the counter boundary op-001-read also matched; scoped
+        // to counter, neither the needle search nor the matches do.
+        let query = temporal_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            "write\ncomplete",
+            Some("counter"),
+        )
+        .unwrap();
+        assert!(query.occurrences.is_empty());
+        assert!(query.matches.is_empty());
+    }
+
+    #[test]
+    fn temporal_queries_reject_empty_needles() {
+        let error = temporal_query(&temporal_fixture(), TemporalRelation::PrecededBy, "", None)
+            .unwrap_err();
+        assert!(error.to_string().contains("non-empty needle"), "{error}");
     }
 }

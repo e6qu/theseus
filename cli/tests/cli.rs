@@ -508,6 +508,78 @@ fn compare_queries_and_reports_campaign_evidence_without_kvm() {
 }
 
 #[test]
+fn query_resolves_temporal_relations_over_retained_moments() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("campaign-result.json"),
+        r#"{"runs":[{"index":0,"timeline":[
+            {"id":"op-000-write","operation":"write","service":"api","moment":"7000@input-hash","serial_delta":{"api":{"bytes":16,"sha256":"h0","excerpt":"write\ncomplete\n","omitted_bytes":0}}},
+            {"id":"op-001-read","operation":"read","service":"counter","moment":"9000@read-hash","serial_delta":{"counter":{"bytes":11,"sha256":"h1","excerpt":"THES:M:stale\n","omitted_bytes":0}}},
+            {"id":"op-002-verify","operation":"verify","service":"api","moment":"12000@verify-hash","serial_delta":{"api":{"bytes":8,"sha256":"h2","excerpt":"done\n","omitted_bytes":0}}}
+        ]}]}"#,
+    )
+    .unwrap();
+
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["query", ".", "--followed-by", "stale", "--format", "json"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let answer: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(answer["format"], "theseus-query-temporal-v1");
+    assert_eq!(answer["relation"], "followed_by");
+    assert_eq!(answer["occurrences"][0]["boundary"], "op-001-read");
+    assert_eq!(answer["occurrences"][0]["service"], "counter");
+    assert_eq!(answer["matches"][0]["boundary"], "op-000-write");
+    assert_eq!(answer["matches"][0]["moment"], "7000@input-hash");
+
+    let text = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--preceded-by",
+            "stale",
+            "--service",
+            "counter",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(text.status.success(), "{text:?}");
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("relation: preceded_by"), "{text}");
+    assert!(
+        text.contains("occurrence\t9000@read-hash\t0\top-001-read\tcounter"),
+        "{text}"
+    );
+    // The marker's own boundary is a counter boundary, but it never matches
+    // its own occurrence, and no later counter boundary exists.
+    assert!(!text.contains("\nmatch\t"), "{text}");
+
+    // Empty needles and flag combinations are usage errors.
+    for args in [
+        vec!["query", ".", "--preceded-by", ""],
+        vec![
+            "query",
+            ".",
+            "--preceded-by",
+            "x",
+            "--moment",
+            "7000@input-hash",
+        ],
+        vec!["query", ".", "--followed-by", "x", "--list"],
+    ] {
+        let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args(&args)
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(!bad.success(), "{args:?}");
+    }
+}
+
+#[test]
 fn evaluate_summarizes_a_locked_public_corpus_without_kvm() {
     let directory = tempfile::tempdir().unwrap();
     let bundle = directory.path().join("bundle");

@@ -39,7 +39,7 @@ This month closed or narrowed several named gaps:
 | Concurrency | Deep thread/process scheduling | Bounded instrumented GCC C pthread path | General Linux thread/process scheduling |
 | Structured randomness | SDKs for Go, Java, C, C++, JavaScript, Python, Rust, .NET + JSONL | Bounded shell choices; Rust helper; language-neutral protocol | SDK breadth; immediate-use guidance feedback from generated values |
 | Debugging | Time travel, multiverse map, causality analysis, streaming reports | Reports, replay, minimization, checkpoint export, violation context, alternative-futures frequencies, one-decision counterfactual forks with moment-addressed diffs | Interactive time travel; fork at an arbitrary checkpoint or choice; temporal queries beyond moment addressing |
-| Event logs | JSONL with `(vtime, input_hash)` moments; temporal operators; event sets | Ordered decision traces; serial deltas; violation excerpts | `(vtime, input_hash)` moment addressing; preceded-by/followed-by queries |
+| Event logs | JSONL with `(vtime, input_hash)` moments; temporal operators; event sets | Ordered decision traces; serial deltas; violation excerpts; moment addressing with `--preceded-by`/`--followed-by` relations over the moment space | Temporal operators beyond strict needle relations over complete transcripts; event sets |
 | Delivery | Hosted SaaS; REST API v0/v1; webhooks; Snouty CLI; CI triggers; integrations | Self-hosted CLI; markdown/JSON/JUnit reports; structured progress streams | Campaign API; notifications; parallel workers; live log/coverage view |
 
 ## Priority gaps and the fix for each
@@ -55,9 +55,12 @@ This month closed or narrowed several named gaps:
    cross-run boundary diffing (`compare --at-moment`). The open work is
    rich value predicates across moments on top of this retrieval.
 2. **Temporal queries** (`preceded by` / `followed by` over retained
-   events). The property layer already evaluates temporal relations inside
-   runs; exposing them as queries over a retained bundle reuses that
-   matcher.
+   events). Landed at the moment-address tier: `theseus query --preceded-by
+   NEEDLE` / `--followed-by NEEDLE` list every moment whose preceding or
+   following serial evidence in the same timeline contains the needle, with
+   the guard semantics of the property layer and answers that record where
+   the needle printed. The open work is richer temporal operators and the
+   full nested property predicates evaluated over complete transcripts.
 3. **Counterfactual re-execution** — fork a retained checkpoint, change one
    recorded choice or fault, re-execute, and diff the futures. Landed for
    fault decisions: `compose explore --fork-run N --replace-fault OLD=NEW`
