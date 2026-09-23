@@ -36,7 +36,7 @@ Use these labels consistently:
 | Ordinary container workloads | Partial | Image-backed services and a Compose subset work; Kubernetes and broad Compose compatibility do not. |
 | Deterministic replay | Partial | Seeds, locked inputs, schedules, faults, checkpoints, and bundles are retained, but uncontrolled kernel and application behavior can still escape the model. |
 | Feedback-guided exploration | Partial | One bounded decision-prefix policy combines coverage, properties, topology states, structured choices, runnable sets, faults, and prior outcomes; it is not yet validated at production scale. |
-| Fault injection | Partial | Explicit and topology-derived profiles cover service lifecycle, asymmetric network degradation and partitions, storage, packet, clock operations including backward jumps and rate windows, CPU throttling, directed link clogs, and user-declared custom commands inside image-backed services, including generated candidates. Custom faults do not yet participate in the generated standard profile. |
+| Fault injection | Partial | Explicit and topology-derived profiles cover service lifecycle, asymmetric network degradation and partitions, storage, packet, clock operations including backward jumps and rate windows, CPU throttling, directed link clogs, and user-declared custom commands inside image-backed services, including generated candidates: the standard profile also proposes custom candidates that re-run a service's own declared commands at eligible barriers. |
 | Assertions and guidance | Partial | Always, always-or-unreachable, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
 | Coverage guidance | Partial | GCC C and Go basic blocks plus LLVM C/C++/Rust edges cover native executables, shared libraries, a selected Cargo graph, and a selected Go command's imported main-module packages. Compose locks manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go external modules and CGO, Java, and production-scale validation remain open. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
@@ -119,7 +119,10 @@ Theseus currently has:
   and a bounded output excerpt; a failing command is a recorded outcome, not
   an execution error. Custom faults have no automatic inverse, never
   participate in terminal recovery, and stay compatible with each other and
-  with every other fault on the same service.
+  with every other fault on the same service. The `standard` profile also
+  proposes custom candidates that re-run an image service's own declared
+  shell command at every eligible barrier, skipping generated candidates
+  that restate a declared fault.
 - Temporal queries over the moment space: `theseus query --preceded-by
   NEEDLE` and `--followed-by NEEDLE` list every moment whose preceding or
   following serial evidence in the same timeline contains the needle, using
@@ -329,9 +332,9 @@ Antithesis without constructing low-level campaign schedules by hand.
   faults, and schedules while keeping lifecycle contracts intact.
 - CPU throttling, directed link clogs, and guest-clock rate windows are
   explicit campaign faults and `standard`-profile candidates now, and clock
-  jumps move backward as well as forward. User-declared `custom` faults exist
-  as declared barrier faults; teaching the generated standard profile to
-  propose custom-shaped candidates for a service's own commands remains open.
+  jumps move backward as well as forward. User-declared `custom` faults
+  exist as declared barrier faults, and the generated standard profile now
+  proposes custom candidates from a service's own declared commands.
 - Generalize quiet periods and explicit fault windows beyond the current
   lifecycle roles and automatic terminal recovery.
 
@@ -369,24 +372,28 @@ reproducible investigation.
 
 ## Immediate next work
 
-### 1. Custom candidates in the generated standard profile
+### 1. Campaign completion notifications
 
-The declared `kind: custom` fault interface landed; the standard profile
-still generates only ordinary command-boundary, service, and network
-candidates. Remaining in this slice:
+The runner and CLI retain complete campaign evidence; nothing tells the rest
+of the world a campaign finished. The missing piece is a notification hook
+that stays out of the deterministic path:
 
-- Let the generated profile propose custom-shaped candidates derived from a
-  service's own declared operations or image entrypoints, with bounded argv
-  variations, so exploration exercises user commands without hand-declaring
-  every fault.
-- Keep terminal recovery semantics unchanged: generated custom candidates
-  record completion without restoring.
-- Tests: profile expansion fixtures over image-backed topologies;
-  determinism of the generated catalog.
+- CLI: `theseus compose explore --notify COMMAND` (also on
+  `--expect-counterexample` and `--fork-run`) runs COMMAND once after the
+  campaign finishes, with `THESEUS_CAMPAIGN_DIR`, `THESEUS_CAMPAIGN_STATUS`,
+  and the failing property names in the environment, so a webhook curl, a
+  Slack post, or a CI step can react without a hosted service.
+- The hook runs after results are retained and never changes verdicts,
+  evidence, or determinism; its output streams to stderr and its failure is
+  reported but does not fail the campaign.
+- Tests: notification fixtures over completed campaign runs (hook env and
+  invocation ordering); verdicts and retained bytes stay identical with and
+  without the hook.
 
-Moment-scoped artifact collection landed and is described in the verified
-baseline; the parity analysis tracks the remaining cross-priority gaps,
-including the campaign API surface and coverage breadth.
+Moment-scoped artifact collection and the profile-generated custom
+candidates landed and are described in the verified baseline; the parity
+analysis tracks the remaining cross-priority gaps, including the campaign
+API surface and coverage breadth.
 
 ## Priority 6: product surface and workload compatibility
 

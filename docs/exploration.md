@@ -155,13 +155,21 @@ duplication, 0.1% corruption, two rounds of latency and jitter, 4096 bytes per
 round, a 1200-byte MTU, eight-frame transmit and receive queues, and a
 directed link clog that stalls frames for 64 rounds. Each image-backed
 service with virtual time also gains a bounded clock-rate candidate (32
-rounds at 4x).
+rounds at 4x). Finally, for every image service it proposes custom
+candidates that re-run the service's own declared shell command at every
+eligible boundary — the classic duplicate-delivery and
+concurrent-invocation faults — with the argv unchanged, so exploration
+exercises user commands without hand-declaring every fault. A generated
+candidate that restates a fault you declared yourself is skipped rather
+than rejected.
 
 The expansion is deterministic and capped at 512 candidates. The complete
 catalog is written to the plan; `max_faults_per_run` still bounds each
 timeline. Theseus does not generate faults after setup, completion, first,
 eventually, finally, assertion, or recovery commands. It restores stopped or
-killed services and directed network conditions before terminal checks.
+killed services and directed network conditions before terminal checks;
+generated custom candidates, like declared ones, record completion without
+restoring.
 
 Use explicit `faults` alongside the profile when a test needs a different
 target or condition. The additional operation-boundary kinds are
