@@ -126,6 +126,12 @@ Theseus currently has:
   the same strict before/after semantics as the property guards. Answers
   record where the needle printed and which moments it influenced, over the
   same bounded excerpts the campaign report's moment log shows.
+- Moment-scoped artifact collection: `theseus query --moment ADDR
+  --collect` writes a self-contained, digest-auditable bundle with the
+  boundary's full record, its neighbors, the decision-trace slice that
+  produced it, and verified cumulative serial-log slices from the retained
+  run directory. Collection is read-only against the source and degrades
+  honestly when serial evidence is absent or unverifiable.
 
 The baseline has important limits:
 
@@ -363,28 +369,24 @@ reproducible investigation.
 
 ## Immediate next work
 
-### 1. Violation-scoped artifact collection
+### 1. Custom candidates in the generated standard profile
 
-A failed property names its first violating timeline, and every boundary
-carries a moment address. The missing piece is turning a selected violation
-or event into a shareable artifact bundle without exporting the whole run:
+The declared `kind: custom` fault interface landed; the standard profile
+still generates only ordinary command-boundary, service, and network
+candidates. Remaining in this slice:
 
-- CLI: `theseus query campaign-dir --moment ADDR --collect --output DIR`
-  (or an equivalent companion) copies the evidence window around that
-  moment into a self-contained directory: the bounded serial excerpts and
-  neighboring moments, the boundary's decision-trace slice, applied
-  actions, coverage, and the serial-log slices from the retained run
-  directory when it is available.
-- Output: a versioned manifest naming the source bundle, run, moment, and
-  every copied file, so an artifact bundle is auditable without the
-  original campaign.
-- Tests: collect fixtures over retained campaign results; collection stays
-  read-only against the source bundle.
+- Let the generated profile propose custom-shaped candidates derived from a
+  service's own declared operations or image entrypoints, with bounded argv
+  variations, so exploration exercises user commands without hand-declaring
+  every fault.
+- Keep terminal recovery semantics unchanged: generated custom candidates
+  record completion without restoring.
+- Tests: profile expansion fixtures over image-backed topologies;
+  determinism of the generated catalog.
 
-Temporal queries landed and are described in the verified baseline; the
-parity analysis tracks the remaining cross-priority gaps, including
-custom-shaped candidates in the generated standard profile and the campaign
-API surface.
+Moment-scoped artifact collection landed and is described in the verified
+baseline; the parity analysis tracks the remaining cross-priority gaps,
+including the campaign API surface and coverage breadth.
 
 ## Priority 6: product surface and workload compatibility
 
