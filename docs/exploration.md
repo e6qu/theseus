@@ -184,6 +184,29 @@ directed link with a bounded stall: frames still enter the link, but each
 waits `latency_rounds` (1–4096) before delivery, so clogged frames queue up
 and arrive only after `link_unclog` (or terminal recovery) restores the link.
 
+`kind: custom` runs your own command inside an image-backed service at an
+operation barrier instead of a built-in effect:
+
+```yaml
+faults:
+  - kind: custom
+    service: api
+    after: request
+    command: [/usr/local/bin/probe, --flag]
+```
+
+The service must be image-backed with a `container_service` contract, and the
+argv reaches execve unchanged through the same pivot shell protocol as shell
+operations — it is not a shell snippet. The applied action records the exit
+status and a bounded output excerpt in the campaign result, timeline, and
+replay fingerprint; a failing command is a recorded outcome, not an
+execution error, because a custom fault deliberately provokes failures.
+There is no automatic inverse: terminal checks record completion without
+restoring, so heal what the command changed yourself. Two custom faults on
+one service are compatible with each other and with every other fault on
+that service, and two distinct commands at the same barrier keep distinct
+recorded fault names.
+
 ## Require a fault and recovery path
 
 Operation-barrier faults are optional search choices unless they set

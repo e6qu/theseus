@@ -36,7 +36,7 @@ Use these labels consistently:
 | Ordinary container workloads | Partial | Image-backed services and a Compose subset work; Kubernetes and broad Compose compatibility do not. |
 | Deterministic replay | Partial | Seeds, locked inputs, schedules, faults, checkpoints, and bundles are retained, but uncontrolled kernel and application behavior can still escape the model. |
 | Feedback-guided exploration | Partial | One bounded decision-prefix policy combines coverage, properties, topology states, structured choices, runnable sets, faults, and prior outcomes; it is not yet validated at production scale. |
-| Fault injection | Partial | Explicit and topology-derived profiles cover service lifecycle, asymmetric network degradation and partitions, storage, packet, clock operations including backward jumps and rate windows, CPU throttling, and directed link clogs, including generated candidates. A custom-fault interface remains open. |
+| Fault injection | Partial | Explicit and topology-derived profiles cover service lifecycle, asymmetric network degradation and partitions, storage, packet, clock operations including backward jumps and rate windows, CPU throttling, directed link clogs, and user-declared custom commands inside image-backed services, including generated candidates. Custom faults do not yet participate in the generated standard profile. |
 | Assertions and guidance | Partial | Always, always-or-unreachable, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
 | Coverage guidance | Partial | GCC C and Go basic blocks plus LLVM C/C++/Rust edges cover native executables, shared libraries, a selected Cargo graph, and a selected Go command's imported main-module packages. Compose locks manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go external modules and CGO, Java, and production-scale validation remain open. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
@@ -113,6 +113,13 @@ Theseus currently has:
   fault decision, and retains both futures. The fork records its provenance,
   and `theseus compare --forked` reports the first diverging operation
   boundary with both sides' moment addresses.
+- A `kind: custom` campaign fault: a user-declared argv command run inside an
+  image-backed service at an operation barrier through the same pivot shell
+  protocol as shell operations. The applied action records the exit status
+  and a bounded output excerpt; a failing command is a recorded outcome, not
+  an execution error. Custom faults have no automatic inverse, never
+  participate in terminal recovery, and stay compatible with each other and
+  with every other fault on the same service.
 
 The baseline has important limits:
 
@@ -310,8 +317,9 @@ Antithesis without constructing low-level campaign schedules by hand.
   faults, and schedules while keeping lifecycle contracts intact.
 - CPU throttling, directed link clogs, and guest-clock rate windows are
   explicit campaign faults and `standard`-profile candidates now, and clock
-  jumps move backward as well as forward. Remaining in this slice:
-  configurable custom faults in the generated profile model.
+  jumps move backward as well as forward. User-declared `custom` faults exist
+  as declared barrier faults; teaching the generated standard profile to
+  propose custom-shaped candidates for a service's own commands remains open.
 - Generalize quiet periods and explicit fault windows beyond the current
   lifecycle roles and automatic terminal recovery.
 
@@ -347,28 +355,24 @@ reproducible investigation.
 
 ## Immediate next work
 
-### 1. Custom fault interface
+### 1. Temporal queries over retained events
 
-User-declared fault actions executed inside image-backed services at
-operation barriers.
+The property layer already evaluates temporal relations inside runs, and
+every retained boundary carries a moment address. The missing piece is
+querying a retained bundle with those relations directly:
 
-- CLI: `kind: custom` campaign fault with `service`, `after`, and
-  `command` (argv via the image pivot shell protocol). No automatic
-  inverse; terminal checks record completion without restoring.
-- Plan: passes through `ComposeCampaignFault` -> `CampaignFaultPlan` ->
-  `CampaignFault` -> `CampaignAction` like every other barrier fault.
-- Runner: apply arm sends the command through the same UART protocol as
-  shell operations; records an `AppliedCampaignAction` with exit status
-  and bounded output.
-- Compat: two custom faults on one service are compatible. Custom faults
-  never participate in terminal recovery.
-- Tests: compose validation (command required, service must be
-  image-backed with container_service); runner naming and compat tests.
+- Query surface: `theseus query` extensions or `compare` companions that
+  answer "which moments precede/follow this event or property verdict" over
+  one or both retained results, reusing the property layer's matcher.
+- Output: moment-addressed hits with bounded excerpts, in the same
+  machine-readable JSON shape as the existing query commands.
+- Tests: query fixtures over retained campaign results; replay-checked
+  results stay byte-stable.
 
-Counterfactual re-execution landed and is described in the verified
-baseline; its schedule-rebuild machinery (`recorded_campaign_schedules`,
-checkpoint-prefix reuse, and the forked recorded view) is the model the
-custom fault interface should follow for plan-to-runner pass-through.
+Custom faults landed and are described in the verified baseline; the parity
+analysis tracks the remaining cross-priority gaps, including custom-shaped
+candidates in the generated standard profile and artifact collection around
+property violations.
 
 ## Priority 6: product surface and workload compatibility
 

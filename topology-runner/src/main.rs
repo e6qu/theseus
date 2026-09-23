@@ -410,6 +410,10 @@ struct CampaignFault {
     drive: Option<String>,
     #[serde(default)]
     after: Option<String>,
+    /// The argv a `custom` fault runs inside its image-backed service. It is
+    /// passed to execve unchanged, like every shell operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    command: Option<Vec<String>>,
     #[serde(default)]
     after_input: Option<CampaignOperationInputReference>,
     #[serde(default)]
@@ -484,6 +488,10 @@ enum CampaignFaultKind {
     NetworkRecover,
     PacketFault,
     PacketRecover,
+    /// A user-declared argv command run inside an image-backed service at an
+    /// operation barrier. It has no automatic inverse and never participates
+    /// in terminal recovery.
+    Custom,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -1555,6 +1563,9 @@ struct CampaignAction {
     to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     drive: Option<String>,
+    /// The argv a `custom` fault runs inside its image-backed service.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error_ppm: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -7584,7 +7595,8 @@ fn campaign_fault_applies(
         | CampaignFaultKind::NetworkFault
         | CampaignFaultKind::NetworkRecover
         | CampaignFaultKind::PacketFault
-        | CampaignFaultKind::PacketRecover => {
+        | CampaignFaultKind::PacketRecover
+        | CampaignFaultKind::Custom => {
             if fault.after.is_none() && fault.after_input.is_none() {
                 return false;
             }
@@ -7991,6 +8003,7 @@ fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
         from: fault.from.clone(),
         to: fault.to.clone(),
         drive: fault.drive.clone(),
+        command: fault.command.clone(),
         error_ppm: fault.error_ppm,
         latency_rounds: fault.latency_rounds,
         torn_write_bytes: fault.torn_write_bytes,
@@ -8033,6 +8046,7 @@ fn campaign_recovery_action(
         CampaignFaultKind::Pause
         | CampaignFaultKind::Restart
         | CampaignFaultKind::ClockJump
+        | CampaignFaultKind::Custom
         | CampaignFaultKind::CpuRelease
         | CampaignFaultKind::ClockRateRelease
         | CampaignFaultKind::Heal
@@ -8195,7 +8209,22 @@ fn campaign_fault_name(fault: &CampaignFault) -> String {
                 campaign_fault_barrier_name(fault)
             )
         }
+        CampaignFaultKind::Custom => format!(
+            "{}:custom@{}:{:08x}",
+            fault.service.as_deref().expect("validated custom service"),
+            campaign_fault_barrier_name(fault),
+            campaign_custom_command_digest(fault.command.as_deref().unwrap_or_default()),
+        ),
     }
+}
+
+/// A stable short identity for a custom fault's argv, so two distinct custom
+/// faults on one service at one barrier keep distinct recorded names while
+/// the same command always resolves to the same fault.
+fn campaign_custom_command_digest(command: &[String]) -> u32 {
+    let encoded = serde_json::to_vec(command).expect("custom command serializes");
+    let digest = Sha256::digest(&encoded);
+    u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]])
 }
 
 fn campaign_fault_names(campaign: &CampaignPlan, faults: &[usize]) -> Vec<String> {
@@ -12712,10 +12741,210 @@ fn apply_campaign_action(
                 detail,
             })
         }
+        CampaignFaultKind::Custom => {
+            apply_custom_command_action(action, driver_name, driver, services, switches, round)
+        }
         CampaignFaultKind::Pause | CampaignFaultKind::Restart | CampaignFaultKind::ClockJump => {
             Err("campaign lifecycle fault cannot be applied at an operation barrier".to_owned())
         }
     }
+}
+
+/// Run one user-declared command inside its image-backed service through the
+/// same pivot shell protocol as shell operations. The command is not a shell
+/// snippet: the argv reaches execve unchanged. A failing command is a
+/// recorded outcome, not an execution error - custom faults deliberately
+/// provoke failures, so the applied action carries the exit status and a
+/// bounded output excerpt. There is no automatic inverse; terminal checks
+/// record completion without restoring.
+#[allow(clippy::too_many_arguments)]
+fn apply_custom_command_action(
+    action: &CampaignAction,
+    driver_name: &str,
+    driver: &mut ServiceRuntime,
+    services: &mut BTreeMap<String, ServiceRuntime>,
+    switches: &BTreeMap<String, SharedSimSwitch>,
+    round: &mut u64,
+) -> Result<AppliedCampaignAction, String> {
+    let service_name = action
+        .service
+        .as_deref()
+        .ok_or_else(|| "campaign custom fault has no service".to_owned())?;
+    let command = action
+        .command
+        .as_deref()
+        .ok_or_else(|| "campaign custom fault has no command".to_owned())?;
+    let digest = campaign_custom_command_digest(command);
+    let name = format!("custom_{}_{}_{digest:08x}", action.operation, service_name);
+    let envelope = serde_json::to_string(&serde_json::json!({
+        "name": &name,
+        "command": command,
+        "expect_exit": 0,
+        "environment": {},
+    }))
+    .expect("custom command serializes");
+    let bytes = format!("THES:SHELL:operation:{envelope}\n").into_bytes();
+    let checkpoint = format!("THES:CHECKPOINT:{name}");
+    let pass = format!("THES:SHELL:operation:{name}:PASS");
+    let fail = format!("THES:SHELL:operation:{name}:FAIL");
+
+    if service_name == driver_name {
+        let serial = driver.serial_logs[0].clone();
+        let offset = fs::metadata(&serial)
+            .map_err(|error| error.to_string())?
+            .len() as usize;
+        driver.vm.push_serial_input(&bytes)?;
+        wait_for_serial_after_rounds(
+            &serial,
+            offset,
+            checkpoint.as_bytes(),
+            "custom fault checkpoint",
+            driver,
+            services,
+            switches,
+            round,
+        )?;
+        let response = fs::read(&serial).map_err(|error| error.to_string())?;
+        let detail = custom_command_outcome(&response[offset..], &pass, &fail, &name)?;
+        return Ok(AppliedCampaignAction {
+            operation: action.operation.clone(),
+            kind: "custom".to_owned(),
+            target: format!("service:{service_name}"),
+            detail,
+        });
+    }
+
+    let mut target = services
+        .remove(service_name)
+        .ok_or_else(|| format!("campaign custom fault service did not start: {service_name}"))?;
+    let serial = target.serial_logs[0].clone();
+    let offset = fs::metadata(&serial)
+        .map_err(|error| error.to_string())?
+        .len() as usize;
+    let result = (|| {
+        target.vm.push_serial_input(&bytes)?;
+        let max_rounds = campaign_barrier_round_limit(bytes.len());
+        for step in 0..=max_rounds {
+            if fs::read(&serial).is_ok_and(|serial| {
+                serial[offset..]
+                    .windows(checkpoint.len())
+                    .any(|window| window == checkpoint.as_bytes())
+            }) {
+                let response = fs::read(&serial).map_err(|error| error.to_string())?;
+                return custom_command_outcome(&response[offset..], &pass, &fail, &name);
+            }
+            if step == max_rounds || *round == u64::MAX {
+                break;
+            }
+            *round += 1;
+            target.vm.pump();
+            target.vm.advance_simulated_networks()?;
+            driver.vm.pump();
+            driver.vm.advance_simulated_networks()?;
+            for service in services.values_mut() {
+                service.vm.pump();
+                service.vm.advance_simulated_networks()?;
+            }
+            for switch in switches.values() {
+                switch
+                    .lock()
+                    .map_err(|_| "simulated switch lock poisoned".to_owned())?
+                    .advance_round();
+            }
+        }
+        Err(format!(
+            "service {service_name:?} did not report the custom command within {max_rounds} topology rounds"
+        ))
+    })();
+    services.insert(service_name.to_owned(), target);
+    let detail = result?;
+    Ok(AppliedCampaignAction {
+        operation: action.operation.clone(),
+        kind: "custom".to_owned(),
+        target: format!("service:{service_name}"),
+        detail,
+    })
+}
+
+const CAMPAIGN_CUSTOM_OUTPUT_EXCERPT: usize = 256;
+const CAMPAIGN_CUSTOM_REASON_EXCERPT: usize = 256;
+
+/// Read one custom command's outcome out of the bounded serial window after
+/// its checkpoint: PASS with its exit status, or FAIL with the pivot's
+/// reason, plus a bounded, JSON-escaped output excerpt.
+fn custom_command_outcome(
+    window: &[u8],
+    pass: &str,
+    fail: &str,
+    name: &str,
+) -> Result<String, String> {
+    let output = custom_command_output_excerpt(window, name);
+    if serial_window_contains(window, pass.as_bytes()) {
+        return Ok(format!(
+            "custom command passed with exit status 0 at the operation barrier{output}"
+        ));
+    }
+    if let Some(at) = serial_window_find(window, fail.as_bytes()) {
+        let rest = &window[at + fail.len()..];
+        let end = rest
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .unwrap_or(rest.len());
+        let reason = String::from_utf8_lossy(&rest[..end]);
+        let mut reason = reason.trim().to_owned();
+        if reason.chars().count() > CAMPAIGN_CUSTOM_REASON_EXCERPT {
+            reason = reason.chars().take(CAMPAIGN_CUSTOM_REASON_EXCERPT).collect();
+        }
+        return Ok(format!(
+            "custom command failed at the operation barrier: {reason}{output}"
+        ));
+    }
+    Err("custom command left no PASS or FAIL marker".to_owned())
+}
+
+/// The pivot reports every campaign shell operation as one JSON evidence
+/// line before its checkpoint. Find this command's line and keep a bounded,
+/// escaped excerpt of its output so the applied action documents what the
+/// command printed without inlining unbounded guest bytes.
+fn custom_command_output_excerpt(window: &[u8], name: &str) -> String {
+    let marker = b"{\"event\":\"shell_operation\"";
+    let mut search = window;
+    while let Some(at) = serial_window_find(search, marker) {
+        let rest = &search[at..];
+        let end = rest
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .unwrap_or(rest.len());
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&rest[..end]) {
+            if value.get("name").and_then(serde_json::Value::as_str) == Some(name) {
+                let text = value
+                    .get("output_text")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        let output = value.get("output")?;
+                        (!output.is_null()).then(|| output.to_string())
+                    })
+                    .unwrap_or_default();
+                let excerpt: String = text.chars().take(CAMPAIGN_CUSTOM_OUTPUT_EXCERPT).collect();
+                let escaped = serde_json::to_string(&excerpt).unwrap_or_default();
+                return format!("; output: {escaped}");
+            }
+        }
+        search = &rest[marker.len()..];
+    }
+    String::new()
+}
+
+fn serial_window_contains(window: &[u8], needle: &[u8]) -> bool {
+    serial_window_find(window, needle).is_some()
+}
+
+fn serial_window_find(window: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || window.len() < needle.len() {
+        return None;
+    }
+    window.windows(needle.len()).position(|candidate| candidate == needle)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -15991,6 +16220,7 @@ mod tests {
                     from: None,
                     to: None,
                     drive: None,
+                    command: None,
                     error_ppm: None,
                     latency_rounds: None,
                     torn_write_bytes: None,
@@ -17832,6 +18062,7 @@ mod tests {
             to: None,
             drive: None,
             after: Some("write".to_owned()),
+            command: None,
             after_input: None,
             at_round: None,
             duration_rounds: None,
@@ -18082,6 +18313,102 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("outside the recorded campaign"), "{error}");
+    }
+
+    fn custom_fault(command: &[&str]) -> CampaignFault {
+        CampaignFault {
+            kind: CampaignFaultKind::Custom,
+            required: false,
+            service: Some("api".to_owned()),
+            network: None,
+            from: None,
+            to: None,
+            drive: None,
+            after: Some("write".to_owned()),
+            command: Some(command.iter().map(|entry| (*entry).to_owned()).collect()),
+            after_input: None,
+            at_round: None,
+            duration_rounds: None,
+            nanoseconds: None,
+            error_ppm: None,
+            latency_rounds: None,
+            torn_write_bytes: None,
+            corrupt_read_xor: None,
+            ethertype: None,
+            ip_protocol: None,
+            source_port: None,
+            destination_port: None,
+            drop_ppm: None,
+            duplicate_ppm: None,
+            corrupt_ppm: None,
+            jitter_rounds: None,
+            tx_bytes_per_round: None,
+            mtu_bytes: None,
+            tx_queue_frames: None,
+            rx_queue_frames: None,
+            every_n_rounds: None,
+            rate: None,
+        }
+    }
+
+    #[test]
+    fn custom_fault_names_separate_commands_and_repeat_deterministically() {
+        let probe = custom_fault(&["/usr/local/bin/probe", "--flag"]);
+        let other = custom_fault(&["/usr/local/bin/other"]);
+        let name = campaign_fault_name(&probe);
+        assert_eq!(
+            name,
+            format!(
+                "api:custom@write:{:08x}",
+                campaign_custom_command_digest(probe.command.as_deref().unwrap())
+            )
+        );
+        assert_ne!(name, campaign_fault_name(&other));
+        assert_eq!(name, campaign_fault_name(&custom_fault(&["/usr/local/bin/probe", "--flag"])));
+    }
+
+    #[test]
+    fn custom_faults_on_one_service_stay_compatible() {
+        let probe = custom_fault(&["/usr/local/bin/probe"]);
+        let mut other = custom_fault(&["/usr/local/bin/other"]);
+        assert!(campaign_faults_compatible(&probe, &other));
+
+        // The same command at a different barrier is also compatible.
+        other.after = Some("read".to_owned());
+        assert!(campaign_faults_compatible(&probe, &other));
+    }
+
+    #[test]
+    fn custom_faults_never_generate_a_terminal_recovery_action() {
+        let fault = custom_fault(&["/usr/local/bin/probe"]);
+        assert!(
+            campaign_recovery_action(&fault, "finally")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn custom_faults_apply_only_after_their_reached_barrier() {
+        let campaign: CampaignPlan = serde_json::from_value(serde_json::json!({
+            "driver": "api",
+            "operations": [
+                {"name": "write", "inputs": [{"name": "default", "input_hex": ""}]},
+                {"name": "read", "inputs": [{"name": "default", "input_hex": "00"}]}
+            ],
+            "faults": [{
+                "kind": "custom",
+                "service": "api",
+                "after": "write",
+                "command": ["/usr/local/bin/probe"]
+            }],
+            "max_runs": 1
+        }))
+        .unwrap();
+        let fault = &campaign.faults[0];
+
+        assert!(!campaign_fault_applies(fault, &[], &campaign));
+        assert!(campaign_fault_applies(fault, &[choice(0)], &campaign));
     }
 
     #[test]
