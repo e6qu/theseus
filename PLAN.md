@@ -41,7 +41,7 @@ Use these labels consistently:
 | Coverage guidance | Partial | GCC C and Go basic blocks plus LLVM C/C++/Rust edges cover native executables, shared libraries, a selected Cargo graph, and a selected Go command's imported main-module packages. Compose locks manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go external modules and CGO, Java, and production-scale validation remain open. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
 | Test composition | Partial | Explicit operations and discovered Antithesis-compatible image templates use all seven lifecycle roles. Each timeline selects one template, the explorer varies bounded command concurrency, eventual checks kill live commands, and final checks join them. Production-scale adaptive command scheduling remains open. |
-| Failure investigation | Early | Replay, minimization, checkpoints, reports, history comparison, and one-decision counterfactual forks with retained, diffable futures exist; interactive time travel, general interventions, temporal queries, and causal evidence do not. |
+| Failure investigation | Early | Replay, minimization, checkpoints, reports, history comparison, one-decision counterfactual forks with retained diffable futures, and moment-scoped temporal queries exist; interactive time travel, general interventions, and causal evidence do not. |
 | Product operation | Early | Theseus is primarily a local/self-hosted CLI; it lacks a comparable API, CI workflow, live campaign view, scalable parallel service, notification surface, and web debugger. |
 
 ## Verified implementation baseline
@@ -120,6 +120,12 @@ Theseus currently has:
   an execution error. Custom faults have no automatic inverse, never
   participate in terminal recovery, and stay compatible with each other and
   with every other fault on the same service.
+- Temporal queries over the moment space: `theseus query --preceded-by
+  NEEDLE` and `--followed-by NEEDLE` list every moment whose preceding or
+  following serial evidence in the same timeline contains the needle, using
+  the same strict before/after semantics as the property guards. Answers
+  record where the needle printed and which moments it influenced, over the
+  same bounded excerpts the campaign report's moment log shows.
 
 The baseline has important limits:
 
@@ -339,7 +345,9 @@ Antithesis reports and multiverse debugging.
 - Capture stdout, stderr, structured events, faults, decisions, coverage,
   properties, and user artifacts on one ordered timeline.
 - Add textual, structured, and temporal queries such as preceded-by and
-  followed-by over retained event data.
+  followed-by over retained event data. Moment-space `--preceded-by` and
+  `--followed-by` relations landed in `theseus query`; richer temporal
+  operators over complete transcripts remain open.
 - Navigate to any retained checkpoint, change one controlled choice or fault,
   re-execute, and compare alternative futures. Fault-decision forks exist now
   (`compose explore --fork-run` with `compare --forked`); navigating to an
@@ -355,24 +363,28 @@ reproducible investigation.
 
 ## Immediate next work
 
-### 1. Temporal queries over retained events
+### 1. Violation-scoped artifact collection
 
-The property layer already evaluates temporal relations inside runs, and
-every retained boundary carries a moment address. The missing piece is
-querying a retained bundle with those relations directly:
+A failed property names its first violating timeline, and every boundary
+carries a moment address. The missing piece is turning a selected violation
+or event into a shareable artifact bundle without exporting the whole run:
 
-- Query surface: `theseus query` extensions or `compare` companions that
-  answer "which moments precede/follow this event or property verdict" over
-  one or both retained results, reusing the property layer's matcher.
-- Output: moment-addressed hits with bounded excerpts, in the same
-  machine-readable JSON shape as the existing query commands.
-- Tests: query fixtures over retained campaign results; replay-checked
-  results stay byte-stable.
+- CLI: `theseus query campaign-dir --moment ADDR --collect --output DIR`
+  (or an equivalent companion) copies the evidence window around that
+  moment into a self-contained directory: the bounded serial excerpts and
+  neighboring moments, the boundary's decision-trace slice, applied
+  actions, coverage, and the serial-log slices from the retained run
+  directory when it is available.
+- Output: a versioned manifest naming the source bundle, run, moment, and
+  every copied file, so an artifact bundle is auditable without the
+  original campaign.
+- Tests: collect fixtures over retained campaign results; collection stays
+  read-only against the source bundle.
 
-Custom faults landed and are described in the verified baseline; the parity
-analysis tracks the remaining cross-priority gaps, including custom-shaped
-candidates in the generated standard profile and artifact collection around
-property violations.
+Temporal queries landed and are described in the verified baseline; the
+parity analysis tracks the remaining cross-priority gaps, including
+custom-shaped candidates in the generated standard profile and the campaign
+API surface.
 
 ## Priority 6: product surface and workload compatibility
 

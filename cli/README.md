@@ -25,6 +25,8 @@ theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-ca
 theseus compare --forked base-campaign-dir forked-campaign-dir
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
 theseus query campaign-dir --list [--service NAME] [--format json]
+theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
+theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
 theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
 theseus evaluate lock [theseus-evaluation.toml]
 theseus evaluate capture campaign-dir --output evaluation-dir --name name
@@ -699,6 +701,29 @@ boundary, and service, and `--service NAME` narrows the index to one
 service. `--format json` emits machine-readable output for both modes —
 for issue bots and CI triage piping the moment index or a resolved hit
 straight into other tooling.
+
+Temporal relations query the moment space directly: `--preceded-by NEEDLE`
+lists every moment whose preceding serial evidence in the same timeline
+contains NEEDLE, and `--followed-by NEEDLE` lists every moment whose
+following evidence does — the same strict before/after semantics the
+property layer's `requires_serial_*` guards use, so the needle's own
+boundary satisfies neither relation:
+
+```sh
+theseus query theseus-compose-campaign --preceded-by 'THES:M:stale' --format json
+theseus query theseus-compose-campaign --followed-by 'lost update' --service api
+```
+
+The answer records every occurrence — the boundary and printing service
+whose retained serial delta contains the needle — and every moment
+satisfying the relation, so an investigator can walk from an event to the
+boundaries it influenced. Relations are evaluated inside each run's
+timeline over the same bounded serial excerpts the moment log shows, with
+the needle ASCII-escaped exactly like the retained bytes; a needle that
+only exists beyond an excerpt's 512-byte cut does not match, and the full
+nested property predicates still evaluate inside the runner over complete
+transcripts. `--service NAME` scopes both where the needle is searched and
+which moments are listed.
 
 ## Checks
 

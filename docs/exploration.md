@@ -365,7 +365,14 @@ diverging boundary, so the same address retrieves either run's log point;
 at any shared moment for point-scoped diffing, and `compare --format github`
 emits `::error` annotations with both sides' moment addresses for CI step
 summaries. `--expect-counterexample` succeeds only when the named property is
-retained as failed, and its minimization preserves that outcome. Tutorial 30
+retained as failed, and its minimization preserves that outcome. `theseus
+query` also evaluates temporal relations over the
+moment space: `--preceded-by NEEDLE` lists every moment whose preceding
+serial evidence in the same timeline contains the needle, `--followed-by
+NEEDLE` every moment whose following evidence does — the same strict
+before/after semantics the property guards use, evaluated over the same
+bounded excerpts the moment log shows, with the answer recording where the
+needle printed and every moment it influenced. Tutorial 30
 is the worked example. `compare` reports differing property
 verdicts between two campaigns; it remains an observation, not a causal
 result.
