@@ -40,11 +40,11 @@ theseus coverage go --process NAME --module NAME --package PACKAGE --symbols DIR
 theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
-theseus compose explore [--max-runs N] [--guidance MODE] [--output campaign-dir] [compose.yaml]
-theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--output campaign-dir] [compose.yaml]
+theseus compose explore [--max-runs N] [--guidance MODE] [--notify COMMAND] [--output campaign-dir] [compose.yaml]
+theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--notify COMMAND] [--output campaign-dir] [compose.yaml]
 theseus compose explore --minimize campaign-dir [--output minimized-dir]
 theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
-theseus compose explore --fork-run N --replace-fault OLD=NEW campaign-dir [--output forked-dir]
+theseus compose explore --fork-run N --replace-fault OLD=NEW campaign-dir [--output forked-dir] [--notify COMMAND]
 theseus compose replay replay-dir [--output replay-dir]
 theseus compose verify checkpoint-bundle-dir
 ```
@@ -674,6 +674,23 @@ override the declared budget and guidance for one exploration without editing
 the Compose file: comparing the same file across guidance modes at one fixed
 budget is the reproducible search comparison the roadmap requires, and every
 retained campaign records which mode and budget produced it.
+
+Pass `--notify COMMAND` to run a completion hook once after the campaign
+finishes, whatever its verdict:
+
+```sh
+theseus compose explore --notify \
+  'curl -X POST -d "status $THESEUS_CAMPAIGN_STATUS: $THESEUS_FAILED_PROPERTIES" https://hooks.example/theseus' \
+  --output campaign compose.yaml
+```
+
+The hook is a `sh` command string; `THESEUS_CAMPAIGN_DIR`,
+`THESEUS_CAMPAIGN_STATUS` (`passed`, `failed`, or `unknown` when no retained
+result exists), and the comma-separated `THESEUS_FAILED_PROPERTIES` are in
+its environment. It runs after results are retained, so it never changes
+verdicts, evidence, or determinism; its output streams to stderr, and a
+failing hook is reported without failing the campaign. `--notify` also
+works with `--expect-counterexample` and `--fork-run`.
 
 `--fork-run` and `--replace-fault` operate on a retained campaign directory
 instead of a Compose file; see

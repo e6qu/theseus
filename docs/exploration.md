@@ -254,6 +254,11 @@ theseus compose explore --minimize campaign \
 These commands succeed only when the runner finishes and retains the named
 failed property or its completed minimization. A runner crash, a different
 failed property, or an unexpectedly passing campaign still returns nonzero.
+`--notify COMMAND` runs a `sh` completion hook after the results are
+retained — whatever the verdict — with `THESEUS_CAMPAIGN_DIR`,
+`THESEUS_CAMPAIGN_STATUS`, and `THESEUS_FAILED_PROPERTIES` in its
+environment, so a webhook or CI step can react without a hosted service;
+the hook never changes verdicts or retained evidence.
 
 ## Properties
 

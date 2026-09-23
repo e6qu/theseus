@@ -135,6 +135,13 @@ Theseus currently has:
   produced it, and verified cumulative serial-log slices from the retained
   run directory. Collection is read-only against the source and degrades
   honestly when serial evidence is absent or unverifiable.
+- Campaign completion notifications: `compose explore --notify COMMAND`
+  (also on `--expect-counterexample` and `--fork-run`) runs a `sh` hook once
+  after the results are retained, whatever the verdict, with
+  `THESEUS_CAMPAIGN_DIR`, `THESEUS_CAMPAIGN_STATUS`, and the comma-separated
+  `THESEUS_FAILED_PROPERTIES` in its environment. The hook never changes
+  verdicts or evidence; its failure is reported without failing the
+  campaign.
 
 The baseline has important limits:
 
@@ -372,28 +379,24 @@ reproducible investigation.
 
 ## Immediate next work
 
-### 1. Campaign completion notifications
+### 1. A versioned campaign status surface
 
-The runner and CLI retain complete campaign evidence; nothing tells the rest
-of the world a campaign finished. The missing piece is a notification hook
-that stays out of the deterministic path:
+Machine-readable retrieval exists per surface (`report --format json`,
+`query`, `compare`, `evaluate`), but nothing answers "what did this campaign
+conclude" with one stable entry point. The missing piece:
 
-- CLI: `theseus compose explore --notify COMMAND` (also on
-  `--expect-counterexample` and `--fork-run`) runs COMMAND once after the
-  campaign finishes, with `THESEUS_CAMPAIGN_DIR`, `THESEUS_CAMPAIGN_STATUS`,
-  and the failing property names in the environment, so a webhook curl, a
-  Slack post, or a CI step can react without a hosted service.
-- The hook runs after results are retained and never changes verdicts,
-  evidence, or determinism; its output streams to stderr and its failure is
-  reported but does not fail the campaign.
-- Tests: notification fixtures over completed campaign runs (hook env and
-  invocation ordering); verdicts and retained bytes stay identical with and
-  without the hook.
+- CLI: a status command (or an equivalent) emitting the versioned summary
+  of a retained campaign: format, status, failed properties with their
+  first violating timeline and moment addresses, run count, guidance,
+  budget, and the retained artifact inventory.
+- Notifications and CI gating compose on that JSON instead of parsing prose
+  or result internals; hooks can embed it directly.
+- Tests: status fixtures over retained campaign results, including old
+  bundles and counterexample exports; the shape stays stable across them.
 
-Moment-scoped artifact collection and the profile-generated custom
-candidates landed and are described in the verified baseline; the parity
-analysis tracks the remaining cross-priority gaps, including the campaign
-API surface and coverage breadth.
+Campaign completion notifications landed and are described in the verified
+baseline; the parity analysis tracks the remaining cross-priority gaps,
+including the full campaign API surface and coverage breadth.
 
 ## Priority 6: product surface and workload compatibility
 
@@ -403,11 +406,13 @@ commands.
 
 - Add a stable campaign API and CI integration alongside the CLI.
 - Campaign exploration streams one structured progress line per completed
-  timeline on stderr. Remaining live surface: logs, coverage, resource use,
-  and retained executions while running.
+  timeline on stderr, and `--notify COMMAND` runs a completion hook after
+  retention. Remaining live surface: logs, coverage, resource use, and
+  retained executions while running.
 - Run many deterministic workers in parallel with explicit resource budgets
   and reproducible work allocation.
-- Add notifications and machine-readable result retrieval.
+- Machine-readable result retrieval exists per surface (report, query,
+  compare, evaluate); notifications compose on those evidence formats.
 - Accept standard Kubernetes manifests and Helm inputs through a documented
   supported environment, in addition to expanding Compose compatibility.
 - Add a web investigation interface only on top of the same portable evidence
