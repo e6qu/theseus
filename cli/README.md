@@ -641,6 +641,30 @@ stalls frames on the directed link until `link_unclog`. `clock_rate` with
 virtual clock rate until `clock_rate_release`; it requires `virtual_time`.
 Terminal checks release all three automatically.
 
+`kind: custom` runs one user-declared command inside an image-backed service
+at an operation barrier:
+
+```yaml
+faults:
+  - kind: custom
+    service: api
+    after: request
+    command: [/usr/local/bin/probe, --flag]
+    required: true
+```
+
+The command must be an image-backed service with a `container_service`
+contract, and the argv reaches execve unchanged through the same pivot shell
+protocol as shell operations — it is not a shell snippet. The applied action
+records the exit status and a bounded output excerpt in the campaign result,
+timeline, and replay fingerprint; a failing command is a recorded outcome,
+not an execution error, because a custom fault deliberately provokes
+failures. There is no automatic inverse: terminal checks record completion
+without restoring, so heal what the command changed yourself. Two custom
+faults on one service are compatible with each other and with every other
+fault on that service, and two distinct commands at the same barrier keep
+distinct recorded fault names.
+
 Pass `--max-runs N` and `--guidance
 coverage|adaptive|posterior|property|unified` to `compose explore` to
 override the declared budget and guidance for one exploration without editing
