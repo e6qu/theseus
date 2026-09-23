@@ -82,7 +82,11 @@ This month closed or narrowed several named gaps:
    re-run each image service's own declared commands at eligible barriers.
 6. **CI surface** — a versioned campaign API over the existing evidence
    formats, webhook-style completion notifications, and a GitHub Actions
-   trigger recipe.
+   trigger recipe. Webhook-style notifications landed: `compose explore
+   --notify COMMAND` runs a completion hook after retention with the
+   campaign directory, status, and failed properties in its environment,
+   and the gating recipe is documented. The open work is the versioned
+   status/campaign API entry point.
 7. **Coverage breadth** — Java, JavaScript, .NET, Go external modules/CGO,
    Rust dynamic graphs, chosen by real workload demand.
 8. **Kubernetes input and parallel workers** — after the execution-side

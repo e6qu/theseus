@@ -52,11 +52,11 @@ const USAGE: &str = "Usage:
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
-  theseus compose explore [--max-runs N] [--guidance MODE] [--output campaign-dir] [compose.yaml]
-  theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--output campaign-dir] [compose.yaml]
+  theseus compose explore [--max-runs N] [--guidance MODE] [--notify COMMAND] [--output campaign-dir] [compose.yaml]
+  theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--notify COMMAND] [--output campaign-dir] [compose.yaml]
   theseus compose explore --minimize campaign-dir [--output minimized-dir]
   theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
-  theseus compose explore --fork-run N --replace-fault OLD=NEW campaign-dir [--output forked-dir]
+  theseus compose explore --fork-run N --replace-fault OLD=NEW campaign-dir [--output forked-dir] [--notify COMMAND]
   theseus compose replay replay-dir [--output replay-dir]
   theseus compose verify checkpoint-bundle-dir
 
@@ -692,30 +692,54 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("minimized campaign counterexample: {}", result.display());
             Ok(())
         }
-        [command, subcommand, fork, run, replace, pair, bundle, output_flag, output]
-            if command == "compose"
-                && subcommand == "explore"
-                && fork == "--fork-run"
-                && replace == "--replace-fault"
-                && output_flag == "--output" =>
+        [command, subcommand, fork, rest @ ..]
+            if command == "compose" && subcommand == "explore" && fork == "--fork-run" =>
         {
-            let run = run.parse::<usize>().map_err(|_| USAGE.to_owned())?;
-            let (fault, replacement) = parse_replace_fault(pair)?;
-            let result = explore_compose_forked(bundle, run, fault, replacement, output)
-                .map_err(|error| error.to_string())?;
-            println!("counterfactual fork retained: {}", result.display());
-            Ok(())
-        }
-        [command, subcommand, fork, run, replace, pair, bundle]
-            if command == "compose"
-                && subcommand == "explore"
-                && fork == "--fork-run"
-                && replace == "--replace-fault" =>
-        {
-            let run = run.parse::<usize>().map_err(|_| USAGE.to_owned())?;
-            let (fault, replacement) = parse_replace_fault(pair)?;
+            let mut run: Option<usize> = None;
+            let mut replacement: Option<String> = None;
+            let mut output: Option<String> = None;
+            let mut notify: Option<String> = None;
+            let mut bundles: Vec<String> = Vec::new();
+            let mut index = 0;
+            while index < rest.len() {
+                match rest[index].as_str() {
+                    "--fork-run" => {
+                        let value = rest.get(index + 1).ok_or(USAGE.to_owned())?;
+                        run = Some(value.parse::<usize>().map_err(|_| USAGE.to_owned())?);
+                        index += 2;
+                    }
+                    "--replace-fault" => {
+                        replacement = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
+                        index += 2;
+                    }
+                    "--output" => {
+                        output = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
+                        index += 2;
+                    }
+                    "--notify" => {
+                        let value = rest.get(index + 1).ok_or(USAGE.to_owned())?;
+                        if value.is_empty() {
+                            return Err(USAGE.to_owned());
+                        }
+                        notify = Some(value.clone());
+                        index += 2;
+                    }
+                    other => {
+                        bundles.push(other.to_owned());
+                        index += 1;
+                    }
+                }
+            }
+            if bundles.len() != 1 {
+                return Err(USAGE.to_owned());
+            }
+            let bundle = &bundles[0];
+            let run = run.ok_or(USAGE.to_owned())?;
+            let (fault, replacement) =
+                parse_replace_fault(replacement.as_deref().ok_or(USAGE.to_owned())?)?;
+            let output = output.unwrap_or_else(|| format!("{bundle}-forked"));
             let result =
-                explore_compose_forked(bundle, run, fault, replacement, format!("{bundle}-forked"))
+                explore_compose_forked(bundle, run, fault, replacement, &output, notify.as_deref())
                     .map_err(|error| error.to_string())?;
             println!("counterfactual fork retained: {}", result.display());
             Ok(())
@@ -726,9 +750,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 && expect == "--expect-counterexample"
                 && output_flag == "--output" =>
         {
-            let (compose, (max_runs, guidance)) = compose_explore_overrides(rest)?;
+            let (compose, overrides) = compose_explore_overrides(rest)?;
             let result = explore_compose_expect_counterexample_with(
-                &compose, output, property, max_runs, guidance,
+                &compose,
+                output,
+                property,
+                overrides.max_runs,
+                overrides.guidance,
+                overrides.notify.as_deref(),
             )
             .map_err(|error| error.to_string())?;
             println!("counterexample retained: {}", result.display());
@@ -739,13 +768,18 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 && subcommand == "explore"
                 && expect == "--expect-counterexample" =>
         {
-            let (compose, (max_runs, guidance)) = compose_explore_overrides(rest)?;
+            let (compose, overrides) = compose_explore_overrides(rest)?;
             let output = compose
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("theseus-compose-campaign");
             let result = explore_compose_expect_counterexample_with(
-                &compose, output, property, max_runs, guidance,
+                &compose,
+                output,
+                property,
+                overrides.max_runs,
+                overrides.guidance,
+                overrides.notify.as_deref(),
             )
             .map_err(|error| error.to_string())?;
             println!("counterexample retained: {}", result.display());
@@ -755,19 +789,31 @@ fn run(args: Vec<String>) -> Result<(), String> {
             if command == "compose" && subcommand == "explore" && flag == "--output" =>
         {
             let (compose, overrides) = compose_explore_overrides(rest)?;
-            let result = explore_compose_with(&compose, output, overrides.0, overrides.1)
-                .map_err(|error| error.to_string())?;
+            let result = explore_compose_with(
+                &compose,
+                output,
+                overrides.max_runs,
+                overrides.guidance,
+                overrides.notify.as_deref(),
+            )
+            .map_err(|error| error.to_string())?;
             println!("campaign passed: {}", result.display());
             Ok(())
         }
         [command, subcommand, rest @ ..] if command == "compose" && subcommand == "explore" => {
-            let (compose, (max_runs, guidance)) = compose_explore_overrides(rest)?;
+            let (compose, overrides) = compose_explore_overrides(rest)?;
             let output = compose
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("theseus-compose-campaign");
-            let result = explore_compose_with(&compose, output, max_runs, guidance)
-                .map_err(|error| error.to_string())?;
+            let result = explore_compose_with(
+                &compose,
+                output,
+                overrides.max_runs,
+                overrides.guidance,
+                overrides.notify.as_deref(),
+            )
+            .map_err(|error| error.to_string())?;
             println!("campaign passed: {}", result.display());
             Ok(())
         }
@@ -788,28 +834,42 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
 }
 
-/// Parse `--max-runs N` and `--guidance MODE` exploration overrides from the
-/// remaining arguments, leaving the manifest path in place.
-fn compose_explore_overrides(
-    args: &[String],
-) -> Result<(PathBuf, (Option<u16>, Option<CampaignGuidance>)), String> {
-    let mut max_runs = None;
-    let mut guidance = None;
+/// The exploration overrides `compose explore` accepts beside the manifest.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ExploreOverrides {
+    max_runs: Option<u16>,
+    guidance: Option<CampaignGuidance>,
+    notify: Option<String>,
+}
+
+/// Parse `--max-runs N`, `--guidance MODE`, and `--notify COMMAND`
+/// exploration overrides from the remaining arguments, leaving the manifest
+/// path in place.
+fn compose_explore_overrides(args: &[String]) -> Result<(PathBuf, ExploreOverrides), String> {
+    let mut overrides = ExploreOverrides::default();
     let mut rest: Vec<String> = Vec::new();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--max-runs" => {
                 let value = args.get(index + 1).ok_or(USAGE.to_owned())?;
-                max_runs = Some(value.parse::<u16>().map_err(|_| USAGE.to_owned())?);
-                if max_runs == Some(0) {
+                overrides.max_runs = Some(value.parse::<u16>().map_err(|_| USAGE.to_owned())?);
+                if overrides.max_runs == Some(0) {
                     return Err(USAGE.to_owned());
                 }
                 index += 2;
             }
             "--guidance" => {
                 let value = args.get(index + 1).ok_or(USAGE.to_owned())?;
-                guidance = Some(parse_guidance(value)?);
+                overrides.guidance = Some(parse_guidance(value)?);
+                index += 2;
+            }
+            "--notify" => {
+                let value = args.get(index + 1).ok_or(USAGE.to_owned())?;
+                if value.is_empty() {
+                    return Err(USAGE.to_owned());
+                }
+                overrides.notify = Some(value.clone());
                 index += 2;
             }
             other => {
@@ -818,7 +878,7 @@ fn compose_explore_overrides(
             }
         }
     }
-    Ok((compose_path(&rest)?, (max_runs, guidance)))
+    Ok((compose_path(&rest)?, overrides))
 }
 
 fn parse_guidance(value: &str) -> Result<CampaignGuidance, String> {
@@ -881,9 +941,7 @@ fn main() -> ExitCode {
 mod usage_tests {
     use super::*;
 
-    fn overrides(
-        args: &[&str],
-    ) -> Result<(PathBuf, (Option<u16>, Option<CampaignGuidance>)), String> {
+    fn overrides(args: &[&str]) -> Result<(PathBuf, ExploreOverrides), String> {
         compose_explore_overrides(
             &args
                 .iter()
@@ -894,13 +952,13 @@ mod usage_tests {
 
     #[test]
     fn explore_overrides_parse_budget_guidance_and_path() {
-        let (path, (max_runs, guidance)) =
+        let (path, parsed) =
             overrides(&["--max-runs", "64", "--guidance", "unified", "compose.yaml"]).unwrap();
         assert_eq!(path, PathBuf::from("compose.yaml"));
-        assert_eq!(max_runs, Some(64));
-        assert!(matches!(guidance, Some(CampaignGuidance::Unified)));
+        assert_eq!(parsed.max_runs, Some(64));
+        assert!(matches!(parsed.guidance, Some(CampaignGuidance::Unified)));
 
-        let (path, (max_runs, guidance)) = overrides(&[
+        let (path, parsed) = overrides(&[
             "--guidance",
             "coverage",
             "--max-runs",
@@ -909,8 +967,8 @@ mod usage_tests {
         ])
         .unwrap();
         assert_eq!(path, PathBuf::from("work/compose.yaml"));
-        assert_eq!(max_runs, Some(8));
-        assert!(matches!(guidance, Some(CampaignGuidance::Coverage)));
+        assert_eq!(parsed.max_runs, Some(8));
+        assert!(matches!(parsed.guidance, Some(CampaignGuidance::Coverage)));
 
         // Interleaving keeps the manifest path in place.
         let (path, _) = overrides(&["compose.yaml", "--max-runs", "3"]).unwrap();
@@ -924,17 +982,42 @@ mod usage_tests {
             ("property", CampaignGuidance::Property),
             ("unified", CampaignGuidance::Unified),
         ] {
-            let (_, (_, guidance)) = overrides(&["--guidance", name, "compose.yaml"]).unwrap();
-            assert!(matches!(guidance, Some(mode) if mode == expected), "{name}");
+            let (_, parsed) = overrides(&["--guidance", name, "compose.yaml"]).unwrap();
+            assert!(
+                matches!(parsed.guidance, Some(mode) if mode == expected),
+                "{name}"
+            );
         }
     }
 
     #[test]
     fn explore_overrides_pass_the_manifest_through_untouched() {
-        let (path, (max_runs, guidance)) = overrides(&["compose.yaml"]).unwrap();
+        let (path, parsed) = overrides(&["compose.yaml"]).unwrap();
         assert_eq!(path, PathBuf::from("compose.yaml"));
-        assert_eq!(max_runs, None);
-        assert_eq!(guidance, None);
+        assert_eq!(parsed.max_runs, None);
+        assert_eq!(parsed.guidance, None);
+        assert_eq!(parsed.notify, None);
+    }
+
+    #[test]
+    fn explore_overrides_parse_a_notification_hook() {
+        let (_, parsed) = overrides(&[
+            "--notify",
+            "curl -X POST https://hooks.example/campaign",
+            "--max-runs",
+            "2",
+            "compose.yaml",
+        ])
+        .unwrap();
+        assert_eq!(
+            parsed.notify.as_deref(),
+            Some("curl -X POST https://hooks.example/campaign")
+        );
+        assert_eq!(parsed.max_runs, Some(2));
+
+        // Empty hooks and missing values are usage errors.
+        assert!(overrides(&["--notify", "", "compose.yaml"]).is_err());
+        assert!(overrides(&["--notify"]).is_err());
     }
 
     #[test]
