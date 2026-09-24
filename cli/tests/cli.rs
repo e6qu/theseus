@@ -873,3 +873,76 @@ fn help_lists_bundle_local_replay_commands() {
         .unwrap()
         .contains("--goarch amd64|arm64"));
 }
+
+#[test]
+fn status_summarizes_a_retained_campaign_without_kvm() {
+    let directory = tempfile::tempdir().unwrap();
+    let bundle = directory.path().join("campaign");
+    fs::create_dir_all(bundle.join("runs/000")).unwrap();
+    fs::create_dir_all(bundle.join("runs/001")).unwrap();
+    fs::write(
+        bundle.join("campaign-result.json"),
+        r#"{"format":"theseus-compose-campaign-result-v1","status":"failed",
+            "driver":"api","guidance":"unified","coverage":"execution_locations",
+            "runs":[{"index":0,"status":"passed"},{"index":1,"status":"failed"}],
+            "properties":[{"name":"lost_update","kind":"always","status":"failed","detail":"0 of 2 retained timelines satisfied the serial needle"}]}"#,
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("replay-plan.json"),
+        r#"{"format":"theseus-compose-plan-v1","campaign":{"driver":"api","max_runs":64}}"#,
+    )
+    .unwrap();
+
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["status", "campaign", "--format", "json"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let status: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(status["format"], "theseus-campaign-status-v1");
+    assert_eq!(status["status"], "failed");
+    assert_eq!(status["driver"], "api");
+    assert_eq!(status["budget"], 64);
+    assert_eq!(status["run_count"], 2);
+    assert_eq!(status["failed_runs"][0], 1);
+    assert_eq!(status["failed_properties"][0], "lost_update");
+    assert_eq!(status["properties"][0]["name"], "lost_update");
+    assert_eq!(status["artifacts"]["runs"], 2);
+    assert_eq!(status["artifacts"]["checkpoint"], false);
+
+    let text = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["status", "campaign"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(text.status.success(), "{text:?}");
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("status: failed"), "{text}");
+    assert!(text.contains("failed properties: lost_update"), "{text}");
+    assert!(
+        text.contains("property lost_update (always): failed"),
+        "{text}"
+    );
+    assert!(
+        text.contains("artifacts: result true plan true runs 2 checkpoint false"),
+        "{text}"
+    );
+
+    // Directories without campaign evidence name their emptiness.
+    let empty = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["status", "."])
+        .current_dir(directory.path())
+        .status()
+        .unwrap();
+    assert!(!empty.success(), "{empty:?}");
+
+    // The help surface lists the command beside the comparison surface.
+    let help = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("theseus status campaign-dir"), "{help}");
+}
