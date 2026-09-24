@@ -822,8 +822,12 @@ digest it records `unverified` instead of collecting unverified bytes.
 
 ## Checks
 
-One-timeline results have two built-in checks: `guest_exit` requires exit
-status zero, and `completion` requires exit before `timeout_secs`. Add named
+One-timeline results have three built-in checks: `guest_exit` requires exit
+status zero, `completion` requires exit before `timeout_secs`, and `oom`
+fails when the service's serial transcript carries the kernel's own
+out-of-memory evidence (`invoked oom-killer`, `Out of memory: Killed
+process`, and the other kernel OOM markers), so a memory-exhaustion death is
+distinguishable from every other crash. Add named
 checks in the manifest for the behavior that matters to your system:
 
 - `serial_contains` — a UTF-8 string must appear in `serial.log`.
