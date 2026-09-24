@@ -12,6 +12,7 @@ extras for host-side and Linux use. AGPL-3.0-or-later (see
 | root (`lib.rs`) | Control-channel contract: register offsets, `MAGIC`, commands (`CMD_SETUP_COMPLETE`), markers (`MARKER_BOOT`, `MARKER_DONE`, `EVENT_TERMINATOR`), and the bare-metal `ControlChannel` driver |
 | `linux` (feature `std`) | `TtyChannel`: the serial-console transport (`THES:M:xx` / `THES:E:xx` lines) for Linux guests with no driver |
 | `bus` (feature `std`) | Device bus primitives (`BusDevice`, `Bus`) moved out of `vmm::vstate` so the engine crate stays free of a `vmm` dependency |
+| [`go/`](go/) | The Go guest SDK: the same serial-line vocabulary (markers, assertions, checkpoints, structured choices, events, command receiver) as an importable module |
 
 ## Used by
 

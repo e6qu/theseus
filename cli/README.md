@@ -358,7 +358,9 @@ shell:
 
 Planning locks every assignment and supplies it as `THESEUS_CHOICES`. The
 command emits `THES:CHOICE:<name>:<upper-bound>:<value>` immediately before it
-uses a value; `theseus-sdk` provides `TtyChannel::choice`, and plain programs
+uses a value; `theseus-sdk` provides `TtyChannel::choice`, the Go module
+[`sdk/go`](../sdk/go/) provides the same vocabulary (`Marker`, `Assertion`,
+`Checkpoint`, `Choice`, event rounds) for Go services, and plain programs
 can use the same line protocol. Unified guidance combines choice and schedule
 decisions with coverage, property, fault, and topology-state feedback. Results
 retain a human-readable decision trace, and replay rejects divergence.

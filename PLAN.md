@@ -390,7 +390,8 @@ Antithesis reports and multiverse debugging.
 - `always_or_unreachable` exists as a campaign property kind. Make property
   observations first-class search feedback.
 - Provide supported assertion, event, and structured-randomness APIs for C,
-  C++, Rust, Go, and Java, while retaining a language-neutral JSON event path.
+  C++, Rust, Go, and Java, while retaining a language-neutral JSON event
+  path. The Rust SDK and the Go module cover those two languages today.
 - Capture stdout, stderr, structured events, faults, decisions, coverage,
   properties, and user artifacts on one ordered timeline.
 - Add textual, structured, and temporal queries such as preceded-by and
@@ -410,25 +411,38 @@ Exit when a user can move from a failed property to its relevant logs and
 decisions, fork an earlier state, test an alternative, and share the complete
 reproducible investigation.
 
+- Campaign sharding: `compose explore --shard INDEX/TOTAL` locks one
+  worker's deterministic partition of the candidate corpus into the replay
+  plan - disjoint, byte-stable shards whose union is the whole corpus -
+  with the shard identity retained in every result and surfaced by
+  `theseus status`.
+- A Go guest SDK: `sdk/go` exposes the Rust SDK's vocabulary - markers,
+  named assertions, operation checkpoints, bounded structured choices
+  consumed from `THESEUS_CHOICES`, host events, and the command receiver -
+  over the same byte-identical serial-line protocol, with injectable
+  transports and protocol tests that run in CI.
+
 ## Immediate next work
 
-### 1. Campaign sharding for parallel deterministic workers
+### 1. Retained side-by-side guidance evidence on a public workload
 
-One campaign executes its schedule corpus sequentially in one process. The
-next work makes parallel exploration reproducible:
+The exploration overrides make fixed-budget cross-policy comparisons a
+one-command affair, but the retained side-by-side comparison the roadmap
+requires has not been produced on a published workload. The next work:
 
-- CLI and plan: `compose explore --shard INDEX/TOTAL` locks a shard of the
-  candidate corpus into the replay plan, so N workers cover disjoint,
-  deterministic partitions and their results concatenate into one search.
-- Runner: select the shard's schedules through the same deterministic
-  ordering; retained evidence records the shard identity.
-- Tests: sharding fixtures where the union of shards equals the unsharded
-  corpus and shards are byte-stable across reruns.
+- Pick a public tutorial workload, run it under each guidance mode at one
+  fixed budget, and retain every campaign with its sharded, reproducible
+  command line.
+- Evaluate the retained campaigns against one evaluation contract and
+  record the comparison - coverage novelty, property outcomes, checkpoint
+  economics - as a committed evaluation artifact.
+- Tests: the comparison itself is the evidence; the evaluation lockfile
+  gates future regressions.
 
-Quiet periods and fault windows landed and are described in the verified
-baseline; the parity analysis tracks the remaining cross-priority gaps,
-including hosted campaign operation and demand-driven coverage breadth for
-JavaScript and .NET.
+Campaign sharding landed and is described in the verified baseline; the
+parity analysis tracks the remaining cross-priority gaps, including hosted
+campaign operation, Kubernetes input, and demand-driven coverage breadth
+for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 
