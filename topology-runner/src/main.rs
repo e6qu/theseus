@@ -9452,11 +9452,44 @@ fn evaluate_campaign_properties(
     Ok(results)
 }
 
+/// The kernel serial markers that identify out-of-memory activity, checked
+/// in the order the classification reports them. The guest's own kernel
+/// prints these deterministically, so the verdict they justify replays like
+/// every other retained evidence.
+const OOM_MARKERS: [&str; 4] = [
+    "invoked oom-killer",
+    "Out of memory and no killable processes",
+    "Out of memory: Killed process",
+    "Memory cgroup out of memory",
+];
+
+/// Classify one service's cumulative serial transcript for out-of-memory
+/// evidence. Returns the matched marker so the verdict retains its own
+/// justification.
+fn oom_evidence(serial: &[u8]) -> Option<&'static str> {
+    OOM_MARKERS
+        .iter()
+        .find(|marker| {
+            let marker = marker.as_bytes();
+            serial.windows(marker.len()).any(|window| window == marker)
+        })
+        .copied()
+}
+
+fn serial_oom_evidence(logs: &[PathBuf]) -> Option<&'static str> {
+    let mut serial = Vec::new();
+    for log in logs {
+        serial.extend(fs::read(log).unwrap_or_default());
+    }
+    oom_evidence(&serial)
+}
+
 /// Automatic verdicts every campaign carries without declaration: no service
-/// crashed (`theseus:crash`) and every service finished inside its budget
-/// (`theseus:completed`). They read the per-service result checks directly
-/// and never participate in minimization or expect-counterexample matching,
-/// which stay bound to declared properties.
+/// crashed (`theseus:crash`), every service finished inside its budget
+/// (`theseus:completed`), and no service lost a process to the kernel
+/// out-of-memory killer (`theseus:oom`). They read the per-service result
+/// checks directly and never participate in minimization or
+/// expect-counterexample matching, which stay bound to declared properties.
 fn default_property_results(output: &Path, runs: &[usize]) -> Vec<CampaignPropertyResult> {
     let defaults = [
         ("theseus:crash", "guest_exit", "a service exited nonzero or crashed"),
@@ -9464,6 +9497,11 @@ fn default_property_results(output: &Path, runs: &[usize]) -> Vec<CampaignProper
             "theseus:completed",
             "completion",
             "a service did not finish inside its timeout",
+        ),
+        (
+            "theseus:oom",
+            "oom",
+            "the kernel out-of-memory killer terminated a process",
         ),
     ];
     defaults
@@ -11153,6 +11191,18 @@ fn execute(
                 detail: exit_detail,
             },
         );
+        // The kernel's own out-of-memory reporting is deterministic serial
+        // evidence: retain the classification beside the exit verdict so an
+        // OOM death is distinguishable from every other crash.
+        let oom = serial_oom_evidence(&service.serial_logs);
+        checks.push(CheckResult {
+            name: "oom".to_owned(),
+            status: if oom.is_some() { "failed" } else { "passed" },
+            detail: match oom {
+                Some(marker) => format!("kernel out-of-memory evidence: {marker}"),
+                None => "no out-of-memory evidence".to_owned(),
+            },
+        });
         if let Some(expected) = &expected_serial {
             let expected = expected
                 .get(name)
@@ -18875,15 +18925,22 @@ mod tests {
     }
 
     #[test]
-    fn default_properties_detect_crashes_and_completions() {
+    fn default_properties_detect_crashes_completions_and_oom() {
         let directory = tempfile::tempdir().unwrap();
-        let write_run = |index: usize, status: &str| {
+        let write_run = |index: usize, status: &str, oom: Option<&str>| {
             let run = directory.path().join("runs").join(format!("{index:03}"));
             fs::create_dir_all(run.join("services/api")).unwrap();
+            let oom_check = match oom {
+                Some(marker) => {
+                    serde_json::json!({"name": "oom", "status": "failed", "detail": marker})
+                }
+                None => serde_json::json!({"name": "oom", "status": "passed", "detail": ""}),
+            };
             let result = serde_json::json!({
                 "checks": [
                     {"name": "guest_exit", "status": status, "detail": ""},
-                    {"name": "completion", "status": "passed", "detail": ""}
+                    {"name": "completion", "status": "passed", "detail": ""},
+                    oom_check
                 ]
             });
             fs::write(
@@ -18892,8 +18949,8 @@ mod tests {
             )
             .unwrap();
         };
-        write_run(0, "passed");
-        write_run(1, "failed");
+        write_run(0, "passed", None);
+        write_run(1, "failed", Some("kernel out-of-memory evidence: invoked oom-killer"));
 
         let results = default_property_results(directory.path(), &[0, 1]);
         let crash = results.iter().find(|r| r.name == "theseus:crash").unwrap();
@@ -18904,18 +18961,57 @@ mod tests {
             .find(|r| r.name == "theseus:completed")
             .unwrap();
         assert_eq!(completed.status, "passed");
+        let oom = results.iter().find(|r| r.name == "theseus:oom").unwrap();
+        assert_eq!(oom.status, "failed");
+        assert!(
+            oom.detail.contains("run 001, service api"),
+            "{}",
+            oom.detail
+        );
 
-        // An all-pass corpus passes both defaults and says how many checks
-        // backed the verdict.
-        write_run(2, "passed");
+        // An all-pass corpus passes all three defaults and says how many
+        // checks backed the verdict.
+        write_run(2, "passed", None);
         let results = default_property_results(directory.path(), &[0, 2]);
-        let crash = results.iter().find(|r| r.name == "theseus:crash").unwrap();
-        assert_eq!(crash.status, "passed");
-        assert!(crash.detail.contains("all 2 retained service checks"));
+        assert!(results.iter().all(|r| r.status == "passed"));
+        let oom = results.iter().find(|r| r.name == "theseus:oom").unwrap();
+        assert!(oom.detail.contains("all 2 retained service checks"));
 
         // A run directory without service results is skipped, not fatal.
         let empty = default_property_results(directory.path(), &[9]);
         assert!(empty.iter().all(|r| r.status == "passed"));
+    }
+
+    #[test]
+    fn oom_evidence_matches_kernel_markers_and_nothing_else() {
+        // The canonical kernel out-of-memory lines are classified.
+        for marker in [
+            "memory: invoked oom-killer: gfp_mask=0x100cca, order=0",
+            "Out of memory and no killable processes...",
+            "Out of memory: Killed process 1234 (worker) total-vm:4096kB",
+            "Memory cgroup out of memory: Killed process 42 (app)",
+        ] {
+            assert_eq!(
+                oom_evidence(marker.as_bytes()),
+                Some(
+                    [
+                        "invoked oom-killer",
+                        "Out of memory and no killable processes",
+                        "Out of memory: Killed process",
+                        "Memory cgroup out of memory",
+                    ]
+                    .iter()
+                    .find(|candidate| marker.contains(*candidate))
+                    .expect("marker belongs to the canonical set")
+                ),
+                "{marker}"
+            );
+        }
+
+        // Ordinary crashes and noise are not OOM.
+        assert_eq!(oom_evidence(b"guest exited with Custom(1)"), None);
+        assert_eq!(oom_evidence(b"panic: not enough memory in pool\n"), None);
+        assert_eq!(oom_evidence(b""), None);
     }
 
     #[test]
