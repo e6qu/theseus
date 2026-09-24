@@ -227,7 +227,7 @@ jobs:
           cargo test --manifest-path topology-runner/Cargo.toml --locked
           cargo test --manifest-path image-runner/Cargo.toml --locked
           cargo test --manifest-path explorer-runner/Cargo.toml --locked
-          go test ./sdk/go/...
+          go -C sdk/go test ./...
 
       - name: Qualify ordinary checkpoint-backed product workflows on native KVM
         env:
