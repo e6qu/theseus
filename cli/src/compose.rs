@@ -2004,6 +2004,7 @@ fn coverage_artifact_plans(
                 "edges",
                 "c" | "c++" | "rust"
             ) | ("theseus-go-coverage-build-v1", "blocks", "go")
+                | ("theseus-java-coverage-build-v1", "classes", "java")
         );
         if !supported {
             return Err(ComposeError::Invalid(format!(
@@ -2065,14 +2066,40 @@ fn coverage_artifact_plans(
             path: symbol_path.clone(),
             source,
         })?;
-        if !symbol_bytes.starts_with(b"\x7fELF")
-            || !symbol_bytes
-                .windows(manifest.build_sha256.len())
-                .any(|window| window == manifest.build_sha256.as_bytes())
+        if !symbol_bytes
+            .windows(manifest.build_sha256.len())
+            .any(|window| window == manifest.build_sha256.as_bytes())
         {
             return Err(ComposeError::Invalid(format!(
                 "service {service:?} coverage symbol {} does not match build {}",
                 manifest.symbols, manifest.build_sha256
+            )));
+        }
+        if manifest.format == "theseus-java-coverage-build-v1" {
+            // The Java symbol artifact is the frontend's class-to-offset
+            // map, not an ELF object: validate the map itself.
+            let map: serde_json::Value =
+                serde_json::from_slice(&symbol_bytes).map_err(|error| {
+                    ComposeError::Invalid(format!(
+                        "service {service:?} coverage symbol {} is not a Java symbol map: {error}",
+                        manifest.symbols
+                    ))
+                })?;
+            if map["format"] != "theseus-java-coverage-symbols-v1"
+                || map["build_sha256"] != manifest.build_sha256
+                || map["classes"]
+                    .as_array()
+                    .is_none_or(|classes| classes.is_empty())
+            {
+                return Err(ComposeError::Invalid(format!(
+                    "service {service:?} coverage symbol {} does not describe build {}",
+                    manifest.symbols, manifest.build_sha256
+                )));
+            }
+        } else if !symbol_bytes.starts_with(b"\x7fELF") {
+            return Err(ComposeError::Invalid(format!(
+                "service {service:?} coverage symbol {} is not an ELF object",
+                manifest.symbols
             )));
         }
         let identity = (
@@ -8711,6 +8738,54 @@ mod tests {
         assert_eq!(coverage.gnu_build_id, None);
         assert_eq!(coverage.manifest.sha256.len(), 64);
         assert_eq!(coverage.symbols.sha256.len(), 64);
+    }
+
+    #[test]
+    fn locks_java_coverage_manifests_and_symbols() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n      coverage:\n        - manifest: api/java-coverage.json\n          symbols: api/java-symbols\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+        );
+        let digest = "0f1e2d3c4b5a6978".repeat(4);
+        fs::create_dir(directory.path().join("api/java-symbols")).unwrap();
+        fs::write(
+            directory.path().join("api/java-symbols/app.debug"),
+            format!(
+                r#"{{"format":"theseus-java-coverage-symbols-v1","build_sha256":"{digest}","classes":[{{"class":"com/example/App","offset":"0x0123456789abcdef","source":"com/example/App.java"}}]}}"#
+            ),
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("api/java-coverage.json"),
+            format!(
+                "{{\"format\":\"theseus-java-coverage-build-v1\",\"coverage\":\"classes\",\"language\":\"java\",\"process\":\"api\",\"module\":\"app\",\"build_sha256\":\"{digest}\",\"symbols\":\"app.debug\"}}"
+            ),
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let coverage = &plan.services["api"].coverage[0];
+        assert_eq!(coverage.format, "theseus-java-coverage-build-v1");
+        assert_eq!(coverage.coverage, "classes");
+        assert_eq!(coverage.language, "java");
+        assert_eq!(coverage.module, "app");
+        assert_eq!(coverage.build_sha256, digest);
+        assert_eq!(coverage.gnu_build_id, None);
+        assert_eq!(coverage.manifest.sha256.len(), 64);
+        assert_eq!(coverage.symbols.sha256.len(), 64);
+
+        // A symbol map describing a different build is rejected, and so is
+        // a map with no classes.
+        fs::write(
+            directory.path().join("api/java-symbols/app.debug"),
+            format!(
+                r#"{{"format":"theseus-java-coverage-symbols-v1","build_sha256":"{digest}","classes":[]}}"#
+            ),
+        )
+        .unwrap();
+        assert!(load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap_err()
+            .to_string()
+            .contains("does not describe build"));
     }
 
     #[test]

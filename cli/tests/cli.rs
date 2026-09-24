@@ -946,3 +946,115 @@ fn status_summarizes_a_retained_campaign_without_kvm() {
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("theseus status campaign-dir"), "{help}");
 }
+
+#[test]
+fn coverage_java_builds_an_agent_that_reports_the_locked_points() {
+    // The Java path needs a JDK with javac, jar, and java on PATH, exactly
+    // like the Go frontend needs a Go toolchain.
+    if Command::new("javac").arg("--version").output().is_err() {
+        panic!("the Java coverage integration test needs a JDK on PATH");
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let work = directory.path().join("work");
+    fs::create_dir_all(work.join("src/com/example")).unwrap();
+    fs::write(
+        work.join("src/com/example/Hello.java"),
+        "package com.example;\npublic class Hello {\n    public static void main(String[] args) {\n        System.out.println(\"hello from theseus\");\n    }\n}\n",
+    )
+    .unwrap();
+    let compiled = Command::new("javac")
+        .args(["-d", "classes", "src/com/example/Hello.java"])
+        .current_dir(&work)
+        .status()
+        .unwrap();
+    assert!(compiled.success(), "{compiled:?}");
+    let archived = Command::new("jar")
+        .args(["--create", "--file", "app.jar", "-C", "classes", "com"])
+        .current_dir(&work)
+        .status()
+        .unwrap();
+    assert!(archived.success(), "{archived:?}");
+
+    let built = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "coverage",
+            "java",
+            "--process",
+            "api",
+            "--module",
+            "app",
+            "--jar",
+            "app.jar",
+            "--symbols",
+            "symbols",
+            "--output",
+            "app.theseus-coverage.json",
+        ])
+        .current_dir(&work)
+        .output()
+        .unwrap();
+    assert!(built.status.success(), "{built:?}");
+
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(work.join("app.theseus-coverage.json")).unwrap()).unwrap();
+    assert_eq!(manifest["format"], "theseus-java-coverage-build-v1");
+    assert_eq!(manifest["coverage"], "classes");
+    assert_eq!(manifest["language"], "java");
+    assert_eq!(manifest["module"], "app");
+    let build_sha256 = manifest["build_sha256"].as_str().unwrap().to_owned();
+    assert_eq!(build_sha256.len(), 64);
+    let symbols: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            work.join("symbols")
+                .join(manifest["symbols"].as_str().unwrap()),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(symbols["format"], "theseus-java-coverage-symbols-v1");
+    assert_eq!(symbols["build_sha256"], build_sha256.as_str());
+    let classes = symbols["classes"].as_array().unwrap();
+    let app = classes
+        .iter()
+        .find(|class| class["class"] == "com/example/Hello")
+        .unwrap_or_else(|| panic!("symbol map misses the class: {symbols}"));
+    let offset = app["offset"].as_str().unwrap();
+
+    // The agent re-derives the same coverage point at runtime and reports
+    // it through the shared first-hit serial-line protocol.
+    let agent_jar = work.join("theseus-coverage-agent.jar");
+    assert!(agent_jar.is_file());
+    let run = Command::new("java")
+        .arg(format!(
+            "-javaagent:{}=api,app,{build_sha256}",
+            agent_jar.display()
+        ))
+        .args(["-cp", "app.jar", "com.example.Hello"])
+        .current_dir(&work)
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "{run:?}");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    let expected = format!("THES:COV:v1:api:app:{build_sha256}:{offset}");
+    assert!(
+        stderr.lines().any(|line| line.trim() == expected),
+        "expected {expected} in:\n{stderr}"
+    );
+    // First-hit: the same class is never reported twice.
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.starts_with("THES:COV:"))
+            .count(),
+        1
+    );
+
+    // Unknown flags are usage errors.
+    let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["coverage", "java", "--nonsense"])
+        .current_dir(&work)
+        .output()
+        .unwrap();
+    assert!(!bad.status.success(), "{bad:?}");
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("Usage:"));
+}
