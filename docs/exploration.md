@@ -192,6 +192,15 @@ directed link with a bounded stall: frames still enter the link, but each
 waits `latency_rounds` (1–4096) before delivery, so clogged frames queue up
 and arrive only after `link_unclog` (or terminal recovery) restores the link.
 
+Fault windows close on their own: add `until: operation` to a fault with an
+automatic recovery and the fault recovers at that operation's barrier,
+before it executes, through the same recovery the terminal lifecycle
+applies. Campaign-level `quiet` windows (`quiet: [{before: verify}]`)
+recover every active fault before the named operation, except faults whose
+own window closes later - a bounded chaos window followed by a settled
+check, declared instead of hand-scheduled. Both are replay-checked like
+every fault.
+
 `kind: custom` runs your own command inside an image-backed service at an
 operation barrier instead of a built-in effect:
 

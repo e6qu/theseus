@@ -168,6 +168,10 @@ Theseus currently has:
   starts a new history. Entries record every verdict in campaign order
   with the first failing campaign, in the same machine-readable JSON
   conventions as the status and query surfaces.
+- Quiet periods and fault windows as campaign inputs: `until` closes a
+  recoverable fault at a named operation's barrier and `quiet` recovers
+  every other active fault before one, both through the terminal
+  lifecycle's automatic recovery path and replay-checked like every fault.
 
 The baseline has important limits:
 
@@ -369,8 +373,10 @@ Antithesis without constructing low-level campaign schedules by hand.
   jumps move backward as well as forward. User-declared `custom` faults
   exist as declared barrier faults, and the generated standard profile now
   proposes custom candidates from a service's own declared commands.
-- Generalize quiet periods and explicit fault windows beyond the current
-  lifecycle roles and automatic terminal recovery.
+- Quiet windows and fault windows are campaign inputs now: `until` closes a
+  recoverable fault at a named barrier and `quiet: [{before: operation}]`
+  recovers every other active fault before one, both through the terminal
+  lifecycle's automatic recovery path.
 
 Exit when an ordinary distributed system can bring its existing test commands
 and have Theseus autonomously compose hundreds of replayable scenarios across
@@ -406,24 +412,23 @@ reproducible investigation.
 
 ## Immediate next work
 
-### 1. Quiet periods and fault windows as campaign inputs
+### 1. Campaign sharding for parallel deterministic workers
 
-The test-template lifecycle derives quiet periods and automatic terminal
-recovery from command roles; explicit campaigns cannot express the same
-windows directly. The next work:
+One campaign executes its schedule corpus sequentially in one process. The
+next work makes parallel exploration reproducible:
 
-- Compose: campaign-level `quiet` and `fault_window` declarations bounded
-  by operation names or rounds, composable with the existing barrier and
-  lifecycle faults instead of being tied to eventually/finally roles.
-- Runner: apply the windows through the same deterministic scheduler paths
-  the template lifecycle uses, replay-checked like every fault.
-- Tests: compose validation fixtures and runner window-application tests;
-  template-derived behavior stays byte-stable.
+- CLI and plan: `compose explore --shard INDEX/TOTAL` locks a shard of the
+  candidate corpus into the replay plan, so N workers cover disjoint,
+  deterministic partitions and their results concatenate into one search.
+- Runner: select the shard's schedules through the same deterministic
+  ordering; retained evidence records the shard identity.
+- Tests: sharding fixtures where the union of shards equals the unsharded
+  corpus and shards are byte-stable across reruns.
 
-Property history across campaigns landed and is described in the verified
+Quiet periods and fault windows landed and are described in the verified
 baseline; the parity analysis tracks the remaining cross-priority gaps,
-including hosted campaign operation, parallel workers, and demand-driven
-coverage breadth for JavaScript and .NET.
+including hosted campaign operation and demand-driven coverage breadth for
+JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 

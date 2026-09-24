@@ -121,6 +121,11 @@ struct ComposeCampaign {
     stages: Vec<String>,
     #[serde(default)]
     faults: Vec<ComposeCampaignFault>,
+    /// Quiet windows: at each named operation's barrier every active fault
+    /// recovers before the operation executes, except the faults whose own
+    /// window closes later.
+    #[serde(default)]
+    quiet: Vec<ComposeQuietWindow>,
     #[serde(default)]
     properties: Vec<ComposeProperty>,
     /// Named recursive serial-evidence expressions. `use: name` expands one
@@ -133,6 +138,13 @@ struct ComposeCampaign {
     max_faults_per_run: u8,
     #[serde(default = "default_campaign_operations_per_run")]
     max_operations_per_run: u8,
+}
+
+/// One campaign-declared quiet window.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeQuietWindow {
+    before: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -469,6 +481,11 @@ struct ComposeCampaignFault {
     drive: Option<String>,
     #[serde(default)]
     after: Option<String>,
+    /// The barrier where a fault window closes: the fault recovers at this
+    /// operation, before it executes, through the same automatic recovery
+    /// the terminal lifecycle applies.
+    #[serde(default)]
+    until: Option<String>,
     /// The argv a `custom` fault runs inside the image at its barrier. It is
     /// passed to execve unchanged, like every shell operation.
     #[serde(default)]
@@ -569,6 +586,7 @@ fn empty_campaign_fault(kind: CampaignFaultKind) -> ComposeCampaignFault {
         to: None,
         drive: None,
         after: None,
+        until: None,
         command: None,
         at_round: None,
         duration_rounds: None,
@@ -1322,6 +1340,12 @@ fn is_default_campaign_coverage(value: &CampaignCoverage) -> bool {
     *value == CampaignCoverage::ExecutionLocations
 }
 
+/// One campaign-declared quiet window.
+#[derive(Debug, Clone, Serialize)]
+pub struct QuietWindowPlan {
+    pub before: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CampaignPlan {
     pub driver: String,
@@ -1344,6 +1368,8 @@ pub struct CampaignPlan {
     pub stages: Vec<String>,
     pub faults: Vec<CampaignFaultPlan>,
     pub properties: Vec<PropertyPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quiet: Vec<QuietWindowPlan>,
     pub max_runs: u16,
     pub max_faults_per_run: u8,
     pub max_operations_per_run: u8,
@@ -1513,6 +1539,10 @@ pub struct CampaignFaultPlan {
     pub after: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after_input: Option<OperationInputReferencePlan>,
+    /// The barrier where a fault window closes, through the automatic
+    /// recovery the terminal lifecycle applies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
     /// The argv a `custom` fault runs inside its image-backed service.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<Vec<String>>,
@@ -4153,6 +4183,7 @@ fn campaign_plan(
                 "rate belongs to clock_rate/clock_rate_release actions".to_owned(),
             ));
         }
+        let until = normalize_campaign_fault_window(&candidate, &operations)?;
         match candidate.kind {
             CampaignFaultKind::Pause
             | CampaignFaultKind::Restart
@@ -4229,6 +4260,7 @@ fn campaign_plan(
                     after: None,
                     after_input: None,
                     command: None,
+                    until,
                     at_round: Some(fault.at_round),
                     duration_rounds: fault.duration_rounds,
                     nanoseconds: fault.nanoseconds,
@@ -4309,6 +4341,7 @@ fn campaign_plan(
                     after,
                     after_input,
                     command: None,
+                    until,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -4412,6 +4445,7 @@ fn campaign_plan(
                     after,
                     after_input,
                     command: Some(command.to_owned()),
+                    until,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -4485,6 +4519,7 @@ fn campaign_plan(
                     after,
                     after_input,
                     command: None,
+                    until,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -4577,6 +4612,7 @@ fn campaign_plan(
                     after,
                     after_input,
                     command: None,
+                    until,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -4678,6 +4714,7 @@ fn campaign_plan(
                     after,
                     after_input,
                     command: None,
+                    until,
                     at_round: None,
                     duration_rounds: candidate.duration_rounds,
                     nanoseconds: None,
@@ -4786,6 +4823,7 @@ fn campaign_plan(
                     after,
                     after_input,
                     command: None,
+                    until,
                     at_round: None,
                     duration_rounds: candidate.duration_rounds,
                     nanoseconds: None,
@@ -4894,6 +4932,7 @@ fn campaign_plan(
                     after,
                     after_input,
                     command: None,
+                    until,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -4999,6 +5038,7 @@ fn campaign_plan(
                     after,
                     after_input,
                     command: None,
+                    until,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -5131,6 +5171,7 @@ fn campaign_plan(
                     after,
                     after_input,
                     command: None,
+                    until,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -5277,6 +5318,7 @@ fn campaign_plan(
                     after,
                     after_input,
                     command: None,
+                    until,
                     at_round: None,
                     duration_rounds: None,
                     nanoseconds: None,
@@ -5309,6 +5351,30 @@ fn campaign_plan(
             "campaign declares {required_faults} required faults but max_faults_per_run is {}",
             campaign.max_faults_per_run
         )));
+    }
+    let mut quiet = Vec::with_capacity(campaign.quiet.len());
+    for window in campaign.quiet {
+        if quiet.len() >= 8 {
+            return Err(ComposeError::Invalid(
+                "campaign declares more than 8 quiet windows".to_owned(),
+            ));
+        }
+        let (before, before_input) = normalize_campaign_fault_after(&window.before, &operations)?;
+        if before_input.is_some() || before.is_none() {
+            return Err(ComposeError::Invalid(
+                "campaign quiet windows accept only an operation name as before".to_owned(),
+            ));
+        }
+        let before = before.expect("validated quiet barrier");
+        if quiet
+            .iter()
+            .any(|existing: &QuietWindowPlan| existing.before == before)
+        {
+            return Err(ComposeError::Invalid(format!(
+                "campaign declares the same quiet window twice: before {before:?}"
+            )));
+        }
+        quiet.push(QuietWindowPlan { before });
     }
     let mut property_names = BTreeSet::new();
     let mut properties = Vec::with_capacity(campaign.properties.len());
@@ -5456,6 +5522,7 @@ fn campaign_plan(
         operations,
         stages: campaign.stages,
         faults,
+        quiet,
         properties,
         max_runs: campaign.max_runs,
         max_faults_per_run: campaign.max_faults_per_run,
@@ -6967,6 +7034,50 @@ fn validate_campaign_state_rule(
         }
     }
     Ok(())
+}
+
+/// Normalize one fault window's `until` barrier. Only fault kinds with an
+/// automatic recovery can close a window: recovery kinds, lifecycle faults,
+/// and custom faults have no inverse to apply at the barrier.
+fn normalize_campaign_fault_window(
+    candidate: &ComposeCampaignFault,
+    operations: &[OperationPlan],
+) -> Result<Option<String>, ComposeError> {
+    let Some(until) = candidate.until.as_deref() else {
+        return Ok(None);
+    };
+    let recoverable = matches!(
+        candidate.kind,
+        CampaignFaultKind::Partition
+            | CampaignFaultKind::LinkPartition
+            | CampaignFaultKind::LinkFault
+            | CampaignFaultKind::LinkClog
+            | CampaignFaultKind::NetworkFault
+            | CampaignFaultKind::PacketFault
+            | CampaignFaultKind::CpuThrottle
+            | CampaignFaultKind::ClockRate
+            | CampaignFaultKind::ServiceStop
+            | CampaignFaultKind::ServiceKill
+            | CampaignFaultKind::StorageFault
+    );
+    if !recoverable {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {:?} faults have no automatic recovery and accept no until window",
+            candidate.kind
+        )));
+    }
+    let (until, until_input) = normalize_campaign_fault_after(until, operations)?;
+    if until_input.is_some() {
+        return Err(ComposeError::Invalid(
+            "campaign fault windows accept only an operation name as until".to_owned(),
+        ));
+    }
+    if candidate.after.is_some() && candidate.after == candidate.until {
+        return Err(ComposeError::Invalid(
+            "campaign fault window must close at an operation after its trigger".to_owned(),
+        ));
+    }
+    Ok(until)
 }
 
 fn normalize_campaign_fault_after(
@@ -8740,6 +8851,73 @@ mod tests {
         assert_eq!(coverage.symbols.sha256.len(), 64);
     }
 
+    #[test]
+    fn normalizes_campaign_fault_windows_and_quiet_windows() {
+        let directory = fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: read\n        input: 'read\\n'\n      - name: verify\n        input: 'verify\\n'\n    faults:\n      - kind: partition\n        network: backplane\n        after: write\n        until: verify\n    quiet:\n      - before: read\n",
+        );
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let campaign = plan.campaign.unwrap();
+        assert_eq!(campaign.faults.len(), 1);
+        assert_eq!(campaign.faults[0].after.as_deref(), Some("write"));
+        assert_eq!(campaign.faults[0].until.as_deref(), Some("verify"));
+        assert_eq!(campaign.quiet.len(), 1);
+        assert_eq!(campaign.quiet[0].before, "read");
+    }
+
+    #[test]
+    fn rejects_malformed_fault_windows_and_quiet_windows() {
+        let base = "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: read\n        input: 'read\\n'\n    ";
+        let case = |campaign_tail: &str| {
+            let directory = fixture(&format!("{base}{campaign_tail}"));
+            load_compose_plan(directory.path().join("compose.yaml")).unwrap_err()
+        };
+
+        // Recovery kinds, lifecycle faults, and custom faults have no window.
+        let error = case("faults:\n      - kind: heal\n        network: backplane\n        after: write\n        until: read\n");
+        assert!(
+            error
+                .to_string()
+                .contains("have no automatic recovery and accept no until window"),
+            "{error}"
+        );
+        let error = case("faults:\n      - kind: restart\n        service: api\n        at_round: 2\n        until: read\n");
+        assert!(
+            error
+                .to_string()
+                .contains("have no automatic recovery and accept no until window"),
+            "{error}"
+        );
+
+        // A window must close after it opens, at a known operation.
+        let error = case("faults:\n      - kind: partition\n        network: backplane\n        after: write\n        until: write\n");
+        assert!(
+            error
+                .to_string()
+                .contains("must close at an operation after its trigger"),
+            "{error}"
+        );
+        let error = case("faults:\n      - kind: partition\n        network: backplane\n        after: write\n        until: ghost\n");
+        assert!(
+            error.to_string().contains("references unknown operation"),
+            "{error}"
+        );
+
+        // Quiet windows name known operations once each.
+        let error = case("quiet:\n      - before: ghost\n");
+        assert!(
+            error.to_string().contains("references unknown operation"),
+            "{error}"
+        );
+        let error = case("quiet:\n      - before: read\n      - before: read\n");
+        assert!(
+            error.to_string().contains("same quiet window twice"),
+            "{error}"
+        );
+        let error = case("quiet:\n      - before: read\n        at: write\n");
+        assert!(error.to_string().contains("unknown field `at`"), "{error}");
+    }
     #[test]
     fn locks_java_coverage_manifests_and_symbols() {
         let directory = fixture(

@@ -681,6 +681,36 @@ stalls frames on the directed link until `link_unclog`. `clock_rate` with
 virtual clock rate until `clock_rate_release`; it requires `virtual_time`.
 Terminal checks release all three automatically.
 
+Fault windows close without a paired recovery fault: add `until` to a fault
+with an automatic recovery (`partition`, `link_partition`, `link_fault`,
+`link_clog`, `network_fault`, `packet_fault`, `storage_fault`,
+`cpu_throttle`, `clock_rate`, `service_stop`, `service_kill`) and the fault
+recovers at that operation's barrier, before it executes, through the same
+automatic recovery the terminal lifecycle applies:
+
+```yaml
+faults:
+  - kind: partition
+    network: backplane
+    after: write
+    until: verify
+```
+
+Campaign-level `quiet` windows generalize that recovery: before each named
+operation, every active fault recovers except the faults whose own window
+closes later:
+
+```yaml
+x-theseus:
+  campaign:
+    quiet:
+      - before: verify
+```
+
+Both are replay-checked like every fault: the recovery actions ride the
+operation's serial checkpoint and join the decision trace, so a quiet or
+windowed campaign replays byte-stably.
+
 `kind: custom` runs one user-declared command inside an image-backed service
 at an operation barrier:
 

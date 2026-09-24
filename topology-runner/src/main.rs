@@ -126,6 +126,11 @@ struct CampaignPlan {
     max_faults_per_run: u8,
     #[serde(default = "default_campaign_operations_per_run")]
     max_operations_per_run: u8,
+    /// Quiet windows: barriers before which every active fault recovers,
+    /// exactly like the automatic terminal recovery of eventually and
+    /// finally commands, declared by ordinary campaigns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    quiet: Vec<QuietWindowPlan>,
     /// Counterfactual re-execution override. When present, the campaign runs
     /// exactly one timeline: the recorded schedule of `run` with the recorded
     /// `fault` decision replaced by the declared `replace` fault. The recorded
@@ -133,6 +138,13 @@ struct CampaignPlan {
     /// shared checkpoint prefix is reused up to the substituted barrier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     counterfactual: Option<CounterfactualPlan>,
+}
+
+/// One quiet window: at this operation's barrier the campaign recovers
+/// every fault its schedule has applied, before the operation executes.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct QuietWindowPlan {
+    before: String,
 }
 
 /// One locked counterfactual decision, recorded in the replay plan like any
@@ -410,6 +422,11 @@ struct CampaignFault {
     drive: Option<String>,
     #[serde(default)]
     after: Option<String>,
+    /// The barrier where a fault window closes: the fault recovers at this
+    /// operation, before it executes, through the same automatic recovery
+    /// the terminal lifecycle applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    until: Option<String>,
     /// The argv a `custom` fault runs inside its image-backed service. It is
     /// passed to execve unchanged, like every shell operation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -7800,10 +7817,32 @@ fn campaign_schedule_event(
         definition.command,
         Some(CampaignTestCommand::Eventually | CampaignTestCommand::Finally)
     );
-    let recover_faults = if quiet_terminal {
+    // Recovery windows, sharing the terminal lifecycle's automatic recovery
+    // path: a quiet window recovers every active fault except the ones with
+    // their own later window, and a fault window closes exactly at its
+    // `until` barrier. The terminal commands stay total: they recover
+    // everything before the campaign's checks run.
+    let quiet_window = campaign
+        .quiet
+        .iter()
+        .any(|window| window.before == definition.name);
+    let closing_window = selected
+        .iter()
+        .any(|fault| fault.until.as_deref() == Some(definition.name.as_str()));
+    let recover_faults = if quiet_terminal || quiet_window || closing_window {
         selected
             .iter()
             .filter(|fault| campaign_fault_applies(fault, &schedule.operations[..index], campaign))
+            .filter(|fault| {
+                let closes_here = fault.until.as_deref() == Some(definition.name.as_str());
+                if quiet_terminal || closes_here {
+                    true
+                } else {
+                    // A quiet window leaves windowed faults active until
+                    // their own barrier.
+                    quiet_window && fault.until.is_none()
+                }
+            })
             .filter_map(|fault| campaign_recovery_action(fault, &definition.name).transpose())
             .collect::<Result<Vec<_>, _>>()?
     } else {
@@ -15569,6 +15608,7 @@ mod tests {
             test_template: None,
             test_templates: Vec::new(),
             max_parallel_commands: 2,
+            quiet: Vec::new(),
             guidance: CampaignGuidance::Coverage,
             coverage: CampaignCoverage::ExecutionLocations,
             state: BTreeMap::from([("phase".to_owned(), "idle".to_owned())]),
@@ -18320,6 +18360,7 @@ mod tests {
             to: None,
             drive: None,
             after: Some("write".to_owned()),
+            until: None,
             command: None,
             after_input: None,
             at_round: None,
@@ -18583,6 +18624,7 @@ mod tests {
             to: None,
             drive: None,
             after: Some("write".to_owned()),
+            until: None,
             command: Some(command.iter().map(|entry| (*entry).to_owned()).collect()),
             after_input: None,
             at_round: None,
@@ -18851,6 +18893,71 @@ mod tests {
         )
         .unwrap()
         .is_none());
+    }
+
+    #[test]
+    fn quiet_windows_and_fault_windows_recover_at_their_barriers() {
+        let campaign: CampaignPlan = serde_json::from_value(serde_json::json!({
+            "driver": "api",
+            "operations": [
+                {"name": "write", "inputs": [{"name": "default", "input_hex": "00"}]},
+                {"name": "read", "inputs": [{"name": "default", "input_hex": "01"}]},
+                {"name": "verify", "inputs": [{"name": "default", "input_hex": "02"}]}
+            ],
+            "faults": [
+                {
+                    "kind": "partition",
+                    "network": "backplane",
+                    "after": "write",
+                    "until": "verify"
+                },
+                {
+                    "kind": "cpu_throttle",
+                    "service": "api",
+                    "after": "write",
+                    "duration_rounds": 4,
+                    "every_n_rounds": 2
+                }
+            ],
+            "quiet": [{"before": "read"}],
+            "max_runs": 8
+        }))
+        .unwrap();
+        let schedule = CampaignSchedule {
+            operations: vec![choice(0), choice(1), choice(2)],
+            faults: vec![0, 1],
+            thread_schedule_prefixes: vec![Vec::new(); 3],
+        };
+        let checkpoint = CampaignCheckpoint {
+            switches: BTreeMap::new(),
+            services: BTreeMap::new(),
+            scheduler: BTreeMap::new(),
+            round: 0,
+        };
+
+        // The quiet window before `read` recovers the throttle, but leaves
+        // the partition active: its own window closes at `verify`.
+        let read_event = campaign_schedule_event(&campaign, &schedule, 1, &checkpoint).unwrap();
+        assert_eq!(read_event.recover_faults.len(), 1);
+        assert_eq!(read_event.recover_faults[0].operation, "read");
+        assert!(matches!(
+            read_event.recover_faults[0].kind,
+            CampaignFaultKind::CpuRelease
+        ));
+
+        // The partition window closes at `verify` through the same recovery
+        // path, before the operation executes.
+        let verify_event = campaign_schedule_event(&campaign, &schedule, 2, &checkpoint).unwrap();
+        assert_eq!(verify_event.recover_faults.len(), 1);
+        assert_eq!(verify_event.recover_faults[0].operation, "verify");
+        assert!(matches!(
+            verify_event.recover_faults[0].kind,
+            CampaignFaultKind::Heal
+        ));
+
+        // The write boundary itself applies faults without recovery.
+        let write_event = campaign_schedule_event(&campaign, &schedule, 0, &checkpoint).unwrap();
+        assert!(write_event.recover_faults.is_empty());
     }
 
 
