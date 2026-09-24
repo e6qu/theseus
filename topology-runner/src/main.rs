@@ -19002,6 +19002,7 @@ mod tests {
                     ]
                     .iter()
                     .find(|candidate| marker.contains(*candidate))
+                    .copied()
                     .expect("marker belongs to the canonical set")
                 ),
                 "{marker}"
