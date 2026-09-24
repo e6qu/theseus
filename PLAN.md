@@ -442,7 +442,8 @@ commands.
   retention. Remaining live surface: logs, coverage, resource use, and
   retained executions while running.
 - Run many deterministic workers in parallel with explicit resource budgets
-  and reproducible work allocation.
+  and reproducible work allocation; `--shard INDEX/TOTAL` partitions the
+  candidate corpus deterministically across workers.
 - Machine-readable result retrieval exists per surface (report, query,
   compare, evaluate); notifications compose on those evidence formats.
 - Accept standard Kubernetes manifests and Helm inputs through a documented

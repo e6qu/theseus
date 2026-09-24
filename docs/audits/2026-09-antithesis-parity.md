@@ -100,7 +100,10 @@ This month closed or narrowed several named gaps:
    Java probes remain open.
 8. **Kubernetes input and parallel workers** — after the execution-side
    priorities; packaging breadth does not compensate for a missing
-   execution capability.
+   execution capability. Parallel workers landed at the CLI level:
+   `compose explore --shard INDEX/TOTAL` partitions the candidate corpus
+   deterministically across workers with the shard retained in every
+   result. Kubernetes input and a hosted campaign service remain open.
 
 ## Non-goals kept
 

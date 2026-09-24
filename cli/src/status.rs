@@ -105,6 +105,9 @@ pub struct CampaignStatus {
     /// The minimized counterexample a bundle retains, when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counterexample: Option<String>,
+    /// The corpus shard the campaign explored, when the plan declared one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shard: Option<(u16, u16)>,
     pub artifacts: ArtifactInventory,
 }
 
@@ -156,6 +159,7 @@ pub fn campaign_status(bundle: impl AsRef<Path>) -> Result<CampaignStatus, Statu
                 failed_properties: vec![property.clone()],
                 properties: Vec::new(),
                 counterexample: Some(property),
+                shard: None,
                 artifacts: artifact_inventory(&bundle),
             });
         }
@@ -217,6 +221,12 @@ pub fn campaign_status(bundle: impl AsRef<Path>) -> Result<CampaignStatus, Statu
             .as_ref()
             .and_then(|minimization| minimization["property"].as_str())
             .map(str::to_owned),
+        shard: result["shard"].as_object().and_then(|shard| {
+            Some((
+                shard.get("index")?.as_u64()? as u16,
+                shard.get("total")?.as_u64()? as u16,
+            ))
+        }),
         artifacts: artifact_inventory(&bundle),
     })
 }
@@ -266,6 +276,7 @@ mod tests {
             Some(
                 r#"{"format":"theseus-compose-campaign-result-v1","status":"failed",
                     "driver":"api","guidance":"unified","coverage":"execution_locations",
+                    "shard":{"index":1,"total":4},
                     "runs":[
                         {"index":0,"status":"passed"},
                         {"index":1,"status":"failed"}
@@ -292,6 +303,7 @@ mod tests {
         );
         assert_eq!(status.driver.as_deref(), Some("api"));
         assert_eq!(status.guidance.as_deref(), Some("unified"));
+        assert_eq!(status.shard, Some((1, 4)));
         assert_eq!(status.budget, Some(64));
         assert_eq!(status.run_count, 2);
         assert_eq!(status.failed_runs, vec![1]);

@@ -44,8 +44,8 @@ theseus coverage java --process NAME --module NAME --jar FILE --symbols DIR --ou
 theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
-theseus compose explore [--max-runs N] [--guidance MODE] [--notify COMMAND] [--output campaign-dir] [compose.yaml]
-theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--notify COMMAND] [--output campaign-dir] [compose.yaml]
+theseus compose explore [--max-runs N] [--guidance MODE] [--notify COMMAND] [--shard INDEX/TOTAL] [--output campaign-dir] [compose.yaml]
+theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--notify COMMAND] [--shard INDEX/TOTAL] [--output campaign-dir] [compose.yaml]
 theseus compose explore --minimize campaign-dir [--output minimized-dir]
 theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
 theseus compose explore --fork-run N --replace-fault OLD=NEW campaign-dir [--output forked-dir] [--notify COMMAND]
@@ -741,6 +741,20 @@ override the declared budget and guidance for one exploration without editing
 the Compose file: comparing the same file across guidance modes at one fixed
 budget is the reproducible search comparison the roadmap requires, and every
 retained campaign records which mode and budget produced it.
+
+Pass `--shard INDEX/TOTAL` to explore one worker's deterministic partition
+of the candidate corpus, so several machines or CI jobs explore the same
+Compose file in parallel and their results cover it completely:
+
+```sh
+theseus compose explore --shard 0/4 --output campaign-shard-0 compose.yaml
+theseus compose explore --shard 3/4 --output campaign-shard-3 compose.yaml
+```
+
+Each retained campaign records its shard beside its policy, the corpus
+ordering is fixed, and the shards are disjoint — rerunning a shard
+reproduces it byte-stably. `theseus status` reports the shard so collectors
+can concatenate the workers' verdicts.
 
 Pass `--notify COMMAND` to run a completion hook once after the campaign
 finishes, whatever its verdict:

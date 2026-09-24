@@ -57,8 +57,8 @@ const USAGE: &str = "Usage:
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
-  theseus compose explore [--max-runs N] [--guidance MODE] [--notify COMMAND] [--output campaign-dir] [compose.yaml]
-  theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--notify COMMAND] [--output campaign-dir] [compose.yaml]
+  theseus compose explore [--max-runs N] [--guidance MODE] [--notify COMMAND] [--shard INDEX/TOTAL] [--output campaign-dir] [compose.yaml]
+  theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--notify COMMAND] [--shard INDEX/TOTAL] [--output campaign-dir] [compose.yaml]
   theseus compose explore --minimize campaign-dir [--output minimized-dir]
   theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
   theseus compose explore --fork-run N --replace-fault OLD=NEW campaign-dir [--output forked-dir] [--notify COMMAND]
@@ -928,6 +928,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 overrides.max_runs,
                 overrides.guidance,
                 overrides.notify.as_deref(),
+                overrides.shard,
             )
             .map_err(|error| error.to_string())?;
             println!("counterexample retained: {}", result.display());
@@ -950,6 +951,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 overrides.max_runs,
                 overrides.guidance,
                 overrides.notify.as_deref(),
+                overrides.shard,
             )
             .map_err(|error| error.to_string())?;
             println!("counterexample retained: {}", result.display());
@@ -965,6 +967,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 overrides.max_runs,
                 overrides.guidance,
                 overrides.notify.as_deref(),
+                overrides.shard,
             )
             .map_err(|error| error.to_string())?;
             println!("campaign passed: {}", result.display());
@@ -982,6 +985,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 overrides.max_runs,
                 overrides.guidance,
                 overrides.notify.as_deref(),
+                overrides.shard,
             )
             .map_err(|error| error.to_string())?;
             println!("campaign passed: {}", result.display());
@@ -1010,6 +1014,7 @@ struct ExploreOverrides {
     max_runs: Option<u16>,
     guidance: Option<CampaignGuidance>,
     notify: Option<String>,
+    shard: Option<(u16, u16)>,
 }
 
 /// Parse `--max-runs N`, `--guidance MODE`, and `--notify COMMAND`
@@ -1040,6 +1045,17 @@ fn compose_explore_overrides(args: &[String]) -> Result<(PathBuf, ExploreOverrid
                     return Err(USAGE.to_owned());
                 }
                 overrides.notify = Some(value.clone());
+                index += 2;
+            }
+            "--shard" => {
+                let value = args.get(index + 1).ok_or(USAGE.to_owned())?;
+                let (index_text, total_text) = value.split_once('/').ok_or(USAGE.to_owned())?;
+                let shard_index: u16 = index_text.parse().map_err(|_| USAGE.to_owned())?;
+                let total: u16 = total_text.parse().map_err(|_| USAGE.to_owned())?;
+                if total == 0 || shard_index >= total || total > 64 {
+                    return Err(USAGE.to_owned());
+                }
+                overrides.shard = Some((shard_index, total));
                 index += 2;
             }
             other => {
@@ -1188,6 +1204,20 @@ mod usage_tests {
         // Empty hooks and missing values are usage errors.
         assert!(overrides(&["--notify", "", "compose.yaml"]).is_err());
         assert!(overrides(&["--notify"]).is_err());
+    }
+
+    #[test]
+    fn explore_overrides_parse_a_shard_partition() {
+        let (_, parsed) = overrides(&["--shard", "1/4", "compose.yaml"]).unwrap();
+        assert_eq!(parsed.shard, Some((1, 4)));
+
+        // Malformed partitions and out-of-range workers are usage errors.
+        for value in ["4/4", "5/4", "0/0", "a/b", "1", "1/65"] {
+            assert!(
+                overrides(&["--shard", value, "compose.yaml"]).is_err(),
+                "{value}"
+            );
+        }
     }
 
     #[test]
