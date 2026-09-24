@@ -161,6 +161,13 @@ Theseus currently has:
   serial markers (`invoked oom-killer`, `Out of memory: Killed process`,
   cgroup OOM), so a memory-exhaustion death is distinguishable from every
   other crash and the verdict replays like every other retained proof.
+- Property history across campaigns: `theseus history campaign-dir...
+  [--property NAME]` traces each property's verdicts across retained
+  campaigns, grouped by the property's declaration identity - the SHA-256
+  of the declaration in the retained replay plan, so a changed needle
+  starts a new history. Entries record every verdict in campaign order
+  with the first failing campaign, in the same machine-readable JSON
+  conventions as the status and query surfaces.
 
 The baseline has important limits:
 
@@ -399,24 +406,24 @@ reproducible investigation.
 
 ## Immediate next work
 
-### 1. Temporal property history across campaigns
+### 1. Quiet periods and fault windows as campaign inputs
 
-A failed property names its first violating timeline; nothing yet connects
-a property's verdicts across campaigns or runs into one auditable history.
-The next work:
+The test-template lifecycle derives quiet periods and automatic terminal
+recovery from command roles; explicit campaigns cannot express the same
+windows directly. The next work:
 
-- CLI: extend the status surface (or a companion) with per-property verdict
-  history keyed by the property's declaration identity, gathered from
-  retained campaign results and evaluation captures.
-- Output: machine-readable rows a CI gate or notification hook can embed,
-  matching the stable JSON conventions of the status and query surfaces.
-- Tests: history fixtures over multiple retained results and evaluation
-  captures; the shape stays stable across old bundles.
+- Compose: campaign-level `quiet` and `fault_window` declarations bounded
+  by operation names or rounds, composable with the existing barrier and
+  lifecycle faults instead of being tied to eventually/finally roles.
+- Runner: apply the windows through the same deterministic scheduler paths
+  the template lifecycle uses, replay-checked like every fault.
+- Tests: compose validation fixtures and runner window-application tests;
+  template-derived behavior stays byte-stable.
 
-OOM detection landed and is described in the verified baseline; the parity
-analysis tracks the remaining cross-priority gaps, including hosted
-campaign operation, parallel workers, and demand-driven coverage
-breadth for JavaScript and .NET.
+Property history across campaigns landed and is described in the verified
+baseline; the parity analysis tracks the remaining cross-priority gaps,
+including hosted campaign operation, parallel workers, and demand-driven
+coverage breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 

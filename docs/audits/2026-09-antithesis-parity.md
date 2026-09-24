@@ -73,8 +73,10 @@ This month closed or narrowed several named gaps:
    per run (`theseus:crash`, `theseus:completed`, `theseus:oom`) are
    recorded beside declared properties without user declaration; the OOM
    verdict classifies the kernel's own out-of-memory serial evidence, so it
-   replays like every other retained proof. The open work is cross-run
-   property history keyed by assertion identity.
+   replays like every other retained proof. Cross-run property history
+   landed: `theseus history` traces verdicts across campaigns grouped by
+   the property's declaration digest. The open work is a cross-run catalog
+   with Antithesis-style assertion identity management.
 5. **Custom fault interface** — a user-declared fault action (command +
    condition + duration) inside the generated profile model. Landed:
    `kind: custom` campaign faults run a user argv inside an image-backed

@@ -24,6 +24,7 @@ theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
 theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
 theseus compare --forked base-campaign-dir forked-campaign-dir
 theseus status campaign-dir [--format json|text]
+theseus history campaign-dir... [--property NAME] [--format json|text]
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
 theseus query campaign-dir --list [--service NAME] [--format json]
@@ -752,6 +753,23 @@ results with missing fields, exits zero whenever the bundle reads, and
 rejects directories that retain no campaign evidence. Completion hooks can
 embed the JSON directly; CI gating stays on the explore command's own exit
 code.
+
+`history` traces one property's verdicts across campaigns:
+
+```sh
+theseus history captures/before captures/after --format json
+theseus history captures/before captures/after --property lost_update
+```
+
+Verdicts group by the property's declaration identity: when a bundle's
+replay plan retains the declaration, the identity is the SHA-256 of that
+declaration, so the same property declared in two campaigns joins into one
+history while a changed needle starts a new one; bundles without a plan
+group by name and kind. Each entry records every verdict in the order the
+campaigns were named (status, campaign status, run count, failed
+timelines, and the retained detail) plus the first named campaign that
+retained the property as failed. `--property NAME` narrows the history;
+directories without campaign evidence are rejected.
 
 ## Query a moment
 
