@@ -7828,13 +7828,13 @@ fn campaign_schedule_event(
         .any(|window| window.before == definition.name);
     let closing_window = selected
         .iter()
-        .any(|fault| fault.until.as_deref() == Some(definition.name));
+        .any(|fault| fault.until.as_deref() == Some(definition.name.as_str()));
     let recover_faults = if quiet_terminal || quiet_window || closing_window {
         selected
             .iter()
             .filter(|fault| campaign_fault_applies(fault, &schedule.operations[..index], campaign))
             .filter(|fault| {
-                let closes_here = fault.until.as_deref() == Some(definition.name);
+                let closes_here = fault.until.as_deref() == Some(definition.name.as_str());
                 if quiet_terminal || closes_here {
                     true
                 } else {
