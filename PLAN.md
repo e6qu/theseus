@@ -142,6 +142,12 @@ Theseus currently has:
   `THESEUS_FAILED_PROPERTIES` in its environment. The hook never changes
   verdicts or evidence; its failure is reported without failing the
   campaign.
+- A versioned campaign status surface: `theseus status campaign-dir
+  --format json` answers "what did this campaign conclude" in one stable
+  shape (`theseus-campaign-status-v1`): the retained status, failed runs and
+  properties with their verbatim verdicts, the declared policy and budget,
+  and the artifact inventory - over current results, old bundles, and
+  minimized counterexample exports.
 
 The baseline has important limits:
 
@@ -379,24 +385,24 @@ reproducible investigation.
 
 ## Immediate next work
 
-### 1. A versioned campaign status surface
+### 1. A representative Java coverage path
 
-Machine-readable retrieval exists per surface (`report --format json`,
-`query`, `compare`, `evaluate`), but nothing answers "what did this campaign
-conclude" with one stable entry point. The missing piece:
+Application coverage works for GCC C, Go main-module packages, and LLVM
+C/C++/Rust; Java remains the largest production toolchain without a path.
+The next work is the smallest honest Java slice:
 
-- CLI: a status command (or an equivalent) emitting the versioned summary
-  of a retained campaign: format, status, failed properties with their
-  first violating timeline and moment addresses, run count, guidance,
-  budget, and the retained artifact inventory.
-- Notifications and CI gating compose on that JSON instead of parsing prose
-  or result internals; hooks can embed it directly.
-- Tests: status fixtures over retained campaign results, including old
-  bundles and counterexample exports; the shape stays stable across them.
+- Coverage: a Java agent (or JVMTI equivalent) recording class-load and
+  method/probe coverage for one selected JAR, with build-scoped identities
+  like the LLVM and Go frontends.
+- Plan and runner: declare the agent and symbols per service, lock them
+  like every other coverage catalog, and join source locations into
+  reports.
+- Tests: an instrumented-JAR fixture over a real JVM run; coverage survives
+  replay and report joins.
 
-Campaign completion notifications landed and are described in the verified
-baseline; the parity analysis tracks the remaining cross-priority gaps,
-including the full campaign API surface and coverage breadth.
+The versioned campaign status surface landed and is described in the
+verified baseline; the parity analysis tracks the remaining cross-priority
+gaps, including hosted campaign operation and parallel workers.
 
 ## Priority 6: product surface and workload compatibility
 

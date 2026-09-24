@@ -23,6 +23,7 @@ theseus compare --format json|markdown|github left-campaign-dir right-campaign-d
 theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
 theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
 theseus compare --forked base-campaign-dir forked-campaign-dir
+theseus status campaign-dir [--format json|text]
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
 theseus query campaign-dir --list [--service NAME] [--format json]
@@ -695,6 +696,27 @@ works with `--expect-counterexample` and `--fork-run`.
 `--fork-run` and `--replace-fault` operate on a retained campaign directory
 instead of a Compose file; see
 [Investigate two campaign results](#investigate-two-campaign-results).
+
+## Status
+
+One stable answer to "what did this campaign conclude", for hooks and CI
+instead of people:
+
+```sh
+theseus status campaign --format json
+theseus status campaign
+```
+
+The versioned JSON (`theseus-campaign-status-v1`) reports the retained
+status (`passed`, `failed`, or `counterexample` for minimized exports), the
+declared policy (driver, guidance, budget), the run count with the failed
+timeline indices, every retained property verdict verbatim with the failed
+names collected, and the artifact inventory (result, replay plan, retained
+run directories, checkpoint). It reads only the bundle, tolerates old
+results with missing fields, exits zero whenever the bundle reads, and
+rejects directories that retain no campaign evidence. Completion hooks can
+embed the JSON directly; CI gating stays on the explore command's own exit
+code.
 
 ## Query a moment
 
