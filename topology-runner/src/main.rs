@@ -138,6 +138,64 @@ struct CampaignPlan {
     /// shared checkpoint prefix is reused up to the substituted barrier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     counterfactual: Option<CounterfactualPlan>,
+    /// Parallel sharding: execute only this worker's deterministic partition
+    /// of the candidate corpus, so N workers cover the whole corpus with
+    /// disjoint, byte-stable partitions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shard: Option<ShardPlan>,
+}
+
+/// One locked shard of the candidate corpus: `index` out of `total` workers.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct ShardPlan {
+    index: u16,
+    total: u16,
+}
+
+/// The deterministic partition of a corpus for one shard: schedules whose
+/// corpus position divides evenly, in corpus order. The union of all shards
+/// is the whole corpus, and the partitions are disjoint.
+fn shard_of_corpus(corpus: usize, shard: &ShardPlan) -> Vec<usize> {
+    (0..corpus)
+        .filter(|position| {
+            position % usize::from(shard.total) == usize::from(shard.index)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod shard_tests {
+    use super::*;
+
+    #[test]
+    fn shards_partition_the_corpus_disjointly_and_completely() {
+        let corpus = 41;
+        let mut covered = Vec::new();
+        for index in 0..4_u16 {
+            let shard = ShardPlan {
+                index,
+                total: 4,
+            };
+            let schedules = shard_of_corpus(corpus, &shard);
+            assert_eq!(schedules.first().copied(), Some(usize::from(index)));
+            assert_eq!(schedules.len(), 10 + usize::from(index < 1));
+            for schedule in &schedules {
+                assert_eq!(schedule % 4, usize::from(index));
+                assert!(!covered.contains(schedule));
+                covered.push(*schedule);
+            }
+        }
+        covered.sort();
+        assert_eq!(covered, (0..corpus).collect::<Vec<_>>());
+
+        // Shards are byte-stable across reruns and an over-wide total keeps
+        // later shards empty rather than overlapping.
+        let empty = ShardPlan {
+            index: 3,
+            total: 4,
+        };
+        assert_eq!(shard_of_corpus(3, &empty), Vec::<usize>::new());
+    }
 }
 
 /// One quiet window: at this operation's barrier the campaign recovers
@@ -813,6 +871,9 @@ struct CampaignResult {
     /// campaign without positional guessing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     counterfactual: Option<CounterfactualPlan>,
+    /// The corpus shard this execution explored, when the plan declared one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shard: Option<ShardPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     replay_verification: Option<CampaignReplayVerification>,
     runs: Vec<CampaignRun>,
@@ -3695,6 +3756,7 @@ fn execute_campaign(
     // recording after the substituted decision, so it must not inherit the
     // recorded machine-stream gating, corpus bounds, or search evidence.
     let counterfactual = campaign.counterfactual.clone();
+    let campaign_shard = campaign.shard.clone();
     let recorded_view;
     let recorded = match (recorded, counterfactual.as_ref()) {
         (Some(recorded), Some(fork)) => {
@@ -3741,6 +3803,17 @@ fn execute_campaign(
     let mut seen_structured_choices = std::collections::BTreeSet::new();
     let mut seen_scheduling_decisions = std::collections::BTreeSet::new();
     let mut pending = (0..schedules.len()).collect::<Vec<_>>();
+    if let Some(shard) = &campaign.shard {
+        pending = shard_of_corpus(schedules.len(), shard);
+        if pending.is_empty() {
+            return Err(format!(
+                "campaign shard {}/{} retains no schedules of the {} candidate corpus",
+                shard.index,
+                shard.total,
+                schedules.len()
+            ));
+        }
+    }
     let mut observations = Vec::new();
     let mut replay_mismatches = Vec::new();
     let mut marker_guard_rejections = 0_usize;
@@ -4166,6 +4239,7 @@ fn execute_campaign(
                 .sum(),
             search,
             counterfactual: counterfactual.clone(),
+            shard: campaign_shard.clone(),
             replay_verification: recorded.map(|recorded| CampaignReplayVerification {
                 status: if replay_verified { "passed" } else { "failed" },
                 detail: if replay_verified {
@@ -15724,6 +15798,7 @@ mod tests {
             max_faults_per_run: 1,
             max_operations_per_run: 2,
             counterfactual: None,
+            shard: None,
         };
         let checkpoint = CampaignCheckpoint {
             switches: BTreeMap::new(),

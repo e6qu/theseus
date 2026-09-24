@@ -1346,6 +1346,15 @@ pub struct QuietWindowPlan {
     pub before: String,
 }
 
+/// One locked shard of the candidate corpus: `index` out of `total`
+/// parallel workers, so the workers cover disjoint, deterministic
+/// partitions of the same corpus.
+#[derive(Debug, Clone, Serialize)]
+pub struct ShardPlan {
+    pub index: u16,
+    pub total: u16,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CampaignPlan {
     pub driver: String,
@@ -1370,6 +1379,8 @@ pub struct CampaignPlan {
     pub properties: Vec<PropertyPlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quiet: Vec<QuietWindowPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard: Option<ShardPlan>,
     pub max_runs: u16,
     pub max_faults_per_run: u8,
     pub max_operations_per_run: u8,
@@ -5523,6 +5534,7 @@ fn campaign_plan(
         stages: campaign.stages,
         faults,
         quiet,
+        shard: None,
         properties,
         max_runs: campaign.max_runs,
         max_faults_per_run: campaign.max_faults_per_run,
@@ -7644,7 +7656,7 @@ pub fn explore_compose(
     path: impl AsRef<Path>,
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ComposeError> {
-    explore_compose_with(path, output, None, None, None)
+    explore_compose_with(path, output, None, None, None, None)
 }
 
 /// Execute the topology's declared campaign with explicit fixed-budget and
@@ -7656,6 +7668,7 @@ pub fn explore_compose_with(
     max_runs: Option<u16>,
     guidance: Option<CampaignGuidance>,
     notify: Option<&str>,
+    shard: Option<(u16, u16)>,
 ) -> Result<PathBuf, ComposeError> {
     let mut plan = load_compose_plan(&path)?;
     if plan.campaign.is_none() {
@@ -7663,6 +7676,7 @@ pub fn explore_compose_with(
             "Compose file has no x-theseus.campaign section".to_owned(),
         ));
     }
+    let shard = shard.map(validate_campaign_shard).transpose()?;
     if let Some(campaign) = plan.campaign.as_mut() {
         if let Some(max_runs) = max_runs {
             campaign.max_runs = max_runs;
@@ -7670,6 +7684,7 @@ pub fn explore_compose_with(
         if let Some(guidance) = guidance {
             campaign.guidance = guidance;
         }
+        campaign.shard = shard;
     }
     plan.topology_runner = Some(installed_runner_artifact()?);
     let output = output.as_ref().to_path_buf();
@@ -7768,6 +7783,7 @@ pub fn explore_compose_expect_counterexample_with(
     max_runs: Option<u16>,
     guidance: Option<CampaignGuidance>,
     notify: Option<&str>,
+    shard: Option<(u16, u16)>,
 ) -> Result<PathBuf, ComposeError> {
     let mut plan = load_compose_plan(&path)?;
     let campaign = plan.campaign.as_ref().ok_or_else(|| {
@@ -7782,6 +7798,7 @@ pub fn explore_compose_expect_counterexample_with(
             "campaign has no property named {property:?}"
         )));
     }
+    let shard = shard.map(validate_campaign_shard).transpose()?;
     if let Some(campaign) = plan.campaign.as_mut() {
         if let Some(max_runs) = max_runs {
             campaign.max_runs = max_runs;
@@ -7789,6 +7806,7 @@ pub fn explore_compose_expect_counterexample_with(
         if let Some(guidance) = guidance {
             campaign.guidance = guidance;
         }
+        campaign.shard = shard;
     }
     plan.topology_runner = Some(installed_runner_artifact()?);
     let output = output.as_ref().to_path_buf();
@@ -7797,6 +7815,18 @@ pub fn explore_compose_expect_counterexample_with(
     let _ = fs::remove_file(&plan_file);
     notify_campaign_completion(notify, &output);
     result.map(|()| output)
+}
+
+/// Validate one exploration shard: `index` out of `total` workers, with a
+/// bounded worker count so one campaign cannot fan out unbounded KVM load.
+fn validate_campaign_shard(shard: (u16, u16)) -> Result<ShardPlan, ComposeError> {
+    let (index, total) = shard;
+    if total == 0 || total > 64 || index >= total {
+        return Err(ComposeError::Invalid(format!(
+            "campaign shard must be INDEX/TOTAL with 0 <= INDEX < TOTAL <= 64: {index}/{total}"
+        )));
+    }
+    Ok(ShardPlan { index, total })
 }
 
 /// Re-run a recorded topology using its locked service artifacts.
