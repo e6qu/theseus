@@ -37,7 +37,7 @@ Use these labels consistently:
 | Deterministic replay | Partial | Seeds, locked inputs, schedules, faults, checkpoints, and bundles are retained, but uncontrolled kernel and application behavior can still escape the model. |
 | Feedback-guided exploration | Partial | One bounded decision-prefix policy combines coverage, properties, topology states, structured choices, runnable sets, faults, and prior outcomes; it is not yet validated at production scale. |
 | Fault injection | Partial | Explicit and topology-derived profiles cover service lifecycle, asymmetric network degradation and partitions, storage, packet, clock operations including backward jumps and rate windows, CPU throttling, directed link clogs, and user-declared custom commands inside image-backed services, including generated candidates: the standard profile also proposes custom candidates that re-run a service's own declared commands at eligible barriers. |
-| Assertions and guidance | Partial | Always, always-or-unreachable, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
+| Assertions and guidance | Partial | Always, always-or-unreachable, sometimes, reachable, and unreachable properties exist, and every campaign retains automatic crash, completion, and OOM verdicts; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
 | Coverage guidance | Partial | GCC C and Go basic blocks plus LLVM C/C++/Rust edges cover native executables, shared libraries, a selected Cargo graph, and a selected Go command's imported main-module packages; a Java agent records class-load coverage for one selected JAR with build-scoped identities and locked class-to-offset symbol maps. Compose locks manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go external modules and CGO, Java method-level probes, JavaScript, and .NET remain open. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
 | Test composition | Partial | Explicit operations and discovered Antithesis-compatible image templates use all seven lifecycle roles. Each timeline selects one template, the explorer varies bounded command concurrency, eventual checks kill live commands, and final checks join them. Production-scale adaptive command scheduling remains open. |
@@ -155,6 +155,12 @@ Theseus currently has:
   Java command via `-javaagent` options, reports first-hit class-load
   coverage through the shared serial-line protocol, and the runner validates
   the map before boot and joins dotted class names into reports.
+- Default OOM detection: every campaign retains `theseus:oom` beside
+  `theseus:crash` and `theseus:completed`. Each service's result carries an
+  `oom` check classified from the kernel's own deterministic out-of-memory
+  serial markers (`invoked oom-killer`, `Out of memory: Killed process`,
+  cgroup OOM), so a memory-exhaustion death is distinguishable from every
+  other crash and the verdict replays like every other retained proof.
 
 The baseline has important limits:
 
@@ -393,23 +399,23 @@ reproducible investigation.
 
 ## Immediate next work
 
-### 1. OOM detection for the default properties
+### 1. Temporal property history across campaigns
 
-`theseus:crash` and `theseus:completed` record crash and completion verdicts
-without declaration; a guest killed by memory exhaustion is currently just
-another crash. The missing piece:
+A failed property names its first violating timeline; nothing yet connects
+a property's verdicts across campaigns or runs into one auditable history.
+The next work:
 
-- Runner: classify guest termination caused by the kernel out-of-memory
-  killer or host-side memory pressure, recording an explicit
-  `theseus:oom`-style verdict beside the crash detail.
-- Evidence: the serial markers and exit evidence that justify the
-  classification are retained, so the verdict replays like every other.
-- Tests: runner fixtures over serial transcripts with out-of-memory killer
-  markers; verdicts stay byte-stable across replay.
+- CLI: extend the status surface (or a companion) with per-property verdict
+  history keyed by the property's declaration identity, gathered from
+  retained campaign results and evaluation captures.
+- Output: machine-readable rows a CI gate or notification hook can embed,
+  matching the stable JSON conventions of the status and query surfaces.
+- Tests: history fixtures over multiple retained results and evaluation
+  captures; the shape stays stable across old bundles.
 
-The Java coverage path landed and is described in the verified baseline;
-the parity analysis tracks the remaining cross-priority gaps, including
-hosted campaign operation, parallel workers, and demand-driven coverage
+OOM detection landed and is described in the verified baseline; the parity
+analysis tracks the remaining cross-priority gaps, including hosted
+campaign operation, parallel workers, and demand-driven coverage
 breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility

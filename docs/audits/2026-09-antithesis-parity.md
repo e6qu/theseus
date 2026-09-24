@@ -69,10 +69,12 @@ This month closed or narrowed several named gaps:
    the first diverging boundary with both sides' moments. Forking at an
    arbitrary retained checkpoint or on an arbitrary recorded choice
    (operation inputs, schedules, structured choices) remains open.
-4. **Default properties** — automatic crash and completion verdicts per
-   run (`theseus:crash`, `theseus:completed`) are recorded beside declared
-   properties without user declaration. The open work is OOM detection and
-   cross-run property history keyed by assertion identity.
+4. **Default properties** — automatic crash, completion, and OOM verdicts
+   per run (`theseus:crash`, `theseus:completed`, `theseus:oom`) are
+   recorded beside declared properties without user declaration; the OOM
+   verdict classifies the kernel's own out-of-memory serial evidence, so it
+   replays like every other retained proof. The open work is cross-run
+   property history keyed by assertion identity.
 5. **Custom fault interface** — a user-declared fault action (command +
    condition + duration) inside the generated profile model. Landed:
    `kind: custom` campaign faults run a user argv inside an image-backed
