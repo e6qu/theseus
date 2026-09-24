@@ -6,10 +6,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use theseus_cli::{
-    boundary_at_moment, capture_evaluation, cargo_coverage, cargo_coverage_rustc_wrapper,
-    collect_moment, compare_campaigns, compare_forked_campaigns, evaluate, explore,
-    explore_compose_expect_counterexample_with, explore_compose_forked, explore_compose_with,
-    find_moment, go_coverage, list_moments, load_compose_plan, load_plan,
+    boundary_at_moment, campaign_status, capture_evaluation, cargo_coverage,
+    cargo_coverage_rustc_wrapper, collect_moment, compare_campaigns, compare_forked_campaigns,
+    evaluate, explore, explore_compose_expect_counterexample_with, explore_compose_forked,
+    explore_compose_with, find_moment, go_coverage, list_moments, load_compose_plan, load_plan,
     minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
     minimize_exploration_path, next_moment_in, previous_moment_in, query_campaigns, replay,
     replay_compose, replay_exploration, replay_exploration_path, replay_to, report, report_file,
@@ -35,6 +35,7 @@ const USAGE: &str = "Usage:
   theseus compare --query /json/pointer left-campaign-dir right-campaign-dir
   theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
   theseus compare --forked base-campaign-dir forked-campaign-dir
+  theseus status campaign-dir [--format json|text]
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
   theseus query campaign-dir --list [--service NAME] [--format json]
@@ -102,6 +103,46 @@ fn print_evaluation(summary: theseus_cli::EvaluationSummary, format: &str) -> Re
     } else {
         Err("evaluation did not satisfy its replay or expected-outcome contract".to_owned())
     }
+}
+
+/// The text rendering of one campaign status summary.
+fn print_status_text(status: &theseus_cli::CampaignStatus) {
+    println!("status: {}", status.status);
+    if let Some(driver) = &status.driver {
+        println!("driver: {driver}");
+    }
+    if let Some(guidance) = &status.guidance {
+        println!("guidance: {guidance}");
+    }
+    if let Some(budget) = status.budget {
+        println!("budget: {budget}");
+    }
+    println!("runs: {}", status.run_count);
+    if !status.failed_runs.is_empty() {
+        println!("failed runs: {:?}", status.failed_runs);
+    }
+    if !status.failed_properties.is_empty() {
+        println!("failed properties: {}", status.failed_properties.join(", "));
+    }
+    for property in &status.properties {
+        println!(
+            "property {} ({}): {}",
+            property.name, property.kind, property.status
+        );
+        if !property.detail.is_empty() {
+            println!("  {}", property.detail);
+        }
+    }
+    if let Some(counterexample) = &status.counterexample {
+        println!("counterexample: {counterexample}");
+    }
+    println!(
+        "artifacts: result {} plan {} runs {} checkpoint {}",
+        status.artifacts.result,
+        status.artifacts.plan,
+        status.artifacts.runs,
+        status.artifacts.checkpoint
+    );
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
@@ -397,6 +438,37 @@ fn run(args: Vec<String>) -> Result<(), String> {
             if let Some(next) = &hit.next {
                 println!("next: {next}");
             }
+            Ok(())
+        }
+        [command, bundle, flag, format] if command == "status" && flag == "--format" => {
+            let status = campaign_status(bundle).map_err(|error| error.to_string())?;
+            match format.as_str() {
+                "json" => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&status)
+                        .map_err(|error| format!("cannot encode status: {error}"))?
+                ),
+                "text" => print_status_text(&status),
+                _ => return Err("status format must be json or text".to_owned()),
+            }
+            Ok(())
+        }
+        [command, flag, format, bundle] if command == "status" && flag == "--format" => {
+            let status = campaign_status(bundle).map_err(|error| error.to_string())?;
+            match format.as_str() {
+                "json" => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&status)
+                        .map_err(|error| format!("cannot encode status: {error}"))?
+                ),
+                "text" => print_status_text(&status),
+                _ => return Err("status format must be json or text".to_owned()),
+            }
+            Ok(())
+        }
+        [command, bundle] if command == "status" => {
+            let status = campaign_status(bundle).map_err(|error| error.to_string())?;
+            print_status_text(&status);
             Ok(())
         }
         [command] if command == "evaluate" => {

@@ -18,6 +18,7 @@ mod manifest;
 mod query;
 mod report;
 mod runner;
+mod status;
 mod topology_evidence;
 
 pub use topology_evidence::{verify_topology_bundle, TopologyBundleSummary};
@@ -57,3 +58,6 @@ pub use query::{
 };
 pub use report::{report, report_file, report_text, ReportError, ReportFormat};
 pub use runner::{replay, replay_to, test, ReplayResult, RunError, TestResult};
+pub use status::{
+    campaign_status, ArtifactInventory, CampaignStatus, PropertyVerdict, StatusError,
+};

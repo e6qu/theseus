@@ -11800,7 +11800,6 @@ x-theseus:
         );
 
         // Without --notify nothing runs at all.
-        let hook = format!("touch {}/hook-quiet", output.display());
         notify_campaign_completion(None, &output);
         assert!(!output.join("hook-quiet").is_file());
     }
