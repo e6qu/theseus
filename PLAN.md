@@ -38,7 +38,7 @@ Use these labels consistently:
 | Feedback-guided exploration | Partial | One bounded decision-prefix policy combines coverage, properties, topology states, structured choices, runnable sets, faults, and prior outcomes; it is not yet validated at production scale. |
 | Fault injection | Partial | Explicit and topology-derived profiles cover service lifecycle, asymmetric network degradation and partitions, storage, packet, clock operations including backward jumps and rate windows, CPU throttling, directed link clogs, and user-declared custom commands inside image-backed services, including generated candidates: the standard profile also proposes custom candidates that re-run a service's own declared commands at eligible barriers. |
 | Assertions and guidance | Partial | Always, always-or-unreachable, sometimes, reachable, and unreachable properties exist; language-neutral bounded shell choices and a Rust helper exist, but language support and assertion-guided exploration remain narrow. |
-| Coverage guidance | Partial | GCC C and Go basic blocks plus LLVM C/C++/Rust edges cover native executables, shared libraries, a selected Cargo graph, and a selected Go command's imported main-module packages. Compose locks manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go external modules and CGO, Java, and production-scale validation remain open. |
+| Coverage guidance | Partial | GCC C and Go basic blocks plus LLVM C/C++/Rust edges cover native executables, shared libraries, a selected Cargo graph, and a selected Go command's imported main-module packages; a Java agent records class-load coverage for one selected JAR with build-scoped identities and locked class-to-offset symbol maps. Compose locks manifests and symbols, validates them before boot, and joins source locations into reports; Rust dynamic graphs, Go external modules and CGO, Java method-level probes, JavaScript, and .NET remain open. |
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
 | Test composition | Partial | Explicit operations and discovered Antithesis-compatible image templates use all seven lifecycle roles. Each timeline selects one template, the explorer varies bounded command concurrency, eventual checks kill live commands, and final checks join them. Production-scale adaptive command scheduling remains open. |
 | Failure investigation | Early | Replay, minimization, checkpoints, reports, history comparison, one-decision counterfactual forks with retained diffable futures, and moment-scoped temporal queries exist; interactive time travel, general interventions, and causal evidence do not. |
@@ -148,6 +148,13 @@ Theseus currently has:
   properties with their verbatim verdicts, the declared policy and budget,
   and the artifact inventory - over current results, old bundles, and
   minimized counterexample exports.
+- A representative Java coverage path: `theseus coverage java` builds a
+  generic class-load coverage agent for one application JAR with the JDK's
+  own tools, locks the identity, agent, JAR, and every class into a build
+  digest, and writes a class-to-offset symbol map. The agent attaches to any
+  Java command via `-javaagent` options, reports first-hit class-load
+  coverage through the shared serial-line protocol, and the runner validates
+  the map before boot and joins dotted class names into reports.
 
 The baseline has important limits:
 
@@ -327,8 +334,9 @@ source locations even when deployed binaries are stripped. The next work is:
 1. Validate large multi-service symbol catalogs on both released Linux
    architectures and retain native-KVM evidence for stripped executables and
    multiple DSOs.
-2. Extend Go coverage to external module graphs and CGO, add a representative
-   Java path, then select JavaScript and .NET work from real workload demand.
+2. Extend Go coverage to external module graphs and CGO, deepen Java beyond
+   class-load coverage to method-level probes, then select JavaScript and
+   .NET work from real workload demand.
 3. Compare block, edge, sampled-PC, and unguided search under the same public
    campaign budgets; retain every workload and result.
 
@@ -385,24 +393,24 @@ reproducible investigation.
 
 ## Immediate next work
 
-### 1. A representative Java coverage path
+### 1. OOM detection for the default properties
 
-Application coverage works for GCC C, Go main-module packages, and LLVM
-C/C++/Rust; Java remains the largest production toolchain without a path.
-The next work is the smallest honest Java slice:
+`theseus:crash` and `theseus:completed` record crash and completion verdicts
+without declaration; a guest killed by memory exhaustion is currently just
+another crash. The missing piece:
 
-- Coverage: a Java agent (or JVMTI equivalent) recording class-load and
-  method/probe coverage for one selected JAR, with build-scoped identities
-  like the LLVM and Go frontends.
-- Plan and runner: declare the agent and symbols per service, lock them
-  like every other coverage catalog, and join source locations into
-  reports.
-- Tests: an instrumented-JAR fixture over a real JVM run; coverage survives
-  replay and report joins.
+- Runner: classify guest termination caused by the kernel out-of-memory
+  killer or host-side memory pressure, recording an explicit
+  `theseus:oom`-style verdict beside the crash detail.
+- Evidence: the serial markers and exit evidence that justify the
+  classification are retained, so the verdict replays like every other.
+- Tests: runner fixtures over serial transcripts with out-of-memory killer
+  markers; verdicts stay byte-stable across replay.
 
-The versioned campaign status surface landed and is described in the
-verified baseline; the parity analysis tracks the remaining cross-priority
-gaps, including hosted campaign operation and parallel workers.
+The Java coverage path landed and is described in the verified baseline;
+the parity analysis tracks the remaining cross-priority gaps, including
+hosted campaign operation, parallel workers, and demand-driven coverage
+breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 

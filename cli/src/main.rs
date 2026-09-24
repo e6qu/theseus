@@ -9,13 +9,13 @@ use theseus_cli::{
     boundary_at_moment, campaign_status, capture_evaluation, cargo_coverage,
     cargo_coverage_rustc_wrapper, collect_moment, compare_campaigns, compare_forked_campaigns,
     evaluate, explore, explore_compose_expect_counterexample_with, explore_compose_forked,
-    explore_compose_with, find_moment, go_coverage, list_moments, load_compose_plan, load_plan,
-    minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
+    explore_compose_with, find_moment, go_coverage, java_coverage, list_moments, load_compose_plan,
+    load_plan, minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
     minimize_exploration_path, next_moment_in, previous_moment_in, query_campaigns, replay,
     replay_compose, replay_exploration, replay_exploration_path, replay_to, report, report_file,
     report_text, snapshot_exploration_path, temporal_query, test, test_compose,
     verify_native_evidence, verify_topology_bundle, write_evaluation_lock, CampaignGuidance,
-    ReportFormat, TemporalRelation, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE,
+    ReportFormat, TemporalRelation, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE, JAVA_COVERAGE_USAGE,
 };
 
 const USAGE: &str = "Usage:
@@ -50,6 +50,8 @@ const USAGE: &str = "Usage:
       [--no-default-features] [--features FEATURES] [--target-dir DIR]
   theseus coverage go --process NAME --module NAME --package PACKAGE --symbols DIR --output FILE
       [--goarch amd64|arm64] [--tags TAGS] [--mod readonly|vendor] [--offline] [--target-dir DIR]
+  theseus coverage java --process NAME --module NAME --jar FILE --symbols DIR --output FILE
+      [--agent-jar FILE]
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
@@ -560,7 +562,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         [command, flag] if command == "coverage" && (flag == "--help" || flag == "-h") => {
-            println!("{CARGO_COVERAGE_USAGE}\n\n{GO_COVERAGE_USAGE}");
+            println!("{CARGO_COVERAGE_USAGE}\n\n{GO_COVERAGE_USAGE}\n\n{JAVA_COVERAGE_USAGE}");
             Ok(())
         }
         [command, subcommand, rest @ ..] if command == "coverage" && subcommand == "cargo" => {
@@ -584,9 +586,28 @@ fn run(args: Vec<String>) -> Result<(), String> {
             );
             Ok(())
         }
-        [command, ..] if command == "coverage" => {
-            Err(format!("{CARGO_COVERAGE_USAGE}\n\n{GO_COVERAGE_USAGE}"))
+        [command, subcommand, flag]
+            if command == "coverage"
+                && subcommand == "java"
+                && (flag == "--help" || flag == "-h") =>
+        {
+            println!("{JAVA_COVERAGE_USAGE}");
+            Ok(())
         }
+        [command, subcommand, rest @ ..] if command == "coverage" && subcommand == "java" => {
+            let result = java_coverage(rest)?;
+            println!(
+                "collected {} class coverage points; manifest: {}; symbols: {}; agent: {}",
+                result.classes,
+                result.manifest.display(),
+                result.symbols.display(),
+                result.agent_jar.display()
+            );
+            Ok(())
+        }
+        [command, ..] if command == "coverage" => Err(format!(
+            "{CARGO_COVERAGE_USAGE}\n\n{GO_COVERAGE_USAGE}\n\n{JAVA_COVERAGE_USAGE}"
+        )),
         [command, minimize, bundle, path_flag, path, output_flag, output]
             if command == "explore"
                 && minimize == "--minimize"

@@ -38,6 +38,8 @@ theseus coverage cargo --process NAME --module NAME --bin NAME --symbols DIR --o
     [--no-default-features] [--features FEATURES] [--target-dir DIR]
 theseus coverage go --process NAME --module NAME --package PACKAGE --symbols DIR --output FILE
     [--goarch amd64|arm64] [--tags TAGS] [--mod readonly|vendor] [--offline] [--target-dir DIR]
+theseus coverage java --process NAME --module NAME --jar FILE --symbols DIR --output FILE
+    [--agent-jar FILE]
 theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
@@ -295,6 +297,39 @@ build tags, and module resolution mode. External module packages are build
 inputs but are not instrumented. Declare the manifest and symbols in the same
 coverage catalog; the runner validates the Go callback and debug data before
 boot and reports source locations. See Tutorial 39.
+
+For JVM workloads, build the class-load coverage agent for one application
+JAR:
+
+```sh
+theseus coverage java \
+  --process api --module app --jar work/app.jar \
+  --symbols work/symbols --output work/app.theseus-coverage.json
+```
+
+The frontend needs a JDK with `javac` and `jar` on PATH. It compiles the
+packaged agent into `theseus-coverage-agent.jar` (beside the output unless
+`--agent-jar` names another path), lists the JAR's classes, and locks the
+identity, the agent, the JAR, and every class into the build digest. Each
+class's coverage point is the first eight SHA-256 bytes of its internal
+name. Attach the agent to the service's own Java command, which then runs
+inside the image:
+
+```yaml
+shell:
+  command:
+    - java
+    - "-javaagent:/opt/theseus/theseus-coverage-agent.jar=api,app,<build_sha256>"
+    - -jar
+    - /work/app.jar
+```
+
+The agent records every application class the run actually loads - JVM
+classes load lazily, so first load is first touch - through the same
+first-hit serial-line protocol as the other frontends, and the runner
+validates the class-to-offset symbol map before boot and joins dotted class
+names into reports. Put the agent JAR and the application JAR into the
+service image the same way you add test commands.
 
 Commands built with the packaged `theseus-schedule-cc` frontend accept a
 Compose shell operation's explicit `thread_schedule: [0, 1, 2]`. Planning

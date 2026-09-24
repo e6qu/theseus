@@ -14,6 +14,7 @@ mod evidence;
 mod execution;
 mod explore;
 mod go_coverage;
+mod java_coverage;
 mod manifest;
 mod query;
 mod report;
@@ -46,6 +47,7 @@ pub use explore::{
     snapshot_exploration_path, ExploreError,
 };
 pub use go_coverage::{go_coverage, GoCoverageOutput, GO_COVERAGE_USAGE};
+pub use java_coverage::{java_coverage, JavaCoverageOutput, JAVA_COVERAGE_USAGE};
 pub use manifest::{
     load_plan, ArtifactPlan, CheckKind, CheckPlan, ExplorePlan, LoadError, Novelty,
     ReplayFingerprint, ReplayTreeNode, RunPlan,

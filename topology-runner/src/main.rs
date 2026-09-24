@@ -9195,16 +9195,63 @@ struct CampaignInstructionSymbolizer {
 /// Join build-scoped userspace coverage records with the exact symbol files
 /// locked beside the campaign. The key includes the service because two
 /// guests may run the same process/module build independently.
+/// One Java class-load coverage point's human-readable identity, derived
+/// from the frontend's symbol map. Class-load coverage has no instruction
+/// position, so the class name is the whole symbol.
+#[derive(Debug, Clone)]
+struct JavaClassSymbol {
+    symbol: String,
+}
+
 struct CampaignApplicationSymbolizer {
     entries: BTreeMap<(String, String, String, String), (Vec<KernelSymbol>, Loader)>,
+    java_entries:
+        BTreeMap<(String, String, String, String), BTreeMap<String, JavaClassSymbol>>,
 }
 
 impl CampaignApplicationSymbolizer {
     fn from_topology(topology: &TopologyPlan) -> Self {
         let mut entries = BTreeMap::new();
+        let mut java_entries = BTreeMap::new();
         for (service, plan) in &topology.services {
             for coverage in &plan.coverage {
                 let path = Path::new(&coverage.symbols.path);
+                if coverage.format == "theseus-java-coverage-build-v1" {
+                    // The Java symbol map is plain JSON: index it by the
+                    // coverage-point offset the agent reports.
+                    let Ok(map) = fs::read_to_string(path) else {
+                        continue;
+                    };
+                    let Ok(map) = serde_json::from_str::<serde_json::Value>(&map) else {
+                        continue;
+                    };
+                    let mut points = BTreeMap::new();
+                    for class in map["classes"].as_array().map(|classes| classes.as_slice()).unwrap_or_default() {
+                        let (Some(offset), Some(class)) =
+                            (class["offset"].as_str(), class["class"].as_str())
+                        else {
+                            continue;
+                        };
+                        points.insert(
+                            offset.to_owned(),
+                            JavaClassSymbol {
+                                symbol: class.replace('/', "."),
+                            },
+                        );
+                    }
+                    if !points.is_empty() {
+                        java_entries.insert(
+                            (
+                                service.clone(),
+                                coverage.process.clone(),
+                                coverage.module.clone(),
+                                coverage.build_sha256.clone(),
+                            ),
+                            points,
+                        );
+                    }
+                    continue;
+                }
                 if let Ok(loader) = Loader::new(path) {
                     entries.insert(
                         (
@@ -9218,7 +9265,10 @@ impl CampaignApplicationSymbolizer {
                 }
             }
         }
-        Self { entries }
+        Self {
+            entries,
+            java_entries,
+        }
     }
 
     fn symbolize(&self, coverage: &mut BTreeMap<String, Vec<ApplicationBlock>>) {
@@ -9230,6 +9280,12 @@ impl CampaignApplicationSymbolizer {
                     point.module.clone(),
                     point.build_sha256.clone(),
                 );
+                if let Some(java_points) = self.java_entries.get(&key) {
+                    if let Some(java_point) = java_points.get(&point.offset) {
+                        point.symbol = Some(java_point.symbol.clone());
+                    }
+                    continue;
+                }
                 let Some((symbols, sources)) = self.entries.get(&key) else {
                     continue;
                 };
@@ -14048,6 +14104,7 @@ fn validate_coverage_artifact(coverage: &CoverageArtifact) -> Result<(), String>
             "edges",
             "c" | "c++" | "rust"
         ) | ("theseus-go-coverage-build-v1", "blocks", "go")
+            | ("theseus-java-coverage-build-v1", "classes", "java")
     );
     if !supported
         || manifest.format != coverage.format
@@ -14085,6 +14142,28 @@ fn validate_coverage_artifact(coverage: &CoverageArtifact) -> Result<(), String>
             coverage.build_sha256,
             symbol_path.display()
         ));
+    }
+    if coverage.format == "theseus-java-coverage-build-v1" {
+        // The Java symbol artifact is the frontend's class-to-offset map,
+        // not an ELF object: the map itself is the contract.
+        let map: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "coverage symbols are not a Java symbol map: {}: {error}",
+                symbol_path.display()
+            )
+        })?;
+        if map["format"] != "theseus-java-coverage-symbols-v1"
+            || map["build_sha256"] != coverage.build_sha256
+            || map["classes"]
+                .as_array()
+                .is_none_or(|classes| classes.is_empty())
+        {
+            return Err(format!(
+                "coverage symbols do not describe the Java build: {}",
+                symbol_path.display()
+            ));
+        }
+        return Ok(());
     }
     let file = object::File::parse(&*bytes)
         .map_err(|error| format!("coverage symbols are not an ELF object: {error}"))?;
@@ -16596,6 +16675,7 @@ mod tests {
             record.build_sha256.clone(),
         );
         let symbolizer = CampaignApplicationSymbolizer {
+            java_entries: BTreeMap::new(),
             entries: BTreeMap::from([(
                 key,
                 (
@@ -16705,6 +16785,7 @@ mod tests {
             source: None,
         };
         let symbolizer = CampaignApplicationSymbolizer {
+            java_entries: BTreeMap::new(),
             entries: BTreeMap::from([(
                 (
                     "api".to_owned(),
@@ -16727,6 +16808,133 @@ mod tests {
             .as_ref()
             .is_some_and(|source| source.file.ends_with("fixture.go")));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn validates_and_joins_locked_java_coverage_symbols() {
+        let directory = std::env::temp_dir().join(format!(
+            "theseus-java-symbols-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(directory.join("symbols")).unwrap();
+        let digest = "1234567890abcdef".repeat(4);
+        let offset = "0x0123456789abcdef";
+        let symbol_name = format!("app-{digest}.debug");
+        let symbol_map = serde_json::json!({
+            "format": "theseus-java-coverage-symbols-v1",
+            "build_sha256": digest,
+            "classes": [
+                {
+                    "class": "com/example/App",
+                    "offset": offset,
+                    "source": "com/example/App.java"
+                }
+            ]
+        });
+        let symbol_path = directory.join("symbols").join(&symbol_name);
+        fs::write(
+            &symbol_path,
+            serde_json::to_vec_pretty(&symbol_map).unwrap(),
+        )
+        .unwrap();
+        let manifest_path = directory.join("app.theseus-coverage.json");
+        fs::write(
+            &manifest_path,
+            serde_json::json!({
+                "format": "theseus-java-coverage-build-v1",
+                "coverage": "classes",
+                "language": "java",
+                "process": "fixture",
+                "module": "app",
+                "build_sha256": digest,
+                "symbols": symbol_name,
+                "classes": symbol_map["classes"],
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut coverage = CoverageArtifact {
+            format: "theseus-java-coverage-build-v1".to_owned(),
+            coverage: "classes".to_owned(),
+            language: "java".to_owned(),
+            process: "fixture".to_owned(),
+            module: "app".to_owned(),
+            build_sha256: digest.clone(),
+            gnu_build_id: None,
+            manifest: artifact_at(manifest_path).unwrap(),
+            symbols: artifact_at(symbol_path).unwrap(),
+        };
+        let locked = directory.join("locked");
+        fs::create_dir_all(locked.join("artifacts")).unwrap();
+        coverage.manifest =
+            artifact_at(lock_artifact(&locked, "coverage-000.json", &coverage.manifest).unwrap())
+                .unwrap();
+        coverage.symbols =
+            artifact_at(lock_artifact(&locked, "coverage-000.debug", &coverage.symbols).unwrap())
+                .unwrap();
+        validate_coverage_artifact(&coverage).unwrap();
+
+        // A symbol map describing a different build is rejected.
+        coverage.build_sha256 = "f".repeat(64);
+        assert!(validate_coverage_artifact(&coverage)
+            .unwrap_err()
+            .contains("identity changed"));
+        coverage.build_sha256 = digest.clone();
+
+        // The recorded class-load point symbolizes to its dotted class.
+        let symbolizer = CampaignApplicationSymbolizer {
+            java_entries: BTreeMap::from([(
+                (
+                    "api".to_owned(),
+                    "fixture".to_owned(),
+                    "app".to_owned(),
+                    digest.clone(),
+                ),
+                BTreeMap::from([(
+                    offset.to_owned(),
+                    JavaClassSymbol {
+                        symbol: "com.example.App".to_owned(),
+                    },
+                )]),
+            )]),
+            entries: BTreeMap::new(),
+        };
+        let record = ApplicationBlock {
+            process: "fixture".to_owned(),
+            module: "app".to_owned(),
+            build_sha256: digest,
+            edge: None,
+            offset: offset.to_owned(),
+            symbol: None,
+            symbol_offset: None,
+            source: None,
+        };
+        let mut points = BTreeMap::from([("api".to_owned(), vec![record])]);
+        symbolizer.symbolize(&mut points);
+        let point = &points["api"][0];
+        assert_eq!(point.symbol.as_deref(), Some("com.example.App"));
+        assert!(point.source.is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn java_coverage_lines_reuse_the_application_record_path() {
+        let digest = "0123456789abcdef".repeat(4);
+        let serial = BTreeMap::from([(
+            "api".to_owned(),
+            format!("THES:COV:v1:app:com-example:{digest}:0x0123456789abcdef\n").into_bytes(),
+        )]);
+        let blocks = campaign_application_blocks_from_serial(&serial);
+        assert_eq!(blocks["api"].len(), 1);
+        assert_eq!(blocks["api"][0].process, "app");
+        assert_eq!(blocks["api"][0].module, "com-example");
+        assert_eq!(blocks["api"][0].offset, "0x0123456789abcdef");
+        assert_eq!(blocks["api"][0].edge, None);
     }
 
     #[test]

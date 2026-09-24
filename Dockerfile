@@ -44,7 +44,7 @@ RUN ./orchestrator/pivot/build.sh --target "$TARGETARCH" \
     && test -x topology-runner/target/release/theseus-topology \
     && test -x image-runner/target/release/theseus-image \
     && test -x explorer-runner/target/release/theseus-explorer \
-    && mkdir -p /out/instrumentation/c /out/instrumentation/llvm /out/instrumentation/go \
+    && mkdir -p /out/instrumentation/c /out/instrumentation/llvm /out/instrumentation/go /out/instrumentation/java \
     && cp instrumentation/c/theseus-coverage-cc /out/instrumentation/c/ \
     && cp instrumentation/c/theseus_coverage.c /out/instrumentation/c/ \
     && cp instrumentation/c/theseus-schedule-cc /out/instrumentation/c/ \
@@ -54,6 +54,7 @@ RUN ./orchestrator/pivot/build.sh --target "$TARGETARCH" \
     && cp instrumentation/llvm/theseus-coverage-inspect /out/instrumentation/llvm/ \
     && cp instrumentation/llvm/theseus_coverage.c /out/instrumentation/llvm/ \
     && cp instrumentation/go/theseus-coverage-inspect /out/instrumentation/go/ \
+    && cp instrumentation/java/TheseusCoverageAgent.java /out/instrumentation/java/ \
     && chmod +x /out/instrumentation/c/theseus-coverage-cc \
         /out/instrumentation/c/theseus-schedule-cc \
         /out/instrumentation/llvm/theseus-coverage-clang \
