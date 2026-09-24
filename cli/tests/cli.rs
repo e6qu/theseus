@@ -1058,3 +1058,64 @@ fn coverage_java_builds_an_agent_that_reports_the_locked_points() {
     assert!(!bad.status.success(), "{bad:?}");
     assert!(String::from_utf8_lossy(&bad.stderr).contains("Usage:"));
 }
+
+#[test]
+fn history_traces_property_verdicts_across_campaigns() {
+    let directory = tempfile::tempdir().unwrap();
+    let plan = r#"{"format":"theseus-compose-plan-v1","campaign":{"driver":"api","properties":[
+        {"name":"lost_update","kind":"always","contains":"THES:ASSERT:no_data_loss:pass"}]}}"#;
+    for (name, status, run_status) in [
+        ("before", "failed", "failed"),
+        ("after", "passed", "passed"),
+    ] {
+        let bundle = directory.path().join(name);
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(bundle.join("campaign-result.json"), format!(r#"{{"status":"{status}","runs":[{{"index":0,"status":"{run_status}"}}],"properties":[{{"name":"lost_update","kind":"always","status":"{status}","detail":"retained verdict"}}]}}"#)).unwrap();
+        fs::write(bundle.join("replay-plan.json"), plan).unwrap();
+    }
+
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["history", "before", "after", "--format", "json"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let history: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(history["format"], "theseus-campaign-property-history-v1");
+    assert_eq!(history["properties"].as_array().unwrap().len(), 1);
+    let entry = &history["properties"][0];
+    assert_eq!(entry["name"], "lost_update");
+    assert!(entry["declaration_sha256"].as_str().unwrap().len() == 64);
+    assert_eq!(entry["verdicts"].as_array().unwrap().len(), 2);
+    assert_eq!(entry["verdicts"][0]["status"], "failed");
+    assert_eq!(entry["verdicts"][1]["status"], "passed");
+    assert!(entry["first_failed_source"]
+        .as_str()
+        .unwrap()
+        .ends_with("/before"));
+
+    let text = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["history", "before", "after", "--property", "lost_update"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(text.status.success(), "{text:?}");
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.contains("property lost_update (always) declaration"),
+        "{text}"
+    );
+    assert!(text.contains("verdict\tfailed\t"), "{text}");
+    assert!(text.contains("verdict\tpassed\t"), "{text}");
+    assert!(text.contains("first failed: "), "{text}");
+
+    // No sources and evidence-free sources are rejected.
+    for args in [vec!["history"], vec!["history", "missing-bundle"]] {
+        let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args(&args)
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(!bad.success(), "{args:?}");
+    }
+}

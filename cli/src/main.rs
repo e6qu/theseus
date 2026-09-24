@@ -11,11 +11,12 @@ use theseus_cli::{
     evaluate, explore, explore_compose_expect_counterexample_with, explore_compose_forked,
     explore_compose_with, find_moment, go_coverage, java_coverage, list_moments, load_compose_plan,
     load_plan, minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
-    minimize_exploration_path, next_moment_in, previous_moment_in, query_campaigns, replay,
-    replay_compose, replay_exploration, replay_exploration_path, replay_to, report, report_file,
-    report_text, snapshot_exploration_path, temporal_query, test, test_compose,
-    verify_native_evidence, verify_topology_bundle, write_evaluation_lock, CampaignGuidance,
-    ReportFormat, TemporalRelation, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE, JAVA_COVERAGE_USAGE,
+    minimize_exploration_path, next_moment_in, previous_moment_in, property_history,
+    query_campaigns, replay, replay_compose, replay_exploration, replay_exploration_path,
+    replay_to, report, report_file, report_text, snapshot_exploration_path, temporal_query, test,
+    test_compose, verify_native_evidence, verify_topology_bundle, write_evaluation_lock,
+    CampaignGuidance, ReportFormat, TemporalRelation, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE,
+    JAVA_COVERAGE_USAGE,
 };
 
 const USAGE: &str = "Usage:
@@ -36,6 +37,7 @@ const USAGE: &str = "Usage:
   theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-campaign-dir
   theseus compare --forked base-campaign-dir forked-campaign-dir
   theseus status campaign-dir [--format json|text]
+  theseus history campaign-dir... [--property NAME] [--format json|text]
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
   theseus query campaign-dir --list [--service NAME] [--format json]
@@ -471,6 +473,81 @@ fn run(args: Vec<String>) -> Result<(), String> {
         [command, bundle] if command == "status" => {
             let status = campaign_status(bundle).map_err(|error| error.to_string())?;
             print_status_text(&status);
+            Ok(())
+        }
+        [command, rest @ ..] if command == "history" => {
+            let mut format = "text";
+            let mut property_filter: Option<String> = None;
+            let mut bundles: Vec<String> = Vec::new();
+            let mut index = 0;
+            while index < rest.len() {
+                match rest[index].as_str() {
+                    "--property" => {
+                        property_filter =
+                            Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
+                        index += 2;
+                    }
+                    "--format" => {
+                        format = match rest.get(index + 1).map(String::as_str) {
+                            Some("json") => "json",
+                            Some("text") => "text",
+                            _ => return Err("history format must be json or text".to_owned()),
+                        };
+                        index += 2;
+                    }
+                    other => {
+                        bundles.push(other.to_owned());
+                        index += 1;
+                    }
+                }
+            }
+            if bundles.is_empty() {
+                return Err(USAGE.to_owned());
+            }
+            let history = property_history(
+                &bundles
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .collect::<Vec<_>>(),
+                property_filter.as_deref(),
+            )
+            .map_err(|error| error.to_string())?;
+            if format == "json" {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&history)
+                        .map_err(|error| format!("cannot encode history: {error}"))?
+                );
+                return Ok(());
+            }
+            for entry in &history.properties {
+                match &entry.declaration_sha256 {
+                    Some(digest) => println!(
+                        "property {} ({}) declaration {}",
+                        entry.name,
+                        entry.kind,
+                        &digest[..12.min(digest.len())]
+                    ),
+                    None => println!(
+                        "property {} ({}) declaration unknown",
+                        entry.name, entry.kind
+                    ),
+                }
+                for verdict in &entry.verdicts {
+                    println!(
+                        "verdict\t{}\t{}\t{}\truns {}\tfailed_runs {:?}\tcampaign {}",
+                        verdict.status,
+                        verdict.source,
+                        verdict.detail,
+                        verdict.run_count,
+                        verdict.failed_runs,
+                        verdict.campaign_status
+                    );
+                }
+                if let Some(source) = &entry.first_failed_source {
+                    println!("first failed: {source}");
+                }
+            }
             Ok(())
         }
         [command] if command == "evaluate" => {
