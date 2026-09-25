@@ -32,10 +32,20 @@ commands='
       echo "keeping guidance/$mode"
       continue
     fi
-    theseus compose explore \
-      --output "guidance/$mode" \
-      --max-runs '"$comparison_budget"' \
-      --guidance "$mode" compose.yaml
+    # A found lost-update counterexample is an exploration outcome, not a
+    # driver failure: the campaign exits nonzero while retaining the
+    # evidence, and the comparison reports it.
+    if theseus compose explore \
+        --output "guidance/$mode" \
+        --max-runs '"$comparison_budget"' \
+        --guidance "$mode" compose.yaml; then
+      echo "$mode: campaign passed"
+    elif test -f "guidance/$mode/campaign-result.json"; then
+      echo "$mode: campaign retained a failing timeline"
+    else
+      echo "$mode: campaign retained no evidence" >&2
+      exit 1
+    fi
   done
 '
 
