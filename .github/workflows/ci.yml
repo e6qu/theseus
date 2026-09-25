@@ -228,6 +228,8 @@ jobs:
           cargo test --manifest-path image-runner/Cargo.toml --locked
           cargo test --manifest-path explorer-runner/Cargo.toml --locked
           go -C sdk/go test ./...
+          javac -d /tmp/sdk-java-build sdk/java/theseus/*.java
+          THESEUS_CHOICES=mode=1 java -cp /tmp/sdk-java-build theseus.TheseusTest
 
       - name: Qualify ordinary checkpoint-backed product workflows on native KVM
         env:

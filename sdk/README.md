@@ -13,6 +13,7 @@ extras for host-side and Linux use. AGPL-3.0-or-later (see
 | `linux` (feature `std`) | `TtyChannel`: the serial-console transport (`THES:M:xx` / `THES:E:xx` lines) for Linux guests with no driver |
 | `bus` (feature `std`) | Device bus primitives (`BusDevice`, `Bus`) moved out of `vmm::vstate` so the engine crate stays free of a `vmm` dependency |
 | [`go/`](go/) | The Go guest SDK: the same serial-line vocabulary (markers, assertions, checkpoints, structured choices, events, command receiver) as an importable module |
+| [`java/`](java/) | The Java guest SDK: the same vocabulary as a single-package dependency with injectable transports |
 
 ## Used by
 
