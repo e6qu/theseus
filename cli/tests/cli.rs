@@ -1119,3 +1119,80 @@ fn history_traces_property_verdicts_across_campaigns() {
         assert!(!bad.success(), "{args:?}");
     }
 }
+
+#[test]
+fn evaluate_compare_reports_guidance_modes_side_by_side() {
+    let directory = tempfile::tempdir().unwrap();
+    for (name, guidance, status) in [
+        ("unified", "unified", "failed"),
+        ("coverage", "coverage", "passed"),
+    ] {
+        let bundle = directory.path().join(name);
+        fs::create_dir_all(&bundle).unwrap();
+        let result = serde_json::json!({
+            "format": "theseus-compose-campaign-result-v1",
+            "status": status,
+            "guidance": guidance,
+            "generated_candidates": 40,
+            "checkpoint_nodes": 7,
+            "checkpoint_reuses": 3,
+            "unique_topology_states": 4,
+            "unique_instruction_locations": 9,
+            "unique_application_blocks": 2,
+            "unique_application_edges": 1,
+            "runs": [{"index": 0, "status": "passed"}, {"index": 1, "status": "failed"}],
+            "properties": [{"name": "lost_update", "kind": "unreachable", "status": "failed", "detail": "d"}],
+        });
+        fs::write(
+            bundle.join("campaign-result.json"),
+            serde_json::to_vec(&result).unwrap(),
+        )
+        .unwrap();
+        let plan = serde_json::json!({
+            "format": "theseus-compose-plan-v1",
+            "campaign": {"driver": "api", "max_runs": 8}
+        });
+        fs::write(
+            bundle.join("replay-plan.json"),
+            serde_json::to_vec(&plan).unwrap(),
+        )
+        .unwrap();
+    }
+
+    let markdown = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "evaluate", "compare", "unified", "coverage", "--format", "markdown",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(markdown.status.success(), "{markdown:?}");
+    let text = String::from_utf8(markdown.stdout).unwrap();
+    assert!(text.contains("# Guidance comparison"), "{text}");
+    assert!(
+        text.contains("Corpus: 40 candidates; budget: 8; modes: coverage, unified"),
+        "{text}"
+    );
+    assert!(text.contains("observational retained evidence"), "{text}");
+
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "evaluate", "compare", "unified", "coverage", "--format", "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let comparison: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(comparison["format"], "theseus-guidance-comparison-v1");
+    assert_eq!(comparison["modes"][0], "coverage");
+    assert_eq!(comparison["rows"][0]["failed_runs"][0], 1);
+
+    // Mismatched corpora and single campaigns are rejected.
+    let short = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["evaluate", "compare", "unified"])
+        .current_dir(directory.path())
+        .status()
+        .unwrap();
+    assert!(!short.success(), "{short:?}");
+}

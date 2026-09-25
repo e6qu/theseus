@@ -1020,3 +1020,331 @@ status = "failed"
         assert!(error.to_string().contains("replay-verified"));
     }
 }
+
+/// One campaign's row in a side-by-side guidance comparison. Every field is
+/// retained evidence from that campaign's result, not a re-execution.
+#[derive(Debug, Serialize)]
+pub struct GuidanceRow {
+    /// The canonicalized campaign directory.
+    pub source: String,
+    pub guidance: String,
+    pub status: String,
+    /// The declared candidate corpus both campaigns explored shards of.
+    pub corpus: usize,
+    pub runs: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_runs: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_properties: Vec<String>,
+    pub unique_topology_states: usize,
+    pub unique_instruction_locations: usize,
+    pub unique_application_blocks: usize,
+    pub unique_application_edges: usize,
+    pub checkpoint_nodes: usize,
+    pub checkpoint_reuses: usize,
+}
+
+/// The side-by-side comparison of campaigns explored under different
+/// guidance modes at one fixed budget. Observational evidence: the artifact
+/// records what each policy found, and never claims one policy caused
+/// another's outcome.
+#[derive(Debug, Serialize)]
+pub struct GuidanceComparison {
+    pub format: &'static str,
+    /// The retained run budget, when every bundle's replay plan declares it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget: Option<u16>,
+    /// The shared candidate corpus size; the comparison rejects campaigns
+    /// explored against different corpora.
+    pub corpus: usize,
+    /// The distinct guidance modes compared.
+    pub modes: Vec<String>,
+    /// Rows in the order the campaigns were named.
+    pub rows: Vec<GuidanceRow>,
+}
+
+fn read_campaign_evidence(
+    source: &Path,
+) -> Result<(serde_json::Value, Option<serde_json::Value>), EvaluationError> {
+    let bundle = fs::canonicalize(source).map_err(|error| EvaluationError::Read {
+        path: source.to_path_buf(),
+        source: error,
+    })?;
+    let result_path = bundle.join("campaign-result.json");
+    let result: serde_json::Value = serde_json::from_slice(&fs::read(&result_path).map_err(
+        |error| EvaluationError::Read {
+            path: result_path.clone(),
+            source: error,
+        },
+    )?)
+    .map_err(|error| EvaluationError::Parse {
+        path: result_path,
+        detail: error.to_string(),
+    })?;
+    let plan = match fs::read(bundle.join("replay-plan.json")) {
+        Ok(bytes) => Some(serde_json::from_slice::<serde_json::Value>(&bytes).map_err(
+            |error| EvaluationError::Parse {
+                path: bundle.join("replay-plan.json"),
+                detail: error.to_string(),
+            },
+        )?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(EvaluationError::Read {
+                path: bundle.join("replay-plan.json"),
+                source: error,
+            })
+        }
+    };
+    Ok((result, plan))
+}
+
+/// Compare retained campaigns explored under different guidance modes at
+/// one fixed budget. Every campaign must have explored the same candidate
+/// corpus, so the rows differ only in policy and outcome.
+impl GuidanceComparison {
+    /// The committed side-by-side artifact: one table row per campaign, in
+    /// the order named, suitable for an evaluation directory or an issue.
+    pub fn markdown(&self) -> String {
+        let mut report = format!(
+            "# Guidance comparison\n\nStatus and retained novelty per guidance mode at one fixed budget.\nCorpus: {} candidates; budget: {}; modes: {}\n\n",
+            self.corpus,
+            self.budget
+                .map(|budget| budget.to_string())
+                .unwrap_or_else(|| "unrecorded".to_owned()),
+            if self.modes.is_empty() {
+                "none".to_owned()
+            } else {
+                self.modes.join(", ")
+            }
+        );
+        report.push_str(
+            "| campaign | guidance | status | runs | failed runs | failed properties | states | instr locations | app blocks | app edges | checkpoint nodes | reuses |\n",
+        );
+        report.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+        for row in &self.rows {
+            report.push_str(&format!(
+                "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                row.source,
+                row.guidance,
+                row.status,
+                row.runs,
+                if row.failed_runs.is_empty() {
+                    "-".to_owned()
+                } else {
+                    format!("{:?}", row.failed_runs)
+                },
+                if row.failed_properties.is_empty() {
+                    "-".to_owned()
+                } else {
+                    row.failed_properties.join(", ")
+                },
+                row.unique_topology_states,
+                row.unique_instruction_locations,
+                row.unique_application_blocks,
+                row.unique_application_edges,
+                row.checkpoint_nodes,
+                row.checkpoint_reuses,
+            ));
+        }
+        report.push_str(
+            "\nThis artifact is observational retained evidence. It does not claim one policy caused another's outcome.\n",
+        );
+        report
+    }
+}
+
+pub fn evaluate_compare(
+    sources: &[std::path::PathBuf],
+) -> Result<GuidanceComparison, EvaluationError> {
+    if sources.len() < 2 {
+        return Err(EvaluationError::Invalid(
+            "guidance comparison needs at least two retained campaigns".to_owned(),
+        ));
+    }
+    let mut rows = Vec::with_capacity(sources.len());
+    let mut corpus = None;
+    let mut budget = None;
+    for source in sources {
+        let bundle = fs::canonicalize(source).map_err(|error| EvaluationError::Read {
+            path: source.to_path_buf(),
+            source: error,
+        })?;
+        let (result, plan) = read_campaign_evidence(source)?;
+        let row_corpus = result["generated_candidates"].as_u64().ok_or_else(|| {
+            EvaluationError::Invalid(format!("{} retains no candidate corpus", bundle.display()))
+        })? as usize;
+        match corpus {
+            None => corpus = Some(row_corpus),
+            Some(shared) if shared == row_corpus => {}
+            Some(shared) => {
+                return Err(EvaluationError::Invalid(format!(
+                    "{} explored a corpus of {} candidates, but the comparison shares {}",
+                    bundle.display(),
+                    row_corpus,
+                    shared
+                )))
+            }
+        }
+        let row_budget = plan
+            .as_ref()
+            .and_then(|plan| plan["campaign"]["max_runs"].as_u64())
+            .map(|budget| budget as u16);
+        match (&budget, row_budget) {
+            (None, _) => budget = row_budget,
+            (Some(shared), Some(row)) if *shared == row => {}
+            (Some(_), Some(_)) => {
+                return Err(EvaluationError::Invalid(format!(
+                    "{} declares a different run budget; compare campaigns at one fixed budget",
+                    bundle.display()
+                )))
+            }
+            (Some(_), None) => {}
+        }
+        let runs = result["runs"].as_array();
+        rows.push(GuidanceRow {
+            source: bundle.display().to_string(),
+            guidance: result["guidance"].as_str().unwrap_or("unknown").to_owned(),
+            status: result["status"].as_str().unwrap_or("unknown").to_owned(),
+            corpus: row_corpus,
+            runs: runs.map(|runs| runs.len()).unwrap_or_default(),
+            failed_runs: runs
+                .map(|runs| {
+                    runs.iter()
+                        .filter(|run| run["status"] == "failed")
+                        .filter_map(|run| run["index"].as_u64())
+                        .map(|index| index as usize)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+            failed_properties: result["properties"]
+                .as_array()
+                .map(|properties| {
+                    properties
+                        .iter()
+                        .filter(|property| property["status"] == "failed")
+                        .filter_map(|property| property["name"].as_str())
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+            unique_topology_states: result["unique_topology_states"]
+                .as_u64()
+                .unwrap_or_default() as usize,
+            unique_instruction_locations: result["unique_instruction_locations"]
+                .as_u64()
+                .unwrap_or_default() as usize,
+            unique_application_blocks: result["unique_application_blocks"]
+                .as_u64()
+                .unwrap_or_default() as usize,
+            unique_application_edges: result["unique_application_edges"]
+                .as_u64()
+                .unwrap_or_default() as usize,
+            checkpoint_nodes: result["checkpoint_nodes"].as_u64().unwrap_or_default() as usize,
+            checkpoint_reuses: result["checkpoint_reuses"].as_u64().unwrap_or_default() as usize,
+        });
+    }
+    let mut modes = rows
+        .iter()
+        .map(|row| row.guidance.clone())
+        .collect::<Vec<_>>();
+    modes.sort();
+    modes.dedup();
+    Ok(GuidanceComparison {
+        format: "theseus-guidance-comparison-v1",
+        budget,
+        corpus: corpus.unwrap_or_default(),
+        modes,
+        rows,
+    })
+}
+
+#[cfg(test)]
+mod guidance_comparison_tests {
+    use super::*;
+
+    fn write_bundle(
+        directory: &Path,
+        name: &str,
+        guidance: &str,
+        status: &str,
+        corpus: u64,
+        budget: u16,
+    ) -> PathBuf {
+        let bundle = directory.join(name);
+        fs::create_dir_all(&bundle).unwrap();
+        let result = serde_json::json!({
+            "format": "theseus-compose-campaign-result-v1",
+            "status": status,
+            "guidance": guidance,
+            "generated_candidates": corpus,
+            "checkpoint_nodes": 7,
+            "checkpoint_reuses": 3,
+            "unique_topology_states": 4,
+            "unique_instruction_locations": 9,
+            "unique_application_blocks": 2,
+            "unique_application_edges": 1,
+            "runs": [{"index": 0, "status": "passed"}, {"index": 1, "status": "failed"}],
+            "properties": [
+                {"name": "lost_update", "kind": "unreachable", "status": "failed", "detail": "d"}
+            ],
+        });
+        fs::write(
+            bundle.join("campaign-result.json"),
+            serde_json::to_vec(&result).unwrap(),
+        )
+        .unwrap();
+        let plan = serde_json::json!({
+            "format": "theseus-compose-plan-v1",
+            "campaign": {"driver": "api", "max_runs": budget}
+        });
+        fs::write(
+            bundle.join("replay-plan.json"),
+            serde_json::to_vec(&plan).unwrap(),
+        )
+        .unwrap();
+        bundle
+    }
+
+    #[test]
+    fn guidance_comparison_rows_retained_evidence_at_one_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let unified = write_bundle(directory.path(), "unified", "unified", "failed", 40, 8);
+        let coverage = write_bundle(directory.path(), "coverage", "coverage", "passed", 40, 8);
+
+        let comparison = evaluate_compare(&[unified, coverage]).unwrap();
+        assert_eq!(comparison.format, "theseus-guidance-comparison-v1");
+        assert_eq!(comparison.corpus, 40);
+        assert_eq!(comparison.budget, Some(8));
+        assert_eq!(comparison.modes, vec!["coverage", "unified"]);
+        assert_eq!(comparison.rows.len(), 2);
+        let unified = &comparison.rows[0];
+        assert_eq!(unified.guidance, "unified");
+        assert_eq!(unified.failed_runs, vec![1]);
+        assert_eq!(unified.failed_properties, vec!["lost_update".to_owned()]);
+        assert_eq!(unified.checkpoint_reuses, 3);
+
+        let markdown = comparison.markdown();
+        assert!(markdown.contains("# Guidance comparison"), "{markdown}");
+        assert!(markdown.contains("unified"), "{markdown}");
+        assert!(
+            markdown.contains("observational retained evidence"),
+            "{markdown}"
+        );
+    }
+
+    #[test]
+    fn guidance_comparison_rejects_mismatched_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = write_bundle(directory.path(), "first", "unified", "passed", 40, 8);
+        let second = write_bundle(directory.path(), "second", "coverage", "passed", 41, 8);
+
+        // Different corpora are a different search.
+        let error = evaluate_compare(&[first.clone(), second]).unwrap_err();
+        assert!(error.to_string().contains("corpus of 41"), "{error}");
+
+        // One campaign is not a comparison.
+        let error = evaluate_compare(&[first]).unwrap_err();
+        assert!(error.to_string().contains("at least two"), "{error}");
+    }
+}

@@ -8,15 +8,15 @@ use std::process::ExitCode;
 use theseus_cli::{
     boundary_at_moment, campaign_status, capture_evaluation, cargo_coverage,
     cargo_coverage_rustc_wrapper, collect_moment, compare_campaigns, compare_forked_campaigns,
-    evaluate, explore, explore_compose_expect_counterexample_with, explore_compose_forked,
-    explore_compose_with, find_moment, go_coverage, java_coverage, list_moments, load_compose_plan,
-    load_plan, minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
-    minimize_exploration_path, next_moment_in, previous_moment_in, property_history,
-    query_campaigns, replay, replay_compose, replay_exploration, replay_exploration_path,
-    replay_to, report, report_file, report_text, snapshot_exploration_path, temporal_query, test,
-    test_compose, verify_native_evidence, verify_topology_bundle, write_evaluation_lock,
-    CampaignGuidance, ReportFormat, TemporalRelation, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE,
-    JAVA_COVERAGE_USAGE,
+    evaluate, evaluate_compare, explore, explore_compose_expect_counterexample_with,
+    explore_compose_forked, explore_compose_with, find_moment, go_coverage, java_coverage,
+    list_moments, load_compose_plan, load_plan, minimize_compose_campaign,
+    minimize_compose_campaign_expect_counterexample, minimize_exploration_path, next_moment_in,
+    previous_moment_in, property_history, query_campaigns, replay, replay_compose,
+    replay_exploration, replay_exploration_path, replay_to, report, report_file, report_text,
+    snapshot_exploration_path, temporal_query, test, test_compose, verify_native_evidence,
+    verify_topology_bundle, write_evaluation_lock, CampaignGuidance, ReportFormat,
+    TemporalRelation, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE, JAVA_COVERAGE_USAGE,
 };
 
 const USAGE: &str = "Usage:
@@ -46,6 +46,7 @@ const USAGE: &str = "Usage:
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
   theseus evaluate lock [theseus-evaluation.toml]
   theseus evaluate capture campaign-dir --output evaluation-dir --name name
+  theseus evaluate compare campaign-dir... [--format json|markdown]
   theseus evidence verify native-evidence.json
   theseus coverage cargo --process NAME --module NAME --bin NAME --symbols DIR --output FILE
       [--manifest-path Cargo.toml] [--package NAME] [--release] [--locked] [--offline]
@@ -547,6 +548,45 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 if let Some(source) = &entry.first_failed_source {
                     println!("first failed: {source}");
                 }
+            }
+            Ok(())
+        }
+        [command, subcommand, rest @ ..] if command == "evaluate" && subcommand == "compare" => {
+            let mut format = "text";
+            let mut bundles: Vec<String> = Vec::new();
+            let mut index = 0;
+            while index < rest.len() {
+                match rest[index].as_str() {
+                    "--format" => {
+                        format = match rest.get(index + 1).map(String::as_str) {
+                            Some("json") => "json",
+                            Some("markdown") => "markdown",
+                            _ => {
+                                return Err("comparison format must be json or markdown".to_owned())
+                            }
+                        };
+                        index += 2;
+                    }
+                    other => {
+                        bundles.push(other.to_owned());
+                        index += 1;
+                    }
+                }
+            }
+            let comparison = evaluate_compare(
+                &bundles
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(|error| error.to_string())?;
+            match format {
+                "json" => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&comparison)
+                        .map_err(|error| format!("cannot encode comparison: {error}"))?
+                ),
+                _ => print!("{}", comparison.markdown()),
             }
             Ok(())
         }
