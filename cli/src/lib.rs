@@ -16,6 +16,7 @@ mod explore;
 mod go_coverage;
 mod history;
 mod java_coverage;
+mod kubernetes;
 mod manifest;
 mod query;
 mod report;

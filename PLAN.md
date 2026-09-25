@@ -447,26 +447,32 @@ reproducible investigation.
   evaluation artifact - the comparison digest beside the workload's
   evaluation lockfile - lands with the next amd64 release evidence set.
 
+- Kubernetes manifest input through a documented supported environment:
+  Pods and Deployments with exactly one container and ClusterIP Services
+  translate into the same locked plan the Compose path produces — argv,
+  literal environment, read-only roots, and selector-driven network
+  membership — with everything outside the subset rejected by name and
+  per-service Theseus manifests defaulted and annotation-overridable.
+
 ## Immediate next work
 
-### 1. Kubernetes manifest input through a documented supported environment
+### 1. ConfigMaps and Secrets as locked service files
 
-Ordinary container workloads remain a parity gap without Kubernetes input.
-The next work is the smallest honest slice:
+The Kubernetes subset rejects ConfigMaps and Secrets today; ordinary
+container workloads carry their configuration that way. The next work:
 
-- Compose-shaped translation: accept a documented Kubernetes subset (Pods
-  with one container, Services, ConfigMaps as files) and translate it into
-  the same locked plan the Compose path produces, with the translation
-  validated and hashed like every input.
-- CLI: `theseus compose plan --kubernetes manifest.yaml` (or an equivalent
-  companion) reporting the identical plan contract.
-- Tests: translation fixtures over manifest subsets; unsupported constructs
-  rejected with naming errors, never silently dropped.
+- Translation: ConfigMap data entries become locked, read-only service
+  files (hashed into the plan like every input), and Secret objects map to
+  the existing Compose secrets contract.
+- Compose parity: the same file contract stays available to Compose
+  services, so both inputs converge on one evidence pipeline.
+- Tests: translation fixtures over mounted configs; unsupported volume
+  types still rejected by name.
 
-The KVM guidance retention landed and is described in the verified
+The Kubernetes input subset landed and is described in the verified
 baseline; the parity analysis tracks the remaining cross-priority gaps,
-including the hosted campaign service and demand-driven coverage breadth
-for JavaScript and .NET.
+including the hosted campaign service, controllers beyond Deployments, and
+demand-driven coverage breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 
