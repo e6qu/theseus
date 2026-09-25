@@ -23,8 +23,11 @@ This month closed or narrowed several named gaps:
 - **Assertions** gained `always_or_unreachable`; failed properties now lead
   to their violating timeline and a bounded serial excerpt.
 - **Search comparison tooling** exists: `--max-runs`/`--guidance`
-  overrides, guidance-and-budget-labeled progress streams, and
-  alternative-futures failure frequencies in reports.
+  overrides, guidance-and-budget-labeled progress streams,
+  alternative-futures failure frequencies in reports, and
+  `theseus evaluate compare`, which emits the committed side-by-side
+  guidance artifact from retained campaigns. The first retained comparison
+  on a public workload awaits one KVM execution.
 
 ## Capability matrix
 

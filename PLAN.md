@@ -422,27 +422,34 @@ reproducible investigation.
   over the same byte-identical serial-line protocol, with injectable
   transports and protocol tests that run in CI.
 
+- A guidance comparison harness: `theseus evaluate compare campaign-dir...`
+  emits the committed side-by-side artifact - per-mode status, failed
+  timelines and properties, retained novelty, and checkpoint economics,
+  read from retained results and rejected when the corpora or budgets
+  differ - with a resumable driver script
+  (`scripts/compare_guidance_modes.sh`) that explores every guidance mode
+  at one fixed budget.
+
 ## Immediate next work
 
-### 1. Retained side-by-side guidance evidence on a public workload
+### 1. The first retained guidance comparison on a public workload
 
-The exploration overrides make fixed-budget cross-policy comparisons a
-one-command affair, but the retained side-by-side comparison the roadmap
-requires has not been produced on a published workload. The next work:
+The comparison harness is landed; the retained artifact itself requires one
+KVM execution, which the repository cannot fake:
 
-- Pick a public tutorial workload, run it under each guidance mode at one
-  fixed budget, and retain every campaign with its sharded, reproducible
-  command line.
-- Evaluate the retained campaigns against one evaluation contract and
-  record the comparison - coverage novelty, property outcomes, checkpoint
-  economics - as a committed evaluation artifact.
-- Tests: the comparison itself is the evidence; the evaluation lockfile
-  gates future regressions.
+- On an amd64 KVM host, run
+  `scripts/compare_guidance_modes.sh tutorials/30-multiservice-lost-update/compose.yaml 64 evaluations/lost-update-guidance`
+  (workload and budget to be confirmed by the run).
+- Commit the retained campaigns (or their digests plus the evaluation
+  summary) and `comparison.md` beside the workload's evaluation, and record
+  the host, kernel, and runtime digest per the evidence rules.
+- The evaluation lockfile then gates future regressions on the published
+  comparison.
 
-Campaign sharding landed and is described in the verified baseline; the
-parity analysis tracks the remaining cross-priority gaps, including hosted
-campaign operation, Kubernetes input, and demand-driven coverage breadth
-for JavaScript and .NET.
+The guidance comparison harness landed and is described in the verified
+baseline; the parity analysis tracks the remaining cross-priority gaps,
+including hosted campaign operation, Kubernetes input, and demand-driven
+coverage breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 
