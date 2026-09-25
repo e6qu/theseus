@@ -32,9 +32,9 @@ commands='
       continue
     fi
     theseus compose explore \
+      --output "guidance/$mode" \
       --max-runs '"$comparison_budget"' \
-      --guidance "$mode" \
-      --output "guidance/$mode" compose.yaml
+      --guidance "$mode" compose.yaml
   done
 '
 
