@@ -25,6 +25,7 @@ done
 # Inside the published runtime: one locked plan, then one campaign per
 # guidance mode at the fixed budget. Resumable: retained campaigns are kept.
 commands='
+  mkdir -p guidance
   theseus compose plan > plan.json
   for mode in unified coverage adaptive posterior property; do
     if test -d "guidance/$mode"; then
