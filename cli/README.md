@@ -33,6 +33,7 @@ theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
 theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
 theseus evaluate lock [theseus-evaluation.toml]
 theseus evaluate capture campaign-dir --output evaluation-dir --name name
+  theseus evaluate compare campaign-dir... [--format json|markdown]
 theseus evidence verify native-evidence.json
 theseus coverage cargo --process NAME --module NAME --bin NAME --symbols DIR --output FILE
     [--manifest-path Cargo.toml] [--package NAME] [--release] [--locked] [--offline]
@@ -219,6 +220,24 @@ theseus evaluate capture theseus-compose-campaign \
   --output evaluations/my-system --name my-system
 theseus evaluate evaluations/my-system/theseus-evaluation.toml
 ```
+
+`evaluate compare` produces the committed side-by-side guidance artifact the
+roadmap requires: explore one public workload under each guidance mode at
+one fixed budget (for example with
+[scripts/compare_guidance_modes.sh](../scripts/compare_guidance_modes.sh),
+which is resumable), retain every campaign, then:
+
+```sh
+theseus evaluate compare guidance/unified guidance/coverage guidance/adaptive   --format markdown > guidance/comparison.md
+```
+
+The versioned JSON (`theseus-guidance-comparison-v1`) and the markdown table
+record, per mode: status, executed and failed timelines, failed properties,
+unique topology states, instruction locations, application blocks and edges,
+and checkpoint economics - every field read from the campaigns' retained
+results. Campaigns explored against different corpora or budgets are
+rejected, so the rows differ only in policy and outcome. The artifact is
+observational evidence and claims no causality.
 
 The report shows checks and serial logs for one timeline, service checks and
 applied faults for a topology, and the search tree plus dirty-page coverage

@@ -40,7 +40,8 @@ pub use compose::{
     replay_compose, test_compose, CampaignGuidance, ComposeError, ComposePlan,
 };
 pub use evaluation::{
-    capture_evaluation, evaluate, write_evaluation_lock, EvaluationError, EvaluationSummary,
+    capture_evaluation, evaluate, evaluate_compare, write_evaluation_lock, EvaluationError,
+    EvaluationSummary, GuidanceComparison, GuidanceRow,
 };
 pub use evidence::{verify_native_evidence, EvidenceError, NativeEvidenceSummary};
 pub use explore::{
