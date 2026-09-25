@@ -453,26 +453,33 @@ reproducible investigation.
   literal environment, read-only roots, and selector-driven network
   membership — with everything outside the subset rejected by name and
   per-service Theseus manifests defaulted and annotation-overridable.
+- ConfigMaps and Secrets as locked service files: `configMap` and `secret`
+  volumes translate into per-key read-only file mounts at the declared
+  `mountPath` (ConfigMap `data`, Secret `data` base64 and `stringData`),
+  hashed into the plan like every input and flowing through the same
+  config/secret evidence pipeline as Compose services.
 
 ## Immediate next work
 
-### 1. ConfigMaps and Secrets as locked service files
+### 1. Guest-side event export over one ordered timeline
 
-The Kubernetes subset rejects ConfigMaps and Secrets today; ordinary
-container workloads carry their configuration that way. The next work:
+Retained evidence covers stdout, stderr, structured events, faults,
+decisions, coverage, and properties — but guest-emitted application events
+that never reach a serial line are lost. The next work:
 
-- Translation: ConfigMap data entries become locked, read-only service
-  files (hashed into the plan like every input), and Secret objects map to
-  the existing Compose secrets contract.
-- Compose parity: the same file contract stays available to Compose
-  services, so both inputs converge on one evidence pipeline.
-- Tests: translation fixtures over mounted configs; unsupported volume
-  types still rejected by name.
+- SDK: an event record API (Go and Java modules first) that batches
+  timestamped application events and flushes them as one serial-line record
+  at each checkpoint, ordered within the deterministic virtual time.
+- Contract: the same RFC 9535 JSON event shape the property layer already
+  evaluates, so temporal queries and reports consume guest events without
+  translation.
+- Tests: helper fixtures over captured serial transcripts; ordering
+  verified against the checkpoint sequence.
 
-The Kubernetes input subset landed and is described in the verified
-baseline; the parity analysis tracks the remaining cross-priority gaps,
-including the hosted campaign service, controllers beyond Deployments, and
-demand-driven coverage breadth for JavaScript and .NET.
+The Kubernetes ConfigMap/Secret translation landed and is described in the
+verified baseline; the parity analysis tracks the remaining cross-priority
+gaps, including the hosted campaign service, controllers beyond
+Deployments, and demand-driven coverage breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 
