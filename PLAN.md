@@ -421,6 +421,9 @@ reproducible investigation.
   consumed from `THESEUS_CHOICES`, host events, and the command receiver -
   over the same byte-identical serial-line protocol, with injectable
   transports and protocol tests that run in CI.
+- A Java guest SDK: `sdk/java` mirrors the Go module's vocabulary and
+  byte-identical protocol as a single-package dependency, with a
+  self-checking protocol test that runs in CI.
 
 - A guidance comparison harness: `theseus evaluate compare campaign-dir...`
   emits the committed side-by-side artifact - per-mode status, failed
