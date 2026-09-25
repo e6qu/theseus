@@ -62,18 +62,18 @@ impl std::error::Error for ComposeError {}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeFile {
+pub(crate) struct ComposeFile {
     #[serde(default)]
-    name: Option<String>,
-    services: BTreeMap<String, ComposeService>,
+    pub(crate) name: Option<String>,
+    pub(crate) services: BTreeMap<String, ComposeService>,
     #[serde(default)]
-    networks: BTreeMap<String, ComposeNetwork>,
+    pub(crate) networks: BTreeMap<String, ComposeNetwork>,
     #[serde(default)]
-    configs: BTreeMap<String, ComposeConfigDefinition>,
+    pub(crate) configs: BTreeMap<String, ComposeConfigDefinition>,
     #[serde(default)]
-    secrets: BTreeMap<String, ComposeConfigDefinition>,
+    pub(crate) secrets: BTreeMap<String, ComposeConfigDefinition>,
     #[serde(rename = "x-theseus", default)]
-    theseus: Option<ComposeTheseus>,
+    pub(crate) theseus: Option<ComposeTheseus>,
 }
 
 /// Topology-wide Theseus configuration.  Keeping campaign input here makes a
@@ -81,16 +81,16 @@ struct ComposeFile {
 /// campaign; no host-side driver program is required.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeTheseus {
+pub(crate) struct ComposeTheseus {
     #[serde(default)]
-    replay_start: crate::manifest::ReplayStart,
+    pub(crate) replay_start: crate::manifest::ReplayStart,
     #[serde(default)]
-    campaign: Option<ComposeCampaign>,
+    pub(crate) campaign: Option<ComposeCampaign>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeCampaign {
+pub(crate) struct ComposeCampaign {
     driver: String,
     /// Expand a bounded catalog of service and directed-network failures from
     /// the locked topology and ordinary operation boundaries.
@@ -920,61 +920,61 @@ pub enum PropertyKind {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeNetwork {}
+pub(crate) struct ComposeNetwork {}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeService {
+pub(crate) struct ComposeService {
     #[serde(rename = "x-theseus")]
-    theseus: ServiceTheseus,
+    pub(crate) theseus: ServiceTheseus,
     #[serde(default)]
-    networks: Vec<String>,
+    pub(crate) networks: Vec<String>,
     #[serde(default)]
-    depends_on: Option<ComposeDependencies>,
+    pub(crate) depends_on: Option<ComposeDependencies>,
     #[serde(default)]
-    environment: Option<ComposeEnvironment>,
+    pub(crate) environment: Option<ComposeEnvironment>,
     #[serde(default)]
-    env_file: Option<ComposeEnvFiles>,
+    pub(crate) env_file: Option<ComposeEnvFiles>,
     /// The Compose launch fields are intentionally an argv-only subset. A
     /// shell string would add image-specific parsing rules to the locked
     /// topology, whereas an argv is the exact execve contract.
     #[serde(default)]
-    command: Option<Vec<String>>,
+    pub(crate) command: Option<Vec<String>>,
     #[serde(default)]
-    entrypoint: Option<Vec<String>>,
+    pub(crate) entrypoint: Option<Vec<String>>,
     #[serde(default)]
-    working_dir: Option<String>,
+    pub(crate) working_dir: Option<String>,
     #[serde(default)]
-    user: Option<String>,
+    pub(crate) user: Option<String>,
     #[serde(default)]
-    configs: Vec<ComposeServiceConfig>,
+    pub(crate) configs: Vec<ComposeServiceConfig>,
     #[serde(default)]
-    secrets: Vec<ComposeServiceConfig>,
+    pub(crate) secrets: Vec<ComposeServiceConfig>,
     #[serde(default)]
-    volumes: Vec<ComposeServiceVolume>,
+    pub(crate) volumes: Vec<ComposeServiceVolume>,
     #[serde(default)]
-    healthcheck: Option<ComposeHealthcheck>,
+    pub(crate) healthcheck: Option<ComposeHealthcheck>,
     #[serde(default)]
-    hostname: Option<String>,
+    pub(crate) hostname: Option<String>,
     #[serde(default)]
-    extra_hosts: Option<ComposeExtraHosts>,
+    pub(crate) extra_hosts: Option<ComposeExtraHosts>,
     #[serde(default)]
-    cpus: Option<ComposeQuantity>,
+    pub(crate) cpus: Option<ComposeQuantity>,
     #[serde(default)]
-    mem_limit: Option<ComposeQuantity>,
+    pub(crate) mem_limit: Option<ComposeQuantity>,
     #[serde(default)]
-    deploy: Option<ComposeDeploy>,
+    pub(crate) deploy: Option<ComposeDeploy>,
     #[serde(default)]
-    read_only: bool,
+    pub(crate) read_only: bool,
     #[serde(default)]
-    tmpfs: Vec<String>,
+    pub(crate) tmpfs: Vec<String>,
 }
 
 /// Compose accepts quantities as either YAML numbers or strings. Theseus
 /// normalizes the small deterministic subset it can express as VM resources.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
-enum ComposeQuantity {
+pub(crate) enum ComposeQuantity {
     Text(String),
     Integer(u64),
     Decimal(f64),
@@ -992,14 +992,14 @@ impl ComposeQuantity {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeDeploy {
+pub(crate) struct ComposeDeploy {
     #[serde(default)]
     resources: Option<ComposeDeployResources>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeDeployResources {
+pub(crate) struct ComposeDeployResources {
     #[serde(default)]
     limits: Option<ComposeResourceLimits>,
 }
@@ -1015,20 +1015,20 @@ struct ComposeResourceLimits {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeConfigDefinition {
+pub(crate) struct ComposeConfigDefinition {
     file: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum ComposeServiceConfig {
+pub(crate) enum ComposeServiceConfig {
     Name(String),
     Mount(ComposeConfigMount),
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeConfigMount {
+pub(crate) struct ComposeConfigMount {
     source: String,
     #[serde(default)]
     target: Option<String>,
@@ -1038,14 +1038,14 @@ struct ComposeConfigMount {
 /// image initramfs instead of keeping a host mount alive at runtime.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum ComposeServiceVolume {
+pub(crate) enum ComposeServiceVolume {
     Short(String),
     Mount(ComposeVolumeMount),
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeVolumeMount {
+pub(crate) struct ComposeVolumeMount {
     #[serde(rename = "type")]
     kind: String,
     source: String,
@@ -1058,7 +1058,7 @@ struct ComposeVolumeMount {
 /// image-specific parsing rules to a replay, so Theseus accepts `CMD` only.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeHealthcheck {
+pub(crate) struct ComposeHealthcheck {
     test: ComposeHealthcheckTest,
     #[serde(default)]
     interval: Option<String>,
@@ -1080,7 +1080,7 @@ enum ComposeHealthcheckTest {
 /// machine that happened to create it.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum ComposeEnvironment {
+pub(crate) enum ComposeEnvironment {
     Map(BTreeMap<String, String>),
     List(Vec<String>),
 }
@@ -1089,7 +1089,7 @@ enum ComposeEnvironment {
 /// stores their literal values, never consulting the host environment later.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum ComposeEnvFiles {
+pub(crate) enum ComposeEnvFiles {
     Single(String),
     List(Vec<String>),
 }
@@ -1099,7 +1099,7 @@ enum ComposeEnvFiles {
 /// resolved IP address into the image initramfs.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum ComposeExtraHosts {
+pub(crate) enum ComposeExtraHosts {
     Map(BTreeMap<String, String>),
     List(Vec<String>),
 }
@@ -1109,14 +1109,14 @@ enum ComposeExtraHosts {
 /// conditions it can prove from its deterministic boot barrier.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum ComposeDependencies {
+pub(crate) enum ComposeDependencies {
     Names(Vec<String>),
     Conditions(BTreeMap<String, ComposeDependency>),
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeDependency {
+pub(crate) struct ComposeDependency {
     #[serde(default)]
     condition: DependencyCondition,
 }
@@ -1131,19 +1131,19 @@ pub enum DependencyCondition {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ServiceTheseus {
-    manifest: PathBuf,
+pub(crate) struct ServiceTheseus {
+    pub(crate) manifest: PathBuf,
     #[serde(default)]
-    faults: Vec<ComposeFault>,
+    pub(crate) faults: Vec<ComposeFault>,
     #[serde(default)]
-    coverage: Vec<ComposeCoverage>,
+    pub(crate) coverage: Vec<ComposeCoverage>,
 }
 
 /// One compiler-generated coverage manifest and the directory containing the
 /// build-scoped symbol file named by that manifest.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeCoverage {
+pub(crate) struct ComposeCoverage {
     manifest: PathBuf,
     symbols: PathBuf,
 }
@@ -1163,7 +1163,7 @@ struct CoverageManifest {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeFault {
+pub(crate) struct ComposeFault {
     at_round: u64,
     kind: FaultKind,
     #[serde(default)]
@@ -1822,11 +1822,14 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         path: compose_path.clone(),
         source,
     })?;
-    let compose: ComposeFile =
+    let compose: ComposeFile = if crate::kubernetes::looks_like_kubernetes(&input) {
+        crate::kubernetes::load_kubernetes_compose(&compose_path, "theseus.toml")?
+    } else {
         serde_yaml::from_str(&input).map_err(|source| ComposeError::Parse {
             path: compose_path.clone(),
             source,
-        })?;
+        })?
+    };
 
     if compose.services.is_empty() {
         return Err(ComposeError::Invalid(
@@ -8885,6 +8888,107 @@ mod tests {
         assert_eq!(coverage.gnu_build_id, None);
         assert_eq!(coverage.manifest.sha256.len(), 64);
         assert_eq!(coverage.symbols.sha256.len(), 64);
+    }
+
+    #[test]
+    fn translates_a_kubernetes_manifest_into_the_locked_plan_path() {
+        let directory = tempfile::tempdir().unwrap();
+        // A container command argv implies an image launch contract, so the
+        // fixture manifests use Docker archives like the image path.
+        let directory = image_fixture(
+            "services:\n  placeholder:\n    x-theseus:\n      manifest: api/theseus.toml\nnetworks:\n  default: {}\n",
+            &[],
+        );
+        fs::write(
+            directory.path().join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'api/runtime/firecracker'\nimage_adapter = 'api/runtime/theseus-image'\n[guest]\nkernel = 'api/guest/vmlinux'\nimage = 'api/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+        for service in ["worker"] {
+            // image_fixture only arms the api service with the adapter.
+            fs::write(
+                directory.path().join(service).join("runtime/theseus-image"),
+                b"adapter",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(
+                directory.path().join(service).join("runtime/theseus-image"),
+                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        for service in ["api", "worker"] {
+            fs::write(
+                directory.path().join(service).join("theseus.toml"),
+                "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+            )
+            .unwrap();
+            write_docker_image(&directory.path().join(service).join("service.tar"), &[]);
+        }
+        fs::write(
+            directory.path().join("k8s.yaml"),
+            "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\n  labels:\n    app: api\nspec:\n  template:\n    spec:\n      containers:\n        - name: api\n          image: api:1\n          command: [/work/api]\n          env:\n            - name: ROLE\n              value: primary\n          securityContext:\n            readOnlyRootFilesystem: true\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: backplane\nspec:\n  selector:\n    app: api\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: worker\n  annotations:\n    theseus.io/manifest: worker/theseus.toml\nspec:\n  template:\n    spec:\n      containers:\n        - name: worker\n          image: worker:1\n          command: [/work/worker, --fast]\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("k8s.yaml")).unwrap();
+        assert_eq!(plan.services.len(), 2);
+        assert!(plan.services.contains_key("api"));
+        assert!(plan.services.contains_key("worker"));
+        let api = &plan.services["api"];
+        assert_eq!(
+            api.networks,
+            vec!["default".to_owned(), "k8s-backplane".to_owned()]
+        );
+        let worker = &plan.services["worker"];
+        assert_eq!(worker.networks, vec!["default".to_owned()]);
+        // The annotation overrides the default service manifest.
+        assert!(worker.manifest.ends_with("worker/theseus.toml"));
+    }
+
+    #[test]
+    fn rejects_kubernetes_manifests_outside_the_supported_subset() {
+        let directory = tempfile::tempdir().unwrap();
+        let case = |manifest: &str| {
+            fs::write(directory.path().join("k8s.yaml"), manifest).unwrap();
+            load_compose_plan(directory.path().join("k8s.yaml")).unwrap_err()
+        };
+
+        let error = case("apiVersion: v1\nkind: StatefulSet\nmetadata:\n  name: api\n");
+        assert!(
+            error.to_string().contains("outside the supported subset"),
+            "{error}"
+        );
+
+        let error = case(
+            "apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\nspec:\n  containers:\n    - name: a\n      image: a:1\n    - name: b\n      image: b:1\n",
+        );
+        assert!(
+            error.to_string().contains("declares 2 containers"),
+            "{error}"
+        );
+
+        let error = case(
+            "apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\nspec:\n  volumes:\n    - name: data\n  containers:\n    - name: a\n      image: a:1\n",
+        );
+        assert!(
+            error.to_string().contains("volumes is not supported"),
+            "{error}"
+        );
+
+        let error = case(
+            "apiVersion: v1\nkind: Service\nmetadata:\n  name: api\nspec:\n  type: NodePort\n  selector:\n    app: api\n",
+        );
+        assert!(
+            error.to_string().contains("supported subset is ClusterIP"),
+            "{error}"
+        );
+
+        let error = case(
+            "apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\nspec:\n  containers:\n    - name: a\n      image: a:1\n      env:\n        - name: ROLE\n          valueFrom:\n            fieldRef:\n              fieldPath: metadata.name\n",
+        );
+        assert!(error.to_string().contains("env valueFrom"), "{error}");
     }
 
     #[test]
