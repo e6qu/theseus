@@ -259,8 +259,11 @@ jobs:
           sh scripts/run_native_validation.sh || validation_status=$?
           counterexample_status=0
           sh scripts/run_native_counterexample.sh || counterexample_status=$?
+          comparison_status=0
+          sh scripts/run_native_guidance_comparison.sh || comparison_status=$?
           test "$validation_status" -eq 0
           test "$counterexample_status" -eq 0
+          test "$comparison_status" -eq 0
 
       - name: Retain native product workflow diagnostics
         if: always()
@@ -273,6 +276,7 @@ jobs:
             docs/tutorials/30-multiservice-lost-update/minimized/
             docs/tutorials/30-multiservice-lost-update/rerun/
             docs/tutorials/30-multiservice-lost-update/retained/
+            docs/tutorials/30-multiservice-lost-update/guidance/
           if-no-files-found: ignore
 
       - name: Retain failed product inputs and execution diagnostics

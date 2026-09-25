@@ -424,6 +424,12 @@ reproducible investigation.
 - A Java guest SDK: `sdk/java` mirrors the Go module's vocabulary and
   byte-identical protocol as a single-package dependency, with a
   self-checking protocol test that runs in CI.
+- The retained guidance comparison on native KVM:
+  `scripts/run_native_guidance_comparison.sh` explores the public
+  lost-update workload under every guidance mode at one fixed budget in
+  every CI run, retaining the campaigns and the
+  `theseus evaluate compare` artifact as workflow evidence alongside the
+  runtime certification.
 
 - A guidance comparison harness: `theseus evaluate compare campaign-dir...`
   emits the committed side-by-side artifact - per-mode status, failed
@@ -433,26 +439,34 @@ reproducible investigation.
   (`scripts/compare_guidance_modes.sh`) that explores every guidance mode
   at one fixed budget.
 
+- The retained guidance comparison on the public lost-update workload:
+  `scripts/run_native_guidance_comparison.sh` explores tutorial 30 under
+  every guidance mode at one fixed budget inside the published runtime on
+  native KVM in every CI run, and retains the campaigns plus the
+  `theseus evaluate compare` artifact as workflow evidence. The committed
+  evaluation artifact - the comparison digest beside the workload's
+  evaluation lockfile - lands with the next amd64 release evidence set.
+
 ## Immediate next work
 
-### 1. The first retained guidance comparison on a public workload
+### 1. Kubernetes manifest input through a documented supported environment
 
-The comparison harness is landed; the retained artifact itself requires one
-KVM execution, which the repository cannot fake:
+Ordinary container workloads remain a parity gap without Kubernetes input.
+The next work is the smallest honest slice:
 
-- On an amd64 KVM host, run
-  `scripts/compare_guidance_modes.sh tutorials/30-multiservice-lost-update/compose.yaml 64 evaluations/lost-update-guidance`
-  (workload and budget to be confirmed by the run).
-- Commit the retained campaigns (or their digests plus the evaluation
-  summary) and `comparison.md` beside the workload's evaluation, and record
-  the host, kernel, and runtime digest per the evidence rules.
-- The evaluation lockfile then gates future regressions on the published
-  comparison.
+- Compose-shaped translation: accept a documented Kubernetes subset (Pods
+  with one container, Services, ConfigMaps as files) and translate it into
+  the same locked plan the Compose path produces, with the translation
+  validated and hashed like every input.
+- CLI: `theseus compose plan --kubernetes manifest.yaml` (or an equivalent
+  companion) reporting the identical plan contract.
+- Tests: translation fixtures over manifest subsets; unsupported constructs
+  rejected with naming errors, never silently dropped.
 
-The guidance comparison harness landed and is described in the verified
+The KVM guidance retention landed and is described in the verified
 baseline; the parity analysis tracks the remaining cross-priority gaps,
-including hosted campaign operation, Kubernetes input, and demand-driven
-coverage breadth for JavaScript and .NET.
+including the hosted campaign service and demand-driven coverage breadth
+for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 

@@ -25,9 +25,10 @@ This month closed or narrowed several named gaps:
 - **Search comparison tooling** exists: `--max-runs`/`--guidance`
   overrides, guidance-and-budget-labeled progress streams,
   alternative-futures failure frequencies in reports, and
-  `theseus evaluate compare`, which emits the committed side-by-side
-  guidance artifact from retained campaigns. The first retained comparison
-  on a public workload awaits one KVM execution.
+  `theseus evaluate compare`, which emits the side-by-side guidance
+  artifact from retained campaigns, retained on native KVM for the public
+  lost-update workload in every CI run. Cross-mode campaigns land as
+  committed evaluation artifacts with the next release evidence set.
 
 ## Capability matrix
 

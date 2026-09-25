@@ -8144,6 +8144,12 @@ fn write_temporary_topology_plan(
             plan_file.display()
         )));
     }
+    if let Some(parent) = plan_file.parent() {
+        fs::create_dir_all(parent).map_err(|source| ComposeError::Read {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
     fs::write(
         &plan_file,
         serde_json::to_vec_pretty(plan).map_err(|error| {
