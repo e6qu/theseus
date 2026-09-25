@@ -645,6 +645,33 @@ networks:
   backplane: {}
 ```
 
+## Kubernetes manifest input
+
+A documented Kubernetes subset translates into the same locked plan the
+Compose path produces, so campaigns, sharding, and evidence are identical:
+
+- `Pod` and `Deployment` workloads with **exactly one container**:
+  `image`, `command` + `args` (the execve argv), literal `env` entries
+  (`valueFrom` is rejected), `workingDir`, and
+  `securityContext.readOnlyRootFilesystem` (→ `read_only`).
+- `Service` objects with type `ClusterIP`: each becomes a Theseus network
+  named `k8s-<service>`; pods whose labels match the selector join it and
+  reach their peers there. Every pod also joins `default`.
+- Per-service Theseus manifests: `theseus.toml` beside the Kubernetes
+  manifest by default, overridable per service with the annotation
+  `theseus.io/manifest: path`.
+
+Everything outside the subset is rejected with a naming error, never
+silently dropped: multiple containers, init containers, volumes and their
+mounts, ConfigMaps and Secrets, `valueFrom` references, ports and probes,
+non-ClusterIP Services, host networking, affinity, and tolerations. Pass a
+Kubernetes manifest to any Compose command — planning sniffs `apiVersion`:
+
+```sh
+theseus compose plan k8s.yaml
+theseus compose explore --output campaign k8s.yaml
+```
+
 Run these commands from the directory containing `compose.yaml`:
 
 ```sh
