@@ -1016,7 +1016,7 @@ struct ComposeResourceLimits {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ComposeConfigDefinition {
-    file: PathBuf,
+    pub(crate) file: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1029,9 +1029,9 @@ pub(crate) enum ComposeServiceConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ComposeConfigMount {
-    source: String,
+    pub(crate) source: String,
     #[serde(default)]
-    target: Option<String>,
+    pub(crate) target: Option<String>,
 }
 
 /// A constrained Compose bind mount. Theseus locks a local directory into the
@@ -1822,14 +1822,18 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         path: compose_path.clone(),
         source,
     })?;
-    let compose: ComposeFile = if crate::kubernetes::looks_like_kubernetes(&input) {
-        crate::kubernetes::load_kubernetes_compose(&compose_path, "theseus.toml")?
-    } else {
-        serde_yaml::from_str(&input).map_err(|source| ComposeError::Parse {
-            path: compose_path.clone(),
-            source,
-        })?
-    };
+    let (compose, inline_configs, inline_secrets) =
+        if crate::kubernetes::looks_like_kubernetes(&input) {
+            let inputs = crate::kubernetes::load_kubernetes_compose(&compose_path, "theseus.toml")?;
+            (inputs.compose, inputs.configs, inputs.secrets)
+        } else {
+            let compose: ComposeFile =
+                serde_yaml::from_str(&input).map_err(|source| ComposeError::Parse {
+                    path: compose_path.clone(),
+                    source,
+                })?;
+            (compose, BTreeMap::new(), BTreeMap::new())
+        };
 
     if compose.services.is_empty() {
         return Err(ComposeError::Invalid(
@@ -1848,8 +1852,16 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         .keys()
         .map(|name| (name.clone(), BTreeSet::new()))
         .collect();
-    let configs = load_compose_files(compose_dir, compose.configs, "config")?;
-    let secrets = load_compose_files(compose_dir, compose.secrets, "secret")?;
+    let mut configs = load_compose_files(compose_dir, compose.configs, "config")?;
+    let mut secrets = load_compose_files(compose_dir, compose.secrets, "secret")?;
+    // A Kubernetes translation carries its config and secret bytes inline:
+    // the synthetic definitions name them, the bytes need no host files.
+    for (name, bytes) in inline_configs {
+        configs.insert(name, bytes);
+    }
+    for (name, bytes) in inline_secrets {
+        secrets.insert(name, bytes);
+    }
     let mut services = BTreeMap::new();
     for (name, service) in compose.services {
         validate_name("service", &name)?;
@@ -8970,10 +8982,12 @@ mod tests {
         );
 
         let error = case(
-            "apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\nspec:\n  volumes:\n    - name: data\n  containers:\n    - name: a\n      image: a:1\n",
+            "apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\nspec:\n  volumes:\n    - name: data\n      emptyDir: {}\n  containers:\n    - name: a\n      image: a:1\n",
         );
         assert!(
-            error.to_string().contains("volumes is not supported"),
+            error
+                .to_string()
+                .contains("volume \"data\" has type \"emptyDir\""),
             "{error}"
         );
 

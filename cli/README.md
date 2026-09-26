@@ -657,13 +657,16 @@ Compose path produces, so campaigns, sharding, and evidence are identical:
 - `Service` objects with type `ClusterIP`: each becomes a Theseus network
   named `k8s-<service>`; pods whose labels match the selector join it and
   reach their peers there. Every pod also joins `default`.
+- `configMap` and `secret` volumes: each entry key becomes one locked,
+  read-only file at `mountPath/<key>` (ConfigMap `data`; Secret `data`
+  base64 and `stringData`), hashed into the plan like every input.
 - Per-service Theseus manifests: `theseus.toml` beside the Kubernetes
   manifest by default, overridable per service with the annotation
   `theseus.io/manifest: path`.
 
 Everything outside the subset is rejected with a naming error, never
-silently dropped: multiple containers, init containers, volumes and their
-mounts, ConfigMaps and Secrets, `valueFrom` references, ports and probes,
+silently dropped: multiple containers, init containers, non-config/secret
+volume types, `subPath`, `valueFrom` references, ports and probes,
 non-ClusterIP Services, host networking, affinity, and tolerations. Pass a
 Kubernetes manifest to any Compose command — planning sniffs `apiVersion`:
 
