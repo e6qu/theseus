@@ -11,6 +11,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 
 /**
  * The Theseus guest SDK for Java services.
@@ -50,6 +51,7 @@ public final class Theseus {
 
   private final BufferedWriter out;
   private final BufferedReader in;
+  private final EventBatch events = new EventBatch();
 
   /** Build a channel over an explicit transport, which keeps the protocol
    * testable without a UART. */
@@ -80,10 +82,27 @@ public final class Theseus {
     newLine();
   }
 
+  /** Queue one application event with the given fields. The SDK adds a
+   * deterministic {@code seq} number; wall-clock time is deliberately
+   * absent because it would break replay. The event is not written until
+   * {@link #checkpoint(String)} or {@link #flushEvents()}. */
+  public void event(Map<String, ?> fields) {
+    events.add(fields);
+  }
+
+  /** Write every queued application event as one compact JSON line per
+   * event, in submission order, and clear the batch. */
+  public void flushEvents() throws IOException {
+    events.flushTo(out);
+    out.flush();
+  }
+
   /** Mark the end of one workload operation, giving applications a stable
    * serial checkpoint protocol without requiring the host to infer
-   * progress. */
+   * progress. Queued application events flush first, so the ordered event
+   * timeline stays inside the checkpoint sequence. */
   public void checkpoint(String name) throws IOException {
+    events.flushTo(out);
     out.write(CHECKPOINT_PREFIX + name);
     newLine();
   }

@@ -16,6 +16,14 @@ public final class TheseusTest {
 
   private static int failures = 0;
 
+  private static java.util.Map<String, Object> mapOf(Object... pairs) {
+    var map = new java.util.LinkedHashMap<String, Object>();
+    for (int index = 0; index < pairs.length; index += 2) {
+      map.put((String) pairs[index], pairs[index + 1]);
+    }
+    return map;
+  }
+
   private static void check(String what, Object got, Object want) {
     if (!got.equals(want)) {
       failures++;
@@ -85,6 +93,22 @@ public final class TheseusTest {
         "event round",
         round.toString(StandardCharsets.UTF_8),
         "THES:M:01\nTHES:M:ff\nTHES:M:ff\n");
+
+    // Application events flush as one ordered JSON timeline before their
+    // checkpoint, byte-compatible with the property layer's JSON needles.
+    // Application events flush as one ordered JSON timeline before their
+    // checkpoint, byte-compatible with the property layer's JSON needles.
+    var timeline = new ByteArrayOutputStream();
+    var timelineChannel = channel("", timeline);
+    timelineChannel.event(mapOf("event", "request", "worker", "a", "value", 1));
+    timelineChannel.event(mapOf("event", "request", "worker", "b", "value", 2));
+    timelineChannel.checkpoint("release_both");
+    check(
+        "event timeline",
+        timeline.toString(StandardCharsets.UTF_8),
+        "{\"event\":\"request\",\"seq\":1,\"value\":1,\"worker\":\"a\"}\n"
+            + "{\"event\":\"request\",\"seq\":2,\"value\":2,\"worker\":\"b\"}\n"
+            + "THES:CHECKPOINT:release_both\n");
 
     // An unstable choice name fails early, matching the Rust SDK.
     var unstable = channel("", new ByteArrayOutputStream());

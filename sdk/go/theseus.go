@@ -44,8 +44,12 @@ const EventTerminator uint8 = 0x00
 // The serial-console control channel. The zero value is not usable; build
 // one with Console or New.
 type Channel struct {
-	out   io.Writer
-	input *bufio.Reader
+	out     io.Writer
+	input   *bufio.Reader
+	pending []eventLine
+	// eventSeq numbers queued events in submission order; deterministic
+	// replay orders the timeline by this sequence, never by host time.
+	eventSeq uint64
 }
 
 // Open the console UART for the channel, the default guest transport.
@@ -83,13 +87,6 @@ func (c *Channel) Assertion(name string, passed bool) error {
 		outcome = "pass"
 	}
 	_, err := fmt.Fprintf(c.out, "%s%s:%s\n", AssertionPrefix, name, outcome)
-	return err
-}
-
-// Mark the end of one workload operation, giving applications a stable
-// serial checkpoint protocol without requiring the host to infer progress.
-func (c *Channel) Checkpoint(name string) error {
-	_, err := fmt.Fprintf(c.out, "%s%s\n", CheckpointPrefix, name)
 	return err
 }
 
