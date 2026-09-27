@@ -530,8 +530,10 @@ struct ComposeCampaignFault {
     rx_queue_frames: Option<u32>,
     #[serde(default)]
     every_n_rounds: Option<u32>,
-    #[serde(default)]
-    rate: Option<u32>,
+    /// The guest-clock rate multiplier: 0.1-0.9 for sub-1x windows,
+    /// 1.0-16.0 for speedups. Milli-units derive at the apply point.
+    #[serde(rename = "rate", default, deserialize_with = "deserialize_rate_milli")]
+    rate_milli: Option<u64>,
 }
 
 /// Campaign-only faults. Lifecycle faults occur on scheduler rounds; topology
@@ -608,7 +610,7 @@ fn empty_campaign_fault(kind: CampaignFaultKind) -> ComposeCampaignFault {
         tx_queue_frames: None,
         rx_queue_frames: None,
         every_n_rounds: None,
-        rate: None,
+        rate_milli: None,
     }
 }
 
@@ -1598,7 +1600,7 @@ pub struct CampaignFaultPlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub every_n_rounds: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub rate: Option<u32>,
+    pub rate_milli: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4199,7 +4201,7 @@ fn campaign_plan(
                 "every_n_rounds belongs to cpu_throttle/cpu_release actions".to_owned(),
             ));
         }
-        if candidate.rate.is_some()
+        if candidate.rate_milli.is_some()
             && !matches!(
                 candidate.kind,
                 CampaignFaultKind::ClockRate | CampaignFaultKind::ClockRateRelease
@@ -4307,7 +4309,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
-                    rate: None,
+                    rate_milli: None,
                 });
             }
             CampaignFaultKind::ServiceStop
@@ -4388,7 +4390,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
-                    rate: None,
+                    rate_milli: None,
                 });
             }
             CampaignFaultKind::Custom => {
@@ -4492,7 +4494,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
-                    rate: None,
+                    rate_milli: None,
                 });
             }
             CampaignFaultKind::Partition | CampaignFaultKind::Heal => {
@@ -4566,7 +4568,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
-                    rate: None,
+                    rate_milli: None,
                 });
             }
             CampaignFaultKind::LinkPartition | CampaignFaultKind::LinkHeal => {
@@ -4659,7 +4661,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
-                    rate: None,
+                    rate_milli: None,
                 });
             }
             CampaignFaultKind::CpuThrottle | CampaignFaultKind::CpuRelease => {
@@ -4761,7 +4763,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: candidate.every_n_rounds,
-                    rate: None,
+                    rate_milli: None,
                 });
             }
             CampaignFaultKind::ClockRate | CampaignFaultKind::ClockRateRelease => {
@@ -4809,10 +4811,21 @@ fn campaign_plan(
                             .to_owned(),
                     ));
                 }
-                if let Some(rate) = candidate.rate {
-                    if !(2..=16).contains(&rate) {
+                if let Some(rate_milli) = candidate.rate_milli {
+                    // A 1x window changes nothing; the supported set is
+                    // sub-1x slowdowns (0.1-0.9) and speedups (2-16).
+                    // A 1x window changes nothing; the supported set is
+                    // sub-1x slowdowns (0.1-0.9, one decimal) and
+                    // speedups (2-16), all exact in milli-units.
+                    let sub_one = (100..=900).contains(&rate_milli) && rate_milli % 100 == 0;
+                    // A 1x window (1000 milli) changes nothing, so
+                    // speedups start at 2x.
+                    let speed_up =
+                        (2_000..=16_000).contains(&rate_milli) && rate_milli % 1_000 == 0;
+                    if !sub_one && !speed_up {
                         return Err(ComposeError::Invalid(
-                            "campaign clock_rate rate must be between 2 and 16".to_owned(),
+                            "campaign clock_rate rate must be between 0.1 and 0.9 or between 2 and 16"
+                                .to_owned(),
                         ));
                     }
                 }
@@ -4828,12 +4841,12 @@ fn campaign_plan(
                                 .to_owned(),
                         ));
                     }
-                    if candidate.rate.is_none() {
+                    if candidate.rate_milli.is_none() {
                         return Err(ComposeError::Invalid(
                             "campaign clock_rate requires rate".to_owned(),
                         ));
                     }
-                } else if candidate.duration_rounds.is_some() || candidate.rate.is_some() {
+                } else if candidate.duration_rounds.is_some() || candidate.rate_milli.is_some() {
                     return Err(ComposeError::Invalid(
                         "campaign clock_rate_release accepts only service and after".to_owned(),
                     ));
@@ -4870,7 +4883,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
-                    rate: candidate.rate,
+                    rate_milli: candidate.rate_milli,
                 });
             }
             CampaignFaultKind::LinkClog | CampaignFaultKind::LinkUnclog => {
@@ -4979,7 +4992,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
-                    rate: None,
+                    rate_milli: None,
                 });
             }
             CampaignFaultKind::StorageFault | CampaignFaultKind::StorageRecover => {
@@ -5086,7 +5099,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
-                    rate: None,
+                    rate_milli: None,
                 });
             }
             CampaignFaultKind::NetworkFault
@@ -5218,7 +5231,7 @@ fn campaign_plan(
                     tx_queue_frames: candidate.tx_queue_frames,
                     rx_queue_frames: candidate.rx_queue_frames,
                     every_n_rounds: None,
-                    rate: None,
+                    rate_milli: None,
                 });
             }
             CampaignFaultKind::PacketFault | CampaignFaultKind::PacketRecover => {
@@ -5366,7 +5379,7 @@ fn campaign_plan(
                     tx_queue_frames: None,
                     rx_queue_frames: None,
                     every_n_rounds: None,
-                    rate: None,
+                    rate_milli: None,
                 });
             }
         }
@@ -5644,7 +5657,7 @@ fn standard_fault_profile(
                 clock_rate.service = Some(service.clone());
                 clock_rate.after = Some(after.clone());
                 clock_rate.duration_rounds = Some(32);
-                clock_rate.rate = Some(4);
+                clock_rate.rate_milli = Some(4_000);
                 generated.push(clock_rate);
                 if generated.len() == MAX_PROFILE_CANDIDATES {
                     return generated;
@@ -7066,6 +7079,26 @@ fn validate_campaign_state_rule(
 /// Normalize one fault window's `until` barrier. Only fault kinds with an
 /// automatic recovery can close a window: recovery kinds, lifecycle faults,
 /// and custom faults have no inverse to apply at the barrier.
+/// Deserialize a clock-rate multiplier from a YAML number: integers are
+/// whole multipliers (1-16), one-decimal floats are sub-1x slowdowns
+/// (0.1-0.9). The value lands as milli-units (1000 = 1x).
+fn deserialize_rate_milli<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Rate {
+        Whole(u64),
+        Slow(f64),
+    }
+    let value = Option::<Rate>::deserialize(deserializer)?;
+    Ok(value.map(|rate| match rate {
+        Rate::Whole(whole) => whole * 1000,
+        Rate::Slow(slow) => (slow * 1000.0).round() as u64,
+    }))
+}
+
 fn normalize_campaign_fault_window(
     candidate: &ComposeCampaignFault,
     operations: &[OperationPlan],
@@ -8742,7 +8775,7 @@ mod tests {
             .filter(|fault| matches!(fault.kind, CampaignFaultKind::ClockRate))
             .collect::<Vec<_>>();
         assert_eq!(rates.len(), 1);
-        assert_eq!(rates[0].rate, Some(4));
+        assert_eq!(rates[0].rate_milli, Some(4_000));
         assert_eq!(rates[0].duration_rounds, Some(32));
         let links = campaign
             .faults
@@ -11480,7 +11513,7 @@ x-theseus:
             campaign.faults[0].kind,
             CampaignFaultKind::ClockRate
         ));
-        assert_eq!(campaign.faults[0].rate, Some(4));
+        assert_eq!(campaign.faults[0].rate_milli, Some(4_000));
         assert_eq!(campaign.faults[0].duration_rounds, Some(32));
 
         let reject = |fault: &str, reason: &str| {
@@ -11495,7 +11528,11 @@ x-theseus:
         );
         reject(
             "kind: clock_rate\n        service: api\n        after: write\n        rate: 1\n        duration_rounds: 32",
-            "rate must be between 2 and 16",
+            "rate must be between 0.1 and 0.9 or between 2 and 16",
+        );
+        reject(
+            "kind: clock_rate\n        service: api\n        after: write\n        rate: 0.95\n        duration_rounds: 32",
+            "rate must be between 0.1 and 0.9 or between 2 and 16",
         );
         reject(
             "kind: clock_rate_release\n        service: api\n        after: write\n        rate: 2",

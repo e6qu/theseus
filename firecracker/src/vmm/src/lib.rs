@@ -1079,10 +1079,17 @@ impl Vmm {
     ///
     /// Like a jump, the change is performed while vCPUs are paused and is
     /// rejected unless deterministic virtual time is enabled.
-    pub fn set_virtual_time_rate(&mut self, rate: u32) -> Result<(), VmmError> {
-        if !(1..=16).contains(&rate) {
+    pub fn set_virtual_time_rate_milli(&mut self, rate_milli: u32) -> Result<(), VmmError> {
+        if !(100..=16_000).contains(&rate_milli) {
             return Err(VmmError::VcpuMessage);
         }
+        // The machine-stream effect label keeps whole rates byte-identical
+        // with pre-sub-1x recordings (4 -> "4", 500 -> "0.5").
+        let rate_label = if rate_milli % 1000 == 0 {
+            format!("{}", rate_milli / 1000)
+        } else {
+            format!("0.{}", rate_milli / 100)
+        };
         let was_running = self.instance_info.state == VmState::Running;
         if was_running {
             self.pause_vm()?;
@@ -1092,8 +1099,8 @@ impl Vmm {
             .as_kvm()
             .ok_or_else(|| VmmError::NotSupportedOnVmType(self.vm.type_name()))?;
         let result = self.apply_machine_host_effect(
-            format!("virtual_time_rate:{rate}"),
-            || kvm_vm.set_virtual_time_rate(rate),
+            format!("virtual_time_rate:{rate_label}"),
+            || kvm_vm.set_virtual_time_rate_milli(rate_milli),
         );
         if was_running {
             self.resume_vm()?;

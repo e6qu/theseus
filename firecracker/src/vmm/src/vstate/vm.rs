@@ -346,12 +346,15 @@ impl KvmVm {
         Ok(())
     }
 
-    /// Set every paused vCPU's guest-clock rate multiplier.
-    pub fn set_virtual_time_rate(&self, rate: u32) -> Result<(), crate::VmmError> {
+    /// Set every paused vCPU's guest-clock rate, in milli-units (1000 =
+    /// 1x, 100..900 = sub-1x slowdowns).
+    pub fn set_virtual_time_rate_milli(&self, rate_milli: u32) -> Result<(), crate::VmmError> {
         let mut handles = self.vcpus_handles();
         handles
             .iter_mut()
-            .try_for_each(|handle| handle.send_event(crate::VcpuEvent::SetVirtualTimeRate(rate)))
+            .try_for_each(|handle| {
+                handle.send_event(crate::VcpuEvent::SetVirtualTimeRateMilli(rate_milli))
+            })
             .map_err(|_| crate::VmmError::VcpuMessage)?;
 
         if handles

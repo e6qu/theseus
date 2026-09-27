@@ -531,8 +531,10 @@ struct CampaignFault {
     rx_queue_frames: Option<u32>,
     #[serde(default)]
     every_n_rounds: Option<u32>,
+    /// The guest-clock rate multiplier: 0.1-0.9 for sub-1x windows,
+    /// 1.0-16.0 for speedups. Milli-units derive at the apply point.
     #[serde(default)]
-    rate: Option<u32>,
+    rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -1686,7 +1688,7 @@ struct CampaignAction {
     #[serde(skip_serializing_if = "Option::is_none")]
     every_n_rounds: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    rate: Option<u32>,
+    rate: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2147,11 +2149,11 @@ impl ServiceVm {
             .map_err(|error| error.to_string())
     }
 
-    fn set_virtual_time_rate(&self, rate: u32) -> Result<(), String> {
+    fn set_virtual_time_rate_milli(&self, rate_milli: u32) -> Result<(), String> {
         self.vmm
             .lock()
             .expect("VMM lock poisoned")
-            .set_virtual_time_rate(rate)
+            .set_virtual_time_rate_milli(rate_milli)
             .map_err(|error| error.to_string())
     }
 
@@ -8144,6 +8146,18 @@ fn campaign_action(fault: &CampaignFault) -> Result<CampaignAction, String> {
     })
 }
 
+/// Convert a recorded clock-rate multiplier to milli-units for the
+/// engine's vclock: 0.1-0.9 for sub-1x windows, 1.0-16.0 for speedups.
+fn clock_rate_milli(rate: f64) -> Result<u32, String> {
+    let milli = (rate * 1000.0).round() as i64;
+    if !(100..=16_000).contains(&milli) {
+        return Err(format!(
+            "clock rate {rate} is outside the supported range 0.1-16"
+        ));
+    }
+    Ok(milli as u32)
+}
+
 fn campaign_recovery_action(
     fault: &CampaignFault,
     operation: &str,
@@ -11257,7 +11271,7 @@ fn execute(
             if let Some(until) = service.rate_until {
                 if round >= until {
                     service.rate_until = None;
-                    service.vm.set_virtual_time_rate(1)?;
+                    service.vm.set_virtual_time_rate_milli(1_000)?;
                     service.faults.push(AppliedFault {
                         round,
                         kind: "clock_rate_release".to_owned(),
@@ -12999,7 +13013,7 @@ fn apply_campaign_action(
             };
             let detail = if release {
                 target.rate_until = None;
-                target.vm.set_virtual_time_rate(1)?;
+                target.vm.set_virtual_time_rate_milli(1_000)?;
                 "released the clock rate at the operation barrier".to_owned()
             } else {
                 let duration = action
@@ -13008,9 +13022,10 @@ fn apply_campaign_action(
                 let rate = action
                     .rate
                     .ok_or_else(|| "campaign clock_rate has no rate".to_owned())?;
+                let rate_milli = clock_rate_milli(rate)?;
                 target
                     .vm
-                    .set_virtual_time_rate(rate)
+                    .set_virtual_time_rate_milli(rate_milli)
                     .map_err(|error| error.to_string())?;
                 target.rate_until = Some(round.saturating_add(duration));
                 format!("moved the guest clock rate to {rate}x for {duration} rounds")
