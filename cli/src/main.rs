@@ -10,7 +10,7 @@ use theseus_cli::{
     cargo_coverage_rustc_wrapper, collect_moment, compare_campaigns, compare_forked_campaigns,
     evaluate, evaluate_compare, explore, explore_compose_expect_counterexample_with,
     explore_compose_forked, explore_compose_with, find_moment, go_coverage, java_coverage,
-    list_moments, load_compose_plan, load_plan, minimize_compose_campaign,
+    list_events, list_moments, load_compose_plan, load_plan, minimize_compose_campaign,
     minimize_compose_campaign_expect_counterexample, minimize_exploration_path, next_moment_in,
     previous_moment_in, property_history, query_campaigns, replay, replay_compose,
     replay_exploration, replay_exploration_path, replay_to, report, report_file, report_text,
@@ -41,6 +41,7 @@ const USAGE: &str = "Usage:
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
   theseus query campaign-dir --list [--service NAME] [--format json]
+  theseus query campaign-dir --events [--service NAME] [--format json]
   theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
   theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
@@ -273,6 +274,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let mut format = "text";
             let mut service_filter: Option<String> = None;
             let mut needle: Option<(TemporalRelation, String)> = None;
+            let mut events = false;
             let mut collect = false;
             let mut output: Option<String> = None;
             let mut index = 0;
@@ -292,6 +294,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     }
                     "--list" => {
                         list = true;
+                        index += 1;
+                    }
+                    "--events" => {
+                        events = true;
                         index += 1;
                     }
                     "--collect" => {
@@ -361,6 +367,27 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     println!(
                         "match\t{}\t{}\t{}\t{}",
                         summary.moment, summary.run, summary.boundary, summary.service
+                    );
+                }
+                return Ok(());
+            }
+            if events {
+                if list || collect || needle.is_some() || moment.is_some() || navigation.is_some() {
+                    return Err(USAGE.to_owned().into());
+                }
+                let records = list_events(&result, service_filter.as_deref())
+                    .map_err(|error| error.to_string())?;
+                if format == "json" {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&records).map_err(|error| error.to_string())?
+                    );
+                    return Ok(());
+                }
+                for record in &records {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        record.moment, record.run, record.boundary, record.service, record.line
                     );
                 }
                 return Ok(());
