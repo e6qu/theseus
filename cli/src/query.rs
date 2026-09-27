@@ -37,6 +37,10 @@ pub struct MomentHit {
     pub input_sha256: String,
     /// Bounded serial excerpt per service, verbatim from the result.
     pub excerpts: Vec<(String, String)>,
+    /// Guest-emitted JSON event lines on this boundary's serial delta,
+    /// verbatim per service.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub events: BTreeMap<String, Vec<String>>,
     /// The preceding boundary's moment address, when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous: Option<String>,
@@ -124,6 +128,24 @@ pub fn find_moment(result: &serde_json::Value, moment: &str) -> Result<MomentHit
                         excerpts.push((service.clone(), excerpt.to_owned()));
                     }
                 }
+                let mut events = BTreeMap::new();
+                if let Some(boundary_events) = boundary["events"].as_object() {
+                    for (service, lines) in boundary_events {
+                        let lines = lines
+                            .as_array()
+                            .map(|lines| {
+                                lines
+                                    .iter()
+                                    .filter_map(serde_json::Value::as_str)
+                                    .map(str::to_owned)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        if !lines.is_empty() {
+                            events.insert(service.clone(), lines);
+                        }
+                    }
+                }
                 let previous = timeline
                     .get(boundary_index.wrapping_sub(1))
                     .filter(|_| boundary_index > 0)
@@ -144,6 +166,7 @@ pub fn find_moment(result: &serde_json::Value, moment: &str) -> Result<MomentHit
                     vtime_ns,
                     input_sha256: input_sha256.unwrap_or_default(),
                     excerpts,
+                    events,
                     previous,
                     next,
                 });
@@ -212,6 +235,73 @@ pub fn list_moments(
         }
     }
     Ok(summaries)
+}
+
+/// One guest-emitted application event, retained verbatim on the boundary
+/// where its serial bytes landed.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct EventRecord {
+    /// Index of the retained timeline (0-based).
+    pub run: usize,
+    /// `op-NNN-<operation>` boundary identity.
+    pub boundary: String,
+    /// The operation name.
+    pub operation: String,
+    /// The moment address of the boundary carrying the event.
+    pub moment: String,
+    /// The service whose serial delta contains the event.
+    pub service: String,
+    /// The event line, verbatim.
+    pub line: String,
+}
+
+/// List every guest-emitted JSON event across the retained campaigns, in
+/// timeline order. Events are the verbatim serial lines; the boundary's
+/// moment address retrieves the surrounding evidence.
+pub fn list_events(
+    result: &serde_json::Value,
+    service: Option<&str>,
+) -> Result<Vec<EventRecord>, MomentError> {
+    let runs = result["runs"]
+        .as_array()
+        .ok_or_else(|| MomentError::NotFound("result has no runs".to_owned()))?;
+    let mut records = Vec::new();
+    for (run_index, run) in runs.iter().enumerate() {
+        let timeline = run["timeline"]
+            .as_array()
+            .ok_or_else(|| MomentError::NotFound(format!("run {run_index} has no timeline")))?;
+        for boundary in timeline {
+            if let Some(events) = boundary["events"].as_object() {
+                for (event_service, lines) in events {
+                    if let Some(filter) = service {
+                        if event_service != filter {
+                            continue;
+                        }
+                    }
+                    for line in lines
+                        .as_array()
+                        .map(|lines| lines.as_slice())
+                        .unwrap_or(&[])
+                    {
+                        if let Some(line) = line.as_str() {
+                            records.push(EventRecord {
+                                run: run_index,
+                                boundary: boundary["id"].as_str().unwrap_or_default().to_owned(),
+                                operation: boundary["operation"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                                service: event_service.clone(),
+                                moment: boundary["moment"].as_str().unwrap_or_default().to_owned(),
+                                line: line.to_owned(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(records)
 }
 
 /// Resolve the moment immediately following `moment` in the same timeline.
@@ -814,6 +904,47 @@ mod tests {
                 ]}
             ]
         })
+    }
+
+    #[test]
+    fn moments_carry_guest_events_and_events_list_verbatim() {
+        let result = serde_json::json!({
+            "runs": [{"index": 0, "timeline": [
+                {"id": "op-000-write", "operation": "write", "service": "api",
+                 "moment": "7000@input-hash",
+                 "events": {"api": [
+                     "{\"event\":\"request\",\"seq\":1,\"worker\":\"a\"}",
+                     "{\"event\":\"request\",\"seq\":2,\"worker\":\"b\"}"
+                 ]}},
+                {"id": "op-001-read", "operation": "read", "service": "counter",
+                 "moment": "9000@read-hash"}
+            ]}]
+        });
+
+        let hit = find_moment(&result, "7000@input-hash").unwrap();
+        check_events(&hit.events, 2);
+
+        let records = list_events(&result, None).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].service, "api");
+        assert_eq!(
+            records[0].line,
+            "{\"event\":\"request\",\"seq\":1,\"worker\":\"a\"}"
+        );
+        assert_eq!(records[0].moment, "7000@input-hash");
+        assert_eq!(records[0].boundary, "op-000-write");
+
+        let filtered = list_events(&result, Some("counter")).unwrap();
+        assert!(filtered.is_empty());
+
+        // A boundary without events keeps the hit shape minimal.
+        let later = find_moment(&result, "9000@read-hash").unwrap();
+        check_events(&later.events, 0);
+    }
+
+    fn check_events(events: &BTreeMap<String, Vec<String>>, want: usize) {
+        let total: usize = events.values().map(Vec::len).sum();
+        assert_eq!(total, want, "{events:?}");
     }
 
     #[test]

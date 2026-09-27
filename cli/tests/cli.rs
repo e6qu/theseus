@@ -1196,3 +1196,48 @@ fn evaluate_compare_reports_guidance_modes_side_by_side() {
         .unwrap();
     assert!(!short.success(), "{short:?}");
 }
+
+#[test]
+fn query_lists_retained_json_events_verbatim() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("campaign-result.json"),
+        r#"{"runs":[{"index":0,"timeline":[
+            {"id":"op-000-write","operation":"write","service":"api","moment":"7000@input-hash",
+             "events":{"api":["{\"event\":\"request\",\"seq\":1,\"worker\":\"a\"}","{\"event\":\"request\",\"seq\":2,\"worker\":\"b\"}"]}},
+            {"id":"op-001-read","operation":"read","service":"counter","moment":"9000@read-hash",
+             "events":{"counter":["{\"event\":\"stale\",\"seq\":3}"]}}
+        ]}]}"#,
+    )
+    .unwrap();
+
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["query", ".", "--events", "--format", "json"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let records: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let records = records.as_array().unwrap();
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0]["service"], "api");
+    assert_eq!(records[0]["moment"], "7000@input-hash");
+    assert_eq!(
+        records[0]["line"],
+        r#"{"event":"request","seq":1,"worker":"a"}"#
+    );
+    assert_eq!(records[2]["service"], "counter");
+
+    let text = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["query", ".", "--events", "--service", "counter"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(text.status.success(), "{text:?}");
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.contains("9000@read-hash\t0\top-001-read\tcounter\t"),
+        "{text}"
+    );
+    assert!(!text.contains("7000@input-hash"), "{text}");
+}

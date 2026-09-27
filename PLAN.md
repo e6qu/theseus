@@ -428,6 +428,11 @@ reproducible investigation.
   and flush them as ordered JSON lines at each checkpoint - deterministic
   sequence numbers, sorted keys, no wall clock - so guest events join the
   serial timeline in the same shape the property layer evaluates.
+- Ordered event indexing: every JSON-object line on a campaign boundary's
+  serial delta is retained verbatim per service (capped at 64 per
+  boundary) in the boundary record, and the query surface retrieves them:
+  `--moment` returns the exact emitted lines, `--events` lists the whole
+  timeline.
 - The retained guidance comparison on native KVM:
   `scripts/run_native_guidance_comparison.sh` explores the public
   lost-update workload under every guidance mode at one fixed budget in
@@ -463,23 +468,26 @@ reproducible investigation.
   hashed into the plan like every input and flowing through the same
   config/secret evidence pipeline as Compose services.
 
+- Ordered event timelines as first-class query input: the runner indexes
+  every JSON-object line on a boundary's serial delta as a verbatim
+  guest event (per service, capped), the boundary record carries it, and
+  `theseus query --moment` returns the exact emitted lines while
+  `query --events` lists the whole timeline - moment address, boundary,
+  service, line - with `--service` narrowing.
+
 ## Immediate next work
 
-### 1. Ordered event timelines as first-class query input
+### 1. The moment log renders guest events in reports
 
-The SDKs now emit guest application events onto the serial timeline, but
-nothing surfaces them as events yet: the property layer matches them
-line-by-line and the moment log indexes checkpoints. The next work:
+The query surface retrieves guest events; the HTML report's moment log
+still shows only serial excerpts. The next work:
 
-- Ingest: the runner and report recognize JSON event lines on a service's
-  serial transcript and index each into the moment log alongside
-  checkpoints, so `theseus query --moment` and `--list` retrieve
-  application events as first-class moments.
-- Contract: the retained line stays verbatim; indexing adds no rewrite.
-- Tests: campaign fixtures with SDK-emitted events; moment retrieval
-  returns the exact emitted line.
+- Report: render each boundary's indexed events inside the moment log
+  entry, verbatim, with the emitting service attributed.
+- Tests: report fixtures with SDK-emitted events; the static page stays
+  self-contained.
 
-The ConfigMap/Secret translation landed and is described in the verified
+The ordered event indexing landed and is described in the verified
 baseline; the parity analysis tracks the remaining cross-priority gaps,
 including the hosted campaign service, controllers beyond Deployments, and
 demand-driven coverage breadth for JavaScript and .NET.

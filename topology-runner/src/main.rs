@@ -1007,6 +1007,11 @@ struct CampaignTimelineBoundary {
     serial_sha256: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     serial_delta: BTreeMap<String, CampaignSerialDelta>,
+    /// Guest-emitted JSON event lines on this boundary's serial delta,
+    /// verbatim per service. The line itself is the evidence; indexing
+    /// adds no rewrite.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    events: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     network_traffic_delta: BTreeMap<String, BTreeMap<String, CampaignNetworkTrafficDelta>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -8962,7 +8967,12 @@ fn campaign_operation_timeline(
                 &previous.structured_choices,
                 &boundary.structured_choices,
             );
-            let serial_delta = campaign_serial_delta(&previous, boundary);
+            let serial_delta_bytes = campaign_serial_delta_bytes(&previous, boundary);
+            let serial_delta: BTreeMap<String, CampaignSerialDelta> = serial_delta_bytes
+                .iter()
+                .map(|(service, delta)| (service.clone(), campaign_serial_evidence(delta)))
+                .collect();
+            let events = campaign_boundary_events(&serial_delta_bytes);
             let network_traffic_delta = campaign_network_traffic_delta(&previous, boundary);
             let (changed_storage, virtual_time_delta_ns) =
                 campaign_boundary_state_delta(&previous, boundary);
@@ -9010,6 +9020,7 @@ fn campaign_operation_timeline(
                 new_structured_choices,
                 serial_sha256: boundary.serial_sha256.clone(),
                 serial_delta,
+                events,
                 network_traffic_delta,
                 changed_storage,
                 virtual_time_delta_ns,
@@ -9209,10 +9220,61 @@ fn campaign_network_traffic_delta(
 
 const CAMPAIGN_EVIDENCE_EXCERPT_BYTES: usize = 512;
 
+/// One boundary retains at most this many JSON event lines per service;
+/// the complete serial log remains the audit trail beyond the cap.
+const BOUNDARY_EVENT_LIMIT: usize = 64;
+
+/// Collect guest-emitted JSON event lines from one boundary's serial
+/// delta, verbatim per service. A line is an event when it parses as a
+/// JSON object - the shape the Go and Java SDK event exporters and the
+/// operation reporter emit, and the shape the property layer's JSON
+/// predicates evaluate.
+fn campaign_boundary_events(
+    serial_delta: &BTreeMap<String, Vec<u8>>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut events = BTreeMap::new();
+    for (service, delta) in serial_delta {
+        let mut lines = Vec::new();
+        for line in delta.split_inclusive(|byte| *byte == b'\n') {
+            let line = String::from_utf8_lossy(line);
+            let line = line.trim();
+            if !(line.starts_with('{') && line.ends_with('}')) {
+                continue;
+            }
+            match serde_json::from_slice::<serde_json::Value>(line.as_bytes()) {
+                Ok(value) if value.is_object() => {
+                    lines.push(line.to_owned());
+                    if lines.len() == BOUNDARY_EVENT_LIMIT {
+                        break;
+                    }
+                }
+                _ => continue,
+            }
+        }
+        if !lines.is_empty() {
+            events.insert(service.clone(), lines);
+        }
+    }
+    events
+}
+
 fn campaign_serial_delta(
     previous: &CampaignCheckpointBoundary,
     boundary: &CampaignCheckpointBoundary,
 ) -> BTreeMap<String, CampaignSerialDelta> {
+    campaign_serial_delta_bytes(previous, boundary)
+        .into_iter()
+        .map(|(service, delta)| (service, campaign_serial_evidence(&delta)))
+        .collect()
+}
+
+/// The raw serial bytes one boundary added over its predecessor, per
+/// service. Both the bounded excerpt evidence and the JSON event index
+/// derive from these bytes.
+fn campaign_serial_delta_bytes(
+    previous: &CampaignCheckpointBoundary,
+    boundary: &CampaignCheckpointBoundary,
+) -> BTreeMap<String, Vec<u8>> {
     boundary
         .serial_contents
         .iter()
@@ -9225,7 +9287,7 @@ fn campaign_serial_delta(
             let delta = contents
                 .strip_prefix(previous_contents)
                 .unwrap_or(contents.as_slice());
-            (!delta.is_empty()).then(|| (service.clone(), campaign_serial_evidence(delta)))
+            (!delta.is_empty()).then(|| (service.clone(), delta.to_vec()))
         })
         .collect()
 }
@@ -16735,6 +16797,29 @@ mod tests {
     }
 
     #[test]
+    fn boundary_events_index_json_lines_verbatim_and_skip_noise() {
+        let payload = "{\"event\":\"request\",\"seq\":1,\"worker\":\"a\"}\n";
+        let delta = BTreeMap::from([
+            (
+                "api".to_owned(),
+                format!("noise line\n{payload}{{\"partial\":").into_bytes(),
+            ),
+            (
+                "worker".to_owned(),
+                format!(
+                    "{payload}{payload}THES:M:42\n"
+                )
+                .into_bytes(),
+            ),
+        ]);
+        let events = campaign_boundary_events(&delta);
+        // Both identical payloads are retained verbatim on the worker, and
+        // the api service keeps only its complete JSON object.
+        assert_eq!(events["worker"], vec![payload.trim().to_owned(), payload.trim().to_owned()]);
+        assert_eq!(events["api"], vec![payload.trim().to_owned()]);
+    }
+
+    #[test]
     fn application_coverage_records_are_strict_deduplicated_and_service_scoped() {
         let digest = "0123456789abcdef".repeat(4);
         let record = format!("THES:COV:v1:worker:parser:{digest}:0x42\n");
@@ -18038,6 +18123,7 @@ mod tests {
             }),
             property_witnesses: vec!["stale_read_is_reachable".to_owned()],
             timeline: vec![CampaignTimelineBoundary {
+                events: BTreeMap::new(),
                 id: "op-000-write".to_owned(),
                 operation: "write".to_owned(),
                 command: None,

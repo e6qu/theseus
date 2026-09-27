@@ -28,6 +28,7 @@ theseus history campaign-dir... [--property NAME] [--format json|text]
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
 theseus query campaign-dir --list [--service NAME] [--format json]
+theseus query campaign-dir --events [--service NAME] [--format json]
 theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
 theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
 theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
@@ -912,7 +913,11 @@ the needle ASCII-escaped exactly like the retained bytes; a needle that
 only exists beyond an excerpt's 512-byte cut does not match, and the full
 nested property predicates still evaluate inside the runner over complete
 transcripts. `--service NAME` scopes both where the needle is searched and
-which moments are listed.
+which moments are listed. Guest-emitted JSON events are first-class:
+`--events` lists every retained application event - moment address,
+boundary, emitting service, and the verbatim line - and a resolved moment
+carries the exact lines its boundary retained (up to 64 per service per
+boundary; the full serial log remains the audit trail).
 
 `--collect` turns one moment into a self-contained, digest-auditable
 artifact bundle without exporting the whole run:
