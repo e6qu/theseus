@@ -13013,7 +13013,7 @@ fn apply_campaign_action(
             };
             let detail = if release {
                 target.rate_until = None;
-                target.vm.set_virtual_time_rate(1)?;
+                target.vm.set_virtual_time_rate_milli(1_000)?;
                 "released the clock rate at the operation barrier".to_owned()
             } else {
                 let duration = action
@@ -13022,6 +13022,7 @@ fn apply_campaign_action(
                 let rate = action
                     .rate
                     .ok_or_else(|| "campaign clock_rate has no rate".to_owned())?;
+                let rate_milli = clock_rate_milli(rate)?;
                 target
                     .vm
                     .set_virtual_time_rate_milli(rate_milli)
