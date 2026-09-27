@@ -500,6 +500,166 @@ pub fn temporal_query(
     })
 }
 
+/// The answer to one event-object temporal query: where matching events
+/// printed, and every moment satisfying the relation. The event lines are
+/// JSON objects, so the predicate maps RFC 6901 pointers to expected
+/// values - the same `fields` shape the property layer's JSON predicates
+/// accept - and every pointer must resolve equal.
+#[derive(Debug, Serialize)]
+pub struct EventTemporalQuery {
+    pub format: &'static str,
+    pub relation: &'static str,
+    /// The predicate as parsed from the command line.
+    pub predicate: serde_json::Value,
+    /// The service scope filter, echoed back when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    /// Every matching event, verbatim.
+    pub occurrences: Vec<EventRecord>,
+    /// Every moment satisfying the relation against those occurrences.
+    pub matches: Vec<MomentSummary>,
+}
+
+/// True when every pointer in the predicate resolves on the event to an
+/// equal value.
+fn event_matches_predicate(
+    event: &serde_json::Value,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    fields.iter().all(|(pointer, expected)| {
+        event
+            .pointer(pointer)
+            .is_some_and(|actual| actual == expected)
+    })
+}
+
+/// Evaluate a `preceded-by`/`followed-by` relation between one structured
+/// event predicate and every retained moment. The predicate is a JSON
+/// object mapping RFC 6901 pointers to expected values; an indexed event
+/// matches when every pointer resolves to an equal value, and a moment
+/// matches `preceded_by` when some matching event lies strictly before it
+/// in the same run (`followed_by`: strictly after).
+pub fn event_temporal_query(
+    result: &serde_json::Value,
+    relation: TemporalRelation,
+    predicate: &serde_json::Value,
+    service: Option<&str>,
+) -> Result<EventTemporalQuery, MomentError> {
+    // The predicate uses the property layer's `fields` shape: RFC 6901
+    // pointers to expected values, all of which must match.
+    let Some(fields) = predicate
+        .get("fields")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Err(MomentError::NotFound(
+            "event predicate must be a JSON object with a fields map of pointer-to-value entries"
+                .to_owned(),
+        ));
+    };
+    if fields.is_empty() {
+        return Err(MomentError::NotFound(
+            "event predicate needs at least one pointer field".to_owned(),
+        ));
+    }
+    for pointer in fields.keys() {
+        if !pointer.starts_with('/') {
+            return Err(MomentError::NotFound(format!(
+                "event predicate fields must use RFC 6901 pointers starting with '/': {pointer:?}"
+            )));
+        }
+    }
+    let runs = result["runs"]
+        .as_array()
+        .ok_or_else(|| MomentError::NotFound("result has no runs".to_owned()))?;
+    let mut occurrences = Vec::new();
+    let mut matches = Vec::new();
+    for (run_index, run) in runs.iter().enumerate() {
+        let timeline = run["timeline"]
+            .as_array()
+            .ok_or_else(|| MomentError::NotFound(format!("run {run_index} has no timeline")))?;
+        let mut occurrence_indices = Vec::new();
+        for (boundary_index, boundary) in timeline.iter().enumerate() {
+            let mut boundary_matches = false;
+            if let Some(events) = boundary["events"].as_object() {
+                for (event_service, lines) in events {
+                    if let Some(filter) = service {
+                        if event_service != filter {
+                            continue;
+                        }
+                    }
+                    for line in lines
+                        .as_array()
+                        .map(|lines| lines.as_slice())
+                        .unwrap_or(&[])
+                    {
+                        let Some(line) = line.as_str() else {
+                            continue;
+                        };
+                        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+                            continue;
+                        };
+
+                        if event_matches_predicate(&event, fields) {
+                            boundary_matches = true;
+                            occurrences.push(EventRecord {
+                                run: run_index,
+                                boundary: boundary["id"].as_str().unwrap_or_default().to_owned(),
+                                operation: boundary["operation"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                                service: event_service.clone(),
+                                moment: boundary["moment"].as_str().unwrap_or_default().to_owned(),
+                                line: line.to_owned(),
+                            });
+                        }
+                    }
+                }
+            }
+            if boundary_matches {
+                occurrence_indices.push(boundary_index);
+            }
+        }
+        for (boundary_index, boundary) in timeline.iter().enumerate() {
+            let related = match relation {
+                TemporalRelation::PrecededBy => occurrence_indices
+                    .iter()
+                    .any(|occurrence| *occurrence < boundary_index),
+                TemporalRelation::FollowedBy => occurrence_indices
+                    .iter()
+                    .any(|occurrence| *occurrence > boundary_index),
+            };
+            if !related {
+                continue;
+            }
+            let boundary_service = boundary["service"].as_str().unwrap_or_default().to_owned();
+            if let Some(filter) = service {
+                if boundary_service != filter {
+                    continue;
+                }
+            }
+            matches.push(MomentSummary {
+                run: run_index,
+                boundary: boundary["id"].as_str().unwrap_or_default().to_owned(),
+                service: boundary_service,
+                operation: boundary["operation"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                moment: boundary["moment"].as_str().unwrap_or_default().to_owned(),
+            });
+        }
+    }
+    Ok(EventTemporalQuery {
+        format: "theseus-query-event-temporal-v1",
+        relation: relation.as_str(),
+        predicate: predicate.clone(),
+        service: service.map(str::to_owned),
+        occurrences,
+        matches,
+    })
+}
+
 /// Load a bundle's campaign result and evaluate the temporal query.
 pub fn query_temporal(
     bundle: impl AsRef<Path>,
@@ -1026,6 +1186,110 @@ mod tests {
         .unwrap();
         assert!(query.occurrences.is_empty());
         assert!(query.matches.is_empty());
+    }
+
+    #[test]
+    fn event_predicates_match_json_structured_occurrences() {
+        let result = serde_json::json!({
+            "runs": [{"index": 0, "timeline": [
+                {"id": "op-000-write", "operation": "write", "service": "api",
+                 "moment": "7000@input-hash",
+                 "events": {"api": [
+                     "{\"event\":\"request\",\"seq\":1,\"worker\":\"a\"}",
+                     "{\"event\":\"verify\",\"seq\":2}"
+                 ]}},
+                {"id": "op-001-read", "operation": "read", "service": "counter",
+                 "moment": "9000@read-hash",
+                 "events": {"counter": ["{\"event\":\"request\",\"seq\":2}"]}}
+            ]}]
+        });
+
+        // The request event prints on the read boundary's delta; the write
+        // boundary is strictly before it and satisfies followed-by, while
+        // the occurrence's own boundary satisfies neither relation.
+        let followed = event_temporal_query(
+            &result,
+            TemporalRelation::FollowedBy,
+            &serde_json::json!({"fields": {"/event": "request", "/worker": "a"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(followed.format, "theseus-query-event-temporal-v1");
+        assert_eq!(followed.occurrences.len(), 1);
+        assert_eq!(
+            followed.occurrences[0].line,
+            "{\"event\":\"request\",\"seq\":1,\"worker\":\"a\"}"
+        );
+        assert_eq!(followed.matches.len(), 0);
+
+        let preceded = event_temporal_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            &serde_json::json!({"fields": {"/event": "request", "/worker": "a"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(preceded.matches.len(), 1);
+        assert_eq!(preceded.matches[0].boundary, "op-001-read");
+    }
+
+    #[test]
+    fn event_predicates_span_services_and_match_nested_pointers() {
+        let result = serde_json::json!({
+            "runs": [{"index": 0, "timeline": [
+                {"id": "op-000-write", "operation": "write", "service": "api",
+                 "moment": "7000@input-hash",
+                 "events": {"api": [
+                     "{\"event\":\"write\",\"seq\":1,\"output\":{\"value\":1}}"
+                 ]}},
+                {"id": "op-001-read", "operation": "read", "service": "counter",
+                 "moment": "9000@read-hash",
+                 "events": {"counter": ["{\"event\":\"read\",\"value\":1}"]}}
+            ]}]
+        });
+
+        let query = event_temporal_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            &serde_json::json!({"fields": {"/output/value": 1}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(query.occurrences.len(), 1);
+        assert_eq!(query.occurrences[0].service, "api");
+        assert_eq!(query.matches.len(), 1);
+        assert_eq!(query.matches[0].boundary, "op-001-read");
+
+        let scoped = event_temporal_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            &serde_json::json!({"fields": {"/output/value": 1}}),
+            Some("counter"),
+        )
+        .unwrap();
+        assert!(scoped.occurrences.is_empty());
+        assert!(scoped.matches.is_empty());
+    }
+
+    #[test]
+    fn event_predicates_reject_malformed_input() {
+        let result = temporal_fixture();
+        // Not an object, an empty object, and a non-pointer field are errors.
+        for predicate in [
+            serde_json::json!("request"),
+            serde_json::json!({}),
+            serde_json::json!({"fields": {}}),
+            serde_json::json!({"event": "request"}),
+        ] {
+            let error =
+                event_temporal_query(&result, TemporalRelation::PrecededBy, &predicate, None)
+                    .unwrap_err();
+            assert!(
+                error.to_string().contains("event predicate")
+                    || error.to_string().contains("non-empty needle"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

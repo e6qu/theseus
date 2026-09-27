@@ -1241,3 +1241,53 @@ fn query_lists_retained_json_events_verbatim() {
     );
     assert!(!text.contains("7000@input-hash"), "{text}");
 }
+
+#[test]
+fn query_matches_structured_events_with_temporal_relations() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("campaign-result.json"),
+        r#"{"runs":[{"index":0,"timeline":[
+            {"id":"op-000-write","operation":"write","service":"api","moment":"7000@input-hash",
+             "events":{"api":["{\"event\":\"write\",\"seq\":1,\"output\":{\"value\":1}}"]}},
+            {"id":"op-001-read","operation":"read","service":"counter","moment":"9000@read-hash"}
+        ]}]}"#,
+    )
+    .unwrap();
+
+    let predicate = r#"{"fields":{"/output/value":1,"/event":"write"}}"#;
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--preceded-by-event",
+            predicate,
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let query: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(query["format"], "theseus-query-event-temporal-v1");
+    assert_eq!(query["relation"], "preceded_by");
+    assert_eq!(query["predicate"]["fields"]["/event"], "write");
+    assert_eq!(
+        query["occurrences"][0]["line"],
+        "{\"event\":\"write\",\"seq\":1,\"output\":{\"value\":1}}"
+    );
+
+    // The read boundary follows the write event's boundary.
+    assert_eq!(query["matches"][0]["boundary"], "op-001-read");
+
+    // A non-object or empty predicate is a usage error.
+    for predicate in ["\"just text\"", "{}"] {
+        let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args(["query", ".", "--preceded-by-event", predicate])
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(!bad.success(), "{predicate}");
+    }
+}

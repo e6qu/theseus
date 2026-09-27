@@ -31,6 +31,8 @@ theseus query campaign-dir --list [--service NAME] [--format json]
 theseus query campaign-dir --events [--service NAME] [--format json]
 theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
 theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
+theseus query campaign-dir --preceded-by-event FIELDS [--service NAME] [--format json]
+theseus query campaign-dir --followed-by-event FIELDS [--service NAME] [--format json]
 theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
 theseus evaluate lock [theseus-evaluation.toml]
 theseus evaluate capture campaign-dir --output evaluation-dir --name name
@@ -919,6 +921,18 @@ boundary, emitting service, and the verbatim line - a resolved moment
 carries the exact lines its boundary retained (up to 64 per service per
 boundary; the full serial log remains the audit trail), and the report's
 moment log renders them verbatim with the emitting service attributed.
+`--preceded-by-event` and `--followed-by-event` take the property layer's
+`fields` shape instead of needle text - RFC 6901 pointers to expected
+values, all of which must match one retained guest event:
+
+```sh
+theseus query campaign --preceded-by-event \
+  '{"fields":{"/event":"request","/worker":"a"}}' --format json
+```
+
+An indexed event matches when every pointer resolves on its JSON object;
+occurrences carry the verbatim line, and the matches list the moments the
+event precedes or follows inside the same timeline.
 
 `--collect` turns one moment into a self-contained, digest-auditable
 artifact bundle without exporting the whole run:

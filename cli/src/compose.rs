@@ -8904,7 +8904,7 @@ mod tests {
 
     #[test]
     fn translates_a_kubernetes_manifest_into_the_locked_plan_path() {
-        let directory = tempfile::tempdir().unwrap();
+        let _directory = tempfile::tempdir().unwrap();
         // A container command argv implies an image launch contract, so the
         // fixture manifests use Docker archives like the image path.
         let directory = image_fixture(
