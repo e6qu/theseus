@@ -47,6 +47,7 @@ RUN ./orchestrator/pivot/build.sh --target "$TARGETARCH" \
     && mkdir -p /out/instrumentation/c /out/instrumentation/llvm /out/instrumentation/go /out/instrumentation/java \
     && cp instrumentation/c/theseus-coverage-cc /out/instrumentation/c/ \
     && cp instrumentation/c/theseus_coverage.c /out/instrumentation/c/ \
+    && cp instrumentation/c/theseus.h /out/instrumentation/c/ \
     && cp instrumentation/c/theseus-schedule-cc /out/instrumentation/c/ \
     && cp instrumentation/c/theseus_schedule.c /out/instrumentation/c/ \
     && cp instrumentation/llvm/theseus-coverage-clang /out/instrumentation/llvm/ \
