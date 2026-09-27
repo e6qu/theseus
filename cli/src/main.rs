@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use theseus_cli::{
-    boundary_at_moment, campaign_status, capture_evaluation, cargo_coverage,
+    assertion_catalog, boundary_at_moment, campaign_status, capture_evaluation, cargo_coverage,
     cargo_coverage_rustc_wrapper, collect_moment, compare_campaigns, compare_forked_campaigns,
     evaluate, evaluate_compare, event_temporal_query, explore,
     explore_compose_expect_counterexample_with, explore_compose_forked, explore_compose_with,
@@ -39,6 +39,7 @@ const USAGE: &str = "Usage:
   theseus compare --forked base-campaign-dir forked-campaign-dir
   theseus status campaign-dir [--format json|text]
   theseus history campaign-dir... [--property NAME] [--format json|text]
+  theseus history campaign-dir... --assertions [--format json|text]
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
   theseus query campaign-dir --list [--service NAME] [--format json]
@@ -560,11 +561,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
         [command, rest @ ..] if command == "history" => {
             let mut format = "text";
+            let mut assertions = false;
             let mut property_filter: Option<String> = None;
             let mut bundles: Vec<String> = Vec::new();
             let mut index = 0;
             while index < rest.len() {
                 match rest[index].as_str() {
+                    "--assertions" => {
+                        assertions = true;
+                        index += 1;
+                    }
                     "--property" => {
                         property_filter =
                             Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
@@ -586,6 +592,42 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
             if bundles.is_empty() {
                 return Err(USAGE.to_owned());
+            }
+            if assertions {
+                if property_filter.is_some() {
+                    return Err(USAGE.to_owned());
+                }
+                let catalog = assertion_catalog(
+                    &bundles
+                        .iter()
+                        .map(std::path::PathBuf::from)
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(|error| error.to_string())?;
+                if format == "json" {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&catalog).map_err(|error| error.to_string())?
+                    );
+                    return Ok(());
+                }
+                println!("assertions: {}", catalog.assertions.len());
+                for entry in &catalog.assertions {
+                    println!(
+                        "assertion {}: {} pass / {} fail across {} campaign(s)",
+                        entry.assertion,
+                        entry.total_passes,
+                        entry.total_fails,
+                        entry.campaigns.len()
+                    );
+                    for campaign in &entry.campaigns {
+                        println!(
+                            "counts\t{}\tpass {}\tfail {}",
+                            campaign.source, campaign.passes, campaign.fails
+                        );
+                    }
+                }
+                return Ok(());
             }
             let history = property_history(
                 &bundles

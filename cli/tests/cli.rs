@@ -1291,3 +1291,78 @@ fn query_matches_structured_events_with_temporal_relations() {
         assert!(!bad.success(), "{predicate}");
     }
 }
+
+#[test]
+fn history_catalogs_assertion_identities_across_campaigns() {
+    let directory = tempfile::tempdir().unwrap();
+    for (name, lines) in [
+        (
+            "before",
+            vec![
+                "THES:ASSERT:no_data_loss:pass",
+                "THES:ASSERT:no_data_loss:fail",
+            ],
+        ),
+        ("after", vec!["THES:ASSERT:no_data_loss:pass"]),
+    ] {
+        let bundle = directory.path().join(name);
+        let run = bundle.join("runs/000/services/api");
+        fs::create_dir_all(&run).unwrap();
+        fs::write(
+            bundle.join("campaign-result.json"),
+            r#"{"status":"passed","runs":[{"index":0,"status":"passed"}]}"#,
+        )
+        .unwrap();
+        let mut serial = lines.join("\n") + "\n";
+        serial.push_str("kernel noise line\n");
+        fs::write(run.join("serial.log"), serial).unwrap();
+    }
+
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "history",
+            "before",
+            "after",
+            "--assertions",
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let catalog: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(catalog["format"], "theseus-assertion-catalog-v1");
+    assert_eq!(catalog["assertions"].as_array().unwrap().len(), 1);
+    let entry = &catalog["assertions"][0];
+    assert_eq!(entry["assertion"], "no_data_loss");
+    assert_eq!(entry["total_passes"], 2);
+    assert_eq!(entry["total_fails"], 1);
+    assert_eq!(entry["campaigns"].as_array().unwrap().len(), 2);
+
+    let text = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["history", "before", "after", "--assertions"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(text.status.success(), "{text:?}");
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.contains("assertion no_data_loss: 2 pass / 1 fail across 2 campaign(s)"),
+        "{text}"
+    );
+    assert!(text.contains("counts\t"), "{text}");
+
+    // --assertions composes with neither --property nor missing sources.
+    for args in [
+        vec!["history", "before", "--assertions", "--property", "x"],
+        vec!["history", "missing", "--assertions"],
+    ] {
+        let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args(&args)
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(!bad.success(), "{args:?}");
+    }
+}
