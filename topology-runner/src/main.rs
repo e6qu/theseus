@@ -18123,6 +18123,7 @@ mod tests {
             }),
             property_witnesses: vec!["stale_read_is_reachable".to_owned()],
             timeline: vec![CampaignTimelineBoundary {
+                events: BTreeMap::new(),
                 id: "op-000-write".to_owned(),
                 operation: "write".to_owned(),
                 command: None,
