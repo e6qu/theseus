@@ -294,6 +294,8 @@ jobs:
 
       - name: Check application instrumentation
         run: |
+          cc -Wall -Wextra -I instrumentation/c -o /tmp/theseus-c-test scripts/tests/theseus_c_sdk_test.c
+          /tmp/theseus-c-test
           sh scripts/tests/test_c_coverage.sh
           sh scripts/tests/test_c_schedule.sh
           sh scripts/tests/test_llvm_coverage.sh
