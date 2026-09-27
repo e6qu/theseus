@@ -475,21 +475,28 @@ reproducible investigation.
   `query --events` lists the whole timeline - moment address, boundary,
   service, line - with `--service` narrowing.
 
+- Moment-log rendering of guest events: the report's moment log renders
+  each indexed event verbatim with the emitting service attributed, in the
+  same self-contained static page.
+
 ## Immediate next work
 
-### 1. The moment log renders guest events in reports
+### 1. Event-aware temporal relations
 
-The query surface retrieves guest events; the HTML report's moment log
-still shows only serial excerpts. The next work:
+The temporal relations match needle text; the indexed guest events are
+structured JSON. The next work:
 
-- Report: render each boundary's indexed events inside the moment log
-  entry, verbatim, with the emitting service attributed.
-- Tests: report fixtures with SDK-emitted events; the static page stays
-  self-contained.
+- Extend `--preceded-by`/`--followed-by` to take a JSON predicate
+  (`json: {fields: {...}}`) that matches a retained event object, reusing
+  the property layer's predicate evaluator over the indexed lines.
+- Output: the same moment-addressed hits, so a guest event's occurrences
+  drive the timeline exactly like needle text does.
+- Tests: relation fixtures over SDK-shaped event lines; unchanged
+  needle-text behavior.
 
-The ordered event indexing landed and is described in the verified
-baseline; the parity analysis tracks the remaining cross-priority gaps,
-including the hosted campaign service, controllers beyond Deployments, and
+The moment-log rendering landed and is described in the verified baseline;
+the parity analysis tracks the remaining cross-priority gaps, including
+the hosted campaign service, controllers beyond Deployments, and
 demand-driven coverage breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility

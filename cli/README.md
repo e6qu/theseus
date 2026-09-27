@@ -915,9 +915,10 @@ nested property predicates still evaluate inside the runner over complete
 transcripts. `--service NAME` scopes both where the needle is searched and
 which moments are listed. Guest-emitted JSON events are first-class:
 `--events` lists every retained application event - moment address,
-boundary, emitting service, and the verbatim line - and a resolved moment
+boundary, emitting service, and the verbatim line - a resolved moment
 carries the exact lines its boundary retained (up to 64 per service per
-boundary; the full serial log remains the audit trail).
+boundary; the full serial log remains the audit trail), and the report's
+moment log renders them verbatim with the emitting service attributed.
 
 `--collect` turns one moment into a self-contained, digest-auditable
 artifact bundle without exporting the whole run:
