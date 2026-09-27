@@ -424,6 +424,10 @@ reproducible investigation.
 - A Java guest SDK: `sdk/java` mirrors the Go module's vocabulary and
   byte-identical protocol as a single-package dependency, with a
   self-checking protocol test that runs in CI.
+- Guest-side event export: the Go and Java SDKs batch application events
+  and flush them as ordered JSON lines at each checkpoint - deterministic
+  sequence numbers, sorted keys, no wall clock - so guest events join the
+  serial timeline in the same shape the property layer evaluates.
 - The retained guidance comparison on native KVM:
   `scripts/run_native_guidance_comparison.sh` explores the public
   lost-update workload under every guidance mode at one fixed budget in
@@ -461,25 +465,24 @@ reproducible investigation.
 
 ## Immediate next work
 
-### 1. Guest-side event export over one ordered timeline
+### 1. Ordered event timelines as first-class query input
 
-Retained evidence covers stdout, stderr, structured events, faults,
-decisions, coverage, and properties — but guest-emitted application events
-that never reach a serial line are lost. The next work:
+The SDKs now emit guest application events onto the serial timeline, but
+nothing surfaces them as events yet: the property layer matches them
+line-by-line and the moment log indexes checkpoints. The next work:
 
-- SDK: an event record API (Go and Java modules first) that batches
-  timestamped application events and flushes them as one serial-line record
-  at each checkpoint, ordered within the deterministic virtual time.
-- Contract: the same RFC 9535 JSON event shape the property layer already
-  evaluates, so temporal queries and reports consume guest events without
-  translation.
-- Tests: helper fixtures over captured serial transcripts; ordering
-  verified against the checkpoint sequence.
+- Ingest: the runner and report recognize JSON event lines on a service's
+  serial transcript and index each into the moment log alongside
+  checkpoints, so `theseus query --moment` and `--list` retrieve
+  application events as first-class moments.
+- Contract: the retained line stays verbatim; indexing adds no rewrite.
+- Tests: campaign fixtures with SDK-emitted events; moment retrieval
+  returns the exact emitted line.
 
-The Kubernetes ConfigMap/Secret translation landed and is described in the
-verified baseline; the parity analysis tracks the remaining cross-priority
-gaps, including the hosted campaign service, controllers beyond
-Deployments, and demand-driven coverage breadth for JavaScript and .NET.
+The ConfigMap/Secret translation landed and is described in the verified
+baseline; the parity analysis tracks the remaining cross-priority gaps,
+including the hosted campaign service, controllers beyond Deployments, and
+demand-driven coverage breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 

@@ -119,3 +119,43 @@ func TestEventRoundEchoesMarkersUntilTheTerminator(t *testing.T) {
 		t.Fatalf("round mismatch:\n got %q\nwant %q", out.String(), expected)
 	}
 }
+
+func TestEventsFlushAsOneOrderedJsonTimeline(t *testing.T) {
+	var out bytes.Buffer
+	channel := New(&out, strings.NewReader(""))
+
+	if err := channel.Event(map[string]any{"event": "request", "worker": "a", "value": 1}); err != nil {
+		t.Fatalf("event: %v", err)
+	}
+	if err := channel.Event(map[string]any{"event": "request", "worker": "b", "value": 2}); err != nil {
+		t.Fatalf("event: %v", err)
+	}
+	if err := channel.Checkpoint("release_both"); err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+
+	expected := "{\"event\":\"request\",\"seq\":1,\"value\":1,\"worker\":\"a\"}\n" +
+		"{\"event\":\"request\",\"seq\":2,\"value\":2,\"worker\":\"b\"}\n" +
+		"THES:CHECKPOINT:release_both\n"
+	if out.String() != expected {
+		t.Fatalf("timeline mismatch:\n got %q\nwant %q", out.String(), expected)
+	}
+
+	// The batch clears: a checkpoint with no events writes only the line.
+	out.Reset()
+	if err := channel.Checkpoint("quiescent"); err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	if out.String() != "THES:CHECKPOINT:quiescent\n" {
+		t.Fatalf("checkpoint mismatch: %q", out.String())
+	}
+}
+
+func TestEventFieldsMustMarshalToAJsonObject(t *testing.T) {
+	channel := New(&bytes.Buffer{}, strings.NewReader(""))
+	channel.Event(map[string]any{"nested": map[string]any{"ok": true}})
+	channel.Event(map[string]any{"bad": func() {}})
+	if err := channel.FlushEvents(); err == nil {
+		t.Fatal("unmarshalable fields must fail the flush")
+	}
+}
