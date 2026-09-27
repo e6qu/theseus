@@ -24,6 +24,17 @@ pub const DEFAULT_TICK_NS: u64 = 1_000_000;
 /// active.
 pub const MAX_CLOCK_RATE: u32 = 16;
 
+/// One whole rate multiplier in milli-units: rates are represented in
+/// thousandths internally so sub-1x slowdowns (0.1x–0.9x = 100–900) share
+/// the same arithmetic as whole multipliers (1000–16000).
+pub const RATE_MILLI_ONE: u32 = 1000;
+
+/// The slowest sub-1x rate in milli-units.
+pub const MIN_CLOCK_RATE_MILLI: u32 = 100;
+
+/// The fastest rate in milli-units.
+pub const MAX_CLOCK_RATE_MILLI: u32 = MAX_CLOCK_RATE * RATE_MILLI_ONE;
+
 /// A tick-stepped virtual clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VirtualClock {
@@ -33,8 +44,9 @@ pub struct VirtualClock {
     tick_ns: u64,
     /// Number of normal quanta elapsed. Explicit clock jumps do not change it.
     tick_count: u64,
-    /// Guest-clock rate multiplier applied at every quantum boundary.
-    rate: u32,
+    /// Guest-clock rate applied at every quantum boundary, in milli-units
+    /// (1000 = 1x, 100..900 = 0.1x..0.9x).
+    rate_milli: u32,
 }
 
 /// Serializable state for snapshots/branches.
@@ -50,6 +62,10 @@ pub struct VirtualClockState {
     /// it, which means rate 1.
     #[serde(default = "default_rate")]
     pub rate: u32,
+    /// The rate in milli-units when a sub-1x (or explicitly recorded)
+    /// window applies. When absent, `rate` whole multipliers apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_milli: Option<u32>,
 }
 
 fn default_rate() -> u32 {
@@ -64,29 +80,37 @@ impl VirtualClock {
             now_ns: 0,
             tick_ns,
             tick_count: 0,
-            rate: 1,
+            rate_milli: RATE_MILLI_ONE,
         }
     }
 
-    /// The guest-clock rate multiplier applied at every quantum boundary.
-    pub fn rate(&self) -> u32 {
-        self.rate
+    /// The guest-clock rate applied at every quantum boundary, in
+    /// milli-units.
+    pub fn rate_milli(&self) -> u32 {
+        self.rate_milli
     }
 
-    /// Set the guest-clock rate multiplier for later quanta.
-    pub fn set_rate(&mut self, rate: u32) {
+    /// Set the guest-clock rate for later quanta, in milli-units: 1000 is
+    /// 1x, 100..900 are sub-1x slowdowns, up to the 16x maximum.
+    pub fn set_rate_milli(&mut self, rate_milli: u32) {
         assert!(
-            (1..=MAX_CLOCK_RATE).contains(&rate),
-            "clock rate must be between 1 and {MAX_CLOCK_RATE}"
+            (MIN_CLOCK_RATE_MILLI..=MAX_CLOCK_RATE_MILLI)
+                .contains(&rate_milli),
+            "clock rate must be between {} and {} milli-units",
+            MIN_CLOCK_RATE_MILLI,
+            MAX_CLOCK_RATE_MILLI
         );
-        self.rate = rate;
+        self.rate_milli = rate_milli;
     }
 
     /// Advance exactly one quantum at the current rate. Called at each
     /// quantum boundary.
     pub fn advance(&mut self) {
         self.tick_count += 1;
-        self.now_ns += self.tick_ns * u64::from(self.rate);
+        // Milli-units keep whole multipliers byte-stable (rate_milli/1000
+        // == rate for 1000..16000) while sub-1x rates floor per quantum,
+        // still a pure function of the tick count.
+        self.now_ns += self.tick_ns * u64::from(self.rate_milli) / 1000;
     }
 
     /// Move time forward or backward without adding a scheduling quantum.
@@ -107,7 +131,15 @@ impl VirtualClock {
             // Backward jumps saturate at the anchored tick count instead of
             // failing the run: the floor keeps the saved/restore invariant
             // `now_ns >= tick_ns * tick_count` intact on every path.
-            let floor = self.tick_ns.saturating_mul(self.tick_count);
+            // The slowest supported rate bounds the minimum: backward
+            // jumps saturate there instead of rewinding elapsed quanta.
+            let floor = u64::try_from(
+                u128::from(self.tick_ns)
+                    * u128::from(self.tick_count)
+                    * u128::from(MIN_CLOCK_RATE_MILLI)
+                    / 1000,
+            )
+            .unwrap_or(u64::MAX);
             self.now_ns = self
                 .now_ns
                 .saturating_sub(delta_ns.unsigned_abs())
@@ -155,7 +187,8 @@ impl VirtualClock {
             now_ns: self.now_ns,
             tick_ns: self.tick_ns,
             tick_count: self.tick_count,
-            rate: self.rate,
+            rate: self.rate_milli / RATE_MILLI_ONE,
+            rate_milli: Some(self.rate_milli),
         }
     }
 
@@ -164,15 +197,22 @@ impl VirtualClock {
     /// `now_ns` may be ahead of `tick_ns * tick_count` when a recorded clock
     /// jump was applied before the snapshot.
     pub fn restore(state: &VirtualClockState) -> Self {
+        // The slowest supported rate bounds how little time N quanta can
+        // add; the floor rejects grossly corrupt snapshots without
+        // assuming which rate window applied at each quantum.
+        let floor = u128::from(state.tick_ns)
+            * u128::from(state.tick_count)
+            * u128::from(MIN_CLOCK_RATE_MILLI)
+            / 1000;
         assert!(
-            state.tick_ns > 0 && state.now_ns >= state.tick_ns.saturating_mul(state.tick_count),
+            state.tick_ns > 0 && u128::from(state.now_ns) >= floor,
             "inconsistent virtual clock state"
         );
         VirtualClock {
             now_ns: state.now_ns,
             tick_ns: state.tick_ns,
             tick_count: state.tick_count,
-            rate: state.rate,
+            rate_milli: state.rate_milli.unwrap_or(state.rate * RATE_MILLI_ONE),
         }
     }
 }
@@ -244,10 +284,11 @@ mod tests {
     #[should_panic]
     fn test_restore_rejects_inconsistent_state() {
         let bad = VirtualClockState {
-            now_ns: 999,
+            now_ns: 99,
             tick_ns: 1000,
             tick_count: 1,
             rate: 1,
+            rate_milli: None,
         };
         let _ = VirtualClock::restore(&bad);
     }
@@ -266,12 +307,12 @@ mod tests {
     fn test_clock_rate_multiplies_later_quanta_and_survives_round_trips() {
         let mut clock = VirtualClock::new(1_000);
         clock.advance();
-        clock.set_rate(4);
+        clock.set_rate_milli(4_000);
         clock.advance();
         assert_eq!(clock.now_ns(), 5_000);
         assert_eq!(clock.tick_count(), 2);
         assert_eq!(VirtualClock::restore(&clock.save()), clock);
-        clock.set_rate(1);
+        clock.set_rate_milli(1_000);
         clock.advance();
         assert_eq!(clock.now_ns(), 6_000);
     }
@@ -283,15 +324,46 @@ mod tests {
             tick_ns: 1_000,
             tick_count: 2,
             rate: 1,
+            rate_milli: None,
         };
-        assert_eq!(VirtualClock::restore(&state).rate(), 1);
+        assert_eq!(VirtualClock::restore(&state).rate_milli(), 1000);
+    }
+
+    #[test]
+    fn test_sub_one_rate_advances_half_ticks_deterministically() {
+        let mut clock = VirtualClock::new(1_000);
+        clock.set_rate_milli(500);
+        clock.advance();
+        clock.advance();
+        clock.advance();
+        assert_eq!(clock.now_ns(), 1_500);
+        assert_eq!(clock.tick_count(), 3);
+        // Round-trips through the state with the milli rate intact.
+        assert_eq!(
+            VirtualClock::restore(&clock.save()).rate_milli(),
+            500
+        );
+        clock.advance();
+        assert_eq!(clock.now_ns(), 2_000);
+
+        // Sub-1x snapshots restore: now_ns sits below the rate-1 tick
+        // floor by design, and the restore floor scales with the rate.
+        let state = clock.save();
+        assert_eq!(VirtualClock::restore(&state), clock);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_sub_one_rate_bounds_rejected() {
+        let mut clock = VirtualClock::new(1_000);
+        clock.set_rate_milli(50);
     }
 
     #[test]
     #[should_panic]
     fn test_rate_bounds_rejected() {
         let mut clock = VirtualClock::new(1_000);
-        clock.set_rate(17);
+        clock.set_rate_milli(17_000);
     }
 
     #[test]
@@ -304,11 +376,15 @@ mod tests {
         assert_eq!(clock.now_ns(), 22_000);
         assert_eq!(clock.tick_count(), 2);
         assert_eq!(VirtualClock::restore(&clock.save()), clock);
-        // The floor is the anchored tick count: 2 ticks * 1000 ns.
+        // The floor is the slowest-rate bound: 2 ticks at 0.1x =
+        // 2 * 1000 ns * 100 / 1000 = 200 ns. Backward jumps saturate
+        // there instead of rewinding elapsed quanta.
         clock.jump(-20_000);
         assert_eq!(clock.now_ns(), 2_000);
+        clock.jump(-1_900);
+        assert_eq!(clock.now_ns(), 200, "floor clamps the backward jump");
         clock.jump(-1);
-        assert_eq!(clock.now_ns(), 2_000, "floor clamps the backward jump");
+        assert_eq!(clock.now_ns(), 200, "floor clamps the backward jump");
         assert_eq!(VirtualClock::restore(&clock.save()), clock);
     }
 
