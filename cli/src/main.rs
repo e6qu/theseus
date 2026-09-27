@@ -8,15 +8,16 @@ use std::process::ExitCode;
 use theseus_cli::{
     boundary_at_moment, campaign_status, capture_evaluation, cargo_coverage,
     cargo_coverage_rustc_wrapper, collect_moment, compare_campaigns, compare_forked_campaigns,
-    evaluate, evaluate_compare, explore, explore_compose_expect_counterexample_with,
-    explore_compose_forked, explore_compose_with, find_moment, go_coverage, java_coverage,
-    list_events, list_moments, load_compose_plan, load_plan, minimize_compose_campaign,
-    minimize_compose_campaign_expect_counterexample, minimize_exploration_path, next_moment_in,
-    previous_moment_in, property_history, query_campaigns, replay, replay_compose,
-    replay_exploration, replay_exploration_path, replay_to, report, report_file, report_text,
-    snapshot_exploration_path, temporal_query, test, test_compose, verify_native_evidence,
-    verify_topology_bundle, write_evaluation_lock, CampaignGuidance, ReportFormat,
-    TemporalRelation, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE, JAVA_COVERAGE_USAGE,
+    evaluate, evaluate_compare, event_temporal_query, explore,
+    explore_compose_expect_counterexample_with, explore_compose_forked, explore_compose_with,
+    find_moment, go_coverage, java_coverage, list_events, list_moments, load_compose_plan,
+    load_plan, minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
+    minimize_exploration_path, next_moment_in, previous_moment_in, property_history,
+    query_campaigns, replay, replay_compose, replay_exploration, replay_exploration_path,
+    replay_to, report, report_file, report_text, snapshot_exploration_path, temporal_query, test,
+    test_compose, verify_native_evidence, verify_topology_bundle, write_evaluation_lock,
+    CampaignGuidance, ReportFormat, TemporalRelation, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE,
+    JAVA_COVERAGE_USAGE,
 };
 
 const USAGE: &str = "Usage:
@@ -44,6 +45,8 @@ const USAGE: &str = "Usage:
   theseus query campaign-dir --events [--service NAME] [--format json]
   theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
   theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
+  theseus query campaign-dir --preceded-by-event FIELDS [--service NAME] [--format json]
+  theseus query campaign-dir --followed-by-event FIELDS [--service NAME] [--format json]
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
   theseus evaluate lock [theseus-evaluation.toml]
   theseus evaluate capture campaign-dir --output evaluation-dir --name name
@@ -274,6 +277,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let mut format = "text";
             let mut service_filter: Option<String> = None;
             let mut needle: Option<(TemporalRelation, String)> = None;
+            let mut event_predicate: Option<(TemporalRelation, serde_json::Value)> = None;
             let mut events = false;
             let mut collect = false;
             let mut output: Option<String> = None;
@@ -324,6 +328,27 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         needle = Some((relation, value));
                         index += 2;
                     }
+                    "--preceded-by-event" | "--followed-by-event" => {
+                        if event_predicate.is_some() {
+                            return Err(USAGE.to_owned().into());
+                        }
+                        let relation = if rest[index] == "--preceded-by-event" {
+                            TemporalRelation::PrecededBy
+                        } else {
+                            TemporalRelation::FollowedBy
+                        };
+                        let value = rest.get(index + 1).ok_or(USAGE.to_owned())?;
+                        let predicate: serde_json::Value = serde_json::from_str(value)
+                            .map_err(|error| format!("invalid event predicate: {error}"))?;
+                        if !predicate
+                            .as_object()
+                            .is_some_and(|object| object.contains_key("fields"))
+                        {
+                            return Err(USAGE.to_owned());
+                        }
+                        event_predicate = Some((relation, predicate));
+                        index += 2;
+                    }
                     "--service" => {
                         service_filter = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
                         index += 2;
@@ -341,6 +366,36 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         return Err(USAGE.to_owned().into());
                     }
                 }
+            }
+            if let Some((relation, predicate)) = event_predicate {
+                if list || collect || moment.is_some() || navigation.is_some() || needle.is_some() {
+                    return Err(USAGE.to_owned().into());
+                }
+                let query =
+                    event_temporal_query(&result, relation, &predicate, service_filter.as_deref())
+                        .map_err(|error| error.to_string())?;
+                if format == "json" {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&query).map_err(|error| error.to_string())?
+                    );
+                    return Ok(());
+                }
+                println!("relation: {}", query.relation);
+                println!("predicate: {}", query.predicate);
+                for occurrence in &query.occurrences {
+                    println!(
+                        "occurrence\t{}\t{}\t{}\t{}",
+                        occurrence.moment, occurrence.run, occurrence.boundary, occurrence.service
+                    );
+                }
+                for summary in &query.matches {
+                    println!(
+                        "match\t{}\t{}\t{}\t{}",
+                        summary.moment, summary.run, summary.boundary, summary.service
+                    );
+                }
+                return Ok(());
             }
             if let Some((relation, needle)) = needle {
                 if list || collect || moment.is_some() || navigation.is_some() {
