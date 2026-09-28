@@ -801,7 +801,12 @@ coverage|adaptive|posterior|property|unified` to `compose explore` to
 override the declared budget and guidance for one exploration without editing
 the Compose file: comparing the same file across guidance modes at one fixed
 budget is the reproducible search comparison the roadmap requires, and every
-retained campaign records which mode and budget produced it.
+retained campaign records which mode and budget produced it. Unified
+guidance weighs generated choices by context: each run records the consumed
+choice values beside its choice records, and the policy counts a value's
+first pairing with each schedule context (the operation, thread, and fault
+neighborhood it influenced), so a value revisited under a new neighborhood
+still feeds the search while repeats in the same context stop counting.
 
 Pass `--shard INDEX/TOTAL` to explore one worker's deterministic partition
 of the candidate corpus, so several machines or CI jobs explore the same

@@ -519,27 +519,31 @@ reproducible investigation.
   StatefulSets, DaemonSets, ReplicaSets, and Jobs — all through the same
   pod-spec path with one-container rejection contracts.
 
+- Context-weighted choice feedback: unified guidance counts a consumed
+  value's first pairing with each schedule context, and every run records
+  the consumed values beside its choice records.
+
 ## Immediate next work
 
-### 1. Structured-choice guidance feedback from generated values
+### 1. Choice feedback in the report surface
 
-The choice protocol records consumed values immediately at the point of
-use; the guidance policy counts first-seen choices as novelty. The
-remaining work deepens that feedback:
+The runs record consumed choice values and context-weighted novelty; the
+report renders the choice records only through the campaigns' raw JSON.
+The next work surfaces the feedback where audits read it:
 
-- Guidance: weight structured-choice feedback by the generated value's
-  context (the operation and neighbors it influenced), so the policy
-  learns which generated values mattered rather than merely that a choice
-  was new.
-- Evidence: guidance observations record the consumed values beside the
-  campaigns' choice records for audit.
-- Tests: guidance-policy fixtures over choice feedback; campaign
-  comparisons with and without the deepened feedback.
+- `theseus report` renders each retained run's consumed choice values and
+  context novelty beside the existing evidence columns.
+- `theseus evaluate compare` summarizes consumed-choice coverage across
+  compared campaigns, so guidance comparisons show which generated values
+  each mode reached.
+- Tests: report and comparison fixtures over campaign results carrying
+  choice feedback.
 
-Sub-1x clock-rate windows and the Kubernetes controllers landed and are
-described in the verified baseline; the parity analysis tracks the
-remaining cross-priority gaps, including the hosted campaign service and
-demand-driven coverage breadth for JavaScript and .NET.
+Sub-1x clock-rate windows, the Kubernetes controllers, and the
+context-weighted feedback landed and are described in the verified
+baseline; the parity analysis tracks the remaining cross-priority gaps,
+including the hosted campaign service and demand-driven coverage breadth
+for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 

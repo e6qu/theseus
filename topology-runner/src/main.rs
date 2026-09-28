@@ -927,6 +927,8 @@ struct CampaignRun {
     thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    choice_feedback: Option<CampaignChoiceFeedback>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     execution_ledgers: BTreeMap<String, Vec<ExecutionLedgerEvidence>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1288,6 +1290,8 @@ struct RecordedCampaignRun {
     thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
     #[serde(default)]
     structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    choice_feedback: Option<CampaignChoiceFeedback>,
     #[serde(default)]
     execution_ledgers: BTreeMap<String, Vec<ExecutionLedgerEvidence>>,
     #[serde(default)]
@@ -1389,6 +1393,17 @@ struct StructuredChoiceDecision {
     name: String,
     upper_exclusive: u16,
     selected: u16,
+}
+
+/// Structured-choice feedback recorded beside the run's choice records: the
+/// consumed values, and how many first-seen (value, schedule-context) pairs
+/// this run contributed. Unified guidance weighs the context-aware count, so
+/// a value revisited under a new operation or fault neighborhood still feeds
+/// the policy while repeats in the same context stop counting.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+struct CampaignChoiceFeedback {
+    values: Vec<String>,
+    novel_contexts: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -3808,6 +3823,7 @@ fn execute_campaign(
     let mut seen_application_blocks = std::collections::BTreeSet::new();
     let mut seen_application_edges = std::collections::BTreeSet::new();
     let mut seen_structured_choices = std::collections::BTreeSet::new();
+    let mut seen_choice_contexts = std::collections::BTreeSet::new();
     let mut seen_scheduling_decisions = std::collections::BTreeSet::new();
     let mut pending = (0..schedules.len()).collect::<Vec<_>>();
     if let Some(shard) = &campaign.shard {
@@ -3990,6 +4006,13 @@ fn execute_campaign(
                 .filter(|block| block.edge.is_some())
                 .map(|block| campaign_application_block_id(service, block))
         }));
+        let unified_guidance = campaign.guidance == CampaignGuidance::Unified;
+        let decision_prefix = unified_guidance
+            .then(|| campaign_schedule_decision_prefix(&schedule))
+            .unwrap_or_default();
+        let structured_choice_values = unified_guidance
+            .then(|| campaign_structured_choice_values(&structured_choices))
+            .unwrap_or_default();
         let structured_choice_novelty = structured_choices
             .iter()
             .flat_map(|(service, decisions)| {
@@ -4002,6 +4025,13 @@ fn execute_campaign(
             })
             .filter(|decision| seen_structured_choices.insert(decision.clone()))
             .count();
+        let choice_context_novelty = campaign_choice_context_entries(
+            &decision_prefix,
+            &structured_choice_values,
+        )
+        .into_iter()
+        .filter(|entry| seen_choice_contexts.insert(entry.clone()))
+        .count();
         let scheduling_novelty = thread_scheduling
             .iter()
             .flat_map(|(service, decisions)| {
@@ -4028,16 +4058,16 @@ fn execute_campaign(
         let decision_trace = campaign_decision_trace(&campaign, &schedule, &timeline);
         observations.push(CampaignGuidanceObservation {
             operations: schedule.operations.clone(),
-            decision_prefix: (campaign.guidance == CampaignGuidance::Unified)
-                .then(|| campaign_schedule_decision_prefix(&schedule))
-                .unwrap_or_default(),
+            decision_prefix,
             novel_markers: novelty.len(),
             novel_instructions: instruction_novelty.len(),
             novel_checkpoint_pcs: checkpoint_pc_novelty.len(),
             novel_application_blocks: application_block_novelty.len(),
-            novel_structured_choices: (campaign.guidance == CampaignGuidance::Unified)
+            novel_structured_choices: unified_guidance
                 .then_some(structured_choice_novelty)
                 .unwrap_or_default(),
+            structured_choice_values: structured_choice_values.clone(),
+            novel_choice_contexts: choice_context_novelty,
             novel_scheduling_decisions: (campaign.guidance == CampaignGuidance::Unified)
                 .then_some(scheduling_novelty)
                 .unwrap_or_default(),
@@ -4082,6 +4112,12 @@ fn execute_campaign(
             thread_scheduling,
             thread_synchronization,
             structured_choices,
+            choice_feedback: (unified_guidance && !structured_choice_values.is_empty()).then(|| {
+                CampaignChoiceFeedback {
+                    values: structured_choice_values,
+                    novel_contexts: choice_context_novelty,
+                }
+            }),
             execution_ledgers,
             machine_execution_ledgers,
             machine_execution_traces,
@@ -5078,6 +5114,37 @@ fn campaign_schedule_decision_prefix(schedule: &CampaignSchedule) -> Vec<String>
     prefix
 }
 
+/// The consumed structured-choice values of one run, in service and
+/// emission order. These are the evidence records the guidance observation
+/// keeps beside the campaign's choice records.
+fn campaign_structured_choice_values(
+    structured_choices: &BTreeMap<String, Vec<StructuredChoiceDecision>>,
+) -> Vec<String> {
+    structured_choices
+        .iter()
+        .flat_map(|(service, decisions)| {
+            decisions.iter().map(move |decision| {
+                format!(
+                    "{service}:{}:{}:{}",
+                    decision.name, decision.upper_exclusive, decision.selected
+                )
+            })
+        })
+        .collect()
+}
+
+/// Pairs one consumed choice value with the schedule context it influenced.
+/// First-seen pairs drive the context-weighted guidance feedback: the same
+/// value under a new operation or fault neighborhood counts again, while
+/// repeats in the same context stop counting.
+fn campaign_choice_context_entries(decision_prefix: &[String], values: &[String]) -> Vec<String> {
+    let context = decision_prefix.join(">");
+    values
+        .iter()
+        .map(|value| format!("{value}|{context}"))
+        .collect()
+}
+
 fn campaign_decision_trace(
     campaign: &CampaignPlan,
     schedule: &CampaignSchedule,
@@ -5999,6 +6066,10 @@ struct CampaignGuidanceObservation {
     novel_application_blocks: usize,
     #[serde(skip_serializing_if = "is_zero")]
     novel_structured_choices: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    structured_choice_values: Vec<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    novel_choice_contexts: usize,
     #[serde(skip_serializing_if = "is_zero")]
     novel_scheduling_decisions: usize,
     novel_state: bool,
@@ -7323,6 +7394,7 @@ fn campaign_unified_guidance_signal(observation: &CampaignGuidanceObservation) -
         .saturating_add(observation.novel_checkpoint_pcs.saturating_mul(500))
         .saturating_add(observation.novel_application_blocks.saturating_mul(1_000))
         .saturating_add(observation.novel_structured_choices.saturating_mul(2_000))
+        .saturating_add(observation.novel_choice_contexts.saturating_mul(1_000))
         .saturating_add(observation.novel_scheduling_decisions.saturating_mul(2_000))
         .saturating_add(usize::from(observation.novel_state).saturating_mul(2_000))
         .saturating_add(observation.property_witnesses.len().saturating_mul(100_000))
@@ -16604,6 +16676,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -16647,6 +16721,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: true,
                 failed: false,
@@ -16685,6 +16761,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -16733,6 +16811,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -16746,6 +16826,8 @@ mod tests {
                 novel_checkpoint_pcs: 1,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -16759,6 +16841,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -17375,6 +17459,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -17388,6 +17474,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 2,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -17558,6 +17646,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -17571,6 +17661,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -17584,6 +17676,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -17628,6 +17722,8 @@ mod tests {
             novel_checkpoint_pcs: 0,
             novel_application_blocks: 0,
             novel_structured_choices: 1,
+            structured_choice_values: vec!["api:worker:4:2".to_owned()],
+            novel_choice_contexts: 1,
             novel_scheduling_decisions: 1,
             novel_state: true,
             failed: false,
@@ -17644,7 +17740,7 @@ mod tests {
 
         assert_eq!(selected, 0);
         assert!(reason.contains("unified decision prefix shares 1 point(s)"));
-        assert!(reason.contains("observed reward 106000"));
+        assert!(reason.contains("observed reward 107000"));
     }
 
     #[test]
@@ -17670,6 +17766,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -17683,6 +17781,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -17738,6 +17838,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -17751,6 +17853,8 @@ mod tests {
                 novel_checkpoint_pcs: 0,
                 novel_application_blocks: 0,
                 novel_structured_choices: 0,
+                structured_choice_values: Vec::new(),
+                novel_choice_contexts: 0,
                 novel_scheduling_decisions: 0,
                 novel_state: false,
                 failed: false,
@@ -18213,6 +18317,7 @@ mod tests {
             thread_scheduling: BTreeMap::new(),
             thread_synchronization: BTreeMap::new(),
             structured_choices: BTreeMap::new(),
+            choice_feedback: None,
             execution_ledgers: BTreeMap::from([(
                 "api".to_owned(),
                 vec![ExecutionLedgerEvidence {
@@ -18260,6 +18365,7 @@ mod tests {
             thread_scheduling: actual.thread_scheduling.clone(),
             thread_synchronization: actual.thread_synchronization.clone(),
             structured_choices: actual.structured_choices.clone(),
+            choice_feedback: actual.choice_feedback.clone(),
             execution_ledgers: actual.execution_ledgers.clone(),
             machine_execution_ledgers: actual.machine_execution_ledgers.clone(),
             machine_execution_traces: actual.machine_execution_traces.clone(),
@@ -18429,6 +18535,8 @@ mod tests {
             novel_checkpoint_pcs: 0,
             novel_application_blocks: 0,
             novel_structured_choices: 0,
+            structured_choice_values: Vec::new(),
+            novel_choice_contexts: 0,
             novel_scheduling_decisions: 0,
             novel_state: false,
             failed: false,
@@ -18447,6 +18555,89 @@ mod tests {
         let mut changed = observations;
         changed[0].failed = true;
         assert_ne!(first, CampaignGuidanceLedger::from_observations(&changed));
+    }
+
+    #[test]
+    fn choice_context_feedback_pairs_values_with_schedule_context() {
+        let mut choices = BTreeMap::new();
+        choices.insert(
+            "api".to_string(),
+            vec![StructuredChoiceDecision {
+                ordinal: 0,
+                name: "worker".to_string(),
+                upper_exclusive: 4,
+                selected: 2,
+            }],
+        );
+        let values = campaign_structured_choice_values(&choices);
+        assert_eq!(values, vec!["api:worker:4:2".to_string()]);
+
+        let write_context =
+            campaign_choice_context_entries(&["operation:0:write".to_string()], &values);
+        let read_context =
+            campaign_choice_context_entries(&["operation:1:read".to_string()], &values);
+        let repeat = campaign_choice_context_entries(&["operation:0:write".to_string()], &values);
+        assert_eq!(write_context.len(), 1);
+        assert_ne!(write_context, read_context);
+        assert_eq!(write_context, repeat);
+
+        let mut seen = std::collections::BTreeSet::new();
+        let mut novel = |entries: &Vec<String>| {
+            entries
+                .iter()
+                .filter(|entry| seen.insert((*entry).clone()))
+                .count()
+        };
+        assert_eq!(novel(&write_context), 1);
+        assert_eq!(novel(&read_context), 1);
+        assert_eq!(novel(&repeat), 0);
+    }
+
+    #[test]
+    fn choice_feedback_records_consumed_values_on_unified_runs() {
+        let feedback = CampaignChoiceFeedback {
+            values: vec!["api:worker:4:2".to_string()],
+            novel_contexts: 1,
+        };
+        let encoded = serde_json::to_string(&feedback).unwrap();
+        assert!(encoded.contains(r#""values":["api:worker:4:2"]"#));
+        assert!(encoded.contains(r#""novel_contexts":1"#));
+
+        let empty = CampaignChoiceFeedback::default();
+        assert_eq!(empty.values.len(), 0);
+        assert_eq!(empty.novel_contexts, 0);
+    }
+
+    #[test]
+    fn unified_signal_weights_choice_context_novelty() {
+        let base = CampaignGuidanceObservation {
+            operations: vec![choice(0)],
+            decision_prefix: Vec::new(),
+            novel_markers: 0,
+            novel_instructions: 0,
+            novel_checkpoint_pcs: 0,
+            novel_application_blocks: 0,
+            novel_structured_choices: 1,
+            structured_choice_values: Vec::new(),
+            novel_choice_contexts: 0,
+            novel_scheduling_decisions: 0,
+            novel_state: false,
+            failed: false,
+            property_witnesses: Vec::new(),
+        };
+        let deepened = CampaignGuidanceObservation {
+            novel_choice_contexts: 3,
+            ..base.clone()
+        };
+        assert!(
+            campaign_unified_guidance_signal(&deepened)
+                > campaign_unified_guidance_signal(&base)
+        );
+        assert_eq!(
+            campaign_unified_guidance_signal(&deepened)
+                - campaign_unified_guidance_signal(&base),
+            3_000
+        );
     }
 
     #[test]
