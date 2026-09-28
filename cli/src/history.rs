@@ -526,3 +526,177 @@ mod assertion_catalog_tests {
         assert!(assertion_catalog(&[]).is_err());
     }
 }
+
+/// One guest-emitted application event retained in one campaign's
+/// timeline, verbatim.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct EventHistoryRecord {
+    /// The canonicalized campaign directory.
+    pub source: String,
+    /// Index of the retained timeline (0-based).
+    pub run: usize,
+    /// `op-NNN-<operation>` boundary identity.
+    pub boundary: String,
+    /// The operation name.
+    pub operation: String,
+    /// The service whose serial delta contains the event.
+    pub service: String,
+    /// The moment address of the boundary carrying the event.
+    pub moment: String,
+    /// The event line, verbatim.
+    pub line: String,
+}
+
+/// The versioned guest-event history over the named campaigns: every
+/// indexed event in timeline order, per campaign in the order named.
+#[derive(Debug, Serialize)]
+pub struct EventHistory {
+    pub format: &'static str,
+    pub sources: Vec<String>,
+    pub events: Vec<EventHistoryRecord>,
+}
+
+/// List every indexed guest event across the named campaigns, in the order
+/// the campaigns were named and within each campaign in timeline order.
+pub fn event_history(
+    sources: &[std::path::PathBuf],
+    service: Option<&str>,
+) -> Result<EventHistory, HistoryError> {
+    if sources.is_empty() {
+        return Err(HistoryError::NoSources);
+    }
+    let mut canonical_sources = Vec::with_capacity(sources.len());
+    let mut events = Vec::new();
+    for source in sources {
+        let bundle = fs::canonicalize(source).map_err(HistoryError::Read)?;
+        let result = read_json(&bundle.join("campaign-result.json"))?;
+        let Some(result) = result else {
+            return Err(HistoryError::NotACampaign(format!(
+                "no campaign-result.json in {}",
+                bundle.display()
+            )));
+        };
+        canonical_sources.push(bundle.display().to_string());
+        for (run_index, run) in result["runs"]
+            .as_array()
+            .map(|runs| runs.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .enumerate()
+        {
+            let timeline = run["timeline"].as_array();
+            for boundary in timeline.map(|timeline| timeline.as_slice()).unwrap_or(&[]) {
+                if let Some(boundary_events) = boundary["events"].as_object() {
+                    for (event_service, lines) in boundary_events {
+                        if let Some(filter) = service {
+                            if event_service != filter {
+                                continue;
+                            }
+                        }
+                        for line in lines
+                            .as_array()
+                            .map(|lines| lines.as_slice())
+                            .unwrap_or(&[])
+                        {
+                            if let Some(line) = line.as_str() {
+                                events.push(EventHistoryRecord {
+                                    source: bundle.display().to_string(),
+                                    run: run_index,
+                                    boundary: boundary["id"]
+                                        .as_str()
+                                        .unwrap_or_default()
+                                        .to_owned(),
+                                    operation: boundary["operation"]
+                                        .as_str()
+                                        .unwrap_or_default()
+                                        .to_owned(),
+                                    service: event_service.clone(),
+                                    moment: boundary["moment"]
+                                        .as_str()
+                                        .unwrap_or_default()
+                                        .to_owned(),
+                                    line: line.to_owned(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(EventHistory {
+        format: "theseus-event-history-v1",
+        sources: canonical_sources,
+        events,
+    })
+}
+
+#[cfg(test)]
+mod event_history_tests {
+    use super::*;
+
+    fn write_bundle_with_events(directory: &Path, event_line: &str) -> PathBuf {
+        let run = directory
+            .join("runs")
+            .join("000")
+            .join("services")
+            .join("api");
+        fs::create_dir_all(&run).unwrap();
+        // The retained result stores event lines as JSON strings inside the
+        // events map; serde_json escapes the embedded quotes on write and
+        // unescapes them on read, so the fixture uses the plain line.
+        let escaped = event_line.to_owned();
+        let result = serde_json::json!({
+            "status": "passed",
+            "runs": [{"index": 0, "status": "passed", "timeline": [
+                {"id": "op-000-write", "operation": "write", "service": "api",
+                 "moment": "7000@input-hash",
+                 "events": {"api": [escaped]}}
+            ]}]
+        });
+        fs::write(
+            directory.join("campaign-result.json"),
+            serde_json::to_vec(&result).unwrap(),
+        )
+        .unwrap();
+        directory.to_path_buf()
+    }
+
+    #[test]
+    fn event_history_lists_events_across_campaigns_in_named_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let line = r#"{"event":"request","seq":1,"worker":"a"}"#;
+        let before = write_bundle_with_events(&directory.path().join("before"), line);
+        let after = write_bundle_with_events(&directory.path().join("after"), line);
+
+        let history = event_history(&[before.clone(), after.clone()], None).unwrap();
+        assert_eq!(history.format, "theseus-event-history-v1");
+        assert_eq!(history.events.len(), 2);
+        assert_eq!(
+            history.events[0].source,
+            fs::canonicalize(&before).unwrap().to_str().unwrap()
+        );
+        assert_eq!(
+            history.events[0].line,
+            r#"{"event":"request","seq":1,"worker":"a"}"#
+        );
+        assert_eq!(
+            history.events[1].source,
+            fs::canonicalize(&after).unwrap().to_str().unwrap()
+        );
+
+        let filtered = event_history(&[before, after], Some("counter")).unwrap();
+        assert!(filtered.events.is_empty());
+    }
+
+    #[test]
+    fn event_history_rejects_empty_sources_and_missing_results() {
+        assert!(event_history(&[], None).is_err());
+        let directory = tempfile::tempdir().unwrap();
+        let error = event_history(&[directory.path().to_path_buf()], None).unwrap_err();
+        assert!(
+            error.to_string().contains("no campaign-result.json"),
+            "{error}"
+        );
+    }
+}

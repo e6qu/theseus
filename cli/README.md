@@ -26,6 +26,7 @@ theseus compare --forked base-campaign-dir forked-campaign-dir
 theseus status campaign-dir [--format json|text]
 theseus history campaign-dir... [--property NAME] [--format json|text]
 theseus history campaign-dir... --assertions [--format json|text]
+theseus history campaign-dir... --events [--service NAME] [--format json|text]
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
 theseus query campaign-dir --list [--service NAME] [--format json]
