@@ -658,7 +658,8 @@ networks:
 A documented Kubernetes subset translates into the same locked plan the
 Compose path produces, so campaigns, sharding, and evidence are identical:
 
-- `Pod` and `Deployment` workloads with **exactly one container**:
+- `Pod`, `Deployment`, `StatefulSet`, `DaemonSet`, `ReplicaSet`, and
+  `Job` workloads with **exactly one container**:
   `image`, `command` + `args` (the execve argv), literal `env` entries
   (`valueFrom` is rejected), `workingDir`, and
   `securityContext.readOnlyRootFilesystem` (→ `read_only`).

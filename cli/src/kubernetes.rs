@@ -6,8 +6,8 @@
 //! Theseus services are single-container VMs with one immutable image, one
 //! entrypoint contract, and named networks; this module translates the
 //! Kubernetes subset that maps onto that model - Pods, Deployments,
-//! StatefulSets, and Jobs with exactly one container, and ClusterIP
-//! Services as network membership -
+//! StatefulSets, DaemonSets, ReplicaSets, and Jobs with exactly one
+//! container, and ClusterIP Services as network membership -
 //! into the same `ComposeFile` the Compose path produces, so the locked
 //! plan, campaign, and evidence pipeline are identical. Everything outside
 //! the subset is rejected with a naming error, never silently dropped:
@@ -310,7 +310,7 @@ pub fn load_kubernetes_compose(
         let kind = document.kind.as_deref().unwrap_or_default();
         let metadata = document.metadata;
         match kind {
-            "Pod" | "Deployment" | "StatefulSet" | "Job" => {
+            "Pod" | "Deployment" | "StatefulSet" | "DaemonSet" | "ReplicaSet" | "Job" => {
                 let name = named(&metadata, &kind)?;
                 if services.contains_key(&name) {
                     return Err(ComposeError::Invalid(format!(

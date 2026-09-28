@@ -9137,6 +9137,49 @@ mod tests {
     }
 
     #[test]
+    fn translates_daemonsets_and_replicasets_like_other_controllers() {
+        let directory = image_fixture(
+            "services:\n  placeholder:\n    x-theseus:\n      manifest: api/theseus.toml\nnetworks:\n  default: {}\n",
+            &[],
+        );
+        for service in ["api", "worker"] {
+            fs::write(
+                directory.path().join(service).join("theseus.toml"),
+                "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+            )
+            .unwrap();
+            write_docker_image(&directory.path().join(service).join("service.tar"), &[]);
+        }
+        fs::write(
+            directory.path().join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'api/runtime/firecracker'\nimage_adapter = 'api/runtime/theseus-image'\n[guest]\nkernel = 'api/guest/vmlinux'\nimage = 'api/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("k8s.yaml"),
+            "apiVersion: apps/v1\nkind: DaemonSet\nmetadata:\n  name: api\nspec:\n  template:\n    spec:\n      containers:\n        - name: api\n          image: api:1\n          command: [/work/api]\n---\napiVersion: apps/v1\nkind: ReplicaSet\nmetadata:\n  name: worker\nspec:\n  template:\n    spec:\n      containers:\n        - name: worker\n          image: worker:1\n          command: [/work/worker]\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("k8s.yaml")).unwrap();
+        assert_eq!(plan.services.len(), 2);
+        assert!(plan.services.contains_key("api"));
+        assert!(plan.services.contains_key("worker"));
+        let api_command = plan.services["api"]
+            .launch
+            .as_ref()
+            .and_then(|launch| launch.command.as_deref())
+            .unwrap_or_default();
+        assert_eq!(api_command, ["/work/api"]);
+        let worker_command = plan.services["worker"]
+            .launch
+            .as_ref()
+            .and_then(|launch| launch.command.as_deref())
+            .unwrap_or_default();
+        assert_eq!(worker_command, ["/work/worker"]);
+    }
+
+    #[test]
     fn normalizes_campaign_fault_windows_and_quiet_windows() {
         let directory = fixture(
             "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: read\n        input: 'read\\n'\n      - name: verify\n        input: 'verify\\n'\n    faults:\n      - kind: partition\n        network: backplane\n        after: write\n        until: verify\n    quiet:\n      - before: read\n",
