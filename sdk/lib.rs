@@ -132,9 +132,11 @@ impl ControlChannel {
 /// console with kernel logs (the line protocol is unambiguous).
 #[cfg(feature = "std")]
 pub mod linux {
-    use std::fs::{File, OpenOptions};
+    use std::boxed::Box;
+    use std::fs::OpenOptions;
     use std::io::{self, BufRead, BufReader, Write};
     use std::string::String;
+    use std::vec::Vec;
 
     /// Marker line prefix (guest→host).
     pub const MARKER_PREFIX: &str = "THES:M:";
@@ -157,8 +159,10 @@ pub mod linux {
 
     /// The serial-console control channel.
     pub struct TtyChannel {
-        out: File,
-        input: BufReader<File>,
+        out: Box<dyn Write>,
+        input: BufReader<Box<dyn BufRead>>,
+        event_lines: Vec<(u64, String)>,
+        event_seq: u64,
     }
 
     impl TtyChannel {
@@ -167,9 +171,22 @@ pub mod linux {
             let out = OpenOptions::new().write(true).open("/dev/ttyS0")?;
             let input = OpenOptions::new().read(true).open("/dev/ttyS0")?;
             Ok(TtyChannel {
+                out: Box::new(out),
+                input: BufReader::new(Box::new(io::BufReader::new(input))),
+                event_lines: Vec::new(),
+                event_seq: 0,
+            })
+        }
+
+        /// Build a channel over an explicit transport, which keeps the
+        /// protocol testable without a UART.
+        pub fn new(out: Box<dyn Write>, input: Box<dyn BufRead>) -> Self {
+            TtyChannel {
                 out,
                 input: BufReader::new(input),
-            })
+                event_lines: Vec::new(),
+                event_seq: 0,
+            }
         }
 
         /// Emit a marker byte (host sees a `THES:M:xx` line).
@@ -185,10 +202,44 @@ pub mod linux {
             writeln!(self.out, "{ASSERTION_PREFIX}{name}:{outcome}")
         }
 
+        /// Queue one application event: `json_object` is a complete JSON
+        /// object carrying the caller's fields. The event is not written
+        /// until [`Self::flush_events`] or [`Self::checkpoint`]. Queuing
+        /// beyond the capacity is a no-op: evidence degrades instead of
+        /// breaking the workload.
+        pub fn event(&mut self, json_object: &str) {
+            if json_object.len() >= 896
+                || !json_object.starts_with('{')
+                || !json_object.ends_with('}')
+                || self.event_lines.len() >= 8
+            {
+                return;
+            }
+            self.event_seq += 1;
+            self.event_lines
+                .push((self.event_seq, String::from(json_object)));
+        }
+
+        /// Flush every queued application event as one compact JSON line
+        /// per event, in submission order under the deterministic "seq"
+        /// number, and clear the batch. The caller's object nests under
+        /// "event" (no JSON parser to merge keys), so property predicates
+        /// address fields at /event/... — the same evaluators, one level
+        /// deeper.
+        pub fn flush_events(&mut self) -> io::Result<()> {
+            for (seq, object) in self.event_lines.drain(..) {
+                writeln!(self.out, "{{\"seq\":{},\"event\":{object}}}", seq)?;
+            }
+            Ok(())
+        }
+
         /// Mark the end of one workload operation.  This is optional for the
         /// first campaign implementation, but gives applications a stable
-        /// serial checkpoint protocol without requiring the SDK.
+        /// serial checkpoint protocol without requiring the SDK. Queued
+        /// application events flush first, so the ordered event timeline
+        /// stays inside the checkpoint sequence.
         pub fn checkpoint(&mut self, name: &str) -> io::Result<()> {
+            self.flush_events()?;
             writeln!(self.out, "{CHECKPOINT_PREFIX}{name}")
         }
 
@@ -303,5 +354,85 @@ pub mod linux {
             }
             self.marker(crate::MARKER_DONE)
         }
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tty_event_tests {
+    use super::linux::TtyChannel;
+    use std::boxed::Box;
+    use std::format;
+    use std::fs::{File, OpenOptions};
+    use std::string::String;
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "theseus-sdk-{}-{}-{name}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn events_flush_before_checkpoints_in_submission_order() {
+        let out_path = temp_path("out");
+        let input_path = temp_path("in");
+        let out = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&out_path)
+            .unwrap();
+        let input = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&input_path)
+            .unwrap();
+        let mut channel = TtyChannel::new(Box::new(out), Box::new(std::io::BufReader::new(input)));
+
+        channel.event("{\"event\":\"request\",\"worker\":\"a\"}");
+        channel.event("{\"event\":\"request\",\"worker\":\"b\"}");
+        channel.checkpoint("release_both").unwrap();
+        channel.flush_events().unwrap();
+
+        let written = std::fs::read_to_string(&out_path).unwrap();
+        let expected = "{\"seq\":1,\"event\":{\"event\":\"request\",\"worker\":\"a\"}}\n";
+        assert!(written.contains(expected), "timeline mismatch: {written}");
+        let second = "{\"seq\":2,\"event\":{\"event\":\"request\",\"worker\":\"b\"}}\n";
+        assert!(written.contains(second), "{written}");
+    }
+
+    #[test]
+    fn events_reject_non_object_payloads_silently() {
+        let out_path = temp_path("rej");
+        let input_path = temp_path("rej-in");
+        let out = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&out_path)
+            .unwrap();
+        let input = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&input_path)
+            .unwrap();
+        let mut channel = TtyChannel::new(Box::new(out), Box::new(std::io::BufReader::new(input)));
+
+        channel.event("not an object");
+        channel.checkpoint("marker").unwrap();
+        channel.flush_events().unwrap();
+
+        let written = std::fs::read_to_string(&out_path).unwrap();
+        assert_eq!(written, "THES:CHECKPOINT:marker\n");
     }
 }
