@@ -17740,7 +17740,7 @@ mod tests {
 
         assert_eq!(selected, 0);
         assert!(reason.contains("unified decision prefix shares 1 point(s)"));
-        assert!(reason.contains("observed reward 106000"));
+        assert!(reason.contains("observed reward 107000"));
     }
 
     #[test]
