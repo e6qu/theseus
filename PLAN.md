@@ -477,7 +477,12 @@ reproducible investigation.
 
 - Moment-log rendering of guest events: the report's moment log renders
   each indexed event verbatim with the emitting service attributed, in the
-  same self-contained static page.
+  same self-contained static page, and the Operation boundaries table
+  gains a Guest events column beside the bounded serial excerpt.
+- Cross-run event history: `theseus history --events` lists every indexed
+  guest event across the named campaigns — moment address, boundary,
+  emitting service, verbatim line — in the same versioned JSON conventions
+  as the assertion catalog.
 - Event-aware temporal relations: `theseus query --preceded-by-event
   FIELDS` and `--followed-by-event FIELDS` take the property layer's
   `fields` shape — RFC 6901 pointers to expected values, all matching one
@@ -504,22 +509,28 @@ reproducible investigation.
   machine-readable query away. Serial-less bundles catalog as empty
   counts.
 
+- Event export in the Rust SDK: `TtyChannel::event` queues one JSON
+  object and `flush_events` writes the ordered lines before each
+  checkpoint, nested under `event` with a deterministic `seq` — the C
+  contract — and the channel now accepts injectable transports so the
+  protocol is testable without a UART.
+
 ## Immediate next work
 
-### 1. Guest events in the report timeline
+### 1. DaemonSet and ReplicaSet controllers
 
-Reports render serial excerpts and moment logs; the indexed guest events
-deserve the same treatment in the per-run timeline. The next work:
+The Kubernetes subset covers Pods, Deployments, StatefulSets, and Jobs.
+The next work completes the common single-container controllers:
 
-- Report: render each boundary's indexed events inside the per-run
-  timeline section, verbatim, attributed to the emitting service.
-- Tests: report fixtures with SDK-emitted events; the static page stays
-  self-contained.
+- DaemonSet and ReplicaSet translate through the same pod-spec path,
+  rejecting controller fields outside the documented subset by name.
+- Tests: translation fixtures per controller; empty controllers fail
+  honestly.
 
-The assertion catalog landed and is described in the verified baseline;
-the parity analysis tracks the remaining cross-priority gaps, including
-the hosted campaign service, controllers beyond Deployments, and
-demand-driven coverage breadth for JavaScript and .NET.
+Sub-1x clock-rate windows landed and are described in the verified
+baseline; the parity analysis tracks the remaining cross-priority gaps,
+including the hosted campaign service and demand-driven coverage breadth
+for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 
