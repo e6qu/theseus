@@ -1366,3 +1366,63 @@ fn history_catalogs_assertion_identities_across_campaigns() {
         assert!(!bad.success(), "{args:?}");
     }
 }
+
+#[test]
+fn history_lists_guest_events_across_campaigns() {
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["before", "after"] {
+        let bundle = directory.path().join(name);
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(
+            bundle.join("campaign-result.json"),
+            r#"{"status":"passed","runs":[{"index":0,"timeline":[
+                {"id":"op-000-write","operation":"write","service":"api","moment":"7000@input-hash",
+                 "events":{"api":["{\"event\":\"request\",\"seq\":1,\"worker\":\"a\"}"]}},
+                {"id":"op-001-read","operation":"read","service":"counter","moment":"9000@read-hash",
+                 "events":{"counter":["{\"event\":\"ack\",\"seq\":2}"]}}
+            ]}]}"#,
+        )
+        .unwrap();
+    }
+
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["history", "before", "after", "--events", "--format", "json"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let history: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(history["format"], "theseus-event-history-v1");
+    let events = history["events"].as_array().unwrap();
+    assert_eq!(events.len(), 4);
+    assert_eq!(
+        events[0]["source"].as_str().unwrap().ends_with("/before"),
+        true
+    );
+    assert_eq!(
+        events[2]["source"].as_str().unwrap().ends_with("/after"),
+        true
+    );
+    assert_eq!(events[0]["service"], "api");
+    assert_eq!(events[1]["service"], "counter");
+    assert_eq!(events[2]["service"], "api");
+    assert_eq!(events[3]["service"], "counter");
+
+    let scoped = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "history",
+            "before",
+            "after",
+            "--events",
+            "--service",
+            "counter",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(scoped.status.success(), "{scoped:?}");
+    let text = String::from_utf8(scoped.stdout).unwrap();
+    assert!(text.contains("events: 2"), "{text}");
+    assert!(text.contains("9000@read-hash"), "{text}");
+    assert!(!text.contains("7000@input-hash"), "{text}");
+}

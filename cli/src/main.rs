@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use theseus_cli::{
     assertion_catalog, boundary_at_moment, campaign_status, capture_evaluation, cargo_coverage,
     cargo_coverage_rustc_wrapper, collect_moment, compare_campaigns, compare_forked_campaigns,
-    evaluate, evaluate_compare, event_temporal_query, explore,
+    evaluate, evaluate_compare, event_history, event_temporal_query, explore,
     explore_compose_expect_counterexample_with, explore_compose_forked, explore_compose_with,
     find_moment, go_coverage, java_coverage, list_events, list_moments, load_compose_plan,
     load_plan, minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
@@ -40,6 +40,7 @@ const USAGE: &str = "Usage:
   theseus status campaign-dir [--format json|text]
   theseus history campaign-dir... [--property NAME] [--format json|text]
   theseus history campaign-dir... --assertions [--format json|text]
+  theseus history campaign-dir... --events [--service NAME] [--format json|text]
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
   theseus query campaign-dir --list [--service NAME] [--format json]
@@ -562,6 +563,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
         [command, rest @ ..] if command == "history" => {
             let mut format = "text";
             let mut assertions = false;
+            let mut events = false;
+            let mut service_filter: Option<String> = None;
             let mut property_filter: Option<String> = None;
             let mut bundles: Vec<String> = Vec::new();
             let mut index = 0;
@@ -570,6 +573,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     "--assertions" => {
                         assertions = true;
                         index += 1;
+                    }
+                    "--events" => {
+                        events = true;
+                        index += 1;
+                    }
+                    "--service" => {
+                        service_filter = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
+                        index += 2;
                     }
                     "--property" => {
                         property_filter =
@@ -592,6 +603,34 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
             if bundles.is_empty() {
                 return Err(USAGE.to_owned());
+            }
+            if events {
+                if assertions || property_filter.is_some() {
+                    return Err(USAGE.to_owned());
+                }
+                let history = event_history(
+                    &bundles
+                        .iter()
+                        .map(std::path::PathBuf::from)
+                        .collect::<Vec<_>>(),
+                    service_filter.as_deref(),
+                )
+                .map_err(|error| error.to_string())?;
+                if format == "json" {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&history).map_err(|error| error.to_string())?
+                    );
+                    return Ok(());
+                }
+                println!("events: {}", history.events.len());
+                for record in &history.events {
+                    println!(
+                        "event\t{}\t{}\t{}\t{}",
+                        record.moment, record.source, record.boundary, record.line
+                    );
+                }
+                return Ok(());
             }
             if assertions {
                 if property_filter.is_some() {
