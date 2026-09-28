@@ -9076,6 +9076,67 @@ mod tests {
     }
 
     #[test]
+    fn translates_configmap_binary_data_and_item_projections() {
+        let directory = image_fixture(
+            "services:\n  placeholder:\n    x-theseus:\n      manifest: api/theseus.toml\nnetworks:\n  default: {}\n",
+            &[],
+        );
+        fs::write(
+            directory.path().join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'api/runtime/firecracker'\nimage_adapter = 'api/runtime/theseus-image'\n[guest]\nkernel = 'api/guest/vmlinux'\nimage = 'api/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+        for service in ["api"] {
+            fs::write(
+                directory.path().join(service).join("theseus.toml"),
+                "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+            )
+            .unwrap();
+            write_docker_image(&directory.path().join(service).join("service.tar"), &[]);
+        }
+        // base64("KEY=VALUE") = S0VZPVZBTFVF.
+        fs::write(
+            directory.path().join("k8s.yaml"),
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app-config\ndata:\n  app.conf: mode=campaign\nbinaryData:\n  blob.bin: S0VZPVZBTFVF\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\nspec:\n  template:\n    spec:\n      volumes:\n        - name: config\n          configMap:\n            name: app-config\n            items:\n              - key: app.conf\n                path: settings/main.conf\n              - key: blob.bin\n                path: blob.bin\n      containers:\n        - name: api\n          image: api:1\n          volumeMounts:\n            - name: config\n              mountPath: /etc/app\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("k8s.yaml")).unwrap();
+        let api = &plan.services["api"];
+        let mut targets = api
+            .configs
+            .iter()
+            .map(|c| c.target.as_str())
+            .collect::<Vec<_>>();
+        targets.sort();
+        assert_eq!(
+            targets,
+            vec!["/etc/app/blob.bin", "/etc/app/settings/main.conf"]
+        );
+        let conf = api
+            .configs
+            .iter()
+            .find(|c| c.target == "/etc/app/settings/main.conf")
+            .unwrap();
+        assert_eq!(conf.data, b"mode=campaign");
+        let blob = api
+            .configs
+            .iter()
+            .find(|c| c.target == "/etc/app/blob.bin")
+            .unwrap();
+        assert_eq!(blob.data, b"KEY=VALUE");
+
+        // An items entry naming an absent key is rejected.
+        fs::write(
+            directory.path().join("k8s.yaml"),
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app-config\ndata:\n  app.conf: mode=campaign\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\nspec:\n  template:\n    spec:\n      volumes:\n        - name: config\n          configMap:\n            name: app-config\n            items:\n              - key: absent\n                path: x\n      containers:\n        - name: api\n          image: api:1\n          volumeMounts:\n            - name: config\n              mountPath: /etc/app\n",
+        )
+        .unwrap();
+        let error = load_compose_plan(directory.path().join("k8s.yaml")).unwrap_err();
+        assert!(error.to_string().contains("does not define"), "{error}");
+    }
+
+    #[test]
     fn normalizes_campaign_fault_windows_and_quiet_windows() {
         let directory = fixture(
             "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    networks: [backplane]\nnetworks:\n  backplane: {}\nx-theseus:\n  campaign:\n    driver: api\n    operations:\n      - name: write\n        input: 'write\\n'\n      - name: read\n        input: 'read\\n'\n      - name: verify\n        input: 'verify\\n'\n    faults:\n      - kind: partition\n        network: backplane\n        after: write\n        until: verify\n    quiet:\n      - before: read\n",
