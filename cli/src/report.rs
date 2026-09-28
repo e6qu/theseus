@@ -1461,10 +1461,10 @@ traffic=b=>Object.entries(b.network_traffic_delta).flatMap(([service,nets])=>Obj
 storage=b=>b.changed_storage.join(', ')||'none',
 virtualTime=b=>Object.entries(b.virtual_time_delta_ns).map(([service,clocks])=>service+': '+clocks.join(', ')+' ns').join(' · ')||'none',
 execution=b=>[...Object.entries(b.execution_ledgers||{{}}).flatMap(([service,ledgers])=>ledgers.map((ledger,vcpu)=>service+'/vcpu'+vcpu+': '+ledger.decisions+' decisions · '+ledger.sha256+' · last '+((ledger.tail||[]).at(-1)||'unavailable'))),...Object.entries(b.machine_execution_ledgers||{{}}).map(([service,ledger])=>service+'/machine: '+ledger.decisions+' decisions · '+ledger.sha256+' · last '+((ledger.tail||[]).at(-1)||'unavailable'))].join(' · ')||'unrecorded (legacy)',
-rows=m.campaign_runs.flatMap(r=>r.timeline.map(b=>[String(r.index),b.id||'legacy',b.operation,b.service||'driver (legacy)',input(b),delivery(b),barrier(b),String(b.round),delta(b),b.markers.join(' ')||'none',locations(b),scheduling(b),b.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',Object.entries(b.serial_sha256).map(([service,hash])=>service+':'+hash).join(' ')||'none',serial(b),traffic(b),storage(b),virtualTime(b),execution(b),b.state_sha256||'none',b.moment||'—'])),
+rows=m.campaign_runs.flatMap(r=>r.timeline.map(b=>[String(r.index),b.id||'legacy',b.operation,b.service||'driver (legacy)',input(b),delivery(b),barrier(b),String(b.round),delta(b),b.markers.join(' ')||'none',locations(b),scheduling(b),b.actions.map(a=>a.kind+' '+a.target).join(' · ')||'none',Object.entries(b.serial_sha256).map(([service,hash])=>service+':'+hash).join(' ')||'none',serial(b),guestEvents(b),traffic(b),storage(b),virtualTime(b),execution(b),b.state_sha256||'none',b.moment||'—'])),
 s=section('Operation boundaries');
 s.append(el('p','Each row is the paused checkpoint after one operation. Target names the service whose UART received it. UART input is an escaped, bounded copy of the exact delivered bytes; its hash covers the complete input in the locked replay plan. UART delivery records accepted bytes, guest FIFO reads, and queued bytes. UART barrier records that the named marker arrived after that input, with its post-input response hash and excerpt. Per-vCPU ledgers preserve local order; the machine ledger preserves the total order of handled exits and emulated device effects across vCPUs. The delta compares the checkpoint with the preceding one. New serial output is also escaped and bounded. Network counters, changed storage, and virtual-time deltas show state produced by this operation.'));
-s.append(table(rows,['Run','Boundary ID','Operation','Target','UART input','UART delivery','UART barrier','Round','Delta','Markers','Instruction locations','Thread scheduling','Applied actions','Serial SHA-256','New serial output','Network traffic','Changed storage','Virtual time delta','Execution ledger','State SHA-256','Moment']));
+s.append(table(rows,['Run','Boundary ID','Operation','Target','UART input','UART delivery','UART barrier','Round','Delta','Markers','Instruction locations','Thread scheduling','Applied actions','Serial SHA-256','New serial output','Guest events','Network traffic','Changed storage','Virtual time delta','Execution ledger','State SHA-256','Moment']));
 }}
 if(m.campaign_runs.some(r=>Object.keys(r.thread_synchronization).length)){{const rows=m.campaign_runs.flatMap(r=>Object.entries(r.thread_synchronization).flatMap(([service,events])=>events.map(e=>[String(r.index),service,'#'+e.event,'t'+e.thread,e.operation,e.object_kind+'-'+e.object,e.peer_thread===null?'none':'t'+e.peer_thread]))),s=section('Thread synchronization');s.append(table(rows,['Run','Service','Event','Thread','Operation','Object','Peer thread']));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
@@ -2574,6 +2574,12 @@ mod tests {
         assert!(html.contains("Alternative futures"));
         assert!(html.contains("Moment log"));
         assert!(html.contains("7000@input-hash"));
+        // The operation-boundary table renders guest events verbatim with
+        // the emitting service attributed.
+        assert!(html.contains("Guest events"));
+        // The event line rides the embedded model verbatim (quotes escaped
+        // inside the model string).
+        assert!(html.contains(r#""events":{"api":["#), "{html}");
         // Guest events ride the embedded JSON model verbatim (quotes
         // escaped inside the model string); the moment-log script renders
         // them with the emitting service attributed.
