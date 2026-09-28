@@ -21,9 +21,11 @@ mod manifest;
 mod query;
 mod report;
 mod runner;
+mod serve;
 mod status;
 mod topology_evidence;
 
+pub use serve::serve_campaigns;
 pub use topology_evidence::{verify_topology_bundle, TopologyBundleSummary};
 
 pub use cargo_coverage::{
