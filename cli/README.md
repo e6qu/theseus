@@ -35,6 +35,7 @@ theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
 theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
 theseus query campaign-dir --preceded-by-event FIELDS [--service NAME] [--format json]
 theseus query campaign-dir --followed-by-event FIELDS [--service NAME] [--format json]
+theseus serve campaign-dir... [--address ADDR]
 theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
 theseus evaluate lock [theseus-evaluation.toml]
 theseus evaluate capture campaign-dir --output evaluation-dir --name name
@@ -244,6 +245,20 @@ choice values and summed first-seen value-and-context pairs - every field
 read from the campaigns' retained results. Campaigns explored against different corpora or budgets are
 rejected, so the rows differ only in policy and outcome. The artifact is
 observational evidence and claims no causality.
+
+`serve` exposes retained campaigns over one local read-only HTTP surface:
+
+```sh
+theseus serve guidance/unified guidance/coverage --address 127.0.0.1:8098
+```
+
+Each campaign answers `GET /<name>/result` and `GET /<name>/plan` with the
+versioned JSON verbatim, `GET /<name>/report` with the rendered markdown
+report, and `GET /<name>/serial/<path>` with the serial log files the result
+references - serial routes cannot escape the bundle's `serial/` directory.
+The index page links every served campaign. Every non-GET method is refused,
+nothing is ever written, and the surface stops when the process is
+interrupted.
 
 The report shows checks and serial logs for one timeline, service checks and
 applied faults for a topology, and the search tree plus dirty-page coverage
