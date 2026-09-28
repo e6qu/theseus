@@ -9000,11 +9000,9 @@ mod tests {
             load_compose_plan(directory.path().join("k8s.yaml")).unwrap_err()
         };
 
-        let error = case("apiVersion: v1\nkind: StatefulSet\nmetadata:\n  name: api\n");
-        assert!(
-            error.to_string().contains("outside the supported subset"),
-            "{error}"
-        );
+        // StatefulSet is supported but an empty one still fails honestly.
+        let error = case("apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: api\n");
+        assert!(error.to_string().contains("has no pod spec"), "{error}");
 
         let error = case(
             "apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\nspec:\n  containers:\n    - name: a\n      image: a:1\n    - name: b\n      image: b:1\n",
@@ -9036,6 +9034,45 @@ mod tests {
             "apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\nspec:\n  containers:\n    - name: a\n      image: a:1\n      env:\n        - name: ROLE\n          valueFrom:\n            fieldRef:\n              fieldPath: metadata.name\n",
         );
         assert!(error.to_string().contains("env valueFrom"), "{error}");
+    }
+
+    #[test]
+    fn translates_statefulsets_and_jobs_like_deployments() {
+        let directory = image_fixture(
+            "services:\n  placeholder:\n    x-theseus:\n      manifest: api/theseus.toml\nnetworks:\n  default: {}\n",
+            &[],
+        );
+        for service in ["api", "worker"] {
+            fs::write(
+                directory.path().join(service).join("theseus.toml"),
+                "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+            )
+            .unwrap();
+            write_docker_image(&directory.path().join(service).join("service.tar"), &[]);
+        }
+        fs::write(
+            directory.path().join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'api/runtime/firecracker'\nimage_adapter = 'api/runtime/theseus-image'\n[guest]\nkernel = 'api/guest/vmlinux'\nimage = 'api/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("k8s.yaml"),
+            "apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: api\nspec:\n  template:\n    spec:\n      containers:\n        - name: api\n          image: api:1\n---\napiVersion: batch/v1\nkind: Job\nmetadata:\n  name: worker\nspec:\n  template:\n    spec:\n      containers:\n        - name: worker\n          image: worker:1\n          command: [/work/worker]\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("k8s.yaml")).unwrap();
+        assert_eq!(plan.services.len(), 2);
+        assert!(plan.services.contains_key("api"));
+        assert!(plan.services.contains_key("worker"));
+        let worker = &plan.services["worker"];
+        // The Job's container argv lands in the image launch contract.
+        let command = worker
+            .launch
+            .as_ref()
+            .and_then(|launch| launch.command.as_deref())
+            .unwrap_or_default();
+        assert_eq!(command, ["/work/worker"]);
     }
 
     #[test]
