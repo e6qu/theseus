@@ -183,6 +183,26 @@ fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec
     if route == "moments" {
         return answer(crate::query::list_moments(&result, service.as_deref()));
     }
+    if let Some(moment) = route.strip_prefix("moment/") {
+        let moment = percent_decode(moment);
+        let next = query_flag(query, "next");
+        let previous = query_flag(query, "previous");
+        if next && previous {
+            return (
+                400,
+                "text/plain; charset=utf-8",
+                b"choose either ?next or ?previous".to_vec(),
+            );
+        }
+        let resolved = if next {
+            crate::query::next_moment_in(&result, &moment)
+        } else if previous {
+            crate::query::previous_moment_in(&result, &moment)
+        } else {
+            crate::query::find_moment(&result, &moment)
+        };
+        return answer(resolved);
+    }
     if route == "events" {
         return answer(crate::query::list_events(&result, service.as_deref()));
     }
@@ -248,6 +268,10 @@ fn query_parameter<'a>(query: &'a str, name: &str) -> Option<&'a str> {
         let (key, value) = pair.split_once('=')?;
         (key == name).then_some(value)
     })
+}
+
+fn query_flag(query: &str, name: &str) -> bool {
+    query.split('&').any(|pair| pair == name)
 }
 
 fn serve_serial(root: &Path, relative: &str) -> (u16, &'static str, Vec<u8>) {
@@ -333,7 +357,7 @@ mod tests {
         .unwrap();
         fs::write(
             bundle.join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"chooser","guidance":"unified","structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"timeline":[{"id":"op-000-calculate","operation":"calculate[mode-1]","service":"chooser","round":7,"markers":["42"],"new_markers":["42"],"serial_delta":{"chooser":{"bytes":16,"sha256":"delta-hash","excerpt":"calculate ready\n","omitted_bytes":0}},"state_sha256":"state-hash","moment":"7000@input-hash","events":{"chooser":["{\"event\":\"request\",\"seq\":1}"]}}]}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"chooser","guidance":"unified","structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"timeline":[{"id":"op-000-calculate","operation":"calculate[mode-1]","service":"chooser","round":7,"markers":["42"],"new_markers":["42"],"serial_delta":{"chooser":{"bytes":16,"sha256":"delta-hash","excerpt":"calculate ready\n","omitted_bytes":0}},"state_sha256":"state-hash","moment":"7000@input-hash","events":{"chooser":["{\"event\":\"request\",\"seq\":1}"]}},{"id":"op-001-calculate","operation":"calculate[mode-1]","service":"chooser","round":9,"markers":["42","a1"],"new_markers":["a1"],"serial_delta":{"chooser":{"bytes":11,"sha256":"tail-hash","excerpt":"calculate done\n","omitted_bytes":0}},"state_sha256":"tail-state","moment":"9000@input-hash"}]}]}"#,
         )
         .unwrap();
         fs::write(bundle.join("serial").join("1.log"), b"ready\n").unwrap();
@@ -478,6 +502,48 @@ mod tests {
             "GET /campaign/query/nope HTTP/1.1\r\nHost: x\r\n\r\n",
         );
         assert_eq!(status, 404);
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /campaign/query/moment/7000@input-hash HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert!(body.contains("op-000-calculate"), "{body}");
+        assert!(body.contains("\"next\": \"9000@input-hash\""), "{body}");
+
+        let (status, _, body) = exchange(
+            &address,
+            "GET /campaign/query/moment/7000@input-hash?next HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert!(body.contains("op-001-calculate"), "{body}");
+        assert!(body.contains("calculate done"), "{body}");
+
+        let (status, _, body) = exchange(
+            &address,
+            "GET /campaign/query/moment/9000@input-hash?previous HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert!(body.contains("op-000-calculate"), "{body}");
+
+        let (status, ..) = exchange(
+            &address,
+            "GET /campaign/query/moment/9000@input-hash?next HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 404);
+
+        let (status, ..) = exchange(
+            &address,
+            "GET /campaign/query/moment/1000@missing HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 404);
+
+        let (status, ..) = exchange(
+            &address,
+            "GET /campaign/query/moment/7000@input-hash?next&previous HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 400);
 
         running.store(false, Ordering::SeqCst);
         server.join().unwrap();

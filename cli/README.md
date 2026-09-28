@@ -261,7 +261,10 @@ does: `GET /<name>/query/moments` lists every moment address,
 `GET /<name>/query/events[?service=NAME]` lists the guest-emitted events,
 and `GET /<name>/query/preceded-by/<needle>` and
 `GET /<name>/query/followed-by/<needle>` evaluate the temporal relations
-against the retained excerpts (percent-encode the needle). The index page
+against the retained excerpts (percent-encode the needle), and
+`GET /<name>/query/moment/<moment>` resolves one moment address to its
+boundary - run, service, virtual time, verbatim excerpts, events - with
+`?next` and `?previous` walking to the neighboring moments. The index page
 links every served campaign. Every non-GET method is refused, nothing is
 ever written, and the surface stops when the process is interrupted.
 
