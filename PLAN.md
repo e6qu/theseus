@@ -527,26 +527,31 @@ reproducible investigation.
   feedback in a dedicated section, and `evaluate compare` records distinct
   choice values and summed first-seen contexts per mode.
 
+- A read-only HTTP surface: `theseus serve` answers verbatim evidence
+  routes (result, plan, report, serial logs) and query routes (moments,
+  events, needle relations) for named campaigns, refusing every non-GET
+  request.
+
 ## Immediate next work
 
-### 1. A read-only HTTP surface for retained campaigns
+### 1. Moment navigation on the serve surface
 
-Retained bundles are read through the CLI today; a service that re-exports
-them over HTTP makes the evidence reachable from browsers and CI without
-copying directories. The next work adds the read-only surface:
+The serve surface lists moments and evaluates needle relations; navigating
+from one moment to its neighbors still needs the CLI. The next work adds
+the navigation routes:
 
-- `theseus serve <bundle>...` binds one local address and answers read-only
-  routes for the named campaigns' JSON evidence and rendered reports.
-- The surface serves retained files verbatim (result, plan, serial logs)
-  with explicit content types, and refuses every non-GET request.
-- Tests: an in-process listener fixture exercising the routes and the
-  refusal of non-GET methods.
+- `GET /<name>/query/moment/<moment>` returns the resolved moment with the
+  boundary's retained excerpt, and `[?next]`/`[?previous]` walk to the
+  neighboring moments.
+- Unknown moment addresses answer 404 with the same wording the CLI uses.
+- Tests: listener fixtures over a two-boundary timeline resolving forward
+  and backward navigation and an unresolved address.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
-feedback, and the report surface landed and are described in the verified
-baseline; the parity analysis tracks the remaining cross-priority gaps,
-including the hosted campaign service and demand-driven coverage breadth
-for JavaScript and .NET.
+feedback, the report surface, and the serve surface landed and are
+described in the verified baseline; the parity analysis tracks the
+remaining cross-priority gaps, including the hosted campaign service and
+demand-driven coverage breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 

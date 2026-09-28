@@ -256,9 +256,14 @@ Each campaign answers `GET /<name>/result` and `GET /<name>/plan` with the
 versioned JSON verbatim, `GET /<name>/report` with the rendered markdown
 report, and `GET /<name>/serial/<path>` with the serial log files the result
 references - serial routes cannot escape the bundle's `serial/` directory.
-The index page links every served campaign. Every non-GET method is refused,
-nothing is ever written, and the surface stops when the process is
-interrupted.
+The query surfaces answer over the retained result the same way the CLI
+does: `GET /<name>/query/moments` lists every moment address,
+`GET /<name>/query/events[?service=NAME]` lists the guest-emitted events,
+and `GET /<name>/query/preceded-by/<needle>` and
+`GET /<name>/query/followed-by/<needle>` evaluate the temporal relations
+against the retained excerpts (percent-encode the needle). The index page
+links every served campaign. Every non-GET method is refused, nothing is
+ever written, and the surface stops when the process is interrupted.
 
 The report shows checks and serial logs for one timeline, service checks and
 applied faults for a topology, and the search tree plus dirty-page coverage
