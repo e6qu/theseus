@@ -936,7 +936,7 @@ pub fn collect_moment(
 
 /// Reconstruct one service's complete serial transcript from a retained run
 /// directory, in the same rotation order the runner writes and reads it.
-fn run_serial_contents(run: &Path, service: &str) -> Vec<u8> {
+pub(crate) fn run_serial_contents(run: &Path, service: &str) -> Vec<u8> {
     let mut logs = fs::read_dir(run.join("services").join(service))
         .into_iter()
         .flatten()

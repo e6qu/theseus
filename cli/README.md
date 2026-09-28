@@ -25,6 +25,7 @@ theseus compare --at-moment <vtime_ns>@<input_sha256> left-campaign-dir right-ca
 theseus compare --forked base-campaign-dir forked-campaign-dir
 theseus status campaign-dir [--format json|text]
 theseus history campaign-dir... [--property NAME] [--format json|text]
+theseus history campaign-dir... --assertions [--format json|text]
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
 theseus query campaign-dir --list [--service NAME] [--format json]
@@ -933,6 +934,20 @@ theseus query campaign --preceded-by-event \
 An indexed event matches when every pointer resolves on its JSON object;
 occurrences carry the verbatim line, and the matches list the moments the
 event precedes or follows inside the same timeline.
+
+`history --assertions` builds the cross-run assertion catalog: every
+retained `THES:ASSERT:name:pass|fail` line in the named campaigns'
+serial logs aggregates per assertion name and per campaign:
+
+```sh
+theseus history captures/before captures/after --assertions --format json
+```
+
+The versioned JSON (`theseus-assertion-catalog-v1`) reports, per assertion
+identity and per campaign, the pass and fail counts, plus totals - so a
+regression in an assertion's failure rate across campaigns is one query
+away. Bundles without serial logs catalog as empty counts rather than
+failing.
 
 `--collect` turns one moment into a self-contained, digest-auditable
 artifact bundle without exporting the whole run:

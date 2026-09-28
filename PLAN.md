@@ -483,6 +483,13 @@ reproducible investigation.
   `fields` shape — RFC 6901 pointers to expected values, all matching one
   retained guest event — with occurrences carrying the verbatim line and
   the same strictness contract as the needle form.
+- Sub-1x clock-rate windows: `clock_rate` accepts `rate` between 0.1 and
+  0.9 (one decimal) alongside 2-16 speedups. The engine's vclock
+  represents rates in milli-units — whole multipliers stay byte-stable —
+  sub-1x rates floor per quantum as a pure function of the tick count,
+  snapshots gain an optional `rate_milli` field that old bundles restore
+  without, and the backward-jump floor bounds at the slowest supported
+  rate.
 - A C/C++ guest SDK: `theseus.h` mirrors the Go and Java vocabulary -
   markers, named assertions, checkpoints, bounded structured choices, and
   queued JSON event lines with a deterministic `seq` - as a
@@ -490,32 +497,29 @@ reproducible investigation.
   event batch nesting under `event` in the flushed line (C has no JSON
   parser, so predicates address `/event/...`).
 
-- Event-aware temporal relations: `theseus query --preceded-by-event
-  FIELDS` and `--followed-by-event FIELDS` take the property layer's
-  `fields` shape — RFC 6901 pointers to expected values, all matching one
-  retained guest event — with occurrences carrying the verbatim line and
-  the same strictness contract as the needle form.
+- A cross-run assertion catalog: `theseus history --assertions` aggregates
+  every retained `THES:ASSERT:name:pass|fail` serial line across the named
+  campaigns — pass/fail counts per assertion identity and per campaign,
+  with totals — so a failure-rate regression across campaigns is one
+  machine-readable query away. Serial-less bundles catalog as empty
+  counts.
 
 ## Immediate next work
 
-### 1. Clock-rate reduction below 1x
+### 1. Guest events in the report timeline
 
-Clock-rate windows move a guest's virtual clock between 1x and 16x; slowing
-a guest below real time (the fault Antithesis calls clock skew) remains
-open. The next work:
+Reports render serial excerpts and moment logs; the indexed guest events
+deserve the same treatment in the per-run timeline. The next work:
 
-- Runner: accept `rate` below 1 (`0.1`-`0.9`, one decimal) in the
-  clock-rate fault, pumping the guest for fewer of N rounds by the same
-  deterministic divisor the throttle uses.
-- Contract: replay-checked exactly like the existing rate window; recovery
-  returns the clock to 1x.
-- Tests: runner fixtures over pump schedules at sub-1 rates; replay
-  byte-stability.
+- Report: render each boundary's indexed events inside the per-run
+  timeline section, verbatim, attributed to the emitting service.
+- Tests: report fixtures with SDK-emitted events; the static page stays
+  self-contained.
 
-The C/C++ SDK landed and is described in the verified baseline; the parity
-analysis tracks the remaining cross-priority gaps, including the hosted
-campaign service, controllers beyond Deployments, and demand-driven
-coverage breadth for JavaScript and .NET.
+The assertion catalog landed and is described in the verified baseline;
+the parity analysis tracks the remaining cross-priority gaps, including
+the hosted campaign service, controllers beyond Deployments, and
+demand-driven coverage breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 

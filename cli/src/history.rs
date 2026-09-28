@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -325,5 +325,204 @@ mod tests {
             error.to_string().contains("no campaign-result.json"),
             "{error}"
         );
+    }
+}
+
+/// Per-campaign pass/fail counts for one assertion identity.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct AssertionCampaignCounts {
+    /// The canonicalized campaign directory.
+    pub source: String,
+    pub passes: u64,
+    pub fails: u64,
+}
+
+/// One assertion identity's catalog across the named campaigns, aggregated
+/// from the retained `THES:ASSERT:name:pass|fail` serial lines. The
+/// assertion name is the stable identity: the same name in two campaigns
+/// joins into one row.
+#[derive(Debug, Serialize)]
+pub struct AssertionCatalogEntry {
+    pub assertion: String,
+    pub campaigns: Vec<AssertionCampaignCounts>,
+    pub total_passes: u64,
+    pub total_fails: u64,
+}
+
+/// The versioned assertion catalog over the named campaigns.
+#[derive(Debug, Serialize)]
+pub struct AssertionCatalog {
+    pub format: &'static str,
+    pub sources: Vec<String>,
+    pub assertions: Vec<AssertionCatalogEntry>,
+}
+
+/// Build the cross-run assertion catalog: every retained
+/// `THES:ASSERT:name:pass|fail` line in each campaign's serial logs,
+/// aggregated per assertion name and per campaign. Sources without
+/// retained runs catalog as empty counts rather than failing, so old
+/// bundles join the same history.
+pub fn assertion_catalog(sources: &[std::path::PathBuf]) -> Result<AssertionCatalog, HistoryError> {
+    if sources.is_empty() {
+        return Err(HistoryError::NoSources);
+    }
+    let mut canonical_sources = Vec::with_capacity(sources.len());
+    // assertion name -> campaign index -> (passes, fails)
+    let mut grouped: BTreeMap<String, Vec<(String, u64, u64)>> = BTreeMap::new();
+    for source in sources {
+        let bundle = fs::canonicalize(source).map_err(HistoryError::Read)?;
+        if !bundle.join("campaign-result.json").is_file() {
+            return Err(HistoryError::NotACampaign(format!(
+                "no campaign-result.json in {}",
+                bundle.display()
+            )));
+        }
+        canonical_sources.push(bundle.display().to_string());
+        let runs_dir = bundle.join("runs");
+        let mut run_dirs: Vec<PathBuf> = fs::read_dir(&runs_dir)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|path| path.is_dir())
+                    .collect()
+            })
+            .unwrap_or_default();
+        run_dirs.sort();
+        // assertion name -> (passes, fails) within this campaign
+        let mut per_campaign: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+        for run_dir in &run_dirs {
+            let services = fs::read_dir(run_dir.join("services")).map_err(HistoryError::Read)?;
+            let mut names: Vec<String> = services
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            for service in names {
+                let serial = crate::query::run_serial_contents(&run_dir.clone(), &service);
+                for line in String::from_utf8_lossy(&serial).lines() {
+                    let Some(rest) = line.trim().strip_prefix("THES:ASSERT:") else {
+                        continue;
+                    };
+                    let Some((name, outcome)) = rest.rsplit_once(':') else {
+                        continue;
+                    };
+                    let entry = per_campaign.entry(name.to_owned()).or_insert((0, 0));
+                    match outcome {
+                        "pass" => entry.0 += 1,
+                        "fail" => entry.1 += 1,
+                        _ => continue,
+                    }
+                }
+            }
+        }
+        for (name, (passes, fails)) in &per_campaign {
+            grouped.entry(name.clone()).or_default().push((
+                bundle.display().to_string(),
+                *passes,
+                *fails,
+            ));
+        }
+    }
+    let mut catalog_sources = canonical_sources;
+    catalog_sources.dedup();
+    let assertions = grouped
+        .into_iter()
+        .map(|(assertion, campaigns)| {
+            let entries = campaigns
+                .into_iter()
+                .map(|(source, passes, fails)| AssertionCampaignCounts {
+                    source,
+                    passes,
+                    fails,
+                })
+                .collect::<Vec<_>>();
+            let total_passes = entries.iter().map(|entry| entry.passes).sum();
+            let total_fails = entries.iter().map(|entry| entry.fails).sum();
+            AssertionCatalogEntry {
+                assertion,
+                campaigns: entries,
+                total_passes,
+                total_fails,
+            }
+        })
+        .collect();
+    Ok(AssertionCatalog {
+        format: "theseus-assertion-catalog-v1",
+        sources: catalog_sources,
+        assertions,
+    })
+}
+
+#[cfg(test)]
+mod assertion_catalog_tests {
+    use super::*;
+
+    fn write_bundle_with_assertions(directory: &Path, serial_lines: &[&str]) -> PathBuf {
+        let run = directory
+            .join("runs")
+            .join("000")
+            .join("services")
+            .join("api");
+        fs::create_dir_all(&run).unwrap();
+        fs::write(
+            directory.join("campaign-result.json"),
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"passed","runs":[{"index":0,"status":"passed"}]}"#,
+        )
+        .unwrap();
+        fs::write(run.join("serial.log"), serial_lines.join("\n") + "\n").unwrap();
+        directory.to_path_buf()
+    }
+
+    #[test]
+    fn assertion_catalog_aggregates_by_identity_across_campaigns() {
+        let directory = tempfile::tempdir().unwrap();
+        let before = write_bundle_with_assertions(
+            &directory.path().join("before"),
+            &[
+                "THES:ASSERT:no_data_loss:pass",
+                "THES:ASSERT:no_data_loss:pass",
+                "THES:ASSERT:no_data_loss:fail",
+                "noise line",
+            ],
+        );
+        let after = write_bundle_with_assertions(
+            &directory.path().join("after"),
+            &["THES:ASSERT:no_data_loss:pass", "THES:M:42"],
+        );
+
+        let catalog = assertion_catalog(&[before, after]).unwrap();
+        assert_eq!(catalog.format, "theseus-assertion-catalog-v1");
+        assert_eq!(catalog.assertions.len(), 1);
+        let entry = &catalog.assertions[0];
+        assert_eq!(entry.assertion, "no_data_loss");
+        assert_eq!(entry.campaigns.len(), 2);
+        assert_eq!(entry.total_passes, 3);
+        assert_eq!(entry.total_fails, 1);
+        // Per-campaign counts in the order the campaigns were named.
+        assert_eq!(entry.campaigns[0].passes, 2);
+        assert_eq!(entry.campaigns[0].fails, 1);
+        assert_eq!(entry.campaigns[1].passes, 1);
+        assert_eq!(entry.campaigns[1].fails, 0);
+    }
+
+    #[test]
+    fn assertion_catalog_tolerates_bundles_without_serial_logs() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("bare");
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(
+            bundle.join("campaign-result.json"),
+            r#"{"status":"passed","runs":[]}"#,
+        )
+        .unwrap();
+
+        let catalog = assertion_catalog(&[bundle]).unwrap();
+        assert!(catalog.assertions.is_empty());
+    }
+
+    #[test]
+    fn assertion_catalog_rejects_empty_sources() {
+        assert!(assertion_catalog(&[]).is_err());
     }
 }
