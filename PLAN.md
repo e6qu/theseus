@@ -515,22 +515,31 @@ reproducible investigation.
   contract — and the channel now accepts injectable transports so the
   protocol is testable without a UART.
 
+- Kubernetes controllers: the documented subset covers Pods, Deployments,
+  StatefulSets, DaemonSets, ReplicaSets, and Jobs — all through the same
+  pod-spec path with one-container rejection contracts.
+
 ## Immediate next work
 
-### 1. DaemonSet and ReplicaSet controllers
+### 1. Structured-choice guidance feedback from generated values
 
-The Kubernetes subset covers Pods, Deployments, StatefulSets, and Jobs.
-The next work completes the common single-container controllers:
+The choice protocol records consumed values immediately at the point of
+use; the guidance policy counts first-seen choices as novelty. The
+remaining work deepens that feedback:
 
-- DaemonSet and ReplicaSet translate through the same pod-spec path,
-  rejecting controller fields outside the documented subset by name.
-- Tests: translation fixtures per controller; empty controllers fail
-  honestly.
+- Guidance: weight structured-choice feedback by the generated value's
+  context (the operation and neighbors it influenced), so the policy
+  learns which generated values mattered rather than merely that a choice
+  was new.
+- Evidence: guidance observations record the consumed values beside the
+  campaigns' choice records for audit.
+- Tests: guidance-policy fixtures over choice feedback; campaign
+  comparisons with and without the deepened feedback.
 
-Sub-1x clock-rate windows landed and are described in the verified
-baseline; the parity analysis tracks the remaining cross-priority gaps,
-including the hosted campaign service and demand-driven coverage breadth
-for JavaScript and .NET.
+Sub-1x clock-rate windows and the Kubernetes controllers landed and are
+described in the verified baseline; the parity analysis tracks the
+remaining cross-priority gaps, including the hosted campaign service and
+demand-driven coverage breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 
