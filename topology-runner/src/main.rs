@@ -927,6 +927,8 @@ struct CampaignRun {
     thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    choice_feedback: Option<CampaignChoiceFeedback>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     execution_ledgers: BTreeMap<String, Vec<ExecutionLedgerEvidence>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1288,7 +1290,7 @@ struct RecordedCampaignRun {
     thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
     #[serde(default)]
     structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     choice_feedback: Option<CampaignChoiceFeedback>,
     #[serde(default)]
     execution_ledgers: BTreeMap<String, Vec<ExecutionLedgerEvidence>>,
@@ -1398,7 +1400,7 @@ struct StructuredChoiceDecision {
 /// this run contributed. Unified guidance weighs the context-aware count, so
 /// a value revisited under a new operation or fault neighborhood still feeds
 /// the policy while repeats in the same context stop counting.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct CampaignChoiceFeedback {
     values: Vec<String>,
     novel_contexts: usize,
