@@ -17722,6 +17722,8 @@ mod tests {
             novel_checkpoint_pcs: 0,
             novel_application_blocks: 0,
             novel_structured_choices: 1,
+            structured_choice_values: vec!["api:worker:4:2".to_owned()],
+            novel_choice_contexts: 1,
             novel_scheduling_decisions: 1,
             novel_state: true,
             failed: false,
@@ -18363,6 +18365,7 @@ mod tests {
             thread_scheduling: actual.thread_scheduling.clone(),
             thread_synchronization: actual.thread_synchronization.clone(),
             structured_choices: actual.structured_choices.clone(),
+            choice_feedback: actual.choice_feedback.clone(),
             execution_ledgers: actual.execution_ledgers.clone(),
             machine_execution_ledgers: actual.machine_execution_ledgers.clone(),
             machine_execution_traces: actual.machine_execution_traces.clone(),
@@ -18579,7 +18582,7 @@ mod tests {
         assert_eq!(write_context, repeat);
 
         let mut seen = std::collections::BTreeSet::new();
-        let novel = |entries: &Vec<String>| {
+        let mut novel = |entries: &Vec<String>| {
             entries
                 .iter()
                 .filter(|entry| seen.insert((*entry).clone()))
