@@ -523,24 +523,27 @@ reproducible investigation.
   value's first pairing with each schedule context, and every run records
   the consumed values beside its choice records.
 
+- Consumed-choice coverage: `theseus report` renders each run's choice
+  feedback in a dedicated section, and `evaluate compare` records distinct
+  choice values and summed first-seen contexts per mode.
+
 ## Immediate next work
 
-### 1. Choice feedback in the report surface
+### 1. A read-only HTTP surface for retained campaigns
 
-The runs record consumed choice values and context-weighted novelty; the
-report renders the choice records only through the campaigns' raw JSON.
-The next work surfaces the feedback where audits read it:
+Retained bundles are read through the CLI today; a service that re-exports
+them over HTTP makes the evidence reachable from browsers and CI without
+copying directories. The next work adds the read-only surface:
 
-- `theseus report` renders each retained run's consumed choice values and
-  context novelty beside the existing evidence columns.
-- `theseus evaluate compare` summarizes consumed-choice coverage across
-  compared campaigns, so guidance comparisons show which generated values
-  each mode reached.
-- Tests: report and comparison fixtures over campaign results carrying
-  choice feedback.
+- `theseus serve <bundle>...` binds one local address and answers read-only
+  routes for the named campaigns' JSON evidence and rendered reports.
+- The surface serves retained files verbatim (result, plan, serial logs)
+  with explicit content types, and refuses every non-GET request.
+- Tests: an in-process listener fixture exercising the routes and the
+  refusal of non-GET methods.
 
-Sub-1x clock-rate windows, the Kubernetes controllers, and the
-context-weighted feedback landed and are described in the verified
+Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
+feedback, and the report surface landed and are described in the verified
 baseline; the parity analysis tracks the remaining cross-priority gaps,
 including the hosted campaign service and demand-driven coverage breadth
 for JavaScript and .NET.

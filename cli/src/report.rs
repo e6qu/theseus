@@ -422,6 +422,8 @@ struct CampaignRun {
     thread_synchronization: BTreeMap<String, Vec<ThreadSynchronizationEvent>>,
     #[serde(default)]
     structured_choices: BTreeMap<String, Vec<StructuredChoiceDecision>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    choice_feedback: Option<ChoiceFeedback>,
     #[serde(default)]
     execution_ledgers: BTreeMap<String, Vec<ExecutionLedgerEvidence>>,
     #[serde(default)]
@@ -598,6 +600,17 @@ struct StructuredChoiceDecision {
     name: String,
     upper_exclusive: u16,
     selected: u16,
+}
+
+/// The structured-choice feedback a unified-guidance run recorded beside its
+/// choice records: the consumed values, and how many value-and-schedule-context
+/// pairs were first observed in the run.
+#[derive(Clone, Default, Deserialize, Serialize)]
+struct ChoiceFeedback {
+    #[serde(default)]
+    values: Vec<String>,
+    #[serde(default)]
+    novel_contexts: usize,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1447,6 +1460,7 @@ if(m.campaign_runs.some(r=>r.decision_trace.length)){{const rows=m.campaign_runs
 if(m.campaign_runs.some(r=>r.timeline.length)){{const s=section('Moment log');s.append(el('p','Every operation boundary is a moment address (<virtual-time-ns>@<input-sha256>) for the service that received it. Use this index to retrieve the bounded log excerpt a moment address refers to - for example the addresses a divergence report prints. Guest-emitted JSON events on a boundary render verbatim with the emitting service attributed.'));const rows=[];m.campaign_runs.forEach(r=>{{r.timeline.forEach(b=>{{const excerpt=Object.entries(b.serial_delta).map(([service,d])=>service+': '+d.excerpt).join(' | ')||'none';rows.push([b.moment||'—',String(r.index),b.id||b.operation,b.service||'—',excerpt]);Object.entries(b.events||{{}}).forEach(([service,lines])=>{{lines.forEach(line=>{{rows.push([b.moment||'—',String(r.index),(b.id||b.operation)+' · event',service,line])}})}})}})}});s.append(table(rows,['Moment','Run','Boundary','Service','Log excerpt / event']));}}
 if(m.campaign_futures.length){{const s=section('Alternative futures');s.append(el('p',m.campaign_futures_note));s.append(table(m.campaign_futures.map(f=>[f.future,String(f.timelines),String(f.failed),f.share]),['Future (operations | faults)','Timelines','Failed','Observed failure share']));}}
 if(m.campaign_runs.some(r=>Object.keys(r.structured_choices||{{}}).length)){{const rows=m.campaign_runs.flatMap(r=>Object.entries(r.structured_choices||{{}}).flatMap(([service,cs])=>cs.map(c=>[String(r.index),service,String(c.ordinal),c.name,String(c.selected),String(c.upper_exclusive)]))),s=section('Structured choices');s.append(table(rows,['Run','Service','Ordinal','Name','Selected','Exclusive bound']));}}
+if(m.campaign_runs.some(r=>r.choice_feedback)){{const s=section('Choice feedback');s.append(el('p','Unified guidance weighs a consumed value by its schedule context. The table records the values each run consumed and how many value-and-context pairs it first observed; repeats in an already-seen context stop counting.'));const rows=m.campaign_runs.filter(r=>r.choice_feedback).map(r=>[String(r.index),r.choice_feedback.values.join(', ')||'none',String(r.choice_feedback.novel_contexts)]);s.append(table(rows,['Run','Consumed values','First-seen contexts']));}}
 if(m.campaign_runs.some(r=>r.property_witnesses.length)){{const rows=m.campaign_runs.filter(r=>r.property_witnesses.length).map(r=>[String(r.index),r.operations.join(' → ')||'none',r.property_witnesses.join(', ')]),s=section('Property witnesses');s.append(el('p','These declared properties produced useful evidence in this timeline. A reachable or sometimes match is a witness; an always or unreachable witness is a counterexample.'));s.append(table(rows,['Run','Operations','Property witnesses']));}}
 if(m.campaign_runs.some(r=>r.timeline.length)){{
 const location=l=>{{const label=l.address+(l.symbol?' → '+l.symbol+(l.offset?' +0x'+l.offset.toString(16):''):'');return l.source?label+' · '+l.source.file+':'+l.source.line+(l.source.column?':'+l.source.column:''):label}},
@@ -1961,6 +1975,21 @@ fn campaign_thread_scheduling_label(
     }
 }
 
+fn campaign_choice_feedback_label(run: &CampaignRun) -> String {
+    match &run.choice_feedback {
+        Some(feedback) => format!(
+            "{} · {} first-seen context(s)",
+            if feedback.values.is_empty() {
+                "none".to_owned()
+            } else {
+                feedback.values.join(", ")
+            },
+            feedback.novel_contexts
+        ),
+        None => "none".to_owned(),
+    }
+}
+
 fn campaign_structured_choice_label(
     choices: &BTreeMap<String, Vec<StructuredChoiceDecision>>,
 ) -> String {
@@ -2216,6 +2245,10 @@ fn render_markdown(model: &ReportModel) -> String {
             .campaign_runs
             .iter()
             .any(|run| !run.property_witnesses.is_empty());
+        let has_choice_feedback = model
+            .campaign_runs
+            .iter()
+            .any(|run| run.choice_feedback.is_some());
         output.push_str("\n## Generated timelines\n\n");
         output.push_str("| Run | Template | Operations | Runnable prefix | Candidates");
         if has_posterior {
@@ -2224,13 +2257,20 @@ fn render_markdown(model: &ReportModel) -> String {
         if has_property_witnesses {
             output.push_str(" | Property witnesses");
         }
+        output.push_str(" | Decision trace | Structured choices");
+        if has_choice_feedback {
+            output.push_str(" | Choice feedback");
+        }
         output.push_str(
-            " | Decision trace | Structured choices | Instruction locations | New application coverage | Scheduling decisions | Synchronization events | Active replay decisions | Status |\n| --- | --- | --- | --- | ---",
+            " | Instruction locations | New application coverage | Scheduling decisions | Synchronization events | Active replay decisions | Status |\n| --- | --- | --- | --- | ---",
         );
         if has_posterior {
             output.push_str(" | ---");
         }
         if has_property_witnesses {
+            output.push_str(" | ---");
+        }
+        if has_choice_feedback {
             output.push_str(" | ---");
         }
         output.push_str(" | --- | --- | --- | --- | --- | --- | --- | --- |\n");
@@ -2260,10 +2300,22 @@ fn render_markdown(model: &ReportModel) -> String {
                     markdown_cell(&campaign_property_witness_label(run)),
                 ));
             }
+            if has_choice_feedback {
+                output.push_str(&format!(
+                    " | {} | {} | {}",
+                    markdown_cell(&run.decision_trace.join(" → ")),
+                    markdown_cell(&campaign_structured_choice_label(&run.structured_choices)),
+                    markdown_cell(&campaign_choice_feedback_label(run)),
+                ));
+            } else {
+                output.push_str(&format!(
+                    " | {} | {}",
+                    markdown_cell(&run.decision_trace.join(" → ")),
+                    markdown_cell(&campaign_structured_choice_label(&run.structured_choices)),
+                ));
+            }
             output.push_str(&format!(
-                " | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                markdown_cell(&run.decision_trace.join(" → ")),
-                markdown_cell(&campaign_structured_choice_label(&run.structured_choices)),
+                " | {} | {} | {} | {} | {} | {} |\n",
                 markdown_cell(&campaign_instruction_location_labels(run)),
                 markdown_cell(&campaign_application_block_labels(run)),
                 run.thread_scheduling.values().map(Vec::len).sum::<usize>(),
@@ -2786,7 +2838,7 @@ mod tests {
         );
         write_json(
             &directory.path().join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","decision_trace_format":"theseus-campaign-decision-trace-v1","status":"failed","driver":"chooser","guidance":"unified","structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"decision_trace":["boundary:0:operation:calculate[mode-1]","boundary:0:choice:chooser:mode:1/2"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]}}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","decision_trace_format":"theseus-campaign-decision-trace-v1","status":"failed","driver":"chooser","guidance":"unified","structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"decision_trace":["boundary:0:operation:calculate[mode-1]","boundary:0:choice:chooser:mode:1/2"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"choice_feedback":{"values":["chooser:mode:2:1"],"novel_contexts":1}}]}"#,
         );
 
         let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
@@ -2796,11 +2848,16 @@ mod tests {
         assert!(markdown.contains("Structured choices"));
         assert!(markdown.contains("chooser: #0 mode=1/2"));
         assert!(markdown.contains("boundary:0:choice:chooser:mode:1/2"));
+        assert!(markdown.contains("Choice feedback"));
+        assert!(markdown.contains("chooser:mode:2:1 · 1 first-seen context(s)"));
         let index = report(directory.path(), directory.path().join("report")).unwrap();
         let html = fs::read_to_string(index).unwrap();
         assert!(html.contains("Decision traces"));
         assert!(html.contains("Structured choices"));
         assert!(html.contains("Exclusive bound"));
+        assert!(html.contains("Choice feedback"));
+        assert!(html.contains("First-seen contexts"));
+        assert!(html.contains("chooser:mode:2:1"));
     }
 
     #[test]

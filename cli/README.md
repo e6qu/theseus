@@ -239,8 +239,9 @@ theseus evaluate compare guidance/unified guidance/coverage guidance/adaptive   
 The versioned JSON (`theseus-guidance-comparison-v1`) and the markdown table
 record, per mode: status, executed and failed timelines, failed properties,
 unique topology states, instruction locations, application blocks and edges,
-and checkpoint economics - every field read from the campaigns' retained
-results. Campaigns explored against different corpora or budgets are
+checkpoint economics, and the campaigns' consumed-choice coverage - distinct
+choice values and summed first-seen value-and-context pairs - every field
+read from the campaigns' retained results. Campaigns explored against different corpora or budgets are
 rejected, so the rows differ only in policy and outcome. The artifact is
 observational evidence and claims no causality.
 
@@ -932,6 +933,9 @@ boundary, emitting service, and the verbatim line - a resolved moment
 carries the exact lines its boundary retained (up to 64 per service per
 boundary; the full serial log remains the audit trail), and the report's
 moment log renders them verbatim with the emitting service attributed.
+The report renders a run's consumed choice values and first-seen contexts
+in a dedicated choice-feedback section, so generated-value coverage is
+readable without opening the campaign's raw JSON.
 `--preceded-by-event` and `--followed-by-event` take the property layer's
 `fields` shape instead of needle text - RFC 6901 pointers to expected
 values, all of which must match one retained guest event:
