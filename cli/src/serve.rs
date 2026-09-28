@@ -105,7 +105,7 @@ fn parse_request(request: &str) -> Option<(String, String)> {
 }
 
 fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8>) {
-    let path = path.split('?').next().unwrap_or("/");
+    let path = path.split('#').next().unwrap_or("/");
     if path == "/" || path.is_empty() {
         return (200, "text/html; charset=utf-8", index_page(campaigns));
     }
@@ -113,6 +113,13 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
     let (name, rest) = match trimmed.split_once('/') {
         Some((name, rest)) => (name, rest),
         None => (trimmed, ""),
+    };
+    // Query routes keep their `?parameters`; the verbatim evidence routes
+    // ignore anything after `?`.
+    let rest = if rest.starts_with("query/") {
+        rest
+    } else {
+        rest.split('?').next().unwrap_or_default()
     };
     let Some(campaign) = campaigns.iter().find(|campaign| campaign.name == name) else {
         return not_found();
@@ -142,7 +149,105 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
     if let Some(relative) = rest.strip_prefix("serial/") {
         return serve_serial(&campaign.root, relative);
     }
+    if let Some(query) = rest.strip_prefix("query/") {
+        return route_query(campaign, query);
+    }
     not_found()
+}
+
+/// The read-only query routes: the campaign's moment index, its guest event
+/// records, and the needle relations, all answered from the retained result.
+fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec<u8>) {
+    let (route, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let service = query_parameter(query, "service").map(str::to_owned);
+    let bytes = match std::fs::read(campaign.root.join("campaign-result.json")) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (
+                500,
+                "text/plain; charset=utf-8",
+                b"campaign result unreadable".to_vec(),
+            )
+        }
+    };
+    let result = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(result) => result,
+        Err(_) => {
+            return (
+                500,
+                "text/plain; charset=utf-8",
+                b"campaign result unparsable".to_vec(),
+            )
+        }
+    };
+    if route == "moments" {
+        return answer(crate::query::list_moments(&result, service.as_deref()));
+    }
+    if route == "events" {
+        return answer(crate::query::list_events(&result, service.as_deref()));
+    }
+    let relation = if let Some(needle) = route.strip_prefix("preceded-by/") {
+        Some((crate::query::TemporalRelation::PrecededBy, needle))
+    } else if let Some(needle) = route.strip_prefix("followed-by/") {
+        Some((crate::query::TemporalRelation::FollowedBy, needle))
+    } else {
+        None
+    };
+    if let Some((relation, needle)) = relation {
+        return answer(crate::query::temporal_query(
+            &result,
+            relation,
+            &percent_decode(needle),
+            service.as_deref(),
+        ));
+    }
+    not_found()
+}
+
+fn answer<T: serde::Serialize>(
+    value: Result<T, crate::query::MomentError>,
+) -> (u16, &'static str, Vec<u8>) {
+    match value {
+        Ok(value) => match serde_json::to_string_pretty(&value) {
+            Ok(text) => (200, "application/json", text.into_bytes()),
+            Err(_) => (
+                500,
+                "text/plain; charset=utf-8",
+                b"serialization failed".to_vec(),
+            ),
+        },
+        Err(crate::query::MomentError::NotFound(_)) => not_found(),
+        Err(_) => (500, "text/plain; charset=utf-8", b"query failed".to_vec()),
+    }
+}
+
+/// Decode the one percent-encoded path segment a needle route carries.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 3 <= bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(
+                std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or(""),
+                16,
+            ) {
+                decoded.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn query_parameter<'a>(query: &'a str, name: &str) -> Option<&'a str> {
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == name).then_some(value)
+    })
 }
 
 fn serve_serial(root: &Path, relative: &str) -> (u16, &'static str, Vec<u8>) {
@@ -228,7 +333,7 @@ mod tests {
         .unwrap();
         fs::write(
             bundle.join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"chooser","guidance":"unified","structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]}}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"chooser","guidance":"unified","structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"timeline":[{"id":"op-000-calculate","operation":"calculate[mode-1]","service":"chooser","round":7,"markers":["42"],"new_markers":["42"],"serial_delta":{"chooser":{"bytes":16,"sha256":"delta-hash","excerpt":"calculate ready\n","omitted_bytes":0}},"state_sha256":"state-hash","moment":"7000@input-hash","events":{"chooser":["{\"event\":\"request\",\"seq\":1}"]}}]}]}"#,
         )
         .unwrap();
         fs::write(bundle.join("serial").join("1.log"), b"ready\n").unwrap();
@@ -330,6 +435,49 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(content_type, "text/html; charset=utf-8");
         assert!(body.contains("/campaign/report"), "{body}");
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /campaign/query/moments HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert!(body.contains("\"moment\": \"7000@input-hash\""), "{body}");
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /campaign/query/events HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert!(body.contains("\\\"event\\\":\\\"request\\\""), "{body}");
+
+        let (status, _, body) = exchange(
+            &address,
+            "GET /campaign/query/events?service=none HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(body.trim(), "[]");
+
+        let (status, _, body) = exchange(
+            &address,
+            "GET /campaign/query/preceded-by/calculate HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert!(body.contains("7000@input-hash"), "{body}");
+
+        let (status, _, body) = exchange(
+            &address,
+            "GET /campaign/query/preceded-by/nomatch HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert!(body.contains("\"matches\": []"), "{body}");
+
+        let (status, ..) = exchange(
+            &address,
+            "GET /campaign/query/nope HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 404);
 
         running.store(false, Ordering::SeqCst);
         server.join().unwrap();
