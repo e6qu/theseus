@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::compose::{
-    ComposeConfigDefinition, ComposeConfigMount, ComposeEnvironment, ComposeFile, ComposeNetwork,
-    ComposeService, ComposeServiceConfig, ComposeTheseus, ServiceTheseus,
+    ComposeConfigMount, ComposeEnvironment, ComposeFile, ComposeNetwork, ComposeService,
+    ComposeServiceConfig, ComposeTheseus, ServiceTheseus,
 };
 use crate::ComposeError;
 
@@ -44,6 +44,15 @@ struct ManifestDocument {
     metadata: Option<Metadata>,
     #[serde(default)]
     spec: serde_json::Value,
+    /// ConfigMap plain entries (top-level on ConfigMap documents).
+    #[serde(default)]
+    data: Option<serde_json::Value>,
+    /// ConfigMap base64 entries.
+    #[serde(rename = "binaryData", default)]
+    binary_data: Option<serde_json::Value>,
+    /// Secret plain entries.
+    #[serde(rename = "stringData", default)]
+    string_data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,6 +198,53 @@ fn definition_name(kind: &str, source: &str, key: &str) -> String {
     format!("k8s-{kind}-{}-{}", sanitize(source), sanitize(key))
 }
 
+/// One pod volume resolved to a ConfigMap or Secret source, with the
+/// optional `items` projection (key -> relative path under the mount).
+#[derive(Debug, Clone)]
+struct PodVolume {
+    kind: String,
+    source: String,
+    items: Option<Vec<(String, String)>>,
+}
+
+type VolumeSources = BTreeMap<String, PodVolume>;
+
+/// Parse a volume's optional `items` projection: an array of
+/// `{key, path}` pairs remapping entry keys to relative paths under the
+/// mount point.
+fn parse_volume_items(
+    items: Option<&serde_json::Value>,
+) -> Result<Option<Vec<(String, String)>>, ComposeError> {
+    let Some(items) = items.and_then(serde_json::Value::as_array) else {
+        return Ok(None);
+    };
+    let mut projections = Vec::new();
+    for item in items {
+        let key = item
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                ComposeError::Invalid("Kubernetes volume items must name a key".to_owned())
+            })?;
+        let path = item
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                ComposeError::Invalid(format!("Kubernetes volume item {key:?} must name a path"))
+            })?;
+        if path.starts_with('/') || path.contains("..") {
+            return Err(ComposeError::Invalid(format!(
+                "Kubernetes volume item path {path:?} must be relative without '..'"
+            )));
+        }
+        projections.push((key.to_owned(), path.to_owned()));
+    }
+    if projections.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(projections))
+}
+
 /// Decode a Secret's `data` entry (standard base64).
 fn decode_secret_data(encoded: &str) -> Result<Vec<u8>, ComposeError> {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -235,10 +291,7 @@ pub fn load_kubernetes_compose(
     let mut secret_entries: BTreeMap<String, InlineEntries> = BTreeMap::new();
     let mut configs: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut secrets: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    let mut pod_mounts: BTreeMap<
-        String,
-        (Vec<serde_json::Value>, BTreeMap<String, (String, String)>),
-    > = BTreeMap::new();
+    let mut pod_mounts: BTreeMap<String, (Vec<serde_json::Value>, VolumeSources)> = BTreeMap::new();
 
     for document in serde_yaml::Deserializer::from_str(&input) {
         let document =
@@ -324,7 +377,7 @@ pub fn load_kubernetes_compose(
                     .unwrap_or(false);
                 // ConfigMap and Secret volumes translate into per-key file
                 // mounts; every other volume type stays rejected by name.
-                let mut volume_sources: BTreeMap<String, (String, String)> = BTreeMap::new();
+                let mut volume_sources: BTreeMap<String, PodVolume> = BTreeMap::new();
                 if let Some(volumes) = pod_spec
                     .get("volumes")
                     .and_then(serde_json::Value::as_array)
@@ -347,9 +400,16 @@ pub fn load_kubernetes_compose(
                                     ComposeError::Invalid(format!(
                                         "Kubernetes service {name:?} has a configMap volume without a name"
                                     ))
-                                })?;
-                            volume_sources
-                                .insert(volume_name, ("config".to_owned(), source.to_owned()));
+                                })?
+                                .to_owned();
+                            volume_sources.insert(
+                                volume_name,
+                                PodVolume {
+                                    kind: "config".to_owned(),
+                                    source,
+                                    items: parse_volume_items(config_map.get("items"))?,
+                                },
+                            );
                         } else if let Some(secret) = volume.get("secret") {
                             let source = secret
                                 .get("secretName")
@@ -358,9 +418,16 @@ pub fn load_kubernetes_compose(
                                     ComposeError::Invalid(format!(
                                         "Kubernetes service {name:?} has a secret volume without a secretName"
                                     ))
-                                })?;
-                            volume_sources
-                                .insert(volume_name, ("secret".to_owned(), source.to_owned()));
+                                })?
+                                .to_owned();
+                            volume_sources.insert(
+                                volume_name,
+                                PodVolume {
+                                    kind: "secret".to_owned(),
+                                    source,
+                                    items: parse_volume_items(secret.get("items"))?,
+                                },
+                            );
                         } else {
                             let kind = volume
                                 .as_object()
@@ -429,8 +496,8 @@ pub fn load_kubernetes_compose(
                 let name = named(&metadata, &kind)?;
                 let mut entries = InlineEntries::new();
                 if let Some(data) = document
-                    .spec
-                    .get("data")
+                    .data
+                    .as_ref()
                     .and_then(serde_json::Value::as_object)
                 {
                     for (key, value) in data {
@@ -440,6 +507,23 @@ pub fn load_kubernetes_compose(
                             ))
                         })?;
                         entries.insert(key.clone(), content.as_bytes().to_vec());
+                    }
+                }
+                // binaryData entries are standard base64, decoded into the
+                // same locked file bytes as plain entries.
+                if let Some(data) = document
+                    .binary_data
+                    .as_ref()
+                    .and_then(serde_json::Value::as_object)
+                {
+                    for (key, value) in data {
+                        let encoded = value.as_str().ok_or_else(|| {
+                            ComposeError::Invalid(format!(
+                                "Kubernetes ConfigMap {name:?} binaryData entry {key:?} is not a string"
+                            ))
+                        })?;
+                        let decoded = decode_secret_data(encoded)?;
+                        entries.insert(key.clone(), decoded);
                     }
                 }
                 if entries.is_empty() {
@@ -453,8 +537,8 @@ pub fn load_kubernetes_compose(
                 let name = named(&metadata, &kind)?;
                 let mut entries = InlineEntries::new();
                 if let Some(data) = document
-                    .spec
-                    .get("data")
+                    .data
+                    .as_ref()
                     .and_then(serde_json::Value::as_object)
                 {
                     for (key, value) in data {
@@ -467,8 +551,8 @@ pub fn load_kubernetes_compose(
                     }
                 }
                 if let Some(data) = document
-                    .spec
-                    .get("stringData")
+                    .string_data
+                    .as_ref()
                     .and_then(serde_json::Value::as_object)
                 {
                     for (key, value) in data {
@@ -560,18 +644,19 @@ pub fn load_kubernetes_compose(
                     "Kubernetes service {service_name:?} volumeMount {volume_name:?} declares subPath, which is not supported"
                 )));
             }
-            let Some((kind, source)) = sources.get(volume_name) else {
+            let Some(volume) = sources.get(volume_name) else {
                 return Err(ComposeError::Invalid(format!(
                     "Kubernetes service {service_name:?} volumeMount {volume_name:?} names no declared volume"
                 )));
             };
-            let entries = match kind.as_str() {
-                "config" => config_entries.get(source),
-                _ => secret_entries.get(source),
+            let entries = match volume.kind.as_str() {
+                "config" => config_entries.get(&volume.source),
+                _ => secret_entries.get(&volume.source),
             }
             .ok_or_else(|| {
                 ComposeError::Invalid(format!(
-                    "Kubernetes service {service_name:?} mounts {kind} {source:?}, which the manifest does not define"
+                    "Kubernetes service {service_name:?} mounts {} {:?}, which the manifest does not define",
+                    volume.kind, volume.source
                 ))
             })?;
             let service = services.get_mut(service_name).ok_or_else(|| {
@@ -579,10 +664,41 @@ pub fn load_kubernetes_compose(
                     "Kubernetes service {service_name:?} disappeared before its mounts"
                 ))
             })?;
-            for (key, bytes) in entries {
-                let definition = definition_name(kind, source, key);
-                let target = format!("{mount_path}/{key}");
-                match kind.as_str() {
+            if std::env::var("THESEUS_DEBUG_K8S").is_ok() {
+                eprintln!(
+                    "DEBUG volume {volume_name:?} kind {} source {} entries {:?} items {:?}",
+                    volume.kind,
+                    volume.source,
+                    entries.keys().collect::<Vec<_>>(),
+                    volume.items
+                );
+            }
+            // The optional items projection remaps entry keys to relative
+            // paths under the mount; without it every entry key mounts at
+            // mountPath/key.
+            let mounted: Vec<(&str, &Vec<u8>, &str)> = match &volume.items {
+                Some(projections) => {
+                    let mut projected = Vec::new();
+                    for (key, path) in projections {
+                        let bytes = entries.get(key).ok_or_else(|| {
+                            ComposeError::Invalid(format!(
+                                "Kubernetes service {service_name:?} mounts {} {:?} item {key:?}, which the manifest does not define",
+                                volume.kind, volume.source
+                            ))
+                        })?;
+                        projected.push((key.as_str(), bytes, path.as_str()));
+                    }
+                    projected
+                }
+                None => entries
+                    .iter()
+                    .map(|(key, bytes)| (key.as_str(), bytes, key.as_str()))
+                    .collect(),
+            };
+            for (key, bytes, relative) in mounted {
+                let definition = definition_name(&volume.kind, &volume.source, key);
+                let target = format!("{mount_path}/{relative}");
+                match volume.kind.as_str() {
                     "config" => configs.insert(definition.clone(), bytes.clone()),
                     _ => secrets.insert(definition.clone(), bytes.clone()),
                 };
@@ -625,34 +741,16 @@ pub fn load_kubernetes_compose(
         declared.insert(network.0, ComposeNetwork {});
     }
 
-    // The synthetic definitions are named so `theseus compose plan` output
-    // stays auditable, while their bytes flow inline (no host files).
-    let mut config_definitions = BTreeMap::new();
-    for name in configs.keys() {
-        config_definitions.insert(
-            name.clone(),
-            ComposeConfigDefinition {
-                file: Path::new(&format!(".theseus/{name}")).to_path_buf(),
-            },
-        );
-    }
-    let mut secret_definitions = BTreeMap::new();
-    for name in secrets.keys() {
-        secret_definitions.insert(
-            name.clone(),
-            ComposeConfigDefinition {
-                file: Path::new(&format!(".theseus/{name}")).to_path_buf(),
-            },
-        );
-    }
-
     Ok(KubernetesInputs {
+        // The ComposeFile carries no config/secret definitions: the bytes
+        // flow inline through KubernetesInputs and load_compose_plan seeds
+        // them directly, so no host files are read or written.
         compose: ComposeFile {
             name: None,
             services,
             networks: declared,
-            configs: config_definitions,
-            secrets: secret_definitions,
+            configs: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             theseus: Some(ComposeTheseus {
                 replay_start: Default::default(),
                 campaign: None,
