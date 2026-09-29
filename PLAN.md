@@ -549,26 +549,30 @@ reproducible investigation.
   guidance-comparison artifact over named served campaigns under the
   CLI's corpus and budget rules.
 
+- Serve discovery: a directory argument serves every child bundle (sorted
+  by name), and files, empty directories, and duplicate names are refused.
+
 ## Immediate next work
 
-### 1. Campaign-directory discovery for serve
+### 1. Serve exploration and topology bundles
 
-`theseus serve` names every bundle explicitly; exploring into one output
-directory produces many campaigns that must be listed one by one. The next
-work adds discovery:
+The serve surface assumes campaign bundles; exploration and topology
+directories retain their own versioned results the report layer already
+renders. The next work serves them too:
 
-- A serve argument that names a directory serves every child directory
-  containing a `campaign-result.json`, rejecting duplicate campaign names
-  within one directory walk by name.
-- Tests: a fixture directory with several bundles and a stray non-campaign
-  child, asserting the served index and the duplicate-name refusal.
+- A bundle's `result` route serves whichever versioned result it retains
+  (campaign, exploration, or topology), and discovery accepts the matching
+  result markers.
+- Tests: listener fixtures over an exploration bundle and a topology
+  bundle asserting the verbatim results and rendered reports.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
-history routes, the comparison route, and the grammar-locked bounds landed
-and are described in the verified baseline; the parity analysis tracks the
-remaining cross-priority gaps, including the hosted campaign service and
-demand-driven coverage breadth for JavaScript and .NET.
+history routes, the comparison route, the grammar-locked bounds, and serve
+discovery landed and are described in the verified baseline; the parity
+analysis tracks the remaining cross-priority gaps, including the hosted
+campaign service and demand-driven coverage breadth for JavaScript and
+.NET.
 
 ## Priority 6: product surface and workload compatibility
 

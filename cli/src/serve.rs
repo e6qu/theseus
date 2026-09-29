@@ -41,23 +41,56 @@ fn collect_campaigns(sources: &[PathBuf]) -> Result<Vec<ServedCampaign>, String>
     if sources.is_empty() {
         return Err("serve needs at least one campaign bundle".to_owned());
     }
-    let mut campaigns = Vec::with_capacity(sources.len());
+    let mut campaigns = Vec::new();
     let mut names = std::collections::BTreeSet::new();
     for source in sources {
         let root = std::fs::canonicalize(source)
             .map_err(|error| format!("{}: {error}", source.display()))?;
-        let name = root
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .ok_or_else(|| format!("{}: bundle has no directory name", root.display()))?;
-        if !names.insert(name.clone()) {
+        if root.is_file() {
             return Err(format!(
-                "two bundles share the name {name}; serve campaigns with distinct directory names"
+                "{}: serve names campaign bundles or directories of them",
+                root.display()
             ));
         }
-        campaigns.push(ServedCampaign { name, root });
+        if root.join("campaign-result.json").is_file() {
+            push_campaign(&mut campaigns, &mut names, root)?;
+            continue;
+        }
+        let mut children: Vec<PathBuf> = std::fs::read_dir(&root)
+            .map_err(|error| format!("{}: {error}", root.display()))?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.is_dir() && path.join("campaign-result.json").is_file())
+            .collect();
+        children.sort();
+        if children.is_empty() {
+            return Err(format!(
+                "{}: no campaign bundles found; a campaign directory contains campaign-result.json",
+                root.display()
+            ));
+        }
+        for child in children {
+            push_campaign(&mut campaigns, &mut names, child)?;
+        }
     }
     Ok(campaigns)
+}
+
+fn push_campaign(
+    campaigns: &mut Vec<ServedCampaign>,
+    names: &mut std::collections::BTreeSet<String>,
+    root: PathBuf,
+) -> Result<(), String> {
+    let name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("{}: bundle has no directory name", root.display()))?;
+    if !names.insert(name.clone()) {
+        return Err(format!(
+            "two bundles share the name {name}; serve campaigns with distinct directory names"
+        ));
+    }
+    campaigns.push(ServedCampaign { name, root });
+    Ok(())
 }
 
 fn handle_connection(stream: &mut TcpStream, campaigns: &[ServedCampaign]) -> std::io::Result<()> {
@@ -569,6 +602,8 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(content_type, "text/html; charset=utf-8");
         assert!(body.contains("/campaign/report"), "{body}");
+        assert!(body.contains("/coverage/report"), "{body}");
+        assert!(body.contains("/drift/report"), "{body}");
 
         let (status, content_type, body) = exchange(
             &address,
@@ -740,15 +775,37 @@ mod tests {
     }
 
     #[test]
-    fn serve_rejects_empty_and_duplicate_sources() {
+    fn serve_discovers_campaigns_and_rejects_duplicates() {
         assert!(collect_campaigns(&[]).is_err());
         let directory = tempfile::tempdir().unwrap();
-        let left = directory.path().join("dupe");
-        let right = directory.path().join("nested");
-        fs::create_dir_all(&left).unwrap();
-        fs::create_dir_all(&right).unwrap();
-        assert!(collect_campaigns(&[left.clone(), right.join("dupe")]).is_err());
-        let served = collect_campaigns(&[left]).unwrap();
+
+        let bundle = write_named_bundle(directory.path(), "dupe", "unified", 12);
+        let served = collect_campaigns(&[bundle]).unwrap();
         assert_eq!(served[0].name, "dupe");
+
+        let other = write_named_bundle(&directory.path().join("nested"), "dupe", "coverage", 12);
+        assert!(collect_campaigns(&[directory.path().join("dupe"), other]).is_err());
+
+        let root = directory.path().join("guidance");
+        write_named_bundle(&root, "unified", "unified", 12);
+        write_named_bundle(&root, "coverage", "coverage", 12);
+        fs::create_dir_all(root.join("notes"));
+        fs::write(root.join("README"), b"not a campaign");
+        let expanded = collect_campaigns(&[root]).unwrap();
+        assert_eq!(
+            expanded
+                .iter()
+                .map(|campaign| campaign.name.as_str())
+                .collect::<Vec<_>>(),
+            ["coverage", "unified"]
+        );
+
+        let empty = directory.path().join("empty");
+        fs::create_dir_all(&empty);
+        assert!(collect_campaigns(&[empty]).is_err());
+
+        let file = directory.path().join("plan.yaml");
+        fs::write(&file, b"services: {}");
+        assert!(collect_campaigns(&[file]).is_err());
     }
 }
