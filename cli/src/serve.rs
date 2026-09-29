@@ -282,6 +282,114 @@ fn route_history(campaigns: &[ServedCampaign], rest: &str) -> (u16, &'static str
     not_found()
 }
 
+/// The exploration node routes: the retained search tree, listed and
+/// resolved by seed path, with the replay and minimize commands the CLI
+/// builds.
+fn route_nodes(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec<u8>) {
+    let (route, _) = rest.split_once('?').unwrap_or((rest, ""));
+    let bytes = match std::fs::read(campaign.root.join("result.json")) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (
+                500,
+                "text/plain; charset=utf-8",
+                b"exploration result unreadable".to_vec(),
+            )
+        }
+    };
+    let result = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(result) => result,
+        Err(_) => {
+            return (
+                500,
+                "text/plain; charset=utf-8",
+                b"exploration result unparsable".to_vec(),
+            )
+        }
+    };
+    let mut nodes = result["nodes"].as_array().cloned().unwrap_or_default();
+    nodes.sort_by_key(|node| node["search_index"].as_u64().unwrap_or(0));
+    if route == "nodes" {
+        let shaped = nodes
+            .iter()
+            .map(|node| served_node(&campaign.root, node))
+            .collect::<Vec<_>>();
+        return json_response(&serde_json::json!({
+            "format": "theseus-exploration-nodes-v1",
+            "nodes": shaped,
+        }));
+    }
+    if let Some(seed_path) = route.strip_prefix("node/") {
+        let wanted = seed_path
+            .split(',')
+            .filter_map(|part| part.trim().parse::<u64>().ok())
+            .collect::<Vec<_>>();
+        for node in &nodes {
+            let path = node["seed_path"]
+                .as_array()
+                .map(|path| {
+                    path.iter()
+                        .filter_map(|value| value.as_u64())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if !wanted.is_empty() && path == wanted {
+                return json_response(&served_node(&campaign.root, node));
+            }
+        }
+        return not_found();
+    }
+    not_found()
+}
+
+fn served_node(root: &Path, node: &serde_json::Value) -> serde_json::Value {
+    let seed_path = node["seed_path"]
+        .as_array()
+        .map(|path| {
+            path.iter()
+                .filter_map(|value| value.as_u64())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let joined = seed_path
+        .iter()
+        .map(|seed| seed.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut record = serde_json::json!({
+        "search_index": node["search_index"],
+        "seed_path": seed_path,
+        "entropy_probe_hex": node["entropy_probe_hex"],
+        "markers_hex": node["markers_hex"],
+        "dirty_pages": node["dirty_pages"],
+        "replay_command": format!(
+            "theseus explore --replay {} --seed-path {}",
+            root.display(),
+            joined
+        ),
+        "minimize_command": format!(
+            "theseus explore --minimize {} --seed-path {}",
+            root.display(),
+            joined
+        ),
+    });
+    if let Some(serial_log) = node["serial_log"].as_str() {
+        record["serial_log"] = serde_json::json!(serial_log);
+    }
+    record
+}
+
+fn json_response(value: &serde_json::Value) -> (u16, &'static str, Vec<u8>) {
+    match serde_json::to_string_pretty(value) {
+        Ok(text) => (200, "application/json", text.into_bytes()),
+        Err(_) => (
+            500,
+            "text/plain; charset=utf-8",
+            b"serialization failed".to_vec(),
+        ),
+    }
+}
+
 /// The empty history shapes, answered when no served bundle retains
 /// campaign evidence.
 fn empty_history(route: &str) -> Option<(u16, &'static str, Vec<u8>)> {
@@ -313,6 +421,9 @@ fn empty_history(route: &str) -> Option<(u16, &'static str, Vec<u8>)> {
 /// The read-only query routes: the campaign's moment index, its guest event
 /// records, and the needle relations, all answered from the retained result.
 fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec<u8>) {
+    if campaign.root.join("result.json").is_file() {
+        return route_nodes(campaign, rest);
+    }
     let (route, query) = rest.split_once('?').unwrap_or((rest, ""));
     let service = query_parameter(query, "service").map(str::to_owned);
     let bytes = match std::fs::read(campaign.root.join("campaign-result.json")) {
@@ -576,7 +687,7 @@ mod tests {
         .unwrap();
         fs::write(
             bundle.join("result.json"),
-            r#"{"format":"theseus-result-v1","status":"passed","checks":[]}"#,
+            r#"{"format":"theseus-result-v1","status":"passed","checks":[],"nodes":[{"search_index":1,"id":2,"parent":null,"depth":1,"seed":7,"seed_path":[1],"entropy_probe_hex":"aa","markers_hex":"ff","dirty_pages":2,"serial_log":"serial/1.log"},{"search_index":2,"id":3,"parent":2,"depth":2,"seed":8,"seed_path":[1,2],"entropy_probe_hex":"bb","markers_hex":"90ff","dirty_pages":3}]}"#,
         )
         .unwrap();
         fs::write(bundle.join("serial").join("1.log"), b"ready\n").unwrap();
@@ -905,6 +1016,37 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(content_type, "text/markdown; charset=utf-8");
         assert!(body.contains("Topology replay"), "{body}");
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /exploration/query/nodes HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert!(body.contains("theseus-exploration-nodes-v1"), "{body}");
+        assert!(body.contains("theseus explore --replay"), "{body}");
+        assert!(body.contains("--minimize"), "{body}");
+        assert!(body.contains("serial/1.log"), "{body}");
+
+        let (status, _, body) = exchange(
+            &address,
+            "GET /exploration/query/node/1,2 HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert!(body.contains("\"dirty_pages\": 3"), "{body}");
+        assert!(body.contains("theseus explore --minimize"), "{body}");
+
+        let (status, ..) = exchange(
+            &address,
+            "GET /exploration/query/node/9,9 HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 404);
+
+        let (status, ..) = exchange(
+            &address,
+            "GET /exploration/query/moments HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 404);
 
         running.store(false, Ordering::SeqCst);
         server.join().unwrap();
