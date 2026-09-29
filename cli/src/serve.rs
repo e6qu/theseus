@@ -52,19 +52,19 @@ fn collect_campaigns(sources: &[PathBuf]) -> Result<Vec<ServedCampaign>, String>
                 root.display()
             ));
         }
-        if root.join("campaign-result.json").is_file() {
+        if retained_result(&root).is_some() {
             push_campaign(&mut campaigns, &mut names, root)?;
             continue;
         }
         let mut children: Vec<PathBuf> = std::fs::read_dir(&root)
             .map_err(|error| format!("{}: {error}", root.display()))?
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| path.is_dir() && path.join("campaign-result.json").is_file())
+            .filter(|path| path.is_dir() && retained_result(path).is_some())
             .collect();
         children.sort();
         if children.is_empty() {
             return Err(format!(
-                "{}: no campaign bundles found; a campaign directory contains campaign-result.json",
+                "{}: no bundles found; a served bundle retains a versioned result (campaign, exploration, or topology)",
                 root.display()
             ));
         }
@@ -168,10 +168,10 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
         return not_found();
     };
     if rest == "result" {
-        return read_file(
-            &campaign.root.join("campaign-result.json"),
-            "application/json",
-        );
+        let Some(name) = retained_result(&campaign.root) else {
+            return not_found();
+        };
+        return read_file(&campaign.root.join(name), "application/json");
     }
     if rest == "plan" {
         return read_file(&campaign.root.join("replay-plan.json"), "application/json");
@@ -216,6 +216,16 @@ fn route_compare(campaigns: &[ServedCampaign], query: &str) -> (u16, &'static st
         };
         sources.push(campaign.root.clone());
     }
+    if sources
+        .iter()
+        .any(|source| !source.join("campaign-result.json").is_file())
+    {
+        return (
+            400,
+            "text/plain; charset=utf-8",
+            b"compare names campaign bundles only".to_vec(),
+        );
+    }
     match crate::evaluation::evaluate_compare(&sources) {
         Ok(comparison) => match serde_json::to_string_pretty(&comparison) {
             Ok(text) => (200, "application/json", text.into_bytes()),
@@ -236,6 +246,16 @@ fn route_compare(campaigns: &[ServedCampaign], query: &str) -> (u16, &'static st
     }
 }
 
+/// The served bundles that retain campaign evidence: the history
+/// aggregations' input.
+fn campaign_sources(campaigns: &[ServedCampaign]) -> Vec<std::path::PathBuf> {
+    campaigns
+        .iter()
+        .filter(|campaign| campaign.root.join("campaign-result.json").is_file())
+        .map(|campaign| campaign.root.clone())
+        .collect()
+}
+
 /// The cross-campaign history routes: property, assertion, and event
 /// aggregations over the whole served set, answered by the same functions
 /// the CLI's `theseus history` uses.
@@ -243,7 +263,10 @@ fn route_history(campaigns: &[ServedCampaign], rest: &str) -> (u16, &'static str
     let (route, query) = rest.split_once('?').unwrap_or((rest, ""));
     let service = query_parameter(query, "service").map(str::to_owned);
     let property = query_parameter(query, "property").map(str::to_owned);
-    let sources: Vec<std::path::PathBuf> = campaigns.iter().map(|c| c.root.clone()).collect();
+    let sources: Vec<std::path::PathBuf> = campaign_sources(campaigns);
+    if sources.is_empty() {
+        return empty_history(route).unwrap_or_else(not_found);
+    }
     if route == "properties" {
         return answer(crate::history::property_history(
             &sources,
@@ -257,6 +280,34 @@ fn route_history(campaigns: &[ServedCampaign], rest: &str) -> (u16, &'static str
         return answer(crate::history::event_history(&sources, service.as_deref()));
     }
     not_found()
+}
+
+/// The empty history shapes, answered when no served bundle retains
+/// campaign evidence.
+fn empty_history(route: &str) -> Option<(u16, &'static str, Vec<u8>)> {
+    use crate::history::{AssertionCatalog, CampaignPropertyHistory, EventHistory};
+    let json = match route {
+        "properties" => serde_json::to_string_pretty(&CampaignPropertyHistory {
+            format: "theseus-campaign-property-history-v1",
+            sources: Vec::new(),
+            properties: Vec::new(),
+        })
+        .ok()?,
+        "assertions" => serde_json::to_string_pretty(&AssertionCatalog {
+            format: "theseus-assertion-catalog-v1",
+            sources: Vec::new(),
+            assertions: Vec::new(),
+        })
+        .ok()?,
+        "events" => serde_json::to_string_pretty(&EventHistory {
+            format: "theseus-event-history-v1",
+            sources: Vec::new(),
+            events: Vec::new(),
+        })
+        .ok()?,
+        _ => return None,
+    };
+    Some((200, "application/json", json.into_bytes()))
 }
 
 /// The read-only query routes: the campaign's moment index, its guest event
@@ -401,6 +452,21 @@ fn query_flag(query: &str, name: &str) -> bool {
     query.split('&').any(|pair| pair == name)
 }
 
+/// The versioned result a bundle retains: a campaign result, a
+/// single-timeline or exploration result, or a topology result.
+fn retained_result(root: &Path) -> Option<&'static str> {
+    for name in [
+        "campaign-result.json",
+        "result.json",
+        "topology-result.json",
+    ] {
+        if root.join(name).is_file() {
+            return Some(name);
+        }
+    }
+    None
+}
+
 fn serve_serial(root: &Path, relative: &str) -> (u16, &'static str, Vec<u8>) {
     if relative
         .split('/')
@@ -500,6 +566,44 @@ mod tests {
         bundle
     }
 
+    fn write_exploration_bundle(directory: &Path, name: &str) -> PathBuf {
+        let bundle = directory.join(name);
+        fs::create_dir_all(bundle.join("serial")).unwrap();
+        fs::write(
+            bundle.join("explore-plan.json"),
+            r#"{"format":"theseus-explore-plan-v1","max_depth":2}"#,
+        )
+        .unwrap();
+        fs::write(
+            bundle.join("result.json"),
+            r#"{"format":"theseus-result-v1","status":"passed","checks":[]}"#,
+        )
+        .unwrap();
+        fs::write(bundle.join("serial").join("1.log"), b"ready\n").unwrap();
+        bundle
+    }
+
+    fn write_topology_bundle(directory: &Path, name: &str) -> PathBuf {
+        let bundle = directory.join(name);
+        fs::create_dir_all(bundle.join("services/api")).unwrap();
+        fs::write(
+            bundle.join("replay-plan.json"),
+            r#"{"format":"theseus-compose-plan-v1","compose":"/tmp/compose.yaml"}"#,
+        )
+        .unwrap();
+        fs::write(
+            bundle.join("topology-result.json"),
+            r#"{"status":"passed"}"#,
+        )
+        .unwrap();
+        fs::write(
+            bundle.join("services").join("api").join("result.json"),
+            r#"{"status":"passed","checks":[{"name":"guest_exit","status":"passed","detail":"ok"}]}"#,
+        )
+        .unwrap();
+        bundle
+    }
+
     fn exchange(address: &str, request: &str) -> (u16, String, String) {
         let mut stream = TcpStream::connect(address).unwrap();
         stream.write_all(request.as_bytes()).unwrap();
@@ -531,10 +635,14 @@ mod tests {
         let address = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
         write_named_bundle(directory.path(), "coverage", "coverage", 12);
         write_named_bundle(directory.path(), "drift", "unified", 13);
+        write_exploration_bundle(directory.path(), "exploration");
+        write_topology_bundle(directory.path(), "topology");
         let campaigns = collect_campaigns(&[
             directory.path().join("campaign"),
             directory.path().join("coverage"),
             directory.path().join("drift"),
+            directory.path().join("exploration"),
+            directory.path().join("topology"),
         ])
         .unwrap();
         let running = std::sync::Arc::new(AtomicBool::new(true));
@@ -769,6 +877,34 @@ mod tests {
             "GET /compare?campaigns=campaign,ghost HTTP/1.1\r\nHost: x\r\n\r\n",
         );
         assert_eq!(status, 404);
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /exploration/result HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert!(body.contains("theseus-result-v1"), "{body}");
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /exploration/report HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "text/markdown; charset=utf-8");
+        assert!(body.contains("Timeline replay"), "{body}");
+
+        let (status, content_type, body) =
+            exchange(&address, "GET /topology/result HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert_eq!(body, "{\"status\":\"passed\"}");
+
+        let (status, content_type, body) =
+            exchange(&address, "GET /topology/report HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "text/markdown; charset=utf-8");
+        assert!(body.contains("Topology replay"), "{body}");
 
         running.store(false, Ordering::SeqCst);
         server.join().unwrap();
