@@ -536,27 +536,32 @@ reproducible investigation.
   address to its boundary evidence, and `?next`/`?previous` walk the
   timeline's neighboring moments.
 
+- Cross-campaign history routes: `/history/properties`,
+  `/history/assertions`, and `/history/events` aggregate the whole served
+  set through the same functions the CLI uses.
+
 ## Immediate next work
 
-### 1. Cross-campaign history routes on the serve surface
+### 1. The choice grammar in the Compose plan lock
 
-The serve surface answers one campaign at a time; the cross-run history
-surfaces still need the CLI over several directories. The next work serves
-the same aggregations over the served set:
+Input grammars generate values at operation barriers; the locked Compose
+plan records the grammar cases but the choice protocol's exclusive bounds
+stay implicit. The next work locks the choice contract into the plan:
 
-- `GET /history/properties[?property=NAME]` and
-  `GET /history/assertions` aggregate the served campaigns' property and
-  assertion evidence into the versioned history shapes.
-- `GET /history/events[?service=NAME]` aggregates every served campaign's
-  indexed guest events.
-- Tests: listener fixtures serving two campaigns and asserting the
-  aggregated shapes and the empty-set answers.
+- Each input grammar with bounded cases records the matching structured
+  choice bound in the replay plan, so generated values and consumed
+  choices verify against one declaration.
+- Mismatched bounds (a case name outside the bound, or a bound with no
+  case) are rejected at plan time by name.
+- Tests: plan-lock fixtures over matched and mismatched grammar/bound
+  pairs.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
-feedback, the report surface, the serve surface, and moment navigation
-landed and are described in the verified baseline; the parity analysis
-tracks the remaining cross-priority gaps, including the hosted campaign
-service and demand-driven coverage breadth for JavaScript and .NET.
+feedback, the report surface, the serve surface, moment navigation, and the
+history routes landed and are described in the verified baseline; the
+parity analysis tracks the remaining cross-priority gaps, including the
+hosted campaign service and demand-driven coverage breadth for JavaScript
+and .NET.
 
 ## Priority 6: product surface and workload compatibility
 
