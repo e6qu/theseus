@@ -540,28 +540,31 @@ reproducible investigation.
   `/history/assertions`, and `/history/events` aggregate the whole served
   set through the same functions the CLI uses.
 
+- Grammar-locked choice bounds: an input grammar's plan records the bound
+  each choice variable implies beside the grammar and on every generated
+  case, and a declared bound that disagrees with the cases is rejected at
+  plan time by name.
+
 ## Immediate next work
 
-### 1. The choice grammar in the Compose plan lock
+### 1. The comparison route on the serve surface
 
-Input grammars generate values at operation barriers; the locked Compose
-plan records the grammar cases but the choice protocol's exclusive bounds
-stay implicit. The next work locks the choice contract into the plan:
+`evaluate compare` reads retained bundles from disk; the serve surface
+already answers history aggregations over its served set. The next work
+serves the comparison artifact too:
 
-- Each input grammar with bounded cases records the matching structured
-  choice bound in the replay plan, so generated values and consumed
-  choices verify against one declaration.
-- Mismatched bounds (a case name outside the bound, or a bound with no
-  case) are rejected at plan time by name.
-- Tests: plan-lock fixtures over matched and mismatched grammar/bound
-  pairs.
+- `GET /compare?campaigns=a,b` produces the same
+  `theseus-guidance-comparison-v1` artifact over the named served
+  campaigns, rejecting mismatched corpora and budgets by the same rules.
+- Tests: a listener fixture serving two campaigns and asserting the
+  artifact rows and the mismatch refusal.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
-feedback, the report surface, the serve surface, moment navigation, and the
-history routes landed and are described in the verified baseline; the
-parity analysis tracks the remaining cross-priority gaps, including the
-hosted campaign service and demand-driven coverage breadth for JavaScript
-and .NET.
+feedback, the report surface, the serve surface, moment navigation, the
+history routes, and the grammar-locked bounds landed and are described in
+the verified baseline; the parity analysis tracks the remaining
+cross-priority gaps, including the hosted campaign service and
+demand-driven coverage breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 

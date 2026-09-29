@@ -451,6 +451,25 @@ at the decision point and emit `THES:CHOICE:<name>:<upper-bound>:<value>`
 immediately before using it. The Linux SDK's `TtyChannel::choice` implements
 the same protocol, but any language can emit the line directly.
 
+Input grammars lock the same contract into the plan. A grammar's choice
+variable implies the bound its case count fixes, and an explicit
+`bounds` map must agree:
+
+```yaml
+operations:
+  - name: write
+    input_grammar:
+      template: "write {mode}\n"
+      choices:
+        mode: {fast: fast, safe: safe}
+      bounds: {mode: 2}
+```
+
+The locked plan records the bound beside the grammar and on every
+generated case, so generated values and guest-consumed choices verify
+against one declaration. A bound with no matching choice variable, or a
+bound that excludes declared cases, is rejected at plan time by name.
+
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without
 editing the Compose file. Comparing one file across guidance modes at one
