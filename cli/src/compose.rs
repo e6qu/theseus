@@ -363,6 +363,10 @@ struct ComposeOperationInputGrammar {
     #[serde(default)]
     name_template: Option<String>,
     choices: BTreeMap<String, BTreeMap<String, String>>,
+    /// The structured-choice contract the guest must consume: one bound per
+    /// choice variable, locked to the variable's case count at plan time.
+    #[serde(default)]
+    bounds: BTreeMap<String, u16>,
     #[serde(default)]
     input_captures: BTreeMap<String, ComposeOperationInputCapture>,
     #[serde(default)]
@@ -1458,6 +1462,11 @@ pub struct OperationInputGrammarPlan {
     pub template: String,
     pub name_template: String,
     pub choices: BTreeMap<String, BTreeMap<String, String>>,
+    /// The structured-choice bound each choice variable implies: its case
+    /// count. Generated values and consumed choices verify against this one
+    /// declaration.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bounds: BTreeMap<String, u16>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub input_captures: BTreeMap<String, OperationInputCapturePlan>,
 }
@@ -7331,6 +7340,7 @@ fn normalize_operation_input_references(
 
 struct NormalizedOperationInputGrammar {
     source: OperationInputGrammarPlan,
+    bounds: BTreeMap<String, u16>,
     inputs: Vec<OperationInputPlan>,
 }
 
@@ -7395,6 +7405,19 @@ fn normalize_operation_input_grammar(
             )));
         }
     }
+    for (name, bound) in &grammar.bounds {
+        let Some(variants) = grammar.choices.get(name) else {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} input_grammar bound {name:?} has no matching choice variable"
+            )));
+        };
+        if *bound != variants.len() as u16 {
+            return Err(ComposeError::Invalid(format!(
+                "campaign operation {operation:?} input_grammar bound for {name:?} is {bound} but the grammar declares {} case(s); a case name outside the bound is unreachable",
+                variants.len()
+            )));
+        }
+    }
 
     let name_template = grammar.name_template.clone().unwrap_or_else(|| {
         choice_variables
@@ -7431,6 +7454,15 @@ fn normalize_operation_input_grammar(
         }
         combinations = next;
     }
+    let bounds: BTreeMap<String, u16> = choice_variables
+        .iter()
+        .map(|variable| (variable.clone(), grammar.choices[variable].len() as u16))
+        .collect();
+    let source_bounds = if grammar.bounds.is_empty() {
+        bounds.clone()
+    } else {
+        grammar.bounds.clone()
+    };
 
     let mut generated = BTreeSet::new();
     let mut inputs = Vec::with_capacity(combinations.len());
@@ -7470,7 +7502,7 @@ fn normalize_operation_input_grammar(
                 .is_empty()
                 .then(|| hex(input.as_bytes()))
                 .unwrap_or_default(),
-            choices: BTreeMap::new(),
+            choices: source_bounds.clone(),
             thread_schedule: Vec::new(),
             input_template: (!captures.is_empty()).then_some(input),
             input_captures: captures.clone(),
@@ -7494,8 +7526,10 @@ fn normalize_operation_input_grammar(
             template: grammar.template.clone(),
             name_template,
             choices: grammar.choices.clone(),
+            bounds: bounds.clone(),
             input_captures: captures,
         },
+        bounds,
         inputs,
     })
 }
@@ -11138,6 +11172,102 @@ x-theseus:
         assert_eq!(
             operation.input_grammar.as_ref().unwrap().template,
             "write {value} {mode}\n"
+        );
+        assert_eq!(
+            operation.input_grammar.as_ref().unwrap().bounds,
+            BTreeMap::from([("value".to_owned(), 2), ("mode".to_owned(), 2)])
+        );
+    }
+
+    #[test]
+    fn locks_structured_choice_bounds_to_grammar_case_counts() {
+        let directory = fixture(
+            r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input_grammar:
+          template: "write {mode}\n"
+          choices:
+            mode: {fast: fast, safe: safe}
+          bounds: {mode: 2}
+"#,
+        );
+        let campaign = load_compose_plan(directory.path().join("compose.yaml"))
+            .unwrap()
+            .campaign
+            .unwrap();
+        let operation = &campaign.operations[0];
+        assert_eq!(operation.input_grammar.as_ref().unwrap().bounds["mode"], 2);
+        for input in &operation.inputs {
+            assert_eq!(input.choices["mode"], 2);
+        }
+    }
+
+    #[test]
+    fn rejects_choice_bounds_that_disagree_with_grammar_cases() {
+        let mismatched = r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input_grammar:
+          template: "write {mode}\n"
+          choices:
+            mode: {fast: fast, safe: safe}
+          bounds: {mode: 3}
+"#;
+        let directory = fixture(mismatched);
+        let error = load_compose_plan(directory.path().join("compose.yaml"))
+            .expect_err("mismatched bound must be rejected");
+        assert!(
+            error.to_string().contains(
+                "input_grammar bound for \"mode\" is 3 but the grammar declares 2 case(s)"
+            ),
+            "{error}"
+        );
+
+        let unbacked = r#"services:
+  api:
+    x-theseus:
+      manifest: api/theseus.toml
+    networks: [backplane]
+networks:
+  backplane: {}
+x-theseus:
+  campaign:
+    driver: api
+    operations:
+      - name: write
+        input_grammar:
+          template: "write {mode}\n"
+          choices:
+            mode: {fast: fast, safe: safe}
+          bounds: {phase: 2}
+"#;
+        let directory = fixture(unbacked);
+        let error = load_compose_plan(directory.path().join("compose.yaml"))
+            .expect_err("a bound with no grammar case must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("input_grammar bound \"phase\" has no matching choice variable"),
+            "{error}"
         );
     }
 
