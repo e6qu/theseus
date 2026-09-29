@@ -113,6 +113,13 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
     if let Some(history) = trimmed.strip_prefix("history/") {
         return route_history(campaigns, history);
     }
+    if trimmed.split('?').next() == Some("compare") {
+        let query = trimmed
+            .split_once('?')
+            .map(|(_, query)| query)
+            .unwrap_or("");
+        return route_compare(campaigns, query);
+    }
     let (name, rest) = match trimmed.split_once('/') {
         Some((name, rest)) => (name, rest),
         None => (trimmed, ""),
@@ -156,6 +163,44 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
         return route_query(campaign, query);
     }
     not_found()
+}
+
+/// The comparison route: the committed guidance-comparison artifact over
+/// named served campaigns, under the same corpus and budget rules the CLI
+/// enforces.
+fn route_compare(campaigns: &[ServedCampaign], query: &str) -> (u16, &'static str, Vec<u8>) {
+    let Some(names) = query_parameter(query, "campaigns") else {
+        return (
+            400,
+            "text/plain; charset=utf-8",
+            b"compare needs ?campaigns=name,name".to_vec(),
+        );
+    };
+    let mut sources = Vec::new();
+    for name in names.split(',') {
+        let Some(campaign) = campaigns.iter().find(|campaign| campaign.name == name) else {
+            return not_found();
+        };
+        sources.push(campaign.root.clone());
+    }
+    match crate::evaluation::evaluate_compare(&sources) {
+        Ok(comparison) => match serde_json::to_string_pretty(&comparison) {
+            Ok(text) => (200, "application/json", text.into_bytes()),
+            Err(_) => (
+                500,
+                "text/plain; charset=utf-8",
+                b"serialization failed".to_vec(),
+            ),
+        },
+        Err(crate::evaluation::EvaluationError::Invalid(message)) => {
+            (400, "text/plain; charset=utf-8", message.into_bytes())
+        }
+        Err(_) => (
+            500,
+            "text/plain; charset=utf-8",
+            b"comparison failed".to_vec(),
+        ),
+    }
 }
 
 /// The cross-campaign history routes: property, assertion, and event
@@ -397,22 +442,27 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     fn write_bundle(directory: &Path) -> PathBuf {
-        write_named_bundle(directory, "campaign")
+        write_named_bundle(directory, "campaign", "unified", 12)
     }
 
-    fn write_named_bundle(directory: &Path, name: &str) -> PathBuf {
+    fn write_named_bundle(
+        directory: &Path,
+        name: &str,
+        guidance: &str,
+        candidates: u64,
+    ) -> PathBuf {
         let bundle = directory.join(name);
         fs::create_dir_all(bundle.join("serial")).unwrap();
         fs::write(
             bundle.join("replay-plan.json"),
-            r#"{"format":"theseus-compose-plan-v1","campaign":{"operations":[{"name":"calculate"}]}}"#,
+            r#"{"format":"theseus-compose-plan-v1","campaign":{"driver":"api","operations":[{"name":"calculate"}],"max_runs":8}}"#,
         )
         .unwrap();
-        fs::write(
-            bundle.join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"chooser","guidance":"unified","structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"timeline":[{"id":"op-000-calculate","operation":"calculate[mode-1]","service":"chooser","round":7,"markers":["42"],"new_markers":["42"],"serial_delta":{"chooser":{"bytes":16,"sha256":"delta-hash","excerpt":"calculate ready\n","omitted_bytes":0}},"state_sha256":"state-hash","moment":"7000@input-hash","events":{"chooser":["{\"event\":\"request\",\"seq\":1}"]}},{"id":"op-001-calculate","operation":"calculate[mode-1]","service":"chooser","round":9,"markers":["42","a1"],"new_markers":["a1"],"serial_delta":{"chooser":{"bytes":11,"sha256":"tail-hash","excerpt":"calculate done\n","omitted_bytes":0}},"state_sha256":"tail-state","moment":"9000@input-hash"}]}],"properties":[{"name":"consistent_read","kind":"always","status":"passed","detail":"2 of 2 retained timelines contained pass"}]}"#,
-        )
-        .unwrap();
+        let result = r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"chooser","guidance":"GUIDANCE","generated_candidates":CANDIDATES,"structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"timeline":[{"id":"op-000-calculate","operation":"calculate[mode-1]","service":"chooser","round":7,"markers":["42"],"new_markers":["42"],"serial_delta":{"chooser":{"bytes":16,"sha256":"delta-hash","excerpt":"calculate ready\n","omitted_bytes":0}},"state_sha256":"state-hash","moment":"7000@input-hash","events":{"chooser":["{\"event\":\"request\",\"seq\":1}"]}},{"id":"op-001-calculate","operation":"calculate[mode-1]","service":"chooser","round":9,"markers":["42","a1"],"new_markers":["a1"],"serial_delta":{"chooser":{"bytes":11,"sha256":"tail-hash","excerpt":"calculate done\n","omitted_bytes":0}},"state_sha256":"tail-state","moment":"9000@input-hash"}]}],"properties":[{"name":"consistent_read","kind":"always","status":"passed","detail":"2 of 2 retained timelines contained pass"}]}"#;
+        let result = result
+            .replace("GUIDANCE", guidance)
+            .replace("CANDIDATES", &candidates.to_string());
+        fs::write(bundle.join("campaign-result.json"), result).unwrap();
         fs::write(bundle.join("serial").join("1.log"), b"ready\n").unwrap();
         bundle
     }
@@ -446,7 +496,14 @@ mod tests {
         write_bundle(directory.path());
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
-        let campaigns = collect_campaigns(&[directory.path().join("campaign")]).unwrap();
+        write_named_bundle(directory.path(), "coverage", "coverage", 12);
+        write_named_bundle(directory.path(), "drift", "unified", 13);
+        let campaigns = collect_campaigns(&[
+            directory.path().join("campaign"),
+            directory.path().join("coverage"),
+            directory.path().join("drift"),
+        ])
+        .unwrap();
         let running = std::sync::Arc::new(AtomicBool::new(true));
         let flag = running.clone();
         let server = std::thread::spawn(move || {
@@ -645,6 +702,37 @@ mod tests {
         assert!(body.contains("\"events\": []"), "{body}");
 
         let (status, ..) = exchange(&address, "GET /history/nope HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert_eq!(status, 404);
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /compare?campaigns=campaign,coverage HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert!(body.contains("theseus-guidance-comparison-v1"), "{body}");
+        assert!(body.contains("\"corpus\": 12"), "{body}");
+        assert!(body.contains("\"budget\": 8"), "{body}");
+        assert!(body.contains("\"guidance\": \"unified\""), "{body}");
+        assert!(body.contains("\"guidance\": \"coverage\""), "{body}");
+
+        let (status, _, body) = exchange(
+            &address,
+            "GET /compare?campaigns=campaign,drift HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 400);
+        assert!(
+            body.contains("explored a corpus of 13 candidates"),
+            "{body}"
+        );
+
+        let (status, ..) = exchange(&address, "GET /compare HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert_eq!(status, 400);
+
+        let (status, ..) = exchange(
+            &address,
+            "GET /compare?campaigns=campaign,ghost HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
         assert_eq!(status, 404);
 
         running.store(false, Ordering::SeqCst);

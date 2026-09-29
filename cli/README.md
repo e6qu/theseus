@@ -267,8 +267,11 @@ boundary - run, service, virtual time, verbatim excerpts, events - with
 `?next` and `?previous` walking to the neighboring moments. Cross-campaign
 history answers over the whole served set through the same functions the
 CLI uses: `GET /history/properties[?property=NAME]`,
-`GET /history/assertions`, and `GET /history/events[?service=NAME]`. The
-index page links every served campaign. Every non-GET method is refused, nothing is
+`GET /history/assertions`, and `GET /history/events[?service=NAME]`.
+`GET /compare?campaigns=a,b` produces the guidance-comparison artifact
+over named served campaigns under the same corpus and budget rules the
+CLI enforces - mismatches answer 400 with the refusal message. The index
+page links every served campaign. Every non-GET method is refused, nothing is
 ever written, and the surface stops when the process is interrupted.
 
 The report shows checks and serial logs for one timeline, service checks and
