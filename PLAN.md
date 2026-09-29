@@ -552,27 +552,31 @@ reproducible investigation.
 - Serve discovery: a directory argument serves every child bundle (sorted
   by name), and files, empty directories, and duplicate names are refused.
 
+- Bundle-kind coverage: serve discovery and the `result`/`report` routes
+  accept campaign, exploration, and topology bundles through their
+  versioned results; history and compare scope to campaign bundles, and
+  history answers the empty shapes when none are served.
+
 ## Immediate next work
 
-### 1. Serve exploration and topology bundles
+### 1. Exploration node routes on the serve surface
 
-The serve surface assumes campaign bundles; exploration and topology
-directories retain their own versioned results the report layer already
-renders. The next work serves them too:
+Exploration bundles retain a search tree of seed paths; navigating it still
+needs the CLI. The next work serves the tree:
 
-- A bundle's `result` route serves whichever versioned result it retains
-  (campaign, exploration, or topology), and discovery accepts the matching
-  result markers.
-- Tests: listener fixtures over an exploration bundle and a topology
-  bundle asserting the verbatim results and rendered reports.
+- `GET /<name>/query/nodes` lists the retained search nodes (seed path,
+  markers, dirty-page coverage), and `GET /<name>/query/node/<seed-path>`
+  resolves one node with its replay and minimize commands.
+- Tests: listener fixtures over an exploration bundle asserting the node
+  list, one resolved node, and an unknown seed path.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
-history routes, the comparison route, the grammar-locked bounds, and serve
-discovery landed and are described in the verified baseline; the parity
-analysis tracks the remaining cross-priority gaps, including the hosted
-campaign service and demand-driven coverage breadth for JavaScript and
-.NET.
+history routes, the comparison route, the grammar-locked bounds, serve
+discovery, and bundle-kind coverage landed and are described in the
+verified baseline; the parity analysis tracks the remaining cross-priority
+gaps, including the hosted campaign service and demand-driven coverage
+breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 

@@ -253,9 +253,11 @@ theseus serve guidance/unified guidance/coverage --address 127.0.0.1:8098
 ```
 
 A serve argument that names a directory serves every child directory
-containing a `campaign-result.json` (sorted by name); a directory without
-campaign children, a file argument, or two bundles sharing one directory
-name is refused.
+retaining a versioned result - campaign, exploration, or topology (sorted
+by name); a directory without bundles, a file argument, or two bundles
+sharing one directory name is refused. Each bundle's `result` route serves
+whichever versioned result it retains, and `report` renders it with the
+same machinery as `theseus report`.
 
 Each campaign answers `GET /<name>/result` and `GET /<name>/plan` with the
 versioned JSON verbatim, `GET /<name>/report` with the rendered markdown
