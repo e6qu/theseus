@@ -276,7 +276,67 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
     if let Some(query) = rest.strip_prefix("query/") {
         return route_query(campaign, query);
     }
+    if rest == "tree" {
+        return route_tree(campaign);
+    }
     not_found()
+}
+
+/// The bundle tree route: every retained file, relative path and byte
+/// size, sorted, so the serial logs and artifacts the evidence references
+/// are reachable without knowing their names.
+fn route_tree(campaign: &ServedCampaign) -> (u16, &'static str, Vec<u8>) {
+    let mut files = Vec::new();
+    if collect_tree(&campaign.root, &campaign.root, 0, &mut files).is_err() {
+        return (
+            500,
+            "text/plain; charset=utf-8",
+            b"bundle unreadable".to_vec(),
+        );
+    }
+    files.sort();
+    let listing = files
+        .into_iter()
+        .map(|(path, bytes)| serde_json::json!({"path": path, "bytes": bytes}))
+        .collect::<Vec<_>>();
+    json_response(&serde_json::json!({
+        "format": "theseus-bundle-tree-v1",
+        "files": listing,
+    }))
+}
+
+/// Walk a bundle's retained files as sorted-relative paths. Symlinks are
+/// skipped (neither followed nor listed) so a bundle cannot point outside
+/// itself; depth and count stay bounded.
+fn collect_tree(
+    root: &Path,
+    directory: &Path,
+    depth: usize,
+    files: &mut Vec<(String, u64)>,
+) -> std::io::Result<()> {
+    if depth > 8 || files.len() > 4096 {
+        return Ok(());
+    }
+    let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_tree(root, &path, depth + 1, files)?;
+        } else if file_type.is_file() {
+            let relative = path
+                .strip_prefix(root)
+                .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let bytes = entry.metadata()?.len();
+            files.push((relative, bytes));
+        }
+    }
+    Ok(())
 }
 
 /// The comparison route: the committed guidance-comparison artifact over
@@ -1135,6 +1195,35 @@ mod tests {
             "GET /exploration/query/moments HTTP/1.1\r\nHost: x\r\n\r\n",
         );
         assert_eq!(status, 404);
+
+        let (status, content_type, body) =
+            exchange(&address, "GET /campaign/tree HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert!(body.contains("theseus-bundle-tree-v1"), "{body}");
+        assert!(
+            body.contains("\"path\": \"campaign-result.json\""),
+            "{body}"
+        );
+        assert!(body.contains("\"path\": \"replay-plan.json\""), "{body}");
+        assert!(
+            body.contains("\"bytes\": 6,\n      \"path\": \"serial/1.log\""),
+            "{body}"
+        );
+        let result_position = body.find("campaign-result.json").unwrap();
+        let plan_position = body.find("replay-plan.json").unwrap();
+        let serial_position = body.find("serial/1.log").unwrap();
+        assert!(result_position < plan_position);
+        assert!(plan_position < serial_position);
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /exploration/tree HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert!(body.contains("explore-plan.json"), "{body}");
+        assert!(body.contains("serial/1.log"), "{body}");
 
         running.store(false, Ordering::SeqCst);
         server.join().unwrap();
