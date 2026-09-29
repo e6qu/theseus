@@ -25,7 +25,7 @@ mod serve;
 mod status;
 mod topology_evidence;
 
-pub use serve::serve_campaigns;
+pub use serve::{collect_registry, serve_campaigns, serve_registry};
 pub use topology_evidence::{verify_topology_bundle, TopologyBundleSummary};
 
 pub use cargo_coverage::{
