@@ -545,25 +545,29 @@ reproducible investigation.
   case, and a declared bound that disagrees with the cases is rejected at
   plan time by name.
 
+- Comparison route: `GET /compare?campaigns=a,b` produces the
+  guidance-comparison artifact over named served campaigns under the
+  CLI's corpus and budget rules.
+
 ## Immediate next work
 
-### 1. The comparison route on the serve surface
+### 1. Campaign-directory discovery for serve
 
-`evaluate compare` reads retained bundles from disk; the serve surface
-already answers history aggregations over its served set. The next work
-serves the comparison artifact too:
+`theseus serve` names every bundle explicitly; exploring into one output
+directory produces many campaigns that must be listed one by one. The next
+work adds discovery:
 
-- `GET /compare?campaigns=a,b` produces the same
-  `theseus-guidance-comparison-v1` artifact over the named served
-  campaigns, rejecting mismatched corpora and budgets by the same rules.
-- Tests: a listener fixture serving two campaigns and asserting the
-  artifact rows and the mismatch refusal.
+- A serve argument that names a directory serves every child directory
+  containing a `campaign-result.json`, rejecting duplicate campaign names
+  within one directory walk by name.
+- Tests: a fixture directory with several bundles and a stray non-campaign
+  child, asserting the served index and the duplicate-name refusal.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
-history routes, and the grammar-locked bounds landed and are described in
-the verified baseline; the parity analysis tracks the remaining
-cross-priority gaps, including the hosted campaign service and
+history routes, the comparison route, and the grammar-locked bounds landed
+and are described in the verified baseline; the parity analysis tracks the
+remaining cross-priority gaps, including the hosted campaign service and
 demand-driven coverage breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
