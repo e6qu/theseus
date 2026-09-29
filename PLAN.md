@@ -566,6 +566,20 @@ reproducible investigation.
   duplicates, missing directories, and result-less directories are refused
   by name.
 
+## Immediate next work
+
+### 1. The bundle tree route on the serve surface
+
+Serial routes need exact log paths today; a browser cannot discover what a
+bundle retains. The next work serves the listing:
+
+- `GET /<name>/tree` answers a versioned `theseus-bundle-tree-v1` listing:
+  every retained file under the bundle root, relative path and byte size,
+  sorted, so the serial logs and artifacts the evidence references are
+  reachable without knowing their names.
+- Tests: a listener fixture asserting the listing's paths, sizes, and
+  ordering.
+
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
 history routes, the comparison route, the grammar-locked bounds, serve
