@@ -264,8 +264,11 @@ and `GET /<name>/query/preceded-by/<needle>` and
 against the retained excerpts (percent-encode the needle), and
 `GET /<name>/query/moment/<moment>` resolves one moment address to its
 boundary - run, service, virtual time, verbatim excerpts, events - with
-`?next` and `?previous` walking to the neighboring moments. The index page
-links every served campaign. Every non-GET method is refused, nothing is
+`?next` and `?previous` walking to the neighboring moments. Cross-campaign
+history answers over the whole served set through the same functions the
+CLI uses: `GET /history/properties[?property=NAME]`,
+`GET /history/assertions`, and `GET /history/events[?service=NAME]`. The
+index page links every served campaign. Every non-GET method is refused, nothing is
 ever written, and the surface stops when the process is interrupted.
 
 The report shows checks and serial logs for one timeline, service checks and

@@ -110,6 +110,9 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
         return (200, "text/html; charset=utf-8", index_page(campaigns));
     }
     let trimmed = path.trim_start_matches('/');
+    if let Some(history) = trimmed.strip_prefix("history/") {
+        return route_history(campaigns, history);
+    }
     let (name, rest) = match trimmed.split_once('/') {
         Some((name, rest)) => (name, rest),
         None => (trimmed, ""),
@@ -151,6 +154,29 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
     }
     if let Some(query) = rest.strip_prefix("query/") {
         return route_query(campaign, query);
+    }
+    not_found()
+}
+
+/// The cross-campaign history routes: property, assertion, and event
+/// aggregations over the whole served set, answered by the same functions
+/// the CLI's `theseus history` uses.
+fn route_history(campaigns: &[ServedCampaign], rest: &str) -> (u16, &'static str, Vec<u8>) {
+    let (route, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let service = query_parameter(query, "service").map(str::to_owned);
+    let property = query_parameter(query, "property").map(str::to_owned);
+    let sources: Vec<std::path::PathBuf> = campaigns.iter().map(|c| c.root.clone()).collect();
+    if route == "properties" {
+        return answer(crate::history::property_history(
+            &sources,
+            property.as_deref(),
+        ));
+    }
+    if route == "assertions" {
+        return answer(crate::history::assertion_catalog(&sources));
+    }
+    if route == "events" {
+        return answer(crate::history::event_history(&sources, service.as_deref()));
     }
     not_found()
 }
@@ -224,10 +250,33 @@ fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec
     not_found()
 }
 
-fn answer<T: serde::Serialize>(
-    value: Result<T, crate::query::MomentError>,
+/// Not-found-shaped errors from the query and history layers. History has
+/// no not-found shape: every failure is a failed aggregation, except a
+/// named source that retains no evidence.
+enum QueryFailure {
+    NotFound,
+    Failed,
+}
+
+impl From<crate::query::MomentError> for QueryFailure {
+    fn from(error: crate::query::MomentError) -> Self {
+        match error {
+            crate::query::MomentError::NotFound(_) => Self::NotFound,
+            _ => Self::Failed,
+        }
+    }
+}
+
+impl From<crate::history::HistoryError> for QueryFailure {
+    fn from(_error: crate::history::HistoryError) -> Self {
+        Self::Failed
+    }
+}
+
+fn answer<T: serde::Serialize, E: Into<QueryFailure>>(
+    value: Result<T, E>,
 ) -> (u16, &'static str, Vec<u8>) {
-    match value {
+    match value.map_err(Into::into) {
         Ok(value) => match serde_json::to_string_pretty(&value) {
             Ok(text) => (200, "application/json", text.into_bytes()),
             Err(_) => (
@@ -236,8 +285,8 @@ fn answer<T: serde::Serialize>(
                 b"serialization failed".to_vec(),
             ),
         },
-        Err(crate::query::MomentError::NotFound(_)) => not_found(),
-        Err(_) => (500, "text/plain; charset=utf-8", b"query failed".to_vec()),
+        Err(QueryFailure::NotFound) => not_found(),
+        Err(QueryFailure::Failed) => (500, "text/plain; charset=utf-8", b"query failed".to_vec()),
     }
 }
 
@@ -348,7 +397,11 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     fn write_bundle(directory: &Path) -> PathBuf {
-        let bundle = directory.join("campaign");
+        write_named_bundle(directory, "campaign")
+    }
+
+    fn write_named_bundle(directory: &Path, name: &str) -> PathBuf {
+        let bundle = directory.join(name);
         fs::create_dir_all(bundle.join("serial")).unwrap();
         fs::write(
             bundle.join("replay-plan.json"),
@@ -357,7 +410,7 @@ mod tests {
         .unwrap();
         fs::write(
             bundle.join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"chooser","guidance":"unified","structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"timeline":[{"id":"op-000-calculate","operation":"calculate[mode-1]","service":"chooser","round":7,"markers":["42"],"new_markers":["42"],"serial_delta":{"chooser":{"bytes":16,"sha256":"delta-hash","excerpt":"calculate ready\n","omitted_bytes":0}},"state_sha256":"state-hash","moment":"7000@input-hash","events":{"chooser":["{\"event\":\"request\",\"seq\":1}"]}},{"id":"op-001-calculate","operation":"calculate[mode-1]","service":"chooser","round":9,"markers":["42","a1"],"new_markers":["a1"],"serial_delta":{"chooser":{"bytes":11,"sha256":"tail-hash","excerpt":"calculate done\n","omitted_bytes":0}},"state_sha256":"tail-state","moment":"9000@input-hash"}]}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"chooser","guidance":"unified","structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"timeline":[{"id":"op-000-calculate","operation":"calculate[mode-1]","service":"chooser","round":7,"markers":["42"],"new_markers":["42"],"serial_delta":{"chooser":{"bytes":16,"sha256":"delta-hash","excerpt":"calculate ready\n","omitted_bytes":0}},"state_sha256":"state-hash","moment":"7000@input-hash","events":{"chooser":["{\"event\":\"request\",\"seq\":1}"]}},{"id":"op-001-calculate","operation":"calculate[mode-1]","service":"chooser","round":9,"markers":["42","a1"],"new_markers":["a1"],"serial_delta":{"chooser":{"bytes":11,"sha256":"tail-hash","excerpt":"calculate done\n","omitted_bytes":0}},"state_sha256":"tail-state","moment":"9000@input-hash"}]}],"properties":[{"name":"consistent_read","kind":"always","status":"passed","detail":"2 of 2 retained timelines contained pass"}]}"#,
         )
         .unwrap();
         fs::write(bundle.join("serial").join("1.log"), b"ready\n").unwrap();
@@ -544,6 +597,55 @@ mod tests {
             "GET /campaign/query/moment/7000@input-hash?next&previous HTTP/1.1\r\nHost: x\r\n\r\n",
         );
         assert_eq!(status, 400);
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /history/properties HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert!(
+            body.contains("theseus-campaign-property-history-v1"),
+            "{body}"
+        );
+
+        assert!(body.contains("consistent_read"), "{body}");
+
+        let (status, _, body) = exchange(
+            &address,
+            "GET /history/properties?property=consistent_read HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert!(body.contains("consistent_read"), "{body}");
+
+        let (status, _, body) = exchange(
+            &address,
+            "GET /history/properties?property=missing HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert!(body.contains("\"properties\": []"), "{body}");
+
+        let (status, _, body) = exchange(
+            &address,
+            "GET /history/assertions HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert!(body.contains("theseus-assertion-catalog-v1"), "{body}");
+
+        let (status, _, body) =
+            exchange(&address, "GET /history/events HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert_eq!(status, 200);
+        assert!(body.contains("theseus-event-history-v1"), "{body}");
+
+        let (status, _, body) = exchange(
+            &address,
+            "GET /history/events?service=none HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert!(body.contains("\"events\": []"), "{body}");
+
+        let (status, ..) = exchange(&address, "GET /history/nope HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert_eq!(status, 404);
 
         running.store(false, Ordering::SeqCst);
         server.join().unwrap();
