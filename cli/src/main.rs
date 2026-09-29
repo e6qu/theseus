@@ -14,10 +14,10 @@ use theseus_cli::{
     load_plan, minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
     minimize_exploration_path, next_moment_in, previous_moment_in, property_history,
     query_campaigns, replay, replay_compose, replay_exploration, replay_exploration_path,
-    replay_to, report, report_file, report_text, serve_campaigns, snapshot_exploration_path,
-    temporal_query, test, test_compose, verify_native_evidence, verify_topology_bundle,
-    write_evaluation_lock, CampaignGuidance, ReportFormat, TemporalRelation, CARGO_COVERAGE_USAGE,
-    GO_COVERAGE_USAGE, JAVA_COVERAGE_USAGE,
+    replay_to, report, report_file, report_text, serve_campaigns, serve_registry,
+    snapshot_exploration_path, temporal_query, test, test_compose, verify_native_evidence,
+    verify_topology_bundle, write_evaluation_lock, CampaignGuidance, ReportFormat,
+    TemporalRelation, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE, JAVA_COVERAGE_USAGE,
 };
 
 const USAGE: &str = "Usage:
@@ -49,7 +49,7 @@ const USAGE: &str = "Usage:
   theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
   theseus query campaign-dir --preceded-by-event FIELDS [--service NAME] [--format json]
   theseus query campaign-dir --followed-by-event FIELDS [--service NAME] [--format json]
-  theseus serve campaign-dir... [--address ADDR]
+  theseus serve [campaign-dir... | --index registry.json] [--address ADDR]
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
   theseus evaluate lock [theseus-evaluation.toml]
   theseus evaluate capture campaign-dir --output evaluation-dir --name name
@@ -270,6 +270,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
         [command, rest @ ..] if command == "serve" => {
             let mut address: Option<String> = None;
+            let mut registry: Option<String> = None;
             let mut bundles: Vec<PathBuf> = Vec::new();
             let mut index = 0;
             while index < rest.len() {
@@ -278,17 +279,27 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         address = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
                         index += 2;
                     }
+                    "--index" => {
+                        registry = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
+                        index += 2;
+                    }
                     bundle => {
                         bundles.push(PathBuf::from(bundle));
                         index += 1;
                     }
                 }
             }
-            if bundles.is_empty() {
-                return Err(USAGE.to_owned());
+            let address = address.as_deref().unwrap_or("127.0.0.1:8098");
+            match (&registry, bundles.is_empty()) {
+                (Some(path), true) => {
+                    serve_registry(std::path::Path::new(path), address)
+                        .map_err(|error| error.to_string())?;
+                }
+                (None, false) => {
+                    serve_campaigns(&bundles, address).map_err(|error| error.to_string())?;
+                }
+                _ => return Err(USAGE.to_owned()),
             }
-            serve_campaigns(&bundles, address.as_deref().unwrap_or("127.0.0.1:8098"))
-                .map_err(|error| error.to_string())?;
             Ok(())
         }
         [command, bundle, rest @ ..] if command == "query" => {

@@ -561,24 +561,30 @@ reproducible investigation.
   search tree with replay and minimize commands, and
   `GET /<name>/query/node/<seed-path>` resolves one node.
 
+- The campaign registry: `theseus serve --index registry.json` serves a
+  versioned manifest's named bundles with kind-labeled index entries, and
+  duplicates, missing directories, and result-less directories are refused
+  by name.
+
 ## Immediate next work
 
-### 1. The campaign registry index for serve
+### 1. The bundle tree route on the serve surface
 
-A hosted deployment curates which bundles it exposes; serve today exposes
-everything named on the command line. The next work adds the registry:
+Serial routes need exact log paths today; a browser cannot discover what a
+bundle retains. The next work serves the listing:
 
-- `theseus serve --index registry.json` serves the versioned manifest's
-  named bundles (`name` -> `directory` pairs) instead of the command-line
-  sources, refusing duplicate names and missing directories by name.
-- The index page lists the registry names beside their kinds.
-- Tests: registry fixtures over matched and duplicate/missing entries.
+- `GET /<name>/tree` answers a versioned `theseus-bundle-tree-v1` listing:
+  every retained file under the bundle root, relative path and byte size,
+  sorted, so the serial logs and artifacts the evidence references are
+  reachable without knowing their names.
+- Tests: a listener fixture asserting the listing's paths, sizes, and
+  ordering.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
 history routes, the comparison route, the grammar-locked bounds, serve
-discovery, bundle-kind coverage, and the exploration node routes landed
-and are described in the
+discovery, bundle-kind coverage, the exploration node routes, and the
+campaign registry landed and are described in the
 verified baseline; the parity analysis tracks the remaining cross-priority
 gaps, including the hosted campaign service and demand-driven coverage
 breadth for JavaScript and .NET.

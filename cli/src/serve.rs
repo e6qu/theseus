@@ -14,20 +14,32 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 
-/// One served campaign: its display name and its bundle directory.
+/// One served bundle: its display name, its kind (the versioned result it
+/// retains), and its directory.
+#[derive(Debug)]
 struct ServedCampaign {
     name: String,
+    kind: &'static str,
     root: PathBuf,
 }
 
 /// Serve retained campaign bundles over local read-only HTTP. Blocks while
 /// connections arrive; the process ends when the caller interrupts it.
 pub fn serve_campaigns(sources: &[PathBuf], address: &str) -> Result<(), String> {
-    let campaigns = collect_campaigns(sources)?;
+    serve_campaign_list(collect_campaigns(sources)?, address)
+}
+
+/// Serve the bundles a versioned registry manifest names, in registry
+/// order. Registry directories resolve from the registry file's directory.
+pub fn serve_registry(index: &Path, address: &str) -> Result<(), String> {
+    serve_campaign_list(collect_registry(index)?, address)
+}
+
+fn serve_campaign_list(campaigns: Vec<ServedCampaign>, address: &str) -> Result<(), String> {
     let listener =
         TcpListener::bind(address).map_err(|error| format!("cannot bind {address}: {error}"))?;
     eprintln!(
-        "theseus serving {} campaign(s) at http://{address}",
+        "theseus serving {} bundle(s) at http://{address}",
         campaigns.len()
     );
     for stream in listener.incoming() {
@@ -35,6 +47,74 @@ pub fn serve_campaigns(sources: &[PathBuf], address: &str) -> Result<(), String>
         let _ = handle_connection(&mut stream, &campaigns);
     }
     Ok(())
+}
+
+/// The bundle kind a retained versioned result implies.
+fn bundle_kind(root: &Path) -> &'static str {
+    match retained_result(root) {
+        Some("campaign-result.json") => "campaign",
+        Some("result.json") => "exploration",
+        Some("topology-result.json") => "topology",
+        _ => "unknown",
+    }
+}
+
+/// Read a versioned serve registry: named bundles (`name` -> `directory`
+/// pairs) with directories resolving from the registry file's directory.
+pub fn collect_registry(index: &Path) -> Result<Vec<ServedCampaign>, String> {
+    let index =
+        std::fs::canonicalize(index).map_err(|error| format!("{}: {error}", index.display()))?;
+    let base = index
+        .parent()
+        .ok_or_else(|| format!("{}: registry has no directory", index.display()))?;
+    let bytes = std::fs::read(&index).map_err(|error| format!("{}: {error}", index.display()))?;
+    let registry: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", index.display()))?;
+    if registry["format"] != "theseus-serve-registry-v1" {
+        return Err(format!(
+            "{}: registry format must be theseus-serve-registry-v1",
+            index.display()
+        ));
+    }
+    let entries = registry["campaigns"]
+        .as_array()
+        .ok_or_else(|| format!("{}: registry needs a campaigns array", index.display()))?;
+    let mut campaigns = Vec::with_capacity(entries.len());
+    let mut names = std::collections::BTreeSet::new();
+    for entry in entries {
+        let name = entry["name"]
+            .as_str()
+            .ok_or_else(|| format!("{}: registry entry needs a name", index.display()))?
+            .to_owned();
+        let directory = entry["directory"]
+            .as_str()
+            .ok_or_else(|| {
+                format!(
+                    "{}: registry entry {name:?} needs a directory",
+                    index.display()
+                )
+            })?
+            .to_owned();
+        let root = std::fs::canonicalize(base.join(&directory))
+            .map_err(|error| format!("registry entry {name:?}: {directory}: {error}"))?;
+        if retained_result(&root).is_none() {
+            return Err(format!(
+                "registry entry {name:?}: {directory} retains no versioned result"
+            ));
+        }
+        if !names.insert(name.clone()) {
+            return Err(format!("registry entry {name:?} duplicates a name"));
+        }
+        campaigns.push(ServedCampaign {
+            name,
+            kind: bundle_kind(&root),
+            root,
+        });
+    }
+    if campaigns.is_empty() {
+        return Err(format!("{}: registry names no bundles", index.display()));
+    }
+    Ok(campaigns)
 }
 
 fn collect_campaigns(sources: &[PathBuf]) -> Result<Vec<ServedCampaign>, String> {
@@ -89,7 +169,8 @@ fn push_campaign(
             "two bundles share the name {name}; serve campaigns with distinct directory names"
         ));
     }
-    campaigns.push(ServedCampaign { name, root });
+    let kind = bundle_kind(&root);
+    campaigns.push(ServedCampaign { name, kind, root });
     Ok(())
 }
 
@@ -608,8 +689,15 @@ fn index_page(campaigns: &[ServedCampaign]) -> Vec<u8> {
     );
     for campaign in campaigns {
         let name = escape_html(&campaign.name);
+        let plan_link = campaign
+            .root
+            .join("replay-plan.json")
+            .is_file()
+            .then(|| format!(" · <a href=\"/{name}/plan\">plan</a>"))
+            .unwrap_or_default();
         page.push_str(&format!(
-            "<li><a href=\"/{name}/report\">{name}</a> · <a href=\"/{name}/result\">result</a> · <a href=\"/{name}/plan\">plan</a></li>"
+            "<li>{} · <a href=\"/{name}/report\">{name}</a> · <a href=\"/{name}/result\">result</a>{plan_link}</li>",
+            campaign.kind
         ));
     }
     page.push_str("</ul></body></html>");
@@ -1085,5 +1173,69 @@ mod tests {
         let file = directory.path().join("plan.yaml");
         fs::write(&file, b"services: {}");
         assert!(collect_campaigns(&[file]).is_err());
+    }
+
+    #[test]
+    fn registry_index_serves_named_bundles_and_refuses_bad_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        write_named_bundle(directory.path(), "unified", "unified", 12);
+        write_exploration_bundle(directory.path(), "exploration");
+
+        let registry = directory.path().join("registry.json");
+        fs::write(
+            &registry,
+            r#"{"format":"theseus-serve-registry-v1","campaigns":[{"name":"unified","directory":"unified"},{"name":"tree","directory":"exploration"}]}"#,
+        )
+        .unwrap();
+        let served = collect_registry(&registry).unwrap();
+        assert_eq!(served[0].name, "unified");
+        assert_eq!(served[0].kind, "campaign");
+        assert_eq!(served[1].name, "tree");
+        assert_eq!(served[1].kind, "exploration");
+
+        let page = index_page(&served);
+        let page = String::from_utf8(page).unwrap();
+        assert!(
+            page.contains("campaign · <a href=\"/unified/report\""),
+            "{page}"
+        );
+        assert!(
+            page.contains("exploration · <a href=\"/tree/report\""),
+            "{page}"
+        );
+        assert!(page.contains("/unified/plan"), "{page}");
+        assert!(!page.contains("/tree/plan"), "{page}");
+
+        let duplicate = directory.path().join("duplicate.json");
+        fs::write(
+            &duplicate,
+            r#"{"format":"theseus-serve-registry-v1","campaigns":[{"name":"unified","directory":"unified"},{"name":"unified","directory":"exploration"}]}"#,
+        )
+        .unwrap();
+        let error = collect_registry(&duplicate).unwrap_err();
+        assert!(
+            error.contains("registry entry \"unified\" duplicates a name"),
+            "{error}"
+        );
+
+        let missing = directory.path().join("missing.json");
+        fs::write(
+            &missing,
+            r#"{"format":"theseus-serve-registry-v1","campaigns":[{"name":"gone","directory":"nowhere"}]}"#,
+        )
+        .unwrap();
+        let error = collect_registry(&missing).unwrap_err();
+        assert!(
+            error.contains("registry entry \"gone\": nowhere"),
+            "{error}"
+        );
+
+        let unversioned = directory.path().join("unversioned.json");
+        fs::write(
+            &unversioned,
+            r#"{"format":"something-else","campaigns":[]}"#,
+        )
+        .unwrap();
+        assert!(collect_registry(&unversioned).is_err());
     }
 }

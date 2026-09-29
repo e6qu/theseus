@@ -35,7 +35,7 @@ theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
 theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
 theseus query campaign-dir --preceded-by-event FIELDS [--service NAME] [--format json]
 theseus query campaign-dir --followed-by-event FIELDS [--service NAME] [--format json]
-theseus serve campaign-dir... [--address ADDR]
+theseus serve [campaign-dir... | --index registry.json] [--address ADDR]
 theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
 theseus evaluate lock [theseus-evaluation.toml]
 theseus evaluate capture campaign-dir --output evaluation-dir --name name
@@ -251,6 +251,14 @@ observational evidence and claims no causality.
 ```sh
 theseus serve guidance/unified guidance/coverage --address 127.0.0.1:8098
 ```
+
+`--index registry.json` serves a versioned registry manifest
+(`theseus-serve-registry-v1`) instead of the command-line sources: an
+array of `name` -> `directory` pairs whose directories resolve from the
+registry file's directory, with duplicate names, missing directories, and
+directories retaining no versioned result refused by name. The index page
+labels every served bundle with its kind - campaign, exploration, or
+topology.
 
 A serve argument that names a directory serves every child directory
 retaining a versioned result - campaign, exploration, or topology (sorted
