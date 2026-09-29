@@ -557,23 +557,28 @@ reproducible investigation.
   versioned results; history and compare scope to campaign bundles, and
   history answers the empty shapes when none are served.
 
+- Exploration node routes: `GET /<name>/query/nodes` lists the retained
+  search tree with replay and minimize commands, and
+  `GET /<name>/query/node/<seed-path>` resolves one node.
+
 ## Immediate next work
 
-### 1. Exploration node routes on the serve surface
+### 1. The campaign registry index for serve
 
-Exploration bundles retain a search tree of seed paths; navigating it still
-needs the CLI. The next work serves the tree:
+A hosted deployment curates which bundles it exposes; serve today exposes
+everything named on the command line. The next work adds the registry:
 
-- `GET /<name>/query/nodes` lists the retained search nodes (seed path,
-  markers, dirty-page coverage), and `GET /<name>/query/node/<seed-path>`
-  resolves one node with its replay and minimize commands.
-- Tests: listener fixtures over an exploration bundle asserting the node
-  list, one resolved node, and an unknown seed path.
+- `theseus serve --index registry.json` serves the versioned manifest's
+  named bundles (`name` -> `directory` pairs) instead of the command-line
+  sources, refusing duplicate names and missing directories by name.
+- The index page lists the registry names beside their kinds.
+- Tests: registry fixtures over matched and duplicate/missing entries.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
 history routes, the comparison route, the grammar-locked bounds, serve
-discovery, and bundle-kind coverage landed and are described in the
+discovery, bundle-kind coverage, and the exploration node routes landed
+and are described in the
 verified baseline; the parity analysis tracks the remaining cross-priority
 gaps, including the hosted campaign service and demand-driven coverage
 breadth for JavaScript and .NET.

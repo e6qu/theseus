@@ -257,7 +257,11 @@ retaining a versioned result - campaign, exploration, or topology (sorted
 by name); a directory without bundles, a file argument, or two bundles
 sharing one directory name is refused. Each bundle's `result` route serves
 whichever versioned result it retains, and `report` renders it with the
-same machinery as `theseus report`.
+same machinery as `theseus report`. Exploration bundles answer the search
+tree over HTTP: `GET /<name>/query/nodes` lists every retained node (seed
+path, markers, dirty-page coverage, serial log) with its replay and
+minimize commands, and `GET /<name>/query/node/<seed-path>` resolves one
+node by seed path.
 
 Each campaign answers `GET /<name>/result` and `GET /<name>/plan` with the
 versioned JSON verbatim, `GET /<name>/report` with the rendered markdown
