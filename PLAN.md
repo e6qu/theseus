@@ -532,26 +532,31 @@ reproducible investigation.
   events, needle relations) for named campaigns, refusing every non-GET
   request.
 
+- Moment navigation: `GET /<name>/query/moment/<moment>` resolves one
+  address to its boundary evidence, and `?next`/`?previous` walk the
+  timeline's neighboring moments.
+
 ## Immediate next work
 
-### 1. Moment navigation on the serve surface
+### 1. Cross-campaign history routes on the serve surface
 
-The serve surface lists moments and evaluates needle relations; navigating
-from one moment to its neighbors still needs the CLI. The next work adds
-the navigation routes:
+The serve surface answers one campaign at a time; the cross-run history
+surfaces still need the CLI over several directories. The next work serves
+the same aggregations over the served set:
 
-- `GET /<name>/query/moment/<moment>` returns the resolved moment with the
-  boundary's retained excerpt, and `[?next]`/`[?previous]` walk to the
-  neighboring moments.
-- Unknown moment addresses answer 404 with the same wording the CLI uses.
-- Tests: listener fixtures over a two-boundary timeline resolving forward
-  and backward navigation and an unresolved address.
+- `GET /history/properties[?property=NAME]` and
+  `GET /history/assertions` aggregate the served campaigns' property and
+  assertion evidence into the versioned history shapes.
+- `GET /history/events[?service=NAME]` aggregates every served campaign's
+  indexed guest events.
+- Tests: listener fixtures serving two campaigns and asserting the
+  aggregated shapes and the empty-set answers.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
-feedback, the report surface, and the serve surface landed and are
-described in the verified baseline; the parity analysis tracks the
-remaining cross-priority gaps, including the hosted campaign service and
-demand-driven coverage breadth for JavaScript and .NET.
+feedback, the report surface, the serve surface, and moment navigation
+landed and are described in the verified baseline; the parity analysis
+tracks the remaining cross-priority gaps, including the hosted campaign
+service and demand-driven coverage breadth for JavaScript and .NET.
 
 ## Priority 6: product surface and workload compatibility
 
