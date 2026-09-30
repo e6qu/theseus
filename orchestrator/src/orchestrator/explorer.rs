@@ -165,10 +165,18 @@ pub struct Explorer {
     pub tree: TimelineTree<ExploredNode>,
     /// Actual deterministic search order after applying the novelty policy.
     search_order: Vec<NodeId>,
+    /// Expansion rounds completed so far (the live ledger's round counter).
+    expansions: usize,
+    /// Cumulative dirty-page footprint across captured timelines.
+    dirty_pages_total: u64,
 }
 
 /// Bytes probed from each timeline's entropy device at capture time.
 const ENTROPY_PROBE_LEN: usize = 32;
+
+fn explorer_dirty_pages(payload: &ExploredNode) -> u64 {
+    payload.dirty_pages.unwrap_or(0)
+}
 
 impl Explorer {
     /// Run the loop. `build_root` constructs (but does not boot) the root
@@ -200,13 +208,40 @@ impl Explorer {
             Self::run_and_capture(root_vmm, &config.events, config, root_seed, true)
         })?;
 
+        let root_dirty_pages = explorer_dirty_pages(&root_node);
         let mut explorer = Explorer {
             tree: TimelineTree::new(root_seed, root_node),
             search_order: vec![0],
+            expansions: 0,
+            dirty_pages_total: root_dirty_pages,
         };
         explorer.journal_node(config, 0, 0);
         explorer.expand(0, config, instance_info, seccomp_filters, child_resources)?;
         Ok(explorer)
+    }
+
+    /// Append one bounded resource line per expansion round: captured
+    /// timelines, rounds, and cumulative dirty pages so far. The follower's
+    /// cost curve while the search runs.
+    fn journal_resource_line(&mut self, config: &ExplorerConfig) {
+        let Some(journal) = &config.journal else {
+            return;
+        };
+        self.expansions += 1;
+        let line = format!(
+            "{{\"format\":\"theseus-expansion-ledger-v1\",\"expansions\":{},\"captured\":{},\"dirty_pages_total\":{}}}\n",
+            self.expansions,
+            self.search_order.len(),
+            self.dirty_pages_total
+        );
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(journal)
+        {
+            use std::io::Write as _;
+            let _ = file.write_all(line.as_bytes());
+        }
     }
 
     /// Append one bounded node record to the live journal, in expansion
@@ -294,9 +329,12 @@ impl Explorer {
         let root_node = vmm::detrng::with_stream(&root_rng, || {
             Self::run_and_capture(root_vmm, &config.events, config, root_seed, true)
         })?;
+        let root_dirty_pages = explorer_dirty_pages(&root_node);
         let mut explorer = Explorer {
             tree: TimelineTree::new(root_seed, root_node),
             search_order: vec![0],
+            expansions: 0,
+            dirty_pages_total: root_dirty_pages,
         };
         let mut parent = 0;
 
@@ -578,6 +616,7 @@ impl Explorer {
             let (seed, explored) = result?;
             let markers = explored.markers.clone();
             let dirty_pages = explored.dirty_pages;
+            self.dirty_pages_total += dirty_pages.unwrap_or(0);
             children.push((
                 self.tree.add_child(node, seed, explored),
                 markers,
@@ -611,6 +650,7 @@ impl Explorer {
                 child_resources,
             )?;
         }
+        self.journal_resource_line(config);
         Ok(())
     }
 }
@@ -736,6 +776,34 @@ mod tests {
                 "recorded serial bytes must match {log:?}"
             );
         }
+
+        // One resource line per expansion round, after that round's node
+        // records, with monotonic captured counts: the follower's cost
+        // curve.
+        let ledgers = journal_a
+            .lines()
+            .filter(|line| line.contains("theseus-expansion-ledger-v1"))
+            .collect::<Vec<_>>();
+        assert_eq!(ledgers.len(), 1);
+        let ledger: serde_json::Value = serde_json::from_str(ledgers[0]).unwrap();
+        assert_eq!(ledger["expansions"], 1);
+        assert_eq!(ledger["captured"], 3);
+        let ledger_position = journal_a.find(ledgers[0]).unwrap();
+        let last_node_position = journal_a
+            .rfind(r#""search_index":2"#)
+            .unwrap();
+        assert!(last_node_position < ledger_position);
+        let dirty_total = ledger["dirty_pages_total"].as_u64().unwrap();
+        let recorded: u64 = journal_a
+            .lines()
+            .filter(|line| line.contains("theseus-node-record-v1"))
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["dirty_pages"]
+                    .as_u64()
+                    .unwrap_or(0)
+            })
+            .sum();
+        assert_eq!(dirty_total, recorded);
 
         for id in 0..exp_a.tree.len() as NodeId {
             let node_a = exp_a.tree.node(id);
