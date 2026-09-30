@@ -4149,20 +4149,30 @@ fn execute_campaign(
             } else {
                 Vec::new()
             };
-            eprintln!(
-                "{}",
-                campaign_progress_line(
-                    runs.len(),
-                    run.index,
-                    &run.status,
-                    &run.operations,
-                    &run.faults,
-                    &failed_properties,
-                    checkpoints.reuses as u64,
-                    campaign.guidance.as_str(),
-                    usize::from(campaign.max_runs),
-                )
+            let line = campaign_progress_line(
+                runs.len(),
+                run.index,
+                &run.status,
+                &run.operations,
+                &run.faults,
+                &failed_properties,
+                checkpoints.reuses as u64,
+                campaign.guidance.as_str(),
+                usize::from(campaign.max_runs),
             );
+            eprintln!("{line}");
+            // The same lines land in the bundle as one JSONL journal, so a
+            // CI job or the serve surface can follow the search live
+            // instead of waiting for the final result file.
+            let journal = output.join("progress.jsonl");
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&journal)
+            {
+                use std::io::Write as _;
+                let _ = writeln!(file, "{line}");
+            }
         }
         runs.push(run);
     }
@@ -19547,6 +19557,31 @@ mod tests {
         assert!(line.contains(r#""status":"passed""#));
         assert!(line.contains(r#""guidance":"coverage""#));
         assert!(!line.contains("failed_properties"));
+
+        let directory = std::env::temp_dir().join(format!(
+            "theseus-progress-journal-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let journal = directory.join("progress.jsonl");
+        for line in [campaign_progress_line(1, 0, "passed", &operations, &[], &[], 0, "coverage", 8), campaign_progress_line(2, 1, "failed", &operations, &faults, &["lost_update_is_unreachable"], 3, "unified", 8)] {
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&journal)
+            {
+                use std::io::Write as _;
+                writeln!(file, "{line}").unwrap();
+            }
+        }
+        let retained = std::fs::read_to_string(&journal).unwrap();
+        let lines = retained.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains(r#""completed":1"#));
+        assert!(lines[1].contains(r#""completed":2"#));
+        assert!(lines[1].contains(r#""faults":["backplane:partition@write"]"#));
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]

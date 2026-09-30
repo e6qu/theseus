@@ -574,18 +574,27 @@ reproducible investigation.
   tree lists with extension-implied content types; traversal segments,
   symlinks, and unlisted paths are refused.
 
+- The progress journal: every completed timeline's progress line also
+  lands in the bundle as `progress.jsonl`, and `GET /<name>/progress`
+  serves it, so a CI job or the serve surface follows the search live.
+- The Compose `env_file` directive (single and list forms, locked literal
+  values, `environment` precedence, and refusals) had already landed; the
+  queue was stale and the slice now sits in the verified baseline.
+
 ## Immediate next work
 
-### 1. The Compose env_file directive
+### 1. The live retained-run surface
 
-Services declare environment variables inline today; Compose files also
-source them from files. The next work accepts the directive:
+The progress journal follows completed timelines; the runs themselves are
+only readable at the end. The next work retains each run as it finishes:
 
-- `env_file` entries load `KEY=VALUE` lines and merge into the service
-  environment at plan time, locked with the rest of the plan; a missing
-  file or a line without `=` is rejected by name.
-- Tests: translation fixtures over single and list forms, the merged
-  environment, and the refusals.
+- The journal gains one `runs` sidecar per retained run, or the runner
+  appends a bounded per-run record, so a follower sees operations, faults,
+  and status of every retained timeline while the search continues.
+- `GET /<name>/progress` stays the single live surface; the route serves
+  the journal verbatim and the final result remains the audit record.
+- Tests: runner fixtures over a multi-run campaign asserting the journal
+  order matches retention order.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
