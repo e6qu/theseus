@@ -208,11 +208,12 @@ impl Explorer {
             Self::run_and_capture(root_vmm, &config.events, config, root_seed, true)
         })?;
 
+        let root_dirty_pages = explorer_dirty_pages(&root_node);
         let mut explorer = Explorer {
             tree: TimelineTree::new(root_seed, root_node),
             search_order: vec![0],
             expansions: 0,
-            dirty_pages_total: explorer_dirty_pages(&root_node),
+            dirty_pages_total: root_dirty_pages,
         };
         explorer.journal_node(config, 0, 0);
         explorer.expand(0, config, instance_info, seccomp_filters, child_resources)?;
@@ -328,11 +329,12 @@ impl Explorer {
         let root_node = vmm::detrng::with_stream(&root_rng, || {
             Self::run_and_capture(root_vmm, &config.events, config, root_seed, true)
         })?;
+        let root_dirty_pages = explorer_dirty_pages(&root_node);
         let mut explorer = Explorer {
             tree: TimelineTree::new(root_seed, root_node),
             search_order: vec![0],
             expansions: 0,
-            dirty_pages_total: explorer_dirty_pages(&root_node),
+            dirty_pages_total: root_dirty_pages,
         };
         let mut parent = 0;
 
