@@ -595,19 +595,26 @@ reproducible investigation.
   serial byte count, and the deterministic explorer test asserts the
   counts match the retained logs exactly.
 
+- The expansion ledger: the explorer journals one bounded resource line
+  per expansion round - rounds, captured timelines, and cumulative dirty
+  pages so far - the follower's cost curve while the search runs.
+
 ## Immediate next work
 
-### 1. The KVM dirty-page live ledger
+### 1. The campaign live ledger
 
-Node records carry per-timeline dirty-page counts captured at the
-barrier; the checkpoint economics stay end-of-run. The next work streams
-the resource view:
+Campaign explorations stream per-run and per-round journals; the
+checkpoint cost curve stays end-of-run evidence. The next work streams
+it:
 
-- The explorer journals a bounded resource line per expansion round -
-  captured timelines, retained memory bytes, and COW restore bytes so
-  far - giving a follower the cost curve while the search runs.
-- Tests: the deterministic explorer test asserting the resource lines
-  appear once per round with monotonic captured counts.
+- The campaign runner appends a bounded checkpoint-economics line to the
+  progress journal after each run - checkpoint nodes, reuses, and restore
+  counts so far - so a follower sees the reuse curve while the search
+  continues.
+- `GET /<name>/progress` serves the curve through the unchanged verbatim
+  route; the final result remains the audit record.
+- Tests: runner fixtures asserting the economics lines land in run order
+  with monotonic node counts.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
