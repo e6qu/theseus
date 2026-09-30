@@ -776,9 +776,11 @@ and `compose plan`; it reports a direct missing-runner error for execution.
 
 While `compose explore` runs, the executor writes the same structured
 progress line it prints to stderr into the campaign directory as
-`progress.jsonl`, so a CI job or `theseus serve`'s
-`GET /<name>/progress` route can follow the search live instead of
-waiting for the final result file. The executor also writes one structured
+`progress.jsonl` beside one bounded run record per retained timeline
+(`theseus-run-record-v1`: index, status, operations, faults, and the
+selection reason), so a CI job or `theseus serve`'s
+`GET /<name>/progress` route can follow the search - including every
+retained run - instead of waiting for the final result file. The executor also writes one structured
 progress line per completed timeline to stderr: `theseus-progress-v1` with the
 completed count, run index, status, operations, faults, failed properties,
 checkpoint reuses, and the effective guidance and budget, so CI jobs and

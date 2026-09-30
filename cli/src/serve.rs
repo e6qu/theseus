@@ -861,7 +861,11 @@ mod tests {
             concat!(
                 r#"{"format":"theseus-progress-v1","completed":1,"index":0,"status":"passed"}"#,
                 "\n",
+                r#"{"format":"theseus-run-record-v1","index":0,"status":"passed","operations":["write"],"faults":[],"selection":"first"}"#,
+                "\n",
                 r#"{"format":"theseus-progress-v1","completed":2,"index":1,"status":"failed"}"#,
+                "\n",
+                r#"{"format":"theseus-run-record-v1","index":1,"status":"failed","operations":["read"],"faults":["backplane:partition@read"],"selection":"extends 1-operation prefix"}"#,
                 "\n",
             ),
         )
@@ -1308,7 +1312,8 @@ mod tests {
         assert_eq!(content_type, "text/plain; charset=utf-8");
         assert!(body.contains("\"completed\":1"), "{body}");
         assert!(body.contains("\"status\":\"failed\""), "{body}");
-        assert_eq!(body.lines().count(), 2);
+        assert!(body.contains("theseus-run-record-v1"), "{body}");
+        assert_eq!(body.lines().count(), 4);
 
         let (status, ..) = exchange(
             &address,
