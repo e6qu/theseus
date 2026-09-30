@@ -19635,8 +19635,9 @@ mod tests {
             machine_execution_ledgers: BTreeMap::new(),
             machine_execution_traces: BTreeMap::new(),
             checkpoint_pc_novelty: Vec::new(),
+            state_sha256: String::new(),
             state_novel: false,
-            status: "failed".to_owned(),
+            status: "failed",
             novelty: Vec::new(),
         };
         let record = campaign_run_record_line(&run);
