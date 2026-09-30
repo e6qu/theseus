@@ -160,6 +160,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             &plan,
             (mode == Mode::Snapshot).then_some(&output),
             &serial_logs,
+            (mode == Mode::Explore).then(|| output.join("progress.jsonl")),
         )
     };
     write_plan(&output, &plan)?;
@@ -227,7 +228,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
 /// of failed named properties. This is deterministic and yields a 1-minimal
 /// event sequence, not a globally minimal one.
 fn minimize_events(plan: &mut RunPlan, serial_logs: &Path) -> Result<Execution, String> {
-    let baseline = execute(plan, None, serial_logs)?;
+    let baseline = execute(plan, None, serial_logs, None)?;
     let expected = failed_names(&baseline);
     if expected.is_empty() {
         return Err("minimization requires a property-failing seed path".to_owned());
@@ -243,13 +244,14 @@ fn minimize_events(plan: &mut RunPlan, serial_logs: &Path) -> Result<Execution, 
             .as_mut()
             .expect("exploration plan was executed")
             .events_hex = candidate.to_vec();
-        execute(plan, None, serial_logs).is_ok_and(|execution| failed_names(&execution) == expected)
+        execute(plan, None, serial_logs, None)
+            .is_ok_and(|execution| failed_names(&execution) == expected)
     });
     plan.explore
         .as_mut()
         .expect("exploration plan was executed")
         .events_hex = minimized;
-    execute(plan, None, serial_logs)
+    execute(plan, None, serial_logs, None)
 }
 
 fn failed_names(execution: &Execution) -> Vec<String> {
@@ -286,6 +288,7 @@ fn execute(
     plan: &RunPlan,
     snapshot_output: Option<&Path>,
     serial_logs: &Path,
+    journal: Option<PathBuf>,
 ) -> Result<Execution, String> {
     let explore = plan
         .explore
@@ -311,7 +314,8 @@ fn execute(
     }
     validate_checks(&plan.checks)?;
     let resources = resources_from_plan(plan, Some(serial_log_path(serial_logs, plan.run.seed)))?;
-    let config = explorer_config(plan, explore, Some(serial_logs.to_path_buf()))?;
+    let journal = (explore.replay_seed_path.is_none()).then_some(journal).flatten();
+    let config = explorer_config(plan, explore, Some(serial_logs.to_path_buf()), journal)?;
     let mut event_manager = EventManager::new().map_err(|error| error.to_string())?;
     let filters = get_empty_filters();
     let explorer = if let Some(seed_path) = &explore.replay_seed_path {
@@ -673,6 +677,7 @@ fn explorer_config(
     run_plan: &RunPlan,
     plan: &ExplorePlan,
     serial_log_dir: Option<PathBuf>,
+    journal: Option<PathBuf>,
 ) -> Result<ExplorerConfig, String> {
     let events = plan
         .events_hex
@@ -698,6 +703,7 @@ fn explorer_config(
             Novelty::Markers => NoveltyStrategy::Markers,
             Novelty::Coverage => NoveltyStrategy::DirtyPages,
         },
+        journal,
         serial_log_dir,
     })
 }

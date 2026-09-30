@@ -117,6 +117,10 @@ pub struct ExplorerConfig {
     /// Directory where each timeline writes its serial console output. Files
     /// are named after the timeline seed so sibling logs never share a sink.
     pub serial_log_dir: Option<PathBuf>,
+    /// Optional live journal: one bounded node record per completed
+    /// timeline, appended in expansion order so a follower can watch the
+    /// search without waiting for the result file.
+    pub journal: Option<PathBuf>,
 }
 
 impl ExplorerConfig {
@@ -200,8 +204,49 @@ impl Explorer {
             tree: TimelineTree::new(root_seed, root_node),
             search_order: vec![0],
         };
+        explorer.journal_node(config, 0, 0);
         explorer.expand(0, config, instance_info, seccomp_filters, child_resources)?;
         Ok(explorer)
+    }
+
+    /// Append one bounded node record to the live journal, in expansion
+    /// order. Journaling is best-effort evidence: a write failure never
+    /// fails the search, and the result file remains the audit record.
+    fn journal_node(&self, config: &ExplorerConfig, search_index: usize, node_id: NodeId) {
+        let Some(journal) = &config.journal else {
+            return;
+        };
+        let node = self.tree.node(node_id);
+        let Some(payload) = node.payload.as_ref() else {
+            return;
+        };
+        let seed_path = self.tree.seed_path(node_id);
+        let path_text = seed_path
+            .iter()
+            .map(|seed| seed.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let markers = payload
+            .markers
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let dirty_pages = payload
+            .dirty_pages
+            .map(|pages| pages.to_string())
+            .unwrap_or_else(|| "null".to_owned());
+        let line = format!(
+            "{{\"format\":\"theseus-node-record-v1\",\"search_index\":{search_index},\"seed\":{},\"seed_path\":[{path_text}],\"markers_hex\":\"{markers}\",\"dirty_pages\":{dirty_pages}}}\n",
+            node.seed
+        );
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(journal)
+        {
+            use std::io::Write as _;
+            let _ = file.write_all(line.as_bytes());
+        }
     }
 
     /// Replay exactly one recorded root-to-node seed path. This re-executes
@@ -556,6 +601,7 @@ impl Explorer {
 
         for (child_id, _, _) in children {
             self.search_order.push(child_id);
+            self.journal_node(config, self.search_order.len() - 1, child_id);
             self.expand(
                 child_id,
                 config,
@@ -602,9 +648,16 @@ mod tests {
 
     /// The live loop, twice: same config must produce the same tree — same
     /// shape, same seeds, same entropy probes, same dirty-page footprints at
-    /// every node. Requires KVM.
+    /// every node, and identical live journals. Requires KVM.
     #[test]
     fn test_explore_is_deterministic() {
+        let journal_dir = std::env::temp_dir().join(format!(
+            "theseus-explorer-journal-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&journal_dir);
+        std::fs::create_dir_all(&journal_dir).unwrap();
+        let journal = journal_dir.join("progress.jsonl");
         let config = ExplorerConfig {
             events: vec![0x01, 0x02, 0x03],
             serial_events: Vec::new(),
@@ -617,10 +670,12 @@ mod tests {
             max_nodes: 3,
             novelty: NoveltyStrategy::Markers,
             serial_log_dir: None,
+            journal: Some(journal.clone()),
         };
         let seccomp_filters = get_empty_filters();
 
         let run = || {
+            let _ = std::fs::remove_file(&journal);
             let mut root_evmgr = EventManager::new().unwrap();
             Explorer::explore(
                 42,
@@ -642,7 +697,9 @@ mod tests {
         };
 
         let exp_a = run();
+        let journal_a = std::fs::read_to_string(&journal).unwrap();
         let exp_b = run();
+        let journal_b = std::fs::read_to_string(&journal).unwrap();
 
         // Same shape: root + 2 children, same exploration order.
         assert_eq!(exp_a.tree.len(), 3);
@@ -651,6 +708,17 @@ mod tests {
             exp_a.tree.exploration_order(),
             exp_b.tree.exploration_order()
         );
+
+        // The live journals are identical too: one record per captured
+        // timeline, in expansion order, byte-for-byte across runs.
+        let lines = journal_a.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].contains(r#""search_index":0"#));
+        assert!(lines[0].contains(r#""seed":42"#));
+        assert!(lines[0].contains("theseus-node-record-v1"));
+        assert!(lines[1].contains(r#""search_index":1"#));
+        assert!(lines[2].contains(r#""search_index":2"#));
+        assert_eq!(journal_a, journal_b);
 
         for id in 0..exp_a.tree.len() as NodeId {
             let node_a = exp_a.tree.node(id);
@@ -730,6 +798,7 @@ mod tests {
             max_nodes: 3,
             novelty: NoveltyStrategy::Markers,
             serial_log_dir: None,
+            journal: None,
         };
         let seccomp_filters = get_empty_filters();
 
@@ -836,6 +905,7 @@ mod tests {
             max_nodes: 3,
             novelty: NoveltyStrategy::Markers,
             serial_log_dir: None,
+            journal: None,
         };
         let seccomp_filters = get_empty_filters();
 

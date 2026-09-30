@@ -586,19 +586,24 @@ reproducible investigation.
   faults, and the selection reason - and `GET /<name>/progress` stays the
   single live surface over the journal.
 
+- The exploration live journal: the explorer appends one bounded
+  `theseus-node-record-v1` per captured timeline in expansion order, and
+  `GET /<name>/progress` follows an exploration live; the deterministic
+  explorer test asserts the journals are byte-identical across runs.
+
 ## Immediate next work
 
-### 1. The exploration live journal
+### 1. The explorer live serial tails
 
-Campaign explorations stream per-run journals; single-timeline
-explorations (`theseus explore`) still write their search tree only at
-the end. The next work streams the tree:
+The node journal records markers and dirty pages per timeline; the serial
+logs land as files at capture time already. The next work exposes the
+streaming text:
 
-- The explorer appends one bounded node record to the bundle's
-  `progress.jsonl` as each node completes, so the serve surface's live
-  route follows an exploration too.
-- Tests: an exploration fixture asserting the node records land in
-  completion order while the result stays authoritative.
+- `GET /<name>/serial/<seed>.log` already serves completed logs through
+  the retained-file route; add the node record's serial byte count, so a
+  follower can tell truncated from complete logs while the search runs.
+- Tests: explorer fixtures asserting the recorded byte counts match the
+  retained log sizes.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
