@@ -566,19 +566,23 @@ reproducible investigation.
   duplicates, missing directories, and result-less directories are refused
   by name.
 
+- The bundle tree route: `GET /<name>/tree` answers the versioned
+  `theseus-bundle-tree-v1` listing - every retained file, relative path
+  and byte size, sorted - so retained artifacts are discoverable.
+
 ## Immediate next work
 
-### 1. The bundle tree route on the serve surface
+### 1. The retained-file route on the serve surface
 
-Serial routes need exact log paths today; a browser cannot discover what a
-bundle retains. The next work serves the listing:
+The tree listing names every retained file; fetching one still needs the
+result/plan/serial special cases. The next work generalizes them:
 
-- `GET /<name>/tree` answers a versioned `theseus-bundle-tree-v1` listing:
-  every retained file under the bundle root, relative path and byte size,
-  sorted, so the serial logs and artifacts the evidence references are
-  reachable without knowing their names.
-- Tests: a listener fixture asserting the listing's paths, sizes, and
-  ordering.
+- `GET /<name>/file/<path>` serves any file the tree lists, with the
+  content type implied by the extension (JSON as `application/json`,
+  everything else as `text/plain`), refusing paths outside the bundle and
+  paths the tree does not list.
+- Tests: a listener fixture fetching a serial log and a result by generic
+  path, and traversal and unlisted-file refusals.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the

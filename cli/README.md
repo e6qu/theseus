@@ -269,7 +269,10 @@ same machinery as `theseus report`. Exploration bundles answer the search
 tree over HTTP: `GET /<name>/query/nodes` lists every retained node (seed
 path, markers, dirty-page coverage, serial log) with its replay and
 minimize commands, and `GET /<name>/query/node/<seed-path>` resolves one
-node by seed path.
+node by seed path. `GET /<name>/tree` answers a versioned
+`theseus-bundle-tree-v1` listing of every retained file - relative path
+and byte size, sorted - so the serial logs and artifacts the evidence
+references are discoverable without knowing their names.
 
 Each campaign answers `GET /<name>/result` and `GET /<name>/plan` with the
 versioned JSON verbatim, `GET /<name>/report` with the rendered markdown
