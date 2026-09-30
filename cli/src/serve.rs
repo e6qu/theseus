@@ -886,6 +886,16 @@ mod tests {
             r#"{"format":"theseus-result-v1","status":"passed","checks":[],"nodes":[{"search_index":1,"id":2,"parent":null,"depth":1,"seed":7,"seed_path":[1],"entropy_probe_hex":"aa","markers_hex":"ff","dirty_pages":2,"serial_log":"serial/1.log"},{"search_index":2,"id":3,"parent":2,"depth":2,"seed":8,"seed_path":[1,2],"entropy_probe_hex":"bb","markers_hex":"90ff","dirty_pages":3}]}"#,
         )
         .unwrap();
+        fs::write(
+            bundle.join("progress.jsonl"),
+            concat!(
+                r#"{"format":"theseus-node-record-v1","search_index":0,"seed":7,"seed_path":[7],"markers_hex":"ff","dirty_pages":2}"#,
+                "\n",
+                r#"{"format":"theseus-node-record-v1","search_index":1,"seed":8,"seed_path":[7,8],"markers_hex":"90ff","dirty_pages":3}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
         fs::write(bundle.join("serial").join("1.log"), b"ready\n").unwrap();
         bundle
     }
@@ -1315,11 +1325,15 @@ mod tests {
         assert!(body.contains("theseus-run-record-v1"), "{body}");
         assert_eq!(body.lines().count(), 4);
 
-        let (status, ..) = exchange(
+        let (status, content_type, body) = exchange(
             &address,
             "GET /exploration/progress HTTP/1.1\r\nHost: x\r\n\r\n",
         );
-        assert_eq!(status, 404);
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "text/plain; charset=utf-8");
+        assert!(body.contains("theseus-node-record-v1"), "{body}");
+        assert!(body.contains("\"seed_path\":[7,8]"), "{body}");
+        assert_eq!(body.lines().count(), 2);
 
         running.store(false, Ordering::SeqCst);
         server.join().unwrap();

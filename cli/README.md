@@ -780,7 +780,10 @@ progress line it prints to stderr into the campaign directory as
 (`theseus-run-record-v1`: index, status, operations, faults, and the
 selection reason), so a CI job or `theseus serve`'s
 `GET /<name>/progress` route can follow the search - including every
-retained run - instead of waiting for the final result file. The executor also writes one structured
+retained run - instead of waiting for the final result file. Explorations
+journal too: the explorer appends one bounded `theseus-node-record-v1`
+per captured timeline (seed, seed path, markers, dirty pages) in
+expansion order, and the same route follows an exploration live. The executor also writes one structured
 progress line per completed timeline to stderr: `theseus-progress-v1` with the
 completed count, run index, status, operations, faults, failed properties,
 checkpoint reuses, and the effective guidance and budget, so CI jobs and
