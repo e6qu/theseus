@@ -889,9 +889,9 @@ mod tests {
         fs::write(
             bundle.join("progress.jsonl"),
             concat!(
-                r#"{"format":"theseus-node-record-v1","search_index":0,"seed":7,"seed_path":[7],"markers_hex":"ff","dirty_pages":2}"#,
+                r#"{"format":"theseus-node-record-v1","search_index":0,"seed":7,"seed_path":[7],"markers_hex":"ff","dirty_pages":2,"serial_bytes":6}"#,
                 "\n",
-                r#"{"format":"theseus-node-record-v1","search_index":1,"seed":8,"seed_path":[7,8],"markers_hex":"90ff","dirty_pages":3}"#,
+                r#"{"format":"theseus-node-record-v1","search_index":1,"seed":8,"seed_path":[7,8],"markers_hex":"90ff","dirty_pages":3,"serial_bytes":6}"#,
                 "\n",
             ),
         )
@@ -1333,6 +1333,7 @@ mod tests {
         assert_eq!(content_type, "text/plain; charset=utf-8");
         assert!(body.contains("theseus-node-record-v1"), "{body}");
         assert!(body.contains("\"seed_path\":[7,8]"), "{body}");
+        assert!(body.contains("\"serial_bytes\":6"), "{body}");
         assert_eq!(body.lines().count(), 2);
 
         running.store(false, Ordering::SeqCst);
