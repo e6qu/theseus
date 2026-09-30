@@ -3698,6 +3698,29 @@ fn certification_evidence_sha256(
 /// Execute an autonomous campaign from one reusable, whole-topology branch
 /// point. Each child restores every VM, simulated NIC/switch, UART transcript,
 /// and scheduler cursor before its own operation history is injected.
+/// One bounded per-run record appended to the progress journal, so a
+/// follower sees the operations, faults, and status of every retained
+/// timeline while the search continues. The final result file remains the
+/// complete audit record.
+fn campaign_run_record_line(run: &CampaignRun) -> String {
+    format!(
+        "{{\"format\":\"theseus-run-record-v1\",\"index\":{},\"status\":\"{}\",\"operations\":[{}],\"faults\":[{}],\"selection\":\"{}\"}}",
+        run.index,
+        run.status,
+        run.operations
+            .iter()
+            .map(|operation| format!("\"{operation}\""))
+            .collect::<Vec<_>>()
+            .join(","),
+        run.faults
+            .iter()
+            .map(|fault| format!("\"{fault}\""))
+            .collect::<Vec<_>>()
+            .join(","),
+        run.selection.replace('\\', "\\\\").replace('"', "\\\"")
+    )
+}
+
 /// One structured live-progress line for a completed campaign timeline.
 /// Written to stderr while the exploration runs, so CI and wrappers can
 /// follow the search without parsing the final result file.
@@ -4172,6 +4195,7 @@ fn execute_campaign(
             {
                 use std::io::Write as _;
                 let _ = writeln!(file, "{line}");
+                let _ = writeln!(file, "{}", campaign_run_record_line(&run));
             }
         }
         runs.push(run);
@@ -19581,6 +19605,57 @@ mod tests {
         assert!(lines[0].contains(r#""completed":1"#));
         assert!(lines[1].contains(r#""completed":2"#));
         assert!(lines[1].contains(r#""faults":["backplane:partition@write"]"#));
+
+        // A per-run record follows its progress line, so a follower sees
+        // every retained timeline's operations, faults, and status live.
+        let run = CampaignRun {
+            index: 3,
+            test_template: None,
+            operations: vec!["write".to_owned(), "read".to_owned()],
+            decision_trace: Vec::new(),
+            thread_schedule_prefixes: Vec::new(),
+            fault: None,
+            faults: vec!["backplane:partition@write".to_owned()],
+            actions: Vec::new(),
+            selection: "extends \"1-operation\" prefix".to_owned(),
+            guidance_ledger: CampaignGuidanceLedger::default(),
+            guidance_evidence: None,
+            property_witnesses: Vec::new(),
+            timeline: Vec::new(),
+            program_counters: BTreeMap::new(),
+            instruction_locations: BTreeMap::new(),
+            instruction_novelty: Vec::new(),
+            application_blocks: BTreeMap::new(),
+            application_block_novelty: Vec::new(),
+            thread_scheduling: BTreeMap::new(),
+            thread_synchronization: BTreeMap::new(),
+            structured_choices: BTreeMap::new(),
+            choice_feedback: None,
+            execution_ledgers: BTreeMap::new(),
+            machine_execution_ledgers: BTreeMap::new(),
+            machine_execution_traces: BTreeMap::new(),
+            checkpoint_pc_novelty: Vec::new(),
+            state_sha256: String::new(),
+            state_novel: false,
+            status: "failed",
+            novelty: Vec::new(),
+        };
+        let record = campaign_run_record_line(&run);
+        assert_eq!(
+            record,
+            r#"{"format":"theseus-run-record-v1","index":3,"status":"failed","operations":["write","read"],"faults":["backplane:partition@write"],"selection":"extends \"1-operation\" prefix"}"#
+        );
+        let journal_run = directory.join("runs.jsonl");
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&journal_run)
+        {
+            use std::io::Write as _;
+            writeln!(file, "{record}").unwrap();
+        }
+        let retained = std::fs::read_to_string(&journal_run).unwrap();
+        assert!(retained.contains(r#""theseus-run-record-v1""#));
         let _ = std::fs::remove_dir_all(&directory);
     }
 

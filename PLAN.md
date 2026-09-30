@@ -581,20 +581,24 @@ reproducible investigation.
   values, `environment` precedence, and refusals) had already landed; the
   queue was stale and the slice now sits in the verified baseline.
 
+- The live retained-run surface: the progress journal appends one bounded
+  `theseus-run-record-v1` per retained run - index, status, operations,
+  faults, and the selection reason - and `GET /<name>/progress` stays the
+  single live surface over the journal.
+
 ## Immediate next work
 
-### 1. The live retained-run surface
+### 1. The exploration live journal
 
-The progress journal follows completed timelines; the runs themselves are
-only readable at the end. The next work retains each run as it finishes:
+Campaign explorations stream per-run journals; single-timeline
+explorations (`theseus explore`) still write their search tree only at
+the end. The next work streams the tree:
 
-- The journal gains one `runs` sidecar per retained run, or the runner
-  appends a bounded per-run record, so a follower sees operations, faults,
-  and status of every retained timeline while the search continues.
-- `GET /<name>/progress` stays the single live surface; the route serves
-  the journal verbatim and the final result remains the audit record.
-- Tests: runner fixtures over a multi-run campaign asserting the journal
-  order matches retention order.
+- The explorer appends one bounded node record to the bundle's
+  `progress.jsonl` as each node completes, so the serve surface's live
+  route follows an exploration too.
+- Tests: an exploration fixture asserting the node records land in
+  completion order while the result stays authoritative.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
