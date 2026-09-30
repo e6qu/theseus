@@ -279,6 +279,12 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
     if rest == "tree" {
         return route_tree(campaign);
     }
+    if rest == "progress" {
+        return read_file(
+            &campaign.root.join("progress.jsonl"),
+            "text/plain; charset=utf-8",
+        );
+    }
     if let Some(relative) = rest.strip_prefix("file/") {
         return route_file(campaign, relative);
     }
@@ -850,6 +856,16 @@ mod tests {
             .replace("CANDIDATES", &candidates.to_string());
         fs::write(bundle.join("campaign-result.json"), result).unwrap();
         fs::write(bundle.join("serial").join("1.log"), b"ready\n").unwrap();
+        fs::write(
+            bundle.join("progress.jsonl"),
+            concat!(
+                r#"{"format":"theseus-progress-v1","completed":1,"index":0,"status":"passed"}"#,
+                "\n",
+                r#"{"format":"theseus-progress-v1","completed":2,"index":1,"status":"failed"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
         bundle
     }
 
@@ -1281,6 +1297,22 @@ mod tests {
         let (status, ..) = exchange(
             &address,
             "GET /campaign/file/nope.txt HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 404);
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /campaign/progress HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "text/plain; charset=utf-8");
+        assert!(body.contains("\"completed\":1"), "{body}");
+        assert!(body.contains("\"status\":\"failed\""), "{body}");
+        assert_eq!(body.lines().count(), 2);
+
+        let (status, ..) = exchange(
+            &address,
+            "GET /exploration/progress HTTP/1.1\r\nHost: x\r\n\r\n",
         );
         assert_eq!(status, 404);
 

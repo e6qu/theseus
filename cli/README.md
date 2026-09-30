@@ -774,8 +774,12 @@ campaign run directories can share a checkpoint and are not standalone exports.
 `compose test` needs Linux and KVM. macOS keeps supporting `compose validate`
 and `compose plan`; it reports a direct missing-runner error for execution.
 
-While `compose explore` runs, the executor writes one structured progress
-line per completed timeline to stderr: `theseus-progress-v1` with the
+While `compose explore` runs, the executor writes the same structured
+progress line it prints to stderr into the campaign directory as
+`progress.jsonl`, so a CI job or `theseus serve`'s
+`GET /<name>/progress` route can follow the search live instead of
+waiting for the final result file. The executor also writes one structured
+progress line per completed timeline to stderr: `theseus-progress-v1` with the
 completed count, run index, status, operations, faults, failed properties,
 checkpoint reuses, and the effective guidance and budget, so CI jobs and
 wrappers can follow the search live and attribute it to the comparison arm
