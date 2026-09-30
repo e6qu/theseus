@@ -273,6 +273,10 @@ node by seed path. `GET /<name>/tree` answers a versioned
 `theseus-bundle-tree-v1` listing of every retained file - relative path
 and byte size, sorted - so the serial logs and artifacts the evidence
 references are discoverable without knowing their names.
+`GET /<name>/file/<path>` serves any file the tree lists, with the
+content type implied by the extension (JSON as `application/json`,
+everything else as `text/plain`); traversal segments, symlinks, and
+unlisted paths are refused.
 
 Each campaign answers `GET /<name>/result` and `GET /<name>/plan` with the
 versioned JSON verbatim, `GET /<name>/report` with the rendered markdown

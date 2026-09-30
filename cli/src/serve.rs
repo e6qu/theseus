@@ -279,7 +279,35 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
     if rest == "tree" {
         return route_tree(campaign);
     }
+    if let Some(relative) = rest.strip_prefix("file/") {
+        return route_file(campaign, relative);
+    }
     not_found()
+}
+
+/// The retained-file route: any file the tree lists, with the content type
+/// implied by the extension. Symlinks are refused like the tree skips
+/// them, and path segments cannot escape the bundle.
+fn route_file(campaign: &ServedCampaign, relative: &str) -> (u16, &'static str, Vec<u8>) {
+    if relative
+        .split('/')
+        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return not_found();
+    }
+    let path = campaign.root.join(relative);
+    let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+        return not_found();
+    };
+    if metadata.is_symlink() || !metadata.is_file() {
+        return not_found();
+    }
+    let content_type = if relative.ends_with(".json") {
+        "application/json"
+    } else {
+        "text/plain; charset=utf-8"
+    };
+    read_file(&path, content_type)
 }
 
 /// The bundle tree route: every retained file, relative path and byte
@@ -1224,6 +1252,37 @@ mod tests {
         assert_eq!(content_type, "application/json");
         assert!(body.contains("explore-plan.json"), "{body}");
         assert!(body.contains("serial/1.log"), "{body}");
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /campaign/file/serial/1.log HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "text/plain; charset=utf-8");
+        assert_eq!(body, "ready\n");
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /campaign/file/campaign-result.json HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert!(
+            body.contains("theseus-compose-campaign-result-v1"),
+            "{body}"
+        );
+
+        let (status, ..) = exchange(
+            &address,
+            "GET /campaign/file/serial/../campaign-result.json HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 404);
+
+        let (status, ..) = exchange(
+            &address,
+            "GET /campaign/file/nope.txt HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 404);
 
         running.store(false, Ordering::SeqCst);
         server.join().unwrap();

@@ -570,19 +570,22 @@ reproducible investigation.
   `theseus-bundle-tree-v1` listing - every retained file, relative path
   and byte size, sorted - so retained artifacts are discoverable.
 
+- The retained-file route: `GET /<name>/file/<path>` serves any file the
+  tree lists with extension-implied content types; traversal segments,
+  symlinks, and unlisted paths are refused.
+
 ## Immediate next work
 
-### 1. The retained-file route on the serve surface
+### 1. The Compose env_file directive
 
-The tree listing names every retained file; fetching one still needs the
-result/plan/serial special cases. The next work generalizes them:
+Services declare environment variables inline today; Compose files also
+source them from files. The next work accepts the directive:
 
-- `GET /<name>/file/<path>` serves any file the tree lists, with the
-  content type implied by the extension (JSON as `application/json`,
-  everything else as `text/plain`), refusing paths outside the bundle and
-  paths the tree does not list.
-- Tests: a listener fixture fetching a serial log and a result by generic
-  path, and traversal and unlisted-file refusals.
+- `env_file` entries load `KEY=VALUE` lines and merge into the service
+  environment at plan time, locked with the rest of the plan; a missing
+  file or a line without `=` is rejected by name.
+- Tests: translation fixtures over single and list forms, the merged
+  environment, and the refusals.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
