@@ -4,7 +4,7 @@ Each directory is complete: make it your working directory and use the
 published Theseus artifact named in its README. No tutorial needs a Theseus
 source checkout.
 
-Tutorials 1–8, 10–11, and 14–42 need Linux with KVM and Docker. Tutorials 9,
+Tutorials 1–8, 10–11, and 14–43 need Linux with KVM and Docker. Tutorials 9,
 12, and 13 read recorded bundles with only the published binary. Tutorials 1
 and 2 currently use the arm64 runtime, because that is where the matching
 deterministic-CRNG kernel module is shipped.
@@ -109,6 +109,10 @@ deterministic-CRNG kernel module is shipped.
 42. [Replay from a ready checkpoint](42-replay-from-ready/) — boot an RNG-backed
     guest once, retain its state, and replay serial and standard random-device
     reads from that same checkpoint without claiming deterministic kernel boot.
+
+43. [Serve a campaign registry over HTTP](43-serve-campaign-registry/) — explore
+    one workload under two guidance modes, name both campaigns in a versioned
+    registry, and walk the evidence over one local read-only HTTP surface.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),

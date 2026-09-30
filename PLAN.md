@@ -604,18 +604,24 @@ reproducible investigation.
   and restores, retained memory bytes - and `GET /<name>/progress` serves
   the reuse curve through the unchanged route.
 
+- The hosted campaign registry tutorial: tutorial 43 explores one
+  workload under two guidance modes, names both campaigns in a versioned
+  registry, and walks the evidence over the local read-only HTTP surface.
+
 ## Immediate next work
 
-### 1. The hosted campaign registry tutorial
+### 1. The served-registry smoke script
 
-The serve surface, registry, live journals, and query routes are
-documented as references; no walkthrough shows them together. The next
-work adds the tutorial:
+Tutorial 43 walks the serve surface by hand; CI never exercises the
+registry file against a real server. The next work locks the walkthrough:
 
-- A tutorial that explores one workload, writes a serve registry, and
-  walks the evidence over HTTP - index, result, report, progress, query,
-  and comparison routes - with recorded responses in the tutorial README.
-- Tests: the tutorial doc checks cover the new walkthrough's files.
+- A scripts/tests smoke script that writes a registry over recorded
+  fixtures, starts `theseus serve --index` on an ephemeral port, curls
+  every documented route, and fails on any status other than the
+  documented one.
+- The CI check-and-test job runs it beside the documentation checks.
+- Tests: the script itself is the test; the doc checks cover its README
+  mention.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
