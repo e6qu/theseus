@@ -867,6 +867,8 @@ mod tests {
                 "\n",
                 r#"{"format":"theseus-run-record-v1","index":1,"status":"failed","operations":["read"],"faults":["backplane:partition@read"],"selection":"extends 1-operation prefix"}"#,
                 "\n",
+                r#"{"format":"theseus-checkpoint-ledger-v1","nodes":4,"reuses":3,"prefix_captures":2,"prefix_restores":1,"retained_memory_bytes":1048576}"#,
+                "\n",
             ),
         )
         .unwrap();
@@ -1323,7 +1325,8 @@ mod tests {
         assert!(body.contains("\"completed\":1"), "{body}");
         assert!(body.contains("\"status\":\"failed\""), "{body}");
         assert!(body.contains("theseus-run-record-v1"), "{body}");
-        assert_eq!(body.lines().count(), 4);
+        assert!(body.contains("theseus-checkpoint-ledger-v1"), "{body}");
+        assert_eq!(body.lines().count(), 5);
 
         let (status, content_type, body) = exchange(
             &address,
