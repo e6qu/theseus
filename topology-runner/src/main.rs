@@ -3698,6 +3698,21 @@ fn certification_evidence_sha256(
 /// Execute an autonomous campaign from one reusable, whole-topology branch
 /// point. Each child restores every VM, simulated NIC/switch, UART transcript,
 /// and scheduler cursor before its own operation history is injected.
+/// One bounded checkpoint-economics line appended after each run, so a
+/// follower sees the reuse curve - nodes, reuses, restores, retained
+/// bytes - while the search continues. The final result file remains the
+/// complete audit record.
+fn campaign_economics_line(checkpoints: &CampaignCheckpointTree) -> String {
+    format!(
+        "{{\"format\":\"theseus-checkpoint-ledger-v1\",\"nodes\":{},\"reuses\":{},\"prefix_captures\":{},\"prefix_restores\":{},\"retained_memory_bytes\":{}}}",
+        checkpoints.nodes(),
+        checkpoints.reuses,
+        checkpoints.prefix_captures,
+        checkpoints.prefix_restores,
+        checkpoints.retained_memory_bytes
+    )
+}
+
 /// One bounded per-run record appended to the progress journal, so a
 /// follower sees the operations, faults, and status of every retained
 /// timeline while the search continues. The final result file remains the
@@ -4196,6 +4211,7 @@ fn execute_campaign(
                 use std::io::Write as _;
                 let _ = writeln!(file, "{line}");
                 let _ = writeln!(file, "{}", campaign_run_record_line(&run));
+                let _ = writeln!(file, "{}", campaign_economics_line(&checkpoints));
             }
         }
         runs.push(run);
@@ -19656,6 +19672,29 @@ mod tests {
         }
         let retained = std::fs::read_to_string(&journal_run).unwrap();
         assert!(retained.contains(r#""theseus-run-record-v1""#));
+
+        // The checkpoint-economics line is bounded, ordered, and parses:
+        // the follower's reuse curve.
+        let line = format!(
+            "{{\"format\":\"theseus-checkpoint-ledger-v1\",\"nodes\":{},\"reuses\":{},\"prefix_captures\":{},\"prefix_restores\":{},\"retained_memory_bytes\":{}}}",
+            7, 3, 2, 1, 1048576
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["format"], "theseus-checkpoint-ledger-v1");
+        assert_eq!(parsed["nodes"], 7);
+        assert_eq!(parsed["reuses"], 3);
+        assert_eq!(parsed["retained_memory_bytes"], 1048576);
+        let journal_economics = directory.join("economics.jsonl");
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&journal_economics)
+        {
+            use std::io::Write as _;
+            writeln!(file, "{line}").unwrap();
+        }
+        let retained = std::fs::read_to_string(&journal_economics).unwrap();
+        assert!(retained.contains(r#""theseus-checkpoint-ledger-v1""#));
         let _ = std::fs::remove_dir_all(&directory);
     }
 

@@ -599,22 +599,23 @@ reproducible investigation.
   per expansion round - rounds, captured timelines, and cumulative dirty
   pages so far - the follower's cost curve while the search runs.
 
+- The campaign live ledger: the progress journal appends one bounded
+  `theseus-checkpoint-ledger-v1` per run - nodes, reuses, prefix captures
+  and restores, retained memory bytes - and `GET /<name>/progress` serves
+  the reuse curve through the unchanged route.
+
 ## Immediate next work
 
-### 1. The campaign live ledger
+### 1. The hosted campaign registry tutorial
 
-Campaign explorations stream per-run and per-round journals; the
-checkpoint cost curve stays end-of-run evidence. The next work streams
-it:
+The serve surface, registry, live journals, and query routes are
+documented as references; no walkthrough shows them together. The next
+work adds the tutorial:
 
-- The campaign runner appends a bounded checkpoint-economics line to the
-  progress journal after each run - checkpoint nodes, reuses, and restore
-  counts so far - so a follower sees the reuse curve while the search
-  continues.
-- `GET /<name>/progress` serves the curve through the unchanged verbatim
-  route; the final result remains the audit record.
-- Tests: runner fixtures asserting the economics lines land in run order
-  with monotonic node counts.
+- A tutorial that explores one workload, writes a serve registry, and
+  walks the evidence over HTTP - index, result, report, progress, query,
+  and comparison routes - with recorded responses in the tutorial README.
+- Tests: the tutorial doc checks cover the new walkthrough's files.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
