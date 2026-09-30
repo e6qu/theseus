@@ -591,19 +591,23 @@ reproducible investigation.
   `GET /<name>/progress` follows an exploration live; the deterministic
   explorer test asserts the journals are byte-identical across runs.
 
+- The explorer live serial tails: each node record carries the captured
+  serial byte count, and the deterministic explorer test asserts the
+  counts match the retained logs exactly.
+
 ## Immediate next work
 
-### 1. The explorer live serial tails
+### 1. The KVM dirty-page live ledger
 
-The node journal records markers and dirty pages per timeline; the serial
-logs land as files at capture time already. The next work exposes the
-streaming text:
+Node records carry per-timeline dirty-page counts captured at the
+barrier; the checkpoint economics stay end-of-run. The next work streams
+the resource view:
 
-- `GET /<name>/serial/<seed>.log` already serves completed logs through
-  the retained-file route; add the node record's serial byte count, so a
-  follower can tell truncated from complete logs while the search runs.
-- Tests: explorer fixtures asserting the recorded byte counts match the
-  retained log sizes.
+- The explorer journals a bounded resource line per expansion round -
+  captured timelines, retained memory bytes, and COW restore bytes so
+  far - giving a follower the cost curve while the search runs.
+- Tests: the deterministic explorer test asserting the resource lines
+  appear once per round with monotonic captured counts.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the

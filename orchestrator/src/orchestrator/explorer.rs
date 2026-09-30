@@ -235,8 +235,9 @@ impl Explorer {
             .dirty_pages
             .map(|pages| pages.to_string())
             .unwrap_or_else(|| "null".to_owned());
+        let serial_bytes = payload.serial_log.len();
         let line = format!(
-            "{{\"format\":\"theseus-node-record-v1\",\"search_index\":{search_index},\"seed\":{},\"seed_path\":[{path_text}],\"markers_hex\":\"{markers}\",\"dirty_pages\":{dirty_pages}}}\n",
+            "{{\"format\":\"theseus-node-record-v1\",\"search_index\":{search_index},\"seed\":{},\"seed_path\":[{path_text}],\"markers_hex\":\"{markers}\",\"dirty_pages\":{dirty_pages},\"serial_bytes\":{serial_bytes}}}\n",
             node.seed
         );
         if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -669,7 +670,7 @@ mod tests {
             max_depth: 1,
             max_nodes: 3,
             novelty: NoveltyStrategy::Markers,
-            serial_log_dir: None,
+            serial_log_dir: Some(journal_dir.join("serial")),
             journal: Some(journal.clone()),
         };
         let seccomp_filters = get_empty_filters();
@@ -710,7 +711,10 @@ mod tests {
         );
 
         // The live journals are identical too: one record per captured
-        // timeline, in expansion order, byte-for-byte across runs.
+        // timeline, in expansion order, byte-for-byte across runs. Each
+        // record's serial byte count matches the retained log exactly, so
+        // a follower can tell truncated from complete logs while the
+        // search runs.
         let lines = journal_a.lines().collect::<Vec<_>>();
         assert_eq!(lines.len(), 3);
         assert!(lines[0].contains(r#""search_index":0"#));
@@ -719,6 +723,19 @@ mod tests {
         assert!(lines[1].contains(r#""search_index":1"#));
         assert!(lines[2].contains(r#""search_index":2"#));
         assert_eq!(journal_a, journal_b);
+        for line in &lines {
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            let seed = record["seed"].as_u64().unwrap();
+            let serial_bytes = record["serial_bytes"].as_u64().unwrap();
+            let log = journal_dir
+                .join("serial")
+                .join(format!("{seed}.log"));
+            assert_eq!(
+                std::fs::metadata(&log).unwrap().len(),
+                serial_bytes,
+                "recorded serial bytes must match {log:?}"
+            );
+        }
 
         for id in 0..exp_a.tree.len() as NodeId {
             let node_a = exp_a.tree.node(id);

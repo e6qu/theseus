@@ -782,8 +782,10 @@ selection reason), so a CI job or `theseus serve`'s
 `GET /<name>/progress` route can follow the search - including every
 retained run - instead of waiting for the final result file. Explorations
 journal too: the explorer appends one bounded `theseus-node-record-v1`
-per captured timeline (seed, seed path, markers, dirty pages) in
-expansion order, and the same route follows an exploration live. The executor also writes one structured
+per captured timeline (seed, seed path, markers, dirty pages, and the
+serial byte count - which matches the retained log exactly, so a follower
+can tell truncated from complete logs) in expansion order, and the same
+route follows an exploration live. The executor also writes one structured
 progress line per completed timeline to stderr: `theseus-progress-v1` with the
 completed count, run index, status, operations, faults, failed properties,
 checkpoint reuses, and the effective guidance and budget, so CI jobs and
