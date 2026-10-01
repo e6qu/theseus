@@ -53,9 +53,10 @@ pub use explore::{
 };
 pub use go_coverage::{go_coverage, GoCoverageOutput, GO_COVERAGE_USAGE};
 pub use history::{
-    assertion_catalog, event_history, property_history, AssertionCampaignCounts, AssertionCatalog,
-    AssertionCatalogEntry, CampaignPropertyHistory, EventHistory, EventHistoryRecord, HistoryError,
-    PropertyHistoryEntry, PropertyVerdictRecord,
+    assertion_catalog, choice_catalog, event_history, property_history, AssertionCampaignCounts,
+    AssertionCatalog, AssertionCatalogEntry, CampaignPropertyHistory, ChoiceCatalog,
+    ChoiceCatalogEntry, EventHistory, EventHistoryRecord, HistoryError, PropertyHistoryEntry,
+    PropertyVerdictRecord,
 };
 pub use java_coverage::{java_coverage, JavaCoverageOutput, JAVA_COVERAGE_USAGE};
 pub use manifest::{

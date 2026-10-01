@@ -640,19 +640,28 @@ reproducible investigation.
   the retained search evidence - captures, reuses, restores, retained
   bytes - as a dedicated section in both the HTML and markdown reports.
 
+- The cross-campaign choice catalog: `theseus history --choices` and
+  `GET /history/choices` aggregate every consumed choice value per
+  identity with per-campaign run and failed-run counts - the correlation
+  seed between generated values and outcomes. (The queued
+  economics-on-serve item was already satisfied: comparison rows have
+  recorded checkpoint nodes and reuses since the guidance-comparison
+  harness.)
+
 ## Immediate next work
 
-### 1. The checkpoint economics on the serve surface
+### 1. Choice outcomes in the guidance comparison
 
-The report renders the checkpoint economics section; the serve surface
-serves the report but not the economics as data. The next work exposes
-the numbers:
+The comparison artifact records checkpoint and coverage economics per
+mode; the choice catalog aggregates values across campaigns. The next
+work joins them:
 
-- The bundle tree's campaign bundles answer the economics inside the
-  existing result route (they already do); add the economics to the
-  comparison artifact so `evaluate compare` rows carry checkpoint nodes
-  and reuses beside the coverage counts they already record.
-- Tests: comparison fixtures asserting the economics columns.
+- `theseus evaluate compare` rows gain consumed-choice coverage columns
+  already; extend them with each mode's failed-run share per consumed
+  value identity, so a comparison shows which generated values correlated
+  with failures in which mode.
+- Tests: comparison fixtures over campaigns whose runs carry
+  choice_feedback, asserting the per-identity outcome columns.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
