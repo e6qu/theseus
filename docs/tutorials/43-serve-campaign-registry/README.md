@@ -99,6 +99,17 @@ curl -s http://127.0.0.1:8098/history/properties | grep -n 'consistent\|corrupt'
 curl -s http://127.0.0.1:8098/unified/tree
 ```
 
+The journal is append-only: every read is a prefix of every later read, so
+a follower can poll the route, remember its byte offset, and process only
+the tail while an exploration runs:
+
+```sh
+seen=0
+journal=$(curl -s http://127.0.0.1:8098/unified/progress)
+printf '%s\n' "${journal:$seen}"
+seen=${#journal}
+```
+
 The journal streams the live reuse curve (`theseus-progress-v1`,
 `theseus-run-record-v1`, and `theseus-checkpoint-ledger-v1` lines); the
 moment index addresses every operation boundary; the history routes
