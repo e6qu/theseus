@@ -241,9 +241,11 @@ theseus evaluate compare guidance/unified guidance/coverage guidance/adaptive   
 The versioned JSON (`theseus-guidance-comparison-v1`) and the markdown table
 record, per mode: status, executed and failed timelines, failed properties,
 unique topology states, instruction locations, application blocks and edges,
-checkpoint economics, and the campaigns' consumed-choice coverage - distinct
-choice values and summed first-seen value-and-context pairs - every field
-read from the campaigns' retained results. Campaigns explored against different corpora or budgets are
+checkpoint economics, and the campaigns' consumed-choice coverage -
+distinct choice values, summed first-seen value-and-context pairs, and
+per-identity outcomes (runs and failed runs per consumed value, so a
+comparison shows which generated values correlated with failures in which
+mode) - every field read from the campaigns' retained results. Campaigns explored against different corpora or budgets are
 rejected, so the rows differ only in policy and outcome. The artifact is
 observational evidence and claims no causality.
 

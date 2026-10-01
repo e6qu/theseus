@@ -648,20 +648,22 @@ reproducible investigation.
   recorded checkpoint nodes and reuses since the guidance-comparison
   harness.)
 
+- Choice outcomes in the comparison: `evaluate compare` rows carry
+  per-identity outcomes - runs and failed runs per consumed value - so a
+  comparison shows which generated values correlated with failures in
+  which mode.
+
 ## Immediate next work
 
-### 1. Choice outcomes in the guidance comparison
+### 1. Choice outcomes in the history catalog text
 
-The comparison artifact records checkpoint and coverage economics per
-mode; the choice catalog aggregates values across campaigns. The next
-work joins them:
+The choice catalog aggregates per-campaign counts; its plain-text output
+lists them. The next work sharpens the audit reading:
 
-- `theseus evaluate compare` rows gain consumed-choice coverage columns
-  already; extend them with each mode's failed-run share per consumed
-  value identity, so a comparison shows which generated values correlated
-  with failures in which mode.
-- Tests: comparison fixtures over campaigns whose runs carry
-  choice_feedback, asserting the per-identity outcome columns.
+- The text output groups by consumed value and prints the failure share
+  per campaign beside the counts, so an investigator reads correlation
+  without opening the JSON.
+- Tests: text-format fixtures over the existing catalog fixtures.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the

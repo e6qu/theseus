@@ -1048,6 +1048,20 @@ pub struct GuidanceRow {
     /// Summed first-seen value-and-context pairs across retained runs.
     #[serde(default)]
     pub choice_context_pairs: usize,
+    /// Per-identity outcomes, sorted by identity: which generated values
+    /// correlated with failures in this mode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choice_outcomes: Vec<ChoiceOutcomeRecord>,
+}
+
+/// One consumed choice value's outcome inside one compared campaign: how
+/// many retained runs consumed the identity and how many of those failed.
+#[derive(Debug, Serialize)]
+pub struct ChoiceOutcomeRecord {
+    /// `service:name:upper_exclusive:selected`, the consumed identity.
+    pub choice: String,
+    pub runs: u64,
+    pub failed_runs: u64,
 }
 
 /// The side-by-side comparison of campaigns explored under different
@@ -1125,12 +1139,12 @@ impl GuidanceComparison {
             }
         );
         report.push_str(
-            "| campaign | guidance | status | runs | failed runs | failed properties | states | instr locations | app blocks | app edges | checkpoint nodes | reuses | choice values | context pairs |\n",
+            "| campaign | guidance | status | runs | failed runs | failed properties | states | instr locations | app blocks | app edges | checkpoint nodes | reuses | choice values | context pairs | choice outcomes |\n",
         );
-        report.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+        report.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
         for row in &self.rows {
             report.push_str(&format!(
-                "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 row.source,
                 row.guidance,
                 row.status,
@@ -1153,6 +1167,20 @@ impl GuidanceComparison {
                 row.checkpoint_reuses,
                 row.structured_choice_values,
                 row.choice_context_pairs,
+                if row.choice_outcomes.is_empty() {
+                    "-".to_owned()
+                } else {
+                    row.choice_outcomes
+                        .iter()
+                        .map(|outcome| {
+                            format!(
+                                "{}: {}/{}",
+                                outcome.choice, outcome.runs, outcome.failed_runs
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                },
             ));
         }
         report.push_str(
@@ -1234,6 +1262,35 @@ pub fn evaluate_compare(
                     .sum()
             })
             .unwrap_or_default();
+        let mut outcome_runs: std::collections::BTreeMap<String, (u64, u64)> =
+            std::collections::BTreeMap::new();
+        if let Some(runs) = runs {
+            for run in runs {
+                let failed = run["status"] == "failed";
+                for value in run["choice_feedback"]["values"]
+                    .as_array()
+                    .map(|values| values.as_slice())
+                    .unwrap_or(&[])
+                {
+                    let Some(value) = value.as_str() else {
+                        continue;
+                    };
+                    let entry = outcome_runs.entry(value.to_owned()).or_insert((0, 0));
+                    entry.0 += 1;
+                    if failed {
+                        entry.1 += 1;
+                    }
+                }
+            }
+        }
+        let choice_outcomes = outcome_runs
+            .into_iter()
+            .map(|(choice, (runs, failed_runs))| ChoiceOutcomeRecord {
+                choice,
+                runs,
+                failed_runs,
+            })
+            .collect::<Vec<_>>();
         rows.push(GuidanceRow {
             source: bundle.display().to_string(),
             guidance: result["guidance"].as_str().unwrap_or("unknown").to_owned(),
@@ -1276,6 +1333,7 @@ pub fn evaluate_compare(
             checkpoint_reuses: result["checkpoint_reuses"].as_u64().unwrap_or_default() as usize,
             structured_choice_values,
             choice_context_pairs,
+            choice_outcomes,
         });
     }
     let mut modes = rows
@@ -1368,10 +1426,11 @@ mod guidance_comparison_tests {
         let markdown = comparison.markdown();
         assert!(markdown.contains("# Guidance comparison"), "{markdown}");
         assert!(
-            markdown.contains("choice values | context pairs"),
+            markdown.contains("choice values | context pairs | choice outcomes"),
             "{markdown}"
         );
         assert!(markdown.contains("| 2 | 3 |"), "{markdown}");
+        assert!(markdown.contains("api:mode:2:1: 2/1"), "{markdown}");
         assert!(
             markdown.contains("observational retained evidence"),
             "{markdown}"
