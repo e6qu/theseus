@@ -7340,7 +7340,6 @@ fn normalize_operation_input_references(
 
 struct NormalizedOperationInputGrammar {
     source: OperationInputGrammarPlan,
-    bounds: BTreeMap<String, u16>,
     inputs: Vec<OperationInputPlan>,
 }
 
@@ -7526,10 +7525,9 @@ fn normalize_operation_input_grammar(
             template: grammar.template.clone(),
             name_template,
             choices: grammar.choices.clone(),
-            bounds: bounds.clone(),
+            bounds,
             input_captures: captures,
         },
-        bounds,
         inputs,
     })
 }

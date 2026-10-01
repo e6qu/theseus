@@ -3,7 +3,10 @@
 Explore one workload under two guidance modes, name both campaigns in a
 versioned registry, and walk the retained evidence over one local
 read-only HTTP surface: index, result, report, live progress, moment and
-event queries, history, comparison, and the bundle tree.
+event queries, history, comparison, and the bundle tree. The directory
+ships a recorded example under `recorded/`, so the serving and inspection
+steps run with only the published binary - a KVM host regenerates real
+evidence in the same places.
 
 ## Before you start
 
@@ -58,28 +61,26 @@ cp /usr/local/bin/theseus-image service/work/runtime/theseus-image
 cp /opt/theseus/vmlinux service/work/guest/vmlinux
 theseus compose explore --guidance unified --max-runs 6 \
   --expect-counterexample corrupt_result_is_unreachable \
-  --output campaign-unified compose.yaml
+  --output recorded/campaign-unified compose.yaml
 theseus compose explore --guidance coverage --max-runs 6 \
   --expect-counterexample corrupt_result_is_unreachable \
-  --output campaign-coverage compose.yaml
-cat > registry.json <<'REGISTRY'
-{"format":"theseus-serve-registry-v1","campaigns":[
-  {"name":"unified","directory":"campaign-unified"},
-  {"name":"coverage","directory":"campaign-coverage"}
-]}
-REGISTRY
-grep -n 'guidance' campaign-unified/campaign-result.json \
-  campaign-coverage/campaign-result.json
+  --output recorded/campaign-coverage compose.yaml
+grep -n 'guidance' recorded/campaign-unified/campaign-result.json \
+  recorded/campaign-coverage/campaign-result.json
 ```
 
+On a host without KVM, skip the explorations: the directory ships a
+recorded example under `recorded/` and `registry.json` already names it.
 Both explorations run the same candidate corpus at one fixed budget, so the
 rows differ only in policy and outcome - exactly what `evaluate compare`
 requires. Registry directories resolve from the registry file's directory.
 
 ## 4. Run the read-only HTTP surface
 
+Serving needs only the published binary - no KVM, no Docker. From the
+tutorial directory on your host:
+
 ```sh
-exit
 theseus serve --index registry.json --address 127.0.0.1:8098 &
 sleep 1
 curl -s http://127.0.0.1:8098/ ; echo
@@ -117,5 +118,6 @@ corpus at the same budget, so the rows differ only in guidance and outcome.
 ## 6. Clean up (optional)
 
 ```sh
-rm -rf service/work campaign-unified campaign-coverage registry.json
+kill %1
+rm -rf service/work recorded registry.json
 ```

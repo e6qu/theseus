@@ -1,0 +1,1 @@
+{"format": "theseus-compose-plan-v1", "campaign": {"driver": "chooser", "operations": [{"name": "calculate"}], "max_runs": 6}}
