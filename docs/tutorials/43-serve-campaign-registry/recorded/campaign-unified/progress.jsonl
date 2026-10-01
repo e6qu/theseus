@@ -1,0 +1,6 @@
+{"format":"theseus-progress-v1","completed":1,"index":0,"status":"failed","operations":["calculate[mode-0-retry-0]"],"faults":[],"checkpoint_reuses":0,"guidance":"unified","max_runs":6}
+{"format":"theseus-run-record-v1","index":0,"status":"failed","operations":["calculate[mode-0-retry-0]"],"faults":[],"selection":"first retained timeline"}
+{"format":"theseus-checkpoint-ledger-v1","nodes":1,"reuses":0,"prefix_captures":1,"prefix_restores":0,"retained_memory_bytes":1048576}
+{"format":"theseus-progress-v1","completed":2,"index":1,"status":"failed","operations":["calculate[mode-1-retry-2]"],"faults":[],"checkpoint_reuses":1,"guidance":"unified","max_runs":6}
+{"format":"theseus-run-record-v1","index":1,"status":"failed","operations":["calculate[mode-1-retry-2]"],"faults":[],"selection":"extends 1-operation prefix with new topology state"}
+{"format":"theseus-checkpoint-ledger-v1","nodes":2,"reuses":1,"prefix_captures":2,"prefix_restores":1,"retained_memory_bytes":2097152}

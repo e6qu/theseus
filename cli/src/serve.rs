@@ -9,7 +9,6 @@
 //! references. Every other method is refused, nothing is ever written, and
 //! serial routes cannot escape the bundle's `serial/` directory.
 
-use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -17,7 +16,7 @@ use std::path::{Path, PathBuf};
 /// One served bundle: its display name, its kind (the versioned result it
 /// retains), and its directory.
 #[derive(Debug)]
-struct ServedCampaign {
+pub(crate) struct ServedCampaign {
     name: String,
     kind: &'static str,
     root: PathBuf,
@@ -1358,8 +1357,8 @@ mod tests {
         let root = directory.path().join("guidance");
         write_named_bundle(&root, "unified", "unified", 12);
         write_named_bundle(&root, "coverage", "coverage", 12);
-        fs::create_dir_all(root.join("notes"));
-        fs::write(root.join("README"), b"not a campaign");
+        fs::create_dir_all(root.join("notes")).unwrap();
+        fs::write(root.join("README"), b"not a campaign").unwrap();
         let expanded = collect_campaigns(&[root]).unwrap();
         assert_eq!(
             expanded
@@ -1370,11 +1369,11 @@ mod tests {
         );
 
         let empty = directory.path().join("empty");
-        fs::create_dir_all(&empty);
+        fs::create_dir_all(&empty).unwrap();
         assert!(collect_campaigns(&[empty]).is_err());
 
         let file = directory.path().join("plan.yaml");
-        fs::write(&file, b"services: {}");
+        fs::write(&file, b"services: {}").unwrap();
         assert!(collect_campaigns(&[file]).is_err());
     }
 
