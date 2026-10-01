@@ -154,6 +154,10 @@ struct Node {
     dirty_pages: Option<u64>,
     #[serde(default)]
     serial_log: Option<String>,
+    /// The retained serial log's byte count, rendered beside the path so a
+    /// reader sees the same completeness signal the live journal carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    serial_bytes: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -931,6 +935,13 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
 
 fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, ReportError> {
     result.nodes.sort_by_key(|node| node.search_index);
+    for node in &mut result.nodes {
+        if let Some(serial_log) = &node.serial_log {
+            node.serial_bytes = fs::metadata(root.join(serial_log))
+                .ok()
+                .map(|metadata| metadata.len());
+        }
+    }
     let _: serde_json::Value = read_json(root, Path::new("explore-plan.json"))?;
     let populated = result
         .nodes
@@ -1457,7 +1468,7 @@ app.append(el('h1',m.title)); app.append(el('p',m.kind));
 const status=el('p','Status: '+m.status);status.className='status '+m.status;app.append(status);
 if(m.error){{const e=section('Error');e.append(el('pre',m.error));}}
 const replay=section(m.command_label);replay.append(el('pre',m.command));
-if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));if(n.serial_log){{d.append(el('p','serial log: '+n.serial_log));}}d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
+if(m.nodes.length){{const s=section('Timeline tree');m.nodes.forEach(n=>{{const d=el('div');d.className='node';d.style.marginLeft=(n.depth*1.25)+'rem';d.append(el('strong','#'+n.search_index+' · node '+n.id+' · seed '+n.seed));d.append(el('p','parent: '+(n.parent===null?'root':n.parent)+' · seed path: '+n.seed_path.join(' → ')));if(m.path_command){{d.append(el('code',m.path_command+n.seed_path.join(',')));}}if(m.snapshot_path_command){{d.append(el('p','Export this paused timeline:'));d.append(el('code',m.snapshot_path_command+n.seed_path.join(',')));}}if(m.minimize_path_command&&m.status==='failed'){{d.append(el('p','Minimize this failing path:'));d.append(el('code',m.minimize_path_command+n.seed_path.join(',')));}}d.append(el('p','markers: '+(n.markers_hex||'none')+' · dirty pages: '+(n.dirty_pages===null?'not captured':n.dirty_pages)));if(n.serial_log){{d.append(el('p','serial log: '+n.serial_log+(n.serial_bytes===null||n.serial_bytes===undefined?'':' ('+n.serial_bytes+' bytes)')));}}d.append(el('p','entropy probe: '+n.entropy_probe_hex));s.append(d)}});}}
 if(m.coverage){{const s=section(m.coverage.label);s.append(el('p',m.coverage.summary));}}
 if(Object.keys(m.campaign_state).length){{const s=section('Campaign state machine');s.append(el('pre',JSON.stringify(m.campaign_state)));const rows=[];m.campaign_operations.forEach(o=>{{if(Object.keys(o.requires_state).length||Object.keys(o.sets_state).length)rows.push([o.name,JSON.stringify(o.requires_state),JSON.stringify(o.sets_state)]);o.inputs.forEach(i=>{{if(Object.keys(i.requires_state).length||Object.keys(i.sets_state).length)rows.push([o.name+'['+i.name+']',JSON.stringify(i.requires_state),JSON.stringify(i.sets_state)]);}});}});if(rows.length)s.append(table(rows,['Transition','Requires state','Sets state']));}}
 if(m.campaign_operations.length){{const predicate=p=>p?JSON.stringify(p):'none',predicates=ps=>ps.length?JSON.stringify(ps):'none',ref=r=>r.operation+(r.input?'['+r.input+']':''),capture=(n,c)=>n+'@'+(c.service||'driver')+':'+c.pointer+' · '+JSON.stringify(c.json||c.workflow||{{sequence:c.sequence}})+' ('+(c.encoding||'text')+', '+(c.select||'latest')+')',input=i=>{{const rules=i.requires.length||i.excludes.length||i.max_uses!==null?' ('+[i.requires.length?'after '+i.requires.map(ref).join(' + '):'',i.excludes.length?'without '+i.excludes.map(ref).join(' + '):'',i.max_uses===null?'':'at most '+i.max_uses].filter(Boolean).join('; ')+')':'';const captures=i.input_template?' ← '+i.input_template+' · '+Object.entries(i.input_captures).map(([n,c])=>capture(n,c)).join(', '):'',schedule=i.thread_schedule.length?' · schedule '+i.thread_schedule.join(','):'';return i.name+schedule+rules+captures}},grammar=o=>o.input_grammar?(o.input_grammar.name_template+' ← '+o.input_grammar.template+' · '+Object.entries(o.input_grammar.choices).map(([v,c])=>v+'='+Object.keys(c).join('/')).join(', ')+(Object.keys(o.input_grammar.input_captures).length?' · '+Object.entries(o.input_grammar.input_captures).map(([n,c])=>capture(n,c)).join(', '):'')):'literal cases',threadSchedule=o=>o.thread_schedule_exploration?o.thread_schedule_exploration.strategy+': at most '+o.thread_schedule_exploration.max_choices+' choices and '+o.thread_schedule_exploration.max_variants+' variants':o.thread_schedule_search?'search '+o.thread_schedule_search.generated_schedules+' pattern(s): threads '+o.thread_schedule_search.threads.join(',')+', period '+o.thread_schedule_search.period+', at most '+o.thread_schedule_search.max_switches+' switch(es)':o.thread_schedule.join(',')||'none',inputCases=o=>o.thread_schedule_search?o.thread_schedule_search.generated_schedules+' locked schedule cases':o.inputs.map(input).join(' + ')||'default',s=section('Operation model');s.append(table(m.campaign_operations.map(o=>[o.name,o.test_template||'explicit',o.command||'operation',o.test_command_path||'explicit',o.shell_phase||'input',o.shell_process||'none',threadSchedule(o),grammar(o),inputCases(o),o.stage||'any',o.requires.join(' + ')||'none',o.excludes.join(' + ')||'none',o.requires_markers.join(' + ')||'none',o.excludes_markers.join(' + ')||'none',predicate(o.requires_serial),predicate(o.excludes_serial),predicates(o.requires_serial_all),predicates(o.excludes_serial_any),predicates(o.requires_serial_joins),predicates(o.excludes_serial_joins),predicate(o.requires_serial_evidence),predicate(o.excludes_serial_evidence),o.max_uses===null?'unbounded':String(o.max_uses)]),['Operation','Template','Test command','Source','Command phase','Process','Thread schedule','Input grammar','Input cases','Stage','Requires earlier','Excludes earlier','Requires observed marker','Excludes observed marker','Requires serial predicate','Excludes serial predicate','Requires all serial guards','Excludes any serial guard','Requires JSON joins','Excludes JSON joins','Requires serial evidence','Excludes serial evidence','Maximum uses']));}}
@@ -2186,8 +2197,13 @@ fn render_markdown(model: &ReportModel) -> String {
     if !model.nodes.is_empty() {
         output.push_str("\n## Timeline recipes\n\n");
         for node in &model.nodes {
+            let serial = match (&node.serial_log, node.serial_bytes) {
+                (Some(log), Some(bytes)) => format!("; serial log `{log}` ({bytes} bytes)"),
+                (Some(log), None) => format!("; serial log `{log}`"),
+                (None, _) => String::new(),
+            };
             output.push_str(&format!(
-                "- Timeline #{}: seed path `{}`; markers `{}`; dirty pages `{}`.\n",
+                "- Timeline #{}: seed path `{}`; markers `{}`; dirty pages `{}`{}.\n",
                 node.search_index,
                 node.seed_path
                     .iter()
@@ -2200,7 +2216,8 @@ fn render_markdown(model: &ReportModel) -> String {
                     &node.markers_hex
                 },
                 node.dirty_pages
-                    .map_or_else(|| "not captured".to_owned(), |pages| pages.to_string())
+                    .map_or_else(|| "not captured".to_owned(), |pages| pages.to_string()),
+                serial
             ));
         }
     }
@@ -2947,5 +2964,19 @@ mod tests {
         assert!(html.contains("Event minimization"));
         assert!(html.contains("Timeline #1 serial log"));
         assert!(html.contains("child ready"));
+        assert!(
+            html.contains(r#""serial_log":"serial/1.log","serial_bytes":11"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#""serial_log":"serial/2.log","serial_bytes":12"#),
+            "{html}"
+        );
+        assert!(html.contains("serial_bytes"), "{html}");
+        let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
+        assert!(
+            markdown.contains("serial log `serial/1.log` (11 bytes)"),
+            "{markdown}"
+        );
     }
 }
