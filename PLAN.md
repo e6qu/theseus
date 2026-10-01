@@ -622,20 +622,27 @@ reproducible investigation.
   description per route - and the smoke script checks its probes against
   the manifest.
 
+- The journal polling contract: the tutorial documents offset-based
+  following over the append-only journal, and the smoke script asserts
+  `Content-Length` integrity and the prefix property across two polls.
+
+- Range requests: `GET /<name>/progress` honors `Range: bytes=N-` with a
+  206 suffix response (past-the-end offsets answer 416 with the current
+  length), so a follower fetches only new bytes between polls; tutorial
+  43's follower loop and the smoke script exercise it.
+
 ## Immediate next work
 
-### 1. The campaign journal stream for running searches
+### 1. The orchestrator live serial-tail count in the report
 
-`GET /<name>/progress` serves the journal of finished explorations; a
-follower of a running exploration must poll the file. The next work
-keeps the single read-only surface but documents the polling contract:
+The exploration journal carries per-node serial byte counts; the rendered
+reports still show the logs only as files. The next work renders the
+count:
 
-- The tutorial's walkthrough gains the polling pattern: fetch
-  `/progress`, remember the byte offset, sleep, fetch from the offset.
-- The serve surface gains `Content-Length` assertions in the smoke script
-  so incremental readers can rely on the prefix property.
-- Tests: the smoke script polls a journal twice and asserts the second
-  read is a superset of the first.
+- The exploration report's tree section shows each node's serial byte
+  count beside its serial log path, so a browser reading the HTML report
+  sees the same completeness signal the live journal carries.
+- Tests: report fixtures asserting the count renders beside the log.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the

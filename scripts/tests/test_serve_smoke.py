@@ -117,11 +117,18 @@ def serve(arguments: list[str]) -> subprocess.Popen:
     )
 
 
-def fetch(port: int, path: str, method: str = "GET") -> tuple[int, str, bytes]:
+def fetch(port: int, path: str, method: str = "GET", headers: dict = None) -> tuple[int, str, bytes]:
     request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
+    for name, value in (headers or {}).items():
+        request.add_header(name, value)
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
-            return response.status, response.headers.get("Content-Type", ""), response.read()
+            body = response.read()
+            declared = response.headers.get("Content-Length")
+            assert declared is None or int(declared) == len(body), (
+                f"{path}: Content-Length {declared} != {len(body)} bytes"
+            )
+            return response.status, response.headers.get("Content-Type", ""), body
     except urllib.error.HTTPError as error:
         return error.code, error.headers.get("Content-Type", ""), error.read()
 
@@ -192,6 +199,23 @@ def main() -> None:
         expect(port, "/unified/report", 200)
         expect(port, "/unified/report.html", 200, "<!doctype html>")
         expect(port, "/unified/progress", 200, "theseus-checkpoint-ledger-v1")
+        # Incremental readers rely on the prefix property: the journal is
+        # append-only, so a later read is always a superset of an earlier
+        # one. Assert it across two polls.
+        _, _, first_read = fetch(port, "/unified/progress")
+        _, _, second_read = fetch(port, "/unified/progress")
+        assert second_read.startswith(first_read), "journal is not append-only"
+        # A suffix range fetches only new bytes: the 206 body concatenates
+        # with the earlier prefix into the whole journal.
+        cut = len(first_read) // 2
+        status, content_type, tail = fetch(
+            port, "/unified/progress", headers={"Range": f"bytes={cut}-"}
+        )
+        assert status == 206, status
+        assert content_type.startswith("text/plain"), content_type
+        assert first_read[:cut] + tail == first_read, "range suffix mismatch"
+        past_end = fetch(port, "/unified/progress", headers={"Range": "bytes=999999-"})
+        assert past_end[0] == 416, past_end[0]
         expect(port, "/unified/query/moments", 200, "7000@input-hash")
         expect(port, "/unified/query/events", 200, '\\"event\\":\\"request\\"')
         expect(port, "/unified/query/preceded-by/write", 200)

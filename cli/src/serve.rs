@@ -175,7 +175,7 @@ fn push_campaign(
 
 fn handle_connection(stream: &mut TcpStream, campaigns: &[ServedCampaign]) -> std::io::Result<()> {
     let request = read_request(stream)?;
-    let Some((method, path)) = parse_request(&request) else {
+    let Some((method, path, range)) = parse_request(&request) else {
         return write_response(
             stream,
             400,
@@ -191,8 +191,49 @@ fn handle_connection(stream: &mut TcpStream, campaigns: &[ServedCampaign]) -> st
             b"method not allowed; this surface is read-only",
         );
     }
+    // The live journal honors one Range form: `bytes=N-` answers with the
+    // journal's suffix, so a follower fetches only new bytes between
+    // polls. Everything else ignores the header.
+    if let Some(offset) = range {
+        let trimmed = path.trim_start_matches('/');
+        if let Some((name, "progress")) = trimmed.split_once('/') {
+            if let Some(campaign) = campaigns.iter().find(|campaign| campaign.name == name) {
+                return range_progress(stream, &campaign.root, offset);
+            }
+        }
+    }
     let (status, content_type, body) = route(campaigns, &path);
     write_response(stream, status, content_type, &body)
+}
+
+/// `Range: bytes=N-` over one journal: 206 with the suffix, or 416 with
+/// the current length when the offset reaches past the end.
+fn range_progress(stream: &mut TcpStream, root: &Path, offset: u64) -> std::io::Result<()> {
+    let bytes = match std::fs::read(root.join("progress.jsonl")) {
+        Ok(bytes) => bytes,
+        Err(_) => return write_response(stream, 404, "text/plain; charset=utf-8", b"not found"),
+    };
+    let length = bytes.len();
+    if offset as usize >= length {
+        return write_response_with(
+            stream,
+            416,
+            "text/plain; charset=utf-8",
+            Some(format!("Content-Range: bytes */{length}\r\n")),
+            b"",
+        );
+    }
+    let start = offset as usize;
+    write_response_with(
+        stream,
+        206,
+        "text/plain; charset=utf-8",
+        Some(format!(
+            "Content-Range: bytes {start}-{}/{length}\r\n",
+            length - 1
+        )),
+        &bytes[start..],
+    )
 }
 
 fn read_request(stream: &mut TcpStream) -> std::io::Result<String> {
@@ -209,12 +250,26 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&buffer).into_owned())
 }
 
-fn parse_request(request: &str) -> Option<(String, String)> {
-    let line = request.lines().next()?;
+fn parse_request(request: &str) -> Option<(String, String, Option<u64>)> {
+    let mut lines = request.lines();
+    let line = lines.next()?;
     let mut parts = line.split_whitespace();
     let method = parts.next()?.to_owned();
     let path = parts.next()?.to_owned();
-    Some((method, path))
+    let range = lines.find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("range")
+            .then(|| {
+                value
+                    .trim()
+                    .strip_prefix("bytes=")
+                    .and_then(|spec| spec.strip_suffix('-'))
+                    .and_then(|offset| offset.parse::<u64>().ok())
+            })
+            .flatten()
+    });
+    Some((method, path, range))
 }
 
 fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8>) {
@@ -974,15 +1029,28 @@ fn write_response(
     content_type: &str,
     body: &[u8],
 ) -> std::io::Result<()> {
+    write_response_with(stream, status, content_type, None, body)
+}
+
+fn write_response_with(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    extra_header: Option<String>,
+    body: &[u8],
+) -> std::io::Result<()> {
     let reason = match status {
         200 => "OK",
+        206 => "Partial Content",
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        416 => "Range Not Satisfiable",
         _ => "Internal Server Error",
     };
     let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        extra_header.unwrap_or_default(),
         body.len()
     );
     stream.write_all(head.as_bytes())?;
@@ -1087,8 +1155,32 @@ mod tests {
     }
 
     fn exchange(address: &str, request: &str) -> (u16, String, String) {
+        exchange_with(address, request, &[])
+    }
+
+    fn exchange_raw(address: &str, request: &str, headers: &[&str]) -> String {
         let mut stream = TcpStream::connect(address).unwrap();
-        stream.write_all(request.as_bytes()).unwrap();
+        let mut full = request.to_owned();
+        for header in headers {
+            full.push_str(header);
+            full.push('\r');
+            full.push('\n');
+        }
+        stream.write_all(full.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    fn exchange_with(address: &str, request: &str, headers: &[&str]) -> (u16, String, String) {
+        let mut stream = TcpStream::connect(address).unwrap();
+        let mut full = request.to_owned();
+        for header in headers {
+            full.push_str(header);
+            full.push('\r');
+            full.push('\n');
+        }
+        stream.write_all(full.as_bytes()).unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
         let status: u16 = response
@@ -1444,6 +1536,38 @@ mod tests {
             "GET /exploration/query/moments HTTP/1.1\r\nHost: x\r\n\r\n",
         );
         assert_eq!(status, 404);
+
+        // Range polls fetch only the journal's suffix: the 206 body
+        // concatenates with the earlier read into the whole journal, and
+        // an offset past the end answers 416 with the current length.
+        let (_, _, whole) = exchange(
+            &address,
+            "GET /campaign/progress HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        let raw = exchange_raw(
+            &address,
+            "GET /campaign/progress HTTP/1.1\r\nHost: x\r\n\r\n",
+            &["Range: bytes=0-"],
+        );
+        assert!(raw.contains("206 Partial Content"), "{raw}");
+        assert!(raw.contains("Content-Range: bytes 0-"), "{raw}");
+        assert_eq!(raw.split("\r\n\r\n").nth(1).unwrap_or_default(), whole);
+
+        let cut = whole.len() / 2;
+        let (status, _, suffix) = exchange_with(
+            &address,
+            "GET /campaign/progress HTTP/1.1\r\nHost: x\r\n\r\n",
+            &[&format!("Range: bytes={cut}-")],
+        );
+        assert_eq!(status, 206);
+        assert!(suffix.starts_with(&whole[cut..]));
+
+        let (status, ..) = exchange_with(
+            &address,
+            "GET /campaign/progress HTTP/1.1\r\nHost: x\r\n\r\n",
+            &["Range: bytes=999999-"],
+        );
+        assert_eq!(status, 416);
 
         let (status, content_type, body) =
             exchange(&address, "GET /campaign/tree HTTP/1.1\r\nHost: x\r\n\r\n");
