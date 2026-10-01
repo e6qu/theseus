@@ -518,6 +518,9 @@ fn route_history(campaigns: &[ServedCampaign], rest: &str) -> (u16, &'static str
     if route == "assertions" {
         return answer(crate::history::assertion_catalog(&sources));
     }
+    if route == "choices" {
+        return answer(crate::history::choice_catalog(&sources));
+    }
     if route == "events" {
         return answer(crate::history::event_history(&sources, service.as_deref()));
     }
@@ -635,7 +638,7 @@ fn json_response(value: &serde_json::Value) -> (u16, &'static str, Vec<u8>) {
 /// The empty history shapes, answered when no served bundle retains
 /// campaign evidence.
 fn empty_history(route: &str) -> Option<(u16, &'static str, Vec<u8>)> {
-    use crate::history::{AssertionCatalog, CampaignPropertyHistory, EventHistory};
+    use crate::history::{AssertionCatalog, CampaignPropertyHistory, ChoiceCatalog, EventHistory};
     let json = match route {
         "properties" => serde_json::to_string_pretty(&CampaignPropertyHistory {
             format: "theseus-campaign-property-history-v1",
@@ -647,6 +650,12 @@ fn empty_history(route: &str) -> Option<(u16, &'static str, Vec<u8>)> {
             format: "theseus-assertion-catalog-v1",
             sources: Vec::new(),
             assertions: Vec::new(),
+        })
+        .ok()?,
+        "choices" => serde_json::to_string_pretty(&ChoiceCatalog {
+            format: "theseus-choice-catalog-v1",
+            sources: Vec::new(),
+            choices: Vec::new(),
         })
         .ok()?,
         "events" => serde_json::to_string_pretty(&EventHistory {
@@ -935,6 +944,12 @@ const ROUTES: &[RouteManifestEntry] = &[
         path: "/history/events?service=NAME",
         content_type: "application/json",
         description: "guest events aggregated across campaigns",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/history/choices",
+        content_type: "application/json",
+        description: "consumed choice values with per-campaign outcomes",
     },
     RouteManifestEntry {
         method: "GET",

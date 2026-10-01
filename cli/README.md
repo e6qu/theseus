@@ -27,6 +27,7 @@ theseus status campaign-dir [--format json|text]
 theseus history campaign-dir... [--property NAME] [--format json|text]
 theseus history campaign-dir... --assertions [--format json|text]
 theseus history campaign-dir... --events [--service NAME] [--format json|text]
+theseus history campaign-dir... --choices [--format json|text]
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
 theseus query campaign-dir --list [--service NAME] [--format json]
@@ -297,7 +298,9 @@ boundary - run, service, virtual time, verbatim excerpts, events - with
 `?next` and `?previous` walking to the neighboring moments. Cross-campaign
 history answers over the whole served set through the same functions the
 CLI uses: `GET /history/properties[?property=NAME]`,
-`GET /history/assertions`, and `GET /history/events[?service=NAME]`.
+`GET /history/assertions`, `GET /history/events[?service=NAME]`, and
+`GET /history/choices` (consumed choice values with per-campaign run and
+failure counts).
 `GET /compare?campaigns=a,b` produces the guidance-comparison artifact
 over named served campaigns under the same corpus and budget rules the
 CLI enforces - mismatches answer 400 with the refusal message. The index
