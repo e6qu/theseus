@@ -787,7 +787,10 @@ selection reason) and one checkpoint-economics line per run
 restores, retained memory bytes - the reuse curve), so a CI job or
 `theseus serve`'s `GET /<name>/progress` route can follow the search -
 including every retained run and its cost - instead of waiting for the
-final result file. Explorations
+final result file. The journal route honors `Range: bytes=N-` with a 206
+partial response carrying the suffix (past-the-end offsets answer 416
+with the current length), so a follower fetches only new bytes between
+polls. Explorations
 journal too: the explorer appends one bounded `theseus-node-record-v1`
 per captured timeline (seed, seed path, markers, dirty pages, and the
 serial byte count - which matches the retained log exactly, so a follower

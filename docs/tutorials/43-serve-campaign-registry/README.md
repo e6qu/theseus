@@ -105,10 +105,16 @@ the tail while an exploration runs:
 
 ```sh
 seen=0
-journal=$(curl -s http://127.0.0.1:8098/unified/progress)
-printf '%s\n' "${journal:$seen}"
-seen=${#journal}
+while :; do
+  size=$(curl -s -o /dev/null -w '%{size_download}' \
+    -H "Range: bytes=${seen}-" http://127.0.0.1:8098/unified/progress)
+  [ "$size" = "0" ] && break
+  seen=$((seen + size))
+done
 ```
+
+A follower can also ask for only the tail: `Range: bytes=N-` answers 206
+with the journal suffix, so each poll transfers just the new lines.
 
 The journal streams the live reuse curve (`theseus-progress-v1`,
 `theseus-run-record-v1`, and `theseus-checkpoint-ledger-v1` lines); the

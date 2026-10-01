@@ -626,18 +626,23 @@ reproducible investigation.
   following over the append-only journal, and the smoke script asserts
   `Content-Length` integrity and the prefix property across two polls.
 
+- Range requests: `GET /<name>/progress` honors `Range: bytes=N-` with a
+  206 suffix response (past-the-end offsets answer 416 with the current
+  length), so a follower fetches only new bytes between polls; tutorial
+  43's follower loop and the smoke script exercise it.
+
 ## Immediate next work
 
-### 1. Range requests for the live journal
+### 1. The orchestrator live serial-tail count in the report
 
-Offset-based following still refetches the whole journal each poll. The
-next work serves only the tail:
+The exploration journal carries per-node serial byte counts; the rendered
+reports still show the logs only as files. The next work renders the
+count:
 
-- `GET /<name>/progress` honors `Range: bytes=N-` with a 206 partial
-  response carrying the journal's suffix, so a follower fetches only new
-  bytes; requests past the end answer 416 with the current length.
-- Tests: smoke-script polls that read a suffix range and assert the
-  206 body concatenates with the prefix into the whole journal.
+- The exploration report's tree section shows each node's serial byte
+  count beside its serial log path, so a browser reading the HTML report
+  sees the same completeness signal the live journal carries.
+- Tests: report fixtures asserting the count renders beside the log.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
