@@ -774,6 +774,7 @@ struct ReportModel {
     campaign_futures_note: &'static str,
     campaign_state: BTreeMap<String, String>,
     campaign_operations: Vec<CampaignOperation>,
+    campaign_checkpoint: Option<CampaignCheckpointEconomics>,
 }
 
 /// One observed future: timelines grouped by their operation and fault
@@ -930,6 +931,7 @@ fn single_timeline(root: &Path, result: ResultRecord) -> Result<ReportModel, Rep
 
         campaign_state: BTreeMap::new(),
         campaign_operations: Vec::new(),
+        campaign_checkpoint: None,
     })
 }
 
@@ -1018,6 +1020,7 @@ fn exploration(root: &Path, mut result: ResultRecord) -> Result<ReportModel, Rep
 
         campaign_state: BTreeMap::new(),
         campaign_operations: Vec::new(),
+        campaign_checkpoint: None,
     })
 }
 
@@ -1171,6 +1174,7 @@ fn topology(root: &Path) -> Result<ReportModel, ReportError> {
 
         campaign_state: BTreeMap::new(),
         campaign_operations: Vec::new(),
+        campaign_checkpoint: None,
     })
 }
 
@@ -1297,6 +1301,7 @@ fn campaign(root: &Path) -> Result<ReportModel, ReportError> {
         campaign_runs: result.runs,
         campaign_state,
         campaign_operations,
+        campaign_checkpoint: Some(checkpoint.clone()),
     })
 }
 
@@ -1502,6 +1507,7 @@ s.append(table(rows,['Run','Boundary ID','Operation','Target','UART input','UART
 if(m.campaign_runs.some(r=>Object.keys(r.thread_synchronization).length)){{const rows=m.campaign_runs.flatMap(r=>Object.entries(r.thread_synchronization).flatMap(([service,events])=>events.map(e=>[String(r.index),service,'#'+e.event,'t'+e.thread,e.operation,e.object_kind+'-'+e.object,e.peer_thread===null?'none':'t'+e.peer_thread]))),s=section('Thread synchronization');s.append(table(rows,['Run','Service','Event','Thread','Operation','Object','Peer thread']));}}
 if(m.minimization){{const s=section('Event minimization');s.append(table([[m.minimization.original_events_hex.join(' ')||'none',m.minimization.minimized_events_hex.join(' ')||'none']],['Original events','1-minimal events']));}}
 if(m.campaign_minimization){{const x=m.campaign_minimization,s=section('Campaign minimization');s.append(table([[x.property,x.original_operations.join(' → ')||'none',x.minimized_operations.join(' → ')||'none',x.original_faults.join(' + ')||'none',x.minimized_faults.join(' + ')||'none',String(x.operation_attempts),String(x.fault_attempts)]],['Property','Original operations','1-minimal operations','Original faults','1-minimal faults','Operation replays','Fault replays']));}}
+if(m.campaign_checkpoint){{const c=m.campaign_checkpoint,s=section('Checkpoint economics');s.append(table([['Root captures',String(c.root_captures)],['Prefix captures',String(c.prefix_captures)],['Checkpoint nodes',String(c.checkpoint_nodes)],['Prefix reuses',String(c.prefix_reuses)],['Prefix restores',String(c.prefix_restores)],['Leaf restores',String(c.leaf_restores)],['Topology restores',String(c.topology_restores)],['Avoided recomputations',String(c.avoided_prefix_recomputations)],['Retained memory bytes',String(c.retained_memory_bytes)],['COW restore bytes',String(c.shared_cow_restore_bytes)],['Dirty pages at capture',String(c.private_dirty_pages)],['Snapshot file bytes',String(c.snapshot_file_bytes)],['Prefix evictions',String(c.prefix_evictions)]],['Measure','Value']));}}
 if(m.replay_verification){{const s=section('Replay verification');s.append(table([[m.replay_verification.status,m.replay_verification.detail]],['Status','Detail']));}}
 if(m.checks.length){{const s=section('Checks');s.append(table(m.checks.map(c=>[c.name,c.kind,c.status,c.detail]),['Name','Kind','Status','Detail']));}}
 if(m.faults.length){{const s=section('Applied faults');s.append(table(m.faults.map(f=>[String(f.round),f.kind,f.detail,f.barrier_rounds===null?'—':String(f.barrier_rounds)]),['Round','Kind','Detail','Barrier rounds']));}}
@@ -2356,6 +2362,45 @@ fn render_markdown(model: &ReportModel) -> String {
             ));
         }
     }
+    if let Some(checkpoint) = &model.campaign_checkpoint {
+        output.push_str("\n## Checkpoint economics\n\n| Measure | Value |\n| --- | --- |\n");
+        let rows = [
+            ("Root captures", checkpoint.root_captures.to_string()),
+            ("Prefix captures", checkpoint.prefix_captures.to_string()),
+            ("Checkpoint nodes", checkpoint.checkpoint_nodes.to_string()),
+            ("Prefix reuses", checkpoint.prefix_reuses.to_string()),
+            ("Prefix restores", checkpoint.prefix_restores.to_string()),
+            ("Leaf restores", checkpoint.leaf_restores.to_string()),
+            (
+                "Topology restores",
+                checkpoint.topology_restores.to_string(),
+            ),
+            (
+                "Avoided recomputations",
+                checkpoint.avoided_prefix_recomputations.to_string(),
+            ),
+            (
+                "Retained memory bytes",
+                checkpoint.retained_memory_bytes.to_string(),
+            ),
+            (
+                "COW restore bytes",
+                checkpoint.shared_cow_restore_bytes.to_string(),
+            ),
+            (
+                "Dirty pages at capture",
+                checkpoint.private_dirty_pages.to_string(),
+            ),
+            (
+                "Snapshot file bytes",
+                checkpoint.snapshot_file_bytes.to_string(),
+            ),
+            ("Prefix evictions", checkpoint.prefix_evictions.to_string()),
+        ];
+        for (measure, value) in rows {
+            output.push_str(&format!("| {measure} | {value} |\n"));
+        }
+    }
     let timeline = model
         .campaign_runs
         .iter()
@@ -2863,11 +2908,14 @@ mod tests {
         );
         write_json(
             &directory.path().join("campaign-result.json"),
-            r#"{"format":"theseus-compose-campaign-result-v1","decision_trace_format":"theseus-campaign-decision-trace-v1","status":"failed","driver":"chooser","guidance":"unified","structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"decision_trace":["boundary:0:operation:calculate[mode-1]","boundary:0:choice:chooser:mode:1/2"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"choice_feedback":{"values":["chooser:mode:2:1"],"novel_contexts":1}}]}"#,
+            r#"{"format":"theseus-compose-campaign-result-v1","decision_trace_format":"theseus-campaign-decision-trace-v1","status":"failed","driver":"chooser","guidance":"unified","structured_choice_decisions":1,"search":{"checkpoint":{"root_captures":1,"prefix_captures":3,"checkpoint_nodes":4,"prefix_reuses":7,"prefix_restores":3,"leaf_restores":1,"topology_restores":4,"avoided_prefix_recomputations":7,"retained_memory_bytes":1048576,"shared_cow_restore_bytes":4194304,"private_dirty_pages":12,"snapshot_file_bytes":0},"guidance_observations":1,"guidance_sha256":"ledger-hash"},"runs":[{"index":0,"operations":["calculate[mode-1]"],"decision_trace":["boundary:0:operation:calculate[mode-1]","boundary:0:choice:chooser:mode:1/2"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"choice_feedback":{"values":["chooser:mode:2:1"],"novel_contexts":1}}]}"#,
         );
 
         let markdown = report_text(directory.path(), ReportFormat::Markdown).unwrap();
         assert!(markdown.contains("1 structured choices"));
+        assert!(markdown.contains("## Checkpoint economics"));
+        assert!(markdown.contains("| Root captures | 1 |"));
+        assert!(markdown.contains("| Prefix reuses | 7 |"));
         assert!(markdown.contains("unified decision-prefix guidance"));
         assert!(markdown.contains("Decision trace"));
         assert!(markdown.contains("Structured choices"));
@@ -2883,6 +2931,8 @@ mod tests {
         assert!(html.contains("Choice feedback"));
         assert!(html.contains("First-seen contexts"));
         assert!(html.contains("chooser:mode:2:1"));
+        assert!(html.contains("Checkpoint economics"));
+        assert!(html.contains("Avoided recomputations"));
     }
 
     #[test]
