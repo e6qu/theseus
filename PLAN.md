@@ -617,21 +617,25 @@ reproducible investigation.
   full HTML report without writing files, and the index page links it;
   tutorial 43's recorded example serves it without KVM.
 
+- The serve route manifest: `GET /routes` answers the versioned
+  `theseus-serve-routes-v1` list - method, path shape, content type, and
+  description per route - and the smoke script checks its probes against
+  the manifest.
+
 ## Immediate next work
 
-### 1. The serve route manifest
+### 1. The campaign journal stream for running searches
 
-The serve surface answers eighteen documented routes; a client discovers
-them only through the README. The next work makes the API
-self-describing:
+`GET /<name>/progress` serves the journal of finished explorations; a
+follower of a running exploration must poll the file. The next work
+keeps the single read-only surface but documents the polling contract:
 
-- `GET /routes` answers a versioned `theseus-serve-routes-v1` manifest:
-  every route with its method, path shape, content type, and one-line
-  description, so scripts and the index page render from one source.
-- The index page and the smoke script assert against the manifest instead
-  of hardcoding the route list.
-- Tests: a listener fixture asserting the manifest covers every served
-  route.
+- The tutorial's walkthrough gains the polling pattern: fetch
+  `/progress`, remember the byte offset, sleep, fetch from the offset.
+- The serve surface gains `Content-Length` assertions in the smoke script
+  so incremental readers can rely on the prefix property.
+- Tests: the smoke script polls a journal twice and asserts the second
+  read is a superset of the first.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the

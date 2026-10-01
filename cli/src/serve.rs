@@ -226,6 +226,9 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
     if let Some(history) = trimmed.strip_prefix("history/") {
         return route_history(campaigns, history);
     }
+    if trimmed.split('?').next() == Some("routes") {
+        return json_response(&routes_manifest());
+    }
     if trimmed.split('?').next() == Some("compare") {
         let query = trimmed
             .split_once('?')
@@ -747,6 +750,157 @@ fn query_flag(query: &str, name: &str) -> bool {
     query.split('&').any(|pair| pair == name)
 }
 
+/// One documented route in the self-describing manifest.
+struct RouteManifestEntry {
+    method: &'static str,
+    path: &'static str,
+    content_type: &'static str,
+    description: &'static str,
+}
+
+/// The versioned route manifest: the serve surface's whole API, so scripts
+/// and index pages render from one source instead of hardcoding routes.
+const ROUTES: &[RouteManifestEntry] = &[
+    RouteManifestEntry {
+        method: "GET",
+        path: "/",
+        content_type: "text/html",
+        description: "the index page, linking every served bundle by kind",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/routes",
+        content_type: "application/json",
+        description: "this manifest",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/result",
+        content_type: "application/json",
+        description: "the bundle's versioned result, verbatim",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/plan",
+        content_type: "application/json",
+        description: "the bundle's replay plan, verbatim",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/report",
+        content_type: "text/markdown",
+        description: "the rendered markdown report",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/report.html",
+        content_type: "text/html",
+        description: "the full interactive HTML report",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/progress",
+        content_type: "text/plain",
+        description: "the live journal: progress, run records, ledgers",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/serial/<path>",
+        content_type: "text/plain",
+        description: "serial logs under the bundle's serial directory",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/file/<path>",
+        content_type: "implied by extension",
+        description: "any retained file the tree lists",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/tree",
+        content_type: "application/json",
+        description: "every retained file with byte sizes, sorted",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/moments",
+        content_type: "application/json",
+        description: "the campaign's moment index",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/events?service=NAME",
+        content_type: "application/json",
+        description: "the guest-emitted event records",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/moment/<moment>?next|previous",
+        content_type: "application/json",
+        description: "one resolved moment, optionally navigated",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/preceded-by/<needle>",
+        content_type: "application/json",
+        description: "moments whose evidence the needle precedes",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/followed-by/<needle>",
+        content_type: "application/json",
+        description: "moments whose evidence follows the needle",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/nodes",
+        content_type: "application/json",
+        description: "the exploration search tree with replay commands",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/node/<seed-path>",
+        content_type: "application/json",
+        description: "one exploration node by seed path",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/history/properties?property=NAME",
+        content_type: "application/json",
+        description: "property verdicts across all served campaigns",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/history/assertions",
+        content_type: "application/json",
+        description: "the assertion identity catalog across campaigns",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/history/events?service=NAME",
+        content_type: "application/json",
+        description: "guest events aggregated across campaigns",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/compare?campaigns=a,b",
+        content_type: "application/json",
+        description: "the guidance comparison artifact over named campaigns",
+    },
+];
+
+fn routes_manifest() -> serde_json::Value {
+    serde_json::json!({
+        "format": "theseus-serve-routes-v1",
+        "routes": ROUTES.iter().map(|route| serde_json::json!({
+            "method": route.method,
+            "path": route.path,
+            "content_type": route.content_type,
+            "description": route.description,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 /// The versioned result a bundle retains: a campaign result, a
 /// single-timeline or exploration result, or a topology result.
 fn retained_result(root: &Path) -> Option<&'static str> {
@@ -1042,6 +1196,23 @@ mod tests {
 
         let (status, ..) = exchange(&address, "GET /nope/result HTTP/1.1\r\nHost: x\r\n\r\n");
         assert_eq!(status, 404);
+
+        let (status, content_type, body) =
+            exchange(&address, "GET /routes HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert!(body.contains("theseus-serve-routes-v1"), "{body}");
+        for shape in [
+            "/<name>/result",
+            "/<name>/report.html",
+            "/<name>/progress",
+            "/<name>/tree",
+            "/<name>/query/moments",
+            "/history/events?service=NAME",
+            "/compare?campaigns=a,b",
+        ] {
+            assert!(body.contains(shape), "{body}");
+        }
 
         let (status, content_type, body) = exchange(&address, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
         assert_eq!(status, 200);

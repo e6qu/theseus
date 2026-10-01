@@ -181,6 +181,11 @@ def main() -> None:
     server = serve(["--index", str(root / "registry.json"), "--address", f"127.0.0.1:{port}"])
     try:
         wait_until_ready(port, server)
+        status, _, body = fetch(port, "/routes")
+        assert status == 200, "routes manifest"
+        manifest = json.loads(body)
+        assert manifest["format"] == "theseus-serve-routes-v1", manifest["format"]
+        documented = " ".join(route["path"] for route in manifest["routes"])
         expect(port, "/", 200, "/unified/report")
         expect(port, "/unified/result", 200, "theseus-compose-campaign-result-v1")
         expect(port, "/unified/plan", 200, "theseus-compose-plan-v1")
@@ -208,6 +213,16 @@ def main() -> None:
         expect(port, "/compare?campaigns=unified,campaign-drift", 404)
         expect(port, "/compare?campaigns=unified,nope", 404)
         expect(port, "/compare", 400)
+        for shape in [
+            "/<name>/result",
+            "/<name>/progress",
+            "/<name>/tree",
+            "/<name>/query/moments",
+            "/<name>/query/node/<seed-path>",
+            "/history/events?service=NAME",
+            "/compare?campaigns=a,b",
+        ]:
+            assert shape in documented, f"manifest missing {shape}"
     finally:
         server.terminate()
         server.wait(timeout=60)

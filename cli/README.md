@@ -256,7 +256,9 @@ theseus serve guidance/unified guidance/coverage --address 127.0.0.1:8098
 (`theseus-serve-registry-v1`) instead of the command-line sources: an
 array of `name` -> `directory` pairs whose directories resolve from the
 registry file's directory, with duplicate names, missing directories, and
-directories retaining no versioned result refused by name. The index page
+directories retaining no versioned result refused by name. `GET /routes` answers a versioned `theseus-serve-routes-v1` manifest -
+every route with its method, path shape, content type, and description -
+so scripts render the API from one source. The index page
 labels every served bundle with its kind - campaign, exploration, or
 topology. `scripts/tests/test_serve_smoke.py` exercises every documented
 route against recorded fixtures on each CI run.
