@@ -7,17 +7,17 @@ use std::process::ExitCode;
 
 use theseus_cli::{
     assertion_catalog, boundary_at_moment, campaign_status, capture_evaluation, cargo_coverage,
-    cargo_coverage_rustc_wrapper, collect_moment, compare_campaigns, compare_forked_campaigns,
-    evaluate, evaluate_compare, event_history, event_temporal_query, explore,
-    explore_compose_expect_counterexample_with, explore_compose_forked, explore_compose_with,
-    find_moment, go_coverage, java_coverage, list_events, list_moments, load_compose_plan,
-    load_plan, minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
-    minimize_exploration_path, next_moment_in, previous_moment_in, property_history,
-    query_campaigns, replay, replay_compose, replay_exploration, replay_exploration_path,
-    replay_to, report, report_file, report_text, serve_campaigns, serve_registry,
-    snapshot_exploration_path, temporal_query, test, test_compose, verify_native_evidence,
-    verify_topology_bundle, write_evaluation_lock, CampaignGuidance, ReportFormat,
-    TemporalRelation, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE, JAVA_COVERAGE_USAGE,
+    cargo_coverage_rustc_wrapper, choice_catalog, collect_moment, compare_campaigns,
+    compare_forked_campaigns, evaluate, evaluate_compare, event_history, event_temporal_query,
+    explore, explore_compose_expect_counterexample_with, explore_compose_forked,
+    explore_compose_with, find_moment, go_coverage, java_coverage, list_events, list_moments,
+    load_compose_plan, load_plan, minimize_compose_campaign,
+    minimize_compose_campaign_expect_counterexample, minimize_exploration_path, next_moment_in,
+    previous_moment_in, property_history, query_campaigns, replay, replay_compose,
+    replay_exploration, replay_exploration_path, replay_to, report, report_file, report_text,
+    serve_campaigns, serve_registry, snapshot_exploration_path, temporal_query, test, test_compose,
+    verify_native_evidence, verify_topology_bundle, write_evaluation_lock, CampaignGuidance,
+    ReportFormat, TemporalRelation, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE, JAVA_COVERAGE_USAGE,
 };
 
 const USAGE: &str = "Usage:
@@ -41,6 +41,7 @@ const USAGE: &str = "Usage:
   theseus history campaign-dir... [--property NAME] [--format json|text]
   theseus history campaign-dir... --assertions [--format json|text]
   theseus history campaign-dir... --events [--service NAME] [--format json|text]
+  theseus history campaign-dir... --choices [--format json|text]
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previous] [--format json]
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
   theseus query campaign-dir --list [--service NAME] [--format json]
@@ -598,6 +599,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         [command, rest @ ..] if command == "history" => {
             let mut format = "text";
             let mut assertions = false;
+            let mut choices = false;
             let mut events = false;
             let mut service_filter: Option<String> = None;
             let mut property_filter: Option<String> = None;
@@ -607,6 +609,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 match rest[index].as_str() {
                     "--assertions" => {
                         assertions = true;
+                        index += 1;
+                    }
+                    "--choices" => {
+                        choices = true;
                         index += 1;
                     }
                     "--events" => {
@@ -640,7 +646,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 return Err(USAGE.to_owned());
             }
             if events {
-                if assertions || property_filter.is_some() {
+                if assertions || choices || property_filter.is_some() {
                     return Err(USAGE.to_owned());
                 }
                 let history = event_history(
@@ -668,7 +674,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 return Ok(());
             }
             if assertions {
-                if property_filter.is_some() {
+                if choices || property_filter.is_some() {
                     return Err(USAGE.to_owned());
                 }
                 let catalog = assertion_catalog(
@@ -698,6 +704,72 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         println!(
                             "counts\t{}\tpass {}\tfail {}",
                             campaign.source, campaign.passes, campaign.fails
+                        );
+                    }
+                }
+                return Ok(());
+            }
+            if choices {
+                let catalog = choice_catalog(
+                    &bundles
+                        .iter()
+                        .map(std::path::PathBuf::from)
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(|error| error.to_string())?;
+                if format == "json" {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&catalog).map_err(|error| error.to_string())?
+                    );
+                    return Ok(());
+                }
+                println!("choices: {}", catalog.choices.len());
+                for entry in &catalog.choices {
+                    println!(
+                        "choice {}: {} run(s), {} failed across {} campaign(s)",
+                        entry.choice,
+                        entry.total_runs,
+                        entry.total_failed_runs,
+                        entry.campaigns.len()
+                    );
+                    for campaign in &entry.campaigns {
+                        println!(
+                            "counts\t{}\truns {}\tfailed {}",
+                            campaign.source, campaign.runs, campaign.failed_runs
+                        );
+                    }
+                }
+                return Ok(());
+            }
+            if choices {
+                let catalog = choice_catalog(
+                    &bundles
+                        .iter()
+                        .map(std::path::PathBuf::from)
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(|error| error.to_string())?;
+                if format == "json" {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&catalog).map_err(|error| error.to_string())?
+                    );
+                    return Ok(());
+                }
+                println!("choices: {}", catalog.choices.len());
+                for entry in &catalog.choices {
+                    println!(
+                        "choice {}: {} run(s), {} failed across {} campaign(s)",
+                        entry.choice,
+                        entry.total_runs,
+                        entry.total_failed_runs,
+                        entry.campaigns.len()
+                    );
+                    for campaign in &entry.campaigns {
+                        println!(
+                            "counts\t{}\truns {}\tfailed {}",
+                            campaign.source, campaign.runs, campaign.failed_runs
                         );
                     }
                 }

@@ -357,6 +357,114 @@ pub struct AssertionCatalog {
     pub assertions: Vec<AssertionCatalogEntry>,
 }
 
+/// One consumed choice value's per-campaign record: how many retained runs
+/// consumed it and how many of those failed - the correlation seed between
+/// generated values and outcomes.
+#[derive(Debug, Serialize)]
+pub struct ChoiceCampaignCounts {
+    pub source: String,
+    pub runs: u64,
+    pub failed_runs: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChoiceCatalogEntry {
+    /// `service:name:upper_exclusive:selected`, the consumed identity the
+    /// choice protocol emits.
+    pub choice: String,
+    pub campaigns: Vec<ChoiceCampaignCounts>,
+    pub total_runs: u64,
+    pub total_failed_runs: u64,
+}
+
+/// The versioned choice catalog over the named campaigns.
+#[derive(Debug, Serialize)]
+pub struct ChoiceCatalog {
+    pub format: &'static str,
+    pub sources: Vec<String>,
+    pub choices: Vec<ChoiceCatalogEntry>,
+}
+
+/// Build the cross-campaign choice catalog: every consumed structured
+/// choice value in each campaign's runs, aggregated per identity with
+/// per-campaign run and failed-run counts. Sources without retained
+/// choices contribute nothing; a source without campaign evidence is an
+/// error.
+pub fn choice_catalog(sources: &[std::path::PathBuf]) -> Result<ChoiceCatalog, HistoryError> {
+    if sources.is_empty() {
+        return Err(HistoryError::NoSources);
+    }
+    let mut canonical_sources = Vec::with_capacity(sources.len());
+    // consumed value -> campaign index -> (runs, failed runs)
+    let mut grouped: BTreeMap<String, Vec<(String, u64, u64)>> = BTreeMap::new();
+    for source in sources {
+        let bundle = fs::canonicalize(source).map_err(HistoryError::Read)?;
+        let result_path = bundle.join("campaign-result.json");
+        let result: serde_json::Value =
+            serde_json::from_slice(&fs::read(&result_path).map_err(HistoryError::Read)?)
+                .map_err(HistoryError::Parse)?;
+        canonical_sources.push(bundle.display().to_string());
+        // choice value -> (runs, failed runs) within this campaign
+        let mut per_campaign: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+        for run in result["runs"]
+            .as_array()
+            .map(|runs| runs.as_slice())
+            .unwrap_or(&[])
+        {
+            let failed = run["status"] == "failed";
+            for value in run["choice_feedback"]["values"]
+                .as_array()
+                .map(|values| values.as_slice())
+                .unwrap_or(&[])
+            {
+                let Some(value) = value.as_str() else {
+                    continue;
+                };
+                let entry = per_campaign.entry(value.to_owned()).or_insert((0, 0));
+                entry.0 += 1;
+                if failed {
+                    entry.1 += 1;
+                }
+            }
+        }
+        for (choice, (runs, failed_runs)) in &per_campaign {
+            grouped.entry(choice.clone()).or_default().push((
+                bundle.display().to_string(),
+                *runs,
+                *failed_runs,
+            ));
+        }
+    }
+    let mut catalog_sources = canonical_sources;
+    catalog_sources.dedup();
+    let choices = grouped
+        .into_iter()
+        .map(|(choice, campaigns)| {
+            let entries = campaigns
+                .into_iter()
+                .map(|(source, runs, failed_runs)| ChoiceCampaignCounts {
+                    source,
+                    runs,
+                    failed_runs,
+                })
+                .collect::<Vec<_>>();
+            let total_runs = entries.iter().map(|entry| entry.runs).sum();
+            let total_failed_runs = entries.iter().map(|entry| entry.failed_runs).sum();
+            ChoiceCatalogEntry {
+                choice,
+                campaigns: entries,
+                total_runs,
+                total_failed_runs,
+            }
+        })
+        .collect();
+    Ok(ChoiceCatalog {
+        format: "theseus-choice-catalog-v1",
+        sources: catalog_sources,
+        choices,
+    })
+}
+
 /// Build the cross-run assertion catalog: every retained
 /// `THES:ASSERT:name:pass|fail` line in each campaign's serial logs,
 /// aggregated per assertion name and per campaign. Sources without
@@ -504,6 +612,86 @@ mod assertion_catalog_tests {
         assert_eq!(entry.campaigns[0].fails, 1);
         assert_eq!(entry.campaigns[1].passes, 1);
         assert_eq!(entry.campaigns[1].fails, 0);
+    }
+
+    #[test]
+    fn choice_catalog_aggregates_values_across_campaigns() {
+        let directory = tempfile::tempdir().unwrap();
+        for (name, guidance, statuses) in [
+            ("unified", "unified", vec!["passed", "failed"]),
+            ("coverage", "coverage", vec!["failed"]),
+        ] {
+            let bundle = directory.path().join(name);
+            fs::create_dir_all(&bundle).unwrap();
+            let runs: Vec<serde_json::Value> = statuses
+                .iter()
+                .enumerate()
+                .map(|(index, status)| {
+                    serde_json::json!({
+                        "index": index,
+                        "status": status,
+                        "choice_feedback": {"values": [
+                            format!("chooser:mode:2:{index}"),
+                            "chooser:retry:3:0"
+                        ]}
+                    })
+                })
+                .collect();
+            fs::write(
+                bundle.join("campaign-result.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "format": "theseus-compose-campaign-result-v1",
+                    "guidance": guidance,
+                    "runs": runs
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let catalog = choice_catalog(&[
+            directory.path().join("unified"),
+            directory.path().join("coverage"),
+        ])
+        .unwrap();
+        assert_eq!(catalog.format, "theseus-choice-catalog-v1");
+        assert_eq!(catalog.choices.len(), 3);
+        let mode_one = catalog
+            .choices
+            .iter()
+            .find(|entry| entry.choice == "chooser:mode:2:1")
+            .unwrap();
+        assert_eq!(mode_one.total_runs, 1);
+        assert_eq!(mode_one.total_failed_runs, 1);
+        assert_eq!(mode_one.campaigns.len(), 1);
+
+        let retry = catalog
+            .choices
+            .iter()
+            .find(|entry| entry.choice == "chooser:retry:3:0")
+            .unwrap();
+        assert_eq!(retry.total_runs, 3);
+        assert_eq!(retry.total_failed_runs, 2);
+    }
+
+    #[test]
+    fn choice_catalog_tolerates_runs_without_choices_and_rejects_non_campaigns() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("plain");
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(
+            bundle.join("campaign-result.json"),
+            r#"{"format":"theseus-compose-campaign-result-v1","runs":[{"index":0,"status":"passed"}]}"#,
+        )
+        .unwrap();
+        let catalog = choice_catalog(&[bundle]).unwrap();
+        assert_eq!(catalog.format, "theseus-choice-catalog-v1");
+        assert_eq!(catalog.choices.len(), 0);
+
+        let stray = directory.path().join("stray");
+        fs::create_dir_all(&stray).unwrap();
+        assert!(choice_catalog(&[stray]).is_err());
+        assert!(choice_catalog(&[]).is_err());
     }
 
     #[test]
