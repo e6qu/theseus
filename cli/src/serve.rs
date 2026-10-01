@@ -60,7 +60,7 @@ fn bundle_kind(root: &Path) -> &'static str {
 
 /// Read a versioned serve registry: named bundles (`name` -> `directory`
 /// pairs) with directories resolving from the registry file's directory.
-pub fn collect_registry(index: &Path) -> Result<Vec<ServedCampaign>, String> {
+pub(crate) fn collect_registry(index: &Path) -> Result<Vec<ServedCampaign>, String> {
     let index =
         std::fs::canonicalize(index).map_err(|error| format!("{}: {error}", index.display()))?;
     let base = index
@@ -262,6 +262,16 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
             crate::report::ReportFormat::Markdown,
         ) {
             Ok(markdown) => (200, "text/markdown; charset=utf-8", markdown.into_bytes()),
+            Err(_) => (
+                500,
+                "text/plain; charset=utf-8",
+                b"report rendering failed".to_vec(),
+            ),
+        };
+    }
+    if rest == "report.html" {
+        return match crate::report::report_html_text(&campaign.root) {
+            Ok(html) => (200, "text/html; charset=utf-8", html.into_bytes()),
             Err(_) => (
                 500,
                 "text/plain; charset=utf-8",
@@ -789,7 +799,7 @@ fn index_page(campaigns: &[ServedCampaign]) -> Vec<u8> {
             .then(|| format!(" · <a href=\"/{name}/plan\">plan</a>"))
             .unwrap_or_default();
         page.push_str(&format!(
-            "<li>{} · <a href=\"/{name}/report\">{name}</a> · <a href=\"/{name}/result\">result</a>{plan_link}</li>",
+            "<li>{} · <a href=\"/{name}/report.html\">{name}</a> · <a href=\"/{name}/report\">markdown</a> · <a href=\"/{name}/result\">result</a>{plan_link}</li>",
             campaign.kind
         ));
     }
@@ -1000,6 +1010,15 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(content_type, "text/markdown; charset=utf-8");
         assert!(body.contains("1 structured choices"), "{body}");
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /campaign/report.html HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "text/html; charset=utf-8");
+        assert!(body.contains("Structured choices"), "{body}");
+        assert!(body.contains("<!doctype html>"), "{body}");
 
         let (status, content_type, body) = exchange(
             &address,
@@ -1398,11 +1417,11 @@ mod tests {
         let page = index_page(&served);
         let page = String::from_utf8(page).unwrap();
         assert!(
-            page.contains("campaign · <a href=\"/unified/report\""),
+            page.contains("campaign · <a href=\"/unified/report.html\""),
             "{page}"
         );
         assert!(
-            page.contains("exploration · <a href=\"/tree/report\""),
+            page.contains("exploration · <a href=\"/tree/report.html\""),
             "{page}"
         );
         assert!(page.contains("/unified/plan"), "{page}");

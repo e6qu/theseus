@@ -280,8 +280,9 @@ everything else as `text/plain`); traversal segments, symlinks, and
 unlisted paths are refused.
 
 Each campaign answers `GET /<name>/result` and `GET /<name>/plan` with the
-versioned JSON verbatim, `GET /<name>/report` with the rendered markdown
-report, and `GET /<name>/serial/<path>` with the serial log files the result
+versioned JSON verbatim, `GET /<name>/report` with the rendered markdown report,
+`GET /<name>/report.html` with the full interactive HTML report (the
+index page links it),, and `GET /<name>/serial/<path>` with the serial log files the result
 references - serial routes cannot escape the bundle's `serial/` directory.
 The query surfaces answer over the retained result the same way the CLI
 does: `GET /<name>/query/moments` lists every moment address,

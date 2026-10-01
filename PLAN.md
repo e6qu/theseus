@@ -613,18 +613,25 @@ reproducible investigation.
   asserts every documented route's documented status, including the
   broken-registry startup refusal and directory discovery.
 
+- The interactive report over HTTP: `GET /<name>/report.html` serves the
+  full HTML report without writing files, and the index page links it;
+  tutorial 43's recorded example serves it without KVM.
+
 ## Immediate next work
 
-### 1. Hosted-registry serving from the tutorials
+### 1. The serve route manifest
 
-Tutorial 43 serves a registry by hand from a Linux host; the recorded
-evidence is portable anywhere. The next work closes the loop for readers
-without KVM:
+The serve surface answers eighteen documented routes; a client discovers
+them only through the README. The next work makes the API
+self-describing:
 
-- Record one explored campaign bundle into the tutorial directory and
-  teach the walkthrough's inspection steps to run from the recorded
-  bundle alone, like tutorials 9, 12, and 13.
-- Tests: the tutorial doc checks cover the recorded files.
+- `GET /routes` answers a versioned `theseus-serve-routes-v1` manifest:
+  every route with its method, path shape, content type, and one-line
+  description, so scripts and the index page render from one source.
+- The index page and the smoke script assert against the manifest instead
+  of hardcoding the route list.
+- Tests: a listener fixture asserting the manifest covers every served
+  route.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the

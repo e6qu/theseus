@@ -821,6 +821,14 @@ pub fn report(input: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<PathB
     Ok(index)
 }
 
+/// Render the interactive HTML report without creating files. Unlike
+/// [`report`], this writes nothing: the serve surface returns the string
+/// directly, and other embedders can wrap it.
+pub fn report_html_text(input: impl AsRef<Path>) -> Result<String, ReportError> {
+    let root = report_root(input.as_ref())?;
+    render(&load_model(&root)?)
+}
+
 /// Render a report in a portable text format. Unlike [`report`], this does
 /// not create files, which makes Markdown suitable for `$GITHUB_STEP_SUMMARY`
 /// and JSON suitable for a pipe.

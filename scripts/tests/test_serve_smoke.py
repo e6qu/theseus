@@ -185,6 +185,7 @@ def main() -> None:
         expect(port, "/unified/result", 200, "theseus-compose-campaign-result-v1")
         expect(port, "/unified/plan", 200, "theseus-compose-plan-v1")
         expect(port, "/unified/report", 200)
+        expect(port, "/unified/report.html", 200, "<!doctype html>")
         expect(port, "/unified/progress", 200, "theseus-checkpoint-ledger-v1")
         expect(port, "/unified/query/moments", 200, "7000@input-hash")
         expect(port, "/unified/query/events", 200, '\\"event\\":\\"request\\"')

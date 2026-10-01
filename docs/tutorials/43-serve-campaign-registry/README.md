@@ -107,6 +107,7 @@ side-by-side comparison:
 
 ```sh
 curl -s http://127.0.0.1:8098/unified/report | grep -n 'Structured choices'
+curl -s http://127.0.0.1:8098/unified/report.html | grep -c doctype
 curl -s 'http://127.0.0.1:8098/compare?campaigns=unified,coverage' \
   | grep -n '"guidance"\|"corpus"\|"budget"'
 kill %1

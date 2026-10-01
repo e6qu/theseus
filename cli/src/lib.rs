@@ -25,7 +25,7 @@ mod serve;
 mod status;
 mod topology_evidence;
 
-pub use serve::{collect_registry, serve_campaigns, serve_registry};
+pub use serve::{serve_campaigns, serve_registry};
 pub use topology_evidence::{verify_topology_bundle, TopologyBundleSummary};
 
 pub use cargo_coverage::{
@@ -68,7 +68,7 @@ pub use query::{
     temporal_query, CollectedFile, CollectedMoment, EventRecord, EventTemporalQuery, MomentError,
     MomentHit, MomentSummary, NeedleOccurrence, TemporalQuery, TemporalRelation,
 };
-pub use report::{report, report_file, report_text, ReportError, ReportFormat};
+pub use report::{report, report_file, report_html_text, report_text, ReportError, ReportFormat};
 pub use runner::{replay, replay_to, test, ReplayResult, RunError, TestResult};
 pub use status::{
     campaign_status, ArtifactInventory, CampaignStatus, PropertyVerdict, StatusError,
