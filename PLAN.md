@@ -636,20 +636,23 @@ reproducible investigation.
   both the HTML tree and the markdown recipes, the same completeness
   signal the live journal carries.
 
+- The campaign checkpoint-economics section: the compose report renders
+  the retained search evidence - captures, reuses, restores, retained
+  bytes - as a dedicated section in both the HTML and markdown reports.
+
 ## Immediate next work
 
-### 1. The campaign tree in the exploration report
+### 1. The checkpoint economics on the serve surface
 
-The exploration report renders the tree for single-timeline and search
-explorations; compose campaigns render only run tables. The next work
-renders the campaign's checkpoint shape:
+The report renders the checkpoint economics section; the serve surface
+serves the report but not the economics as data. The next work exposes
+the numbers:
 
-- The campaign report gains a checkpoint-economics section rendered from
-  the retained search evidence: root, prefix, and leaf captures with
-  reuses and restore bytes, so the cost curve is readable in the browser
-  report the serve surface already serves.
-- Tests: report fixtures over a campaign result asserting the economics
-  section renders the recorded counts.
+- The bundle tree's campaign bundles answer the economics inside the
+  existing result route (they already do); add the economics to the
+  comparison artifact so `evaluate compare` rows carry checkpoint nodes
+  and reuses beside the coverage counts they already record.
+- Tests: comparison fixtures asserting the economics columns.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
