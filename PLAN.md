@@ -608,20 +608,23 @@ reproducible investigation.
   workload under two guidance modes, names both campaigns in a versioned
   registry, and walks the evidence over the local read-only HTTP surface.
 
+- The served-registry smoke script: `scripts/tests/test_serve_smoke.py`
+  starts `theseus serve --index` over recorded fixtures on each CI run and
+  asserts every documented route's documented status, including the
+  broken-registry startup refusal and directory discovery.
+
 ## Immediate next work
 
-### 1. The served-registry smoke script
+### 1. Hosted-registry serving from the tutorials
 
-Tutorial 43 walks the serve surface by hand; CI never exercises the
-registry file against a real server. The next work locks the walkthrough:
+Tutorial 43 serves a registry by hand from a Linux host; the recorded
+evidence is portable anywhere. The next work closes the loop for readers
+without KVM:
 
-- A scripts/tests smoke script that writes a registry over recorded
-  fixtures, starts `theseus serve --index` on an ephemeral port, curls
-  every documented route, and fails on any status other than the
-  documented one.
-- The CI check-and-test job runs it beside the documentation checks.
-- Tests: the script itself is the test; the doc checks cover its README
-  mention.
+- Record one explored campaign bundle into the tutorial directory and
+  teach the walkthrough's inspection steps to run from the recorded
+  bundle alone, like tutorials 9, 12, and 13.
+- Tests: the tutorial doc checks cover the recorded files.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the

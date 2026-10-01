@@ -258,7 +258,8 @@ array of `name` -> `directory` pairs whose directories resolve from the
 registry file's directory, with duplicate names, missing directories, and
 directories retaining no versioned result refused by name. The index page
 labels every served bundle with its kind - campaign, exploration, or
-topology.
+topology. `scripts/tests/test_serve_smoke.py` exercises every documented
+route against recorded fixtures on each CI run.
 
 A serve argument that names a directory serves every child directory
 retaining a versioned result - campaign, exploration, or topology (sorted
