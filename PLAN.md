@@ -631,18 +631,25 @@ reproducible investigation.
   length), so a follower fetches only new bytes between polls; tutorial
   43's follower loop and the smoke script exercise it.
 
+- The report's serial tails: the exploration report reads each node's
+  retained log size and renders the byte count beside the log path in
+  both the HTML tree and the markdown recipes, the same completeness
+  signal the live journal carries.
+
 ## Immediate next work
 
-### 1. The orchestrator live serial-tail count in the report
+### 1. The campaign tree in the exploration report
 
-The exploration journal carries per-node serial byte counts; the rendered
-reports still show the logs only as files. The next work renders the
-count:
+The exploration report renders the tree for single-timeline and search
+explorations; compose campaigns render only run tables. The next work
+renders the campaign's checkpoint shape:
 
-- The exploration report's tree section shows each node's serial byte
-  count beside its serial log path, so a browser reading the HTML report
-  sees the same completeness signal the live journal carries.
-- Tests: report fixtures asserting the count renders beside the log.
+- The campaign report gains a checkpoint-economics section rendered from
+  the retained search evidence: root, prefix, and leaf captures with
+  reuses and restore bytes, so the cost curve is readable in the browser
+  report the serve surface already serves.
+- Tests: report fixtures over a campaign result asserting the economics
+  section renders the recorded counts.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
