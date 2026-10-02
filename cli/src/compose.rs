@@ -2771,11 +2771,34 @@ fn image_launch_plan(
         .map(|user| image_user_plan(service, &user))
         .transpose()?;
     for path in &tmpfs {
-        if !path.starts_with('/') || path.contains('\0') || path.split('/').any(|part| part == "..")
+        let (target, size) = match path.split_once(':') {
+            Some((target, option)) => (target, Some(option)),
+            None => (path.as_str(), None),
+        };
+        if !target.starts_with('/')
+            || target.contains('\0')
+            || target.split('/').any(|part| part == "..")
         {
             return Err(ComposeError::Invalid(format!(
-                "service {service:?} tmpfs path {path:?} must be absolute without parent traversal"
+                "service {service:?} tmpfs path {target:?} must be absolute without parent traversal"
             )));
+        }
+        if let Some(option) = size {
+            let Some(bytes) = option.strip_prefix("size=") else {
+                return Err(ComposeError::Invalid(format!(
+                    "service {service:?} tmpfs mount {path:?} supports only the size= option"
+                )));
+            };
+            let parsed: u64 = bytes.parse().map_err(|_| {
+                ComposeError::Invalid(format!(
+                    "service {service:?} tmpfs mount {path:?} has a non-numeric size"
+                ))
+            })?;
+            if parsed == 0 {
+                return Err(ComposeError::Invalid(format!(
+                    "service {service:?} tmpfs mount {path:?} needs a positive size"
+                )));
+            }
         }
     }
     if command.is_none()
@@ -11330,6 +11353,59 @@ x-theseus:
             operation.input_grammar.as_ref().unwrap().bounds,
             BTreeMap::from([("value".to_owned(), 2), ("mode".to_owned(), 2)])
         );
+    }
+
+    #[test]
+    fn locks_tmpfs_sizes_and_refuses_invalid_ones() {
+        let directory = image_fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    tmpfs:\n      - /run/cache:size=1048576\n      - /tmp/scratch\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+            &[],
+        );
+        fs::write(
+            directory.path().join("api/theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+        write_docker_image(&directory.path().join("api/service.tar"), &[]);
+        fs::write(
+            directory.path().join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'api/runtime/firecracker'\nimage_adapter = 'api/runtime/theseus-image'\n[guest]\nkernel = 'api/guest/vmlinux'\nimage = 'api/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("compose.yaml")).unwrap();
+        let launch = plan.services["api"].launch.as_ref().unwrap();
+        assert_eq!(
+            launch.tmpfs,
+            vec![
+                "/run/cache:size=1048576".to_owned(),
+                "/tmp/scratch".to_owned()
+            ]
+        );
+
+        let bad_size = image_fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    tmpfs:\n      - /run/cache:size=big\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+            &[],
+        );
+        fs::write(
+            bad_size.path().join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'api/runtime/firecracker'\nimage_adapter = 'api/runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+        let error = load_compose_plan(bad_size.path().join("compose.yaml")).unwrap_err();
+        assert!(error.to_string().contains("non-numeric size"), "{error}");
+
+        let zero = image_fixture(
+            "services:\n  api:\n    x-theseus:\n      manifest: api/theseus.toml\n    tmpfs:\n      - /run/cache:size=0\n    networks: [backplane]\nnetworks:\n  backplane: {}\n",
+            &[],
+        );
+        fs::write(
+            zero.path().join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'api/runtime/firecracker'\nimage_adapter = 'api/runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+        let error = load_compose_plan(zero.path().join("compose.yaml")).unwrap_err();
+        assert!(error.to_string().contains("positive size"), "{error}");
     }
 
     #[test]
