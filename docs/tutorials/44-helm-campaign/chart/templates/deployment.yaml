@@ -1,0 +1,11 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chooser
+spec:
+  template:
+    spec:
+      containers:
+        - name: chooser
+          image: theseus-helm-tutorial:latest
+          command: ["/usr/local/bin/chooser"]

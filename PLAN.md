@@ -707,17 +707,23 @@ reproducible investigation.
   (`helm template --output-dir` layout) works as-is; empty directories,
   non-YAML directories, and non-Kubernetes documents are refused by name.
 
+- The Helm walkthrough: tutorial 44 renders a one-service chart with
+  `helm template --output-dir`, validates the rendered directory as the
+  campaign input, and inspects the locked plan - with the explore
+  conversion pointed at tutorial 15's flow.
+
 ## Immediate next work
 
-### 1. The Helm walkthrough in the tutorial set
+### 1. The compose breadth backlog
 
-Tutorial 21 covers Compose config; no tutorial renders a Helm chart into
-a Theseus campaign. The next work adds it:
+The workload packaging row's remaining gap is "wider Compose breadth"
+without naming what is missing. The next work makes it a list:
 
-- A tutorial renders a one-service chart with `helm template
-  --output-dir`, explores the rendered directory as the campaign input,
-  and verifies the same replay contract as the Kubernetes tutorials.
-- Tests: the tutorial doc checks cover the new walkthrough's files.
+- An audit of the documented Compose subset against the Compose
+  specification's common fields, recording each unsupported field with
+  the reason it is out of scope (host-state, image-specific, or
+  scheduling-dependent), so breadth work picks from an honest list.
+- Tests: the documentation checks cover the audit table.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
