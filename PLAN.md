@@ -692,18 +692,23 @@ reproducible investigation.
   parity delivery row records the live journal's four surfaces (serve
   route, Range polls, collect prefix, status summary).
 
+- The collect route: `GET /<name>/query/moment/<moment>?collect` answers
+  one ustar archive with the CLI's collected files - boundary record,
+  journal prefix, decision trace, serial slices, digest manifest - built
+  in-memory by the same collection logic.
+
 ## Immediate next work
 
-### 1. The collect command in the serve surface
+### 1. The smoke script's collect route
 
-The collect bundle is a first-class artifact; fetching one over HTTP
-still needs the CLI. The next work serves it:
+The serve smoke script asserts every documented route; the new collect
+route needs the same lock. The next work extends it:
 
-- `GET /<name>/query/moment/<moment>?collect` renders the same collected
-  directory in-memory and answers a single multipart or tar response, so
-  a recipient audits the bundle offline without the CLI.
-- Tests: listener fixtures asserting the archive contains the boundary,
-  journal prefix, and manifest entries.
+- The smoke script fetches a `?collect` archive, untars it with Python's
+  `tarfile`, and asserts the boundary record, journal prefix, and
+  manifest entries against the fixtures.
+- Tests: the smoke script is the test; the manifest lists the collect
+  route beside the others.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
