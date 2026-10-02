@@ -676,19 +676,25 @@ reproducible investigation.
   novelty from the first campaign's consumed identities, and the tutorial
   shows the seed riding the locked plan for replay.
 
+- The journal in collected moments: `theseus query --collect` copies the
+  progress journal's prefix for the collected run - progress line, run
+  record, and checkpoint ledger - so the evidence bundle carries the live
+  account beside the boundary window. (The seeded-replay regression the
+  queue named was already covered: CI's KVM runner tests pin the seeding
+  semantics.)
+
 ## Immediate next work
 
-### 1. The seeded continuation under regression
+### 1. The journal in the status surface
 
-Tutorial 36's seeded step runs under KVM by hand; the serve smoke script
-pattern covers the read-only surface but no CI job replays a seeded
-campaign. The next work locks the behavior:
+`theseus status` summarizes a campaign; the live journal is now a
+first-class artifact the collect path carries. The next work surfaces it:
 
-- A CI step replays a seeded campaign bundle from the recorded runtime
-  artifacts, asserting the replay certifies the same seeded plan and
-  rejects a mutated seed.
-- Tests: the CI step is the test; the tutorial doc checks cover its
-  mention.
+- `theseus status` prints the journal's line counts by kind (progress,
+  run records, checkpoint ledgers) and the last run's economics, so a
+  reader sees the search's shape without reading JSONL.
+- Tests: status fixtures over a bundle with a journal asserting the
+  summary lines.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the

@@ -870,6 +870,28 @@ pub fn collect_moment(
     // the transcript length at that moment, verified against the boundary's
     // cumulative digest. Missing or mismatching evidence degrades the
     // collection instead of failing it.
+    // The progress journal's prefix for this run: the progress line, run
+    // record, and checkpoint-ledger lines up to and including the collected
+    // run, so the evidence bundle carries the live account beside the
+    // boundary window.
+    if let Ok(journal) = fs::read_to_string(bundle.join("progress.jsonl")) {
+        let mut last_index: i64 = -1;
+        let mut prefix = String::new();
+        for line in journal.lines() {
+            if let Ok(record) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(index) = record["index"].as_i64() {
+                    last_index = index;
+                }
+            }
+            if last_index <= located.run as i64 {
+                prefix.push_str(line);
+                prefix.push('\n');
+            }
+        }
+        if !prefix.is_empty() {
+            write_collected_file(&output, "progress.jsonl", prefix.as_bytes(), &mut files)?;
+        }
+    }
     let run_dir = bundle.join("runs").join(format!("{:03}", located.run));
     let mut serial_slices = "unavailable";
     if run_dir.is_dir() {
@@ -1322,6 +1344,20 @@ mod tests {
             transcript,
         )
         .unwrap();
+        fs::write(
+            directory.join("progress.jsonl"),
+            concat!(
+                r#"{"format":"theseus-progress-v1","completed":1,"index":0,"status":"passed"}"#,
+                "\n",
+                r#"{"format":"theseus-run-record-v1","index":0,"status":"passed","operations":["write"]}"#,
+                "\n",
+                r#"{"format":"theseus-checkpoint-ledger-v1","nodes":1,"reuses":0}"#,
+                "\n",
+                r#"{"format":"theseus-progress-v1","completed":2,"index":1,"status":"failed"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1347,6 +1383,12 @@ mod tests {
         assert_eq!(collected.next_moment, None);
         assert_eq!(collected.serial_slices, "collected");
         assert_eq!(collected.decision_trace_entries, 3);
+        // The journal prefix covers the collected run only: three lines up
+        // to and including run 0's ledger, excluding run 1's progress line.
+        let journal = fs::read_to_string(output.join("progress.jsonl")).unwrap();
+        assert_eq!(journal.lines().count(), 3);
+        assert!(journal.contains("theseus-checkpoint-ledger-v1"));
+        assert!(!journal.contains(r#""completed":2"#));
 
         // Every manifest entry matches the bytes on disk, and the manifest
         // lists everything except itself.
@@ -1367,7 +1409,8 @@ mod tests {
         for name in ["boundary.json", "previous.json", "decision-trace.json"] {
             assert!(output.join(name).is_file(), "{name}");
         }
-        assert_eq!(collected.files.len(), 4);
+        assert_eq!(collected.files.len(), 5);
+        assert!(output.join("progress.jsonl").is_file());
         assert!(!output.join("next.json").exists());
 
         // The serial slice is exactly the cumulative transcript at the
@@ -1416,7 +1459,8 @@ mod tests {
         let collected = collect_moment(&bundle, "9000@read-hash", &output).unwrap();
         assert_eq!(collected.serial_slices, "unavailable");
         assert!(!output.join("serial").exists());
-        assert_eq!(collected.files.len(), 3);
+        assert_eq!(collected.files.len(), 4);
+        assert!(output.join("progress.jsonl").is_file());
 
         let error = collect_moment(&bundle, "9000@read-hash", &output).unwrap_err();
         assert!(
