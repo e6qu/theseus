@@ -4,7 +4,9 @@ Each directory is complete: make it your working directory and use the
 published Theseus artifact named in its README. No tutorial needs a Theseus
 source checkout.
 
-Tutorials 1–8, 10–11, and 14–43 need Linux with KVM and Docker. Tutorials 9,
+Tutorials 1–8, 10–11, and 14–44 need Linux with KVM and Docker.
+Tutorial 44 validates a rendered Helm chart with only the published
+binary and Docker. Tutorials 9,
 12, and 13 read recorded bundles with only the published binary, and
 tutorial 43 serves its recorded example the same way after exploring with
 KVM. Tutorials 1
@@ -116,6 +118,10 @@ deterministic-CRNG kernel module is shipped.
     one workload under two guidance modes, name both campaigns in a versioned
     registry, and walk the evidence over one local read-only HTTP surface; the
     shipped recorded example serves without KVM.
+
+44. [Validate a rendered Helm chart](44-helm-campaign/) — render a one-service
+    chart with `helm template`, validate the rendered directory as a campaign
+    input, and inspect the locked plan without invoking Helm inside Theseus.
 
 For source-tree work, see the [fault-hunting exercise](../developer/fault-hunting/)
 and the focused guides for [container images](../guides/container-images/),
