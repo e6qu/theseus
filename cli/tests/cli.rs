@@ -893,6 +893,18 @@ fn status_summarizes_a_retained_campaign_without_kvm() {
         r#"{"format":"theseus-compose-plan-v1","campaign":{"driver":"api","max_runs":64}}"#,
     )
     .unwrap();
+    fs::write(
+        bundle.join("progress.jsonl"),
+        concat!(
+            r#"{"format":"theseus-progress-v1","completed":1,"index":0,"status":"passed"}"#,
+            "\n",
+            r#"{"format":"theseus-run-record-v1","index":0,"status":"passed","operations":["write"]}"#,
+            "\n",
+            r#"{"format":"theseus-checkpoint-ledger-v1","nodes":5,"reuses":2}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
 
     let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
         .args(["status", "campaign", "--format", "json"])
@@ -911,6 +923,11 @@ fn status_summarizes_a_retained_campaign_without_kvm() {
     assert_eq!(status["properties"][0]["name"], "lost_update");
     assert_eq!(status["artifacts"]["runs"], 2);
     assert_eq!(status["artifacts"]["checkpoint"], false);
+    assert_eq!(status["journal"]["progress_lines"], 1);
+    assert_eq!(status["journal"]["run_records"], 1);
+    assert_eq!(status["journal"]["checkpoint_ledgers"], 1);
+    assert_eq!(status["journal"]["last_nodes"], 5);
+    assert_eq!(status["journal"]["last_reuses"], 2);
 
     let text = Command::new(env!("CARGO_BIN_EXE_theseus"))
         .args(["status", "campaign"])
@@ -927,6 +944,14 @@ fn status_summarizes_a_retained_campaign_without_kvm() {
     );
     assert!(
         text.contains("artifacts: result true plan true runs 2 checkpoint false"),
+        "{text}"
+    );
+    assert!(
+        text.contains("journal: 1 progress, 1 run record(s), 1 checkpoint ledger(s)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("journal last ledger: 5 node(s), 2 reuse(s)"),
         "{text}"
     );
 
