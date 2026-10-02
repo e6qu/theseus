@@ -75,6 +75,23 @@ grep -n 'structured_choices\|corrupt_result_is_unreachable' \
 The failure needs `mode=1` and `retry=2`. The result records both values,
 bounds, service, operation boundary, and observation order.
 
+Seed a continuation from that campaign: the consumed choice identities
+ride the locked plan, unified guidance counts them as already seen, and
+the fresh search prefers assignments the first exploration used least.
+
+```sh
+theseus compose explore --guidance unified --max-runs 6 \
+  --seed-choices campaign \
+  --expect-counterexample corrupt_result_is_unreachable \
+  --output seeded compose.yaml
+grep -n 'seed_choice_values' seeded/replay-plan.json | head -1
+grep -c 'chooser:mode:2:1' seeded/replay-plan.json
+grep -n '"choice_feedback"' seeded/campaign-result.json | head -2
+```
+
+The retained plan records the seed, so replay verifies the same input;
+the new campaign journals its own choice feedback exactly like the first.
+
 ## 5. Inspect, minimize, and replay the failure
 
 ```sh
