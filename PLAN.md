@@ -741,18 +741,23 @@ reproducible investigation.
   checkpoint economics) and the ranking experiment - no policy change
   ships before it.
 
+- The weighting comparison harness: `scripts/compare_weighting_signals.sh`
+  explores one workload seeded and unseeded at one fixed budget and
+  emits the comparison artifact plus the cross-campaign choice catalog;
+  the parity row and the design note link it as the required experiment.
+
 ## Immediate next work
 
-### 1. The weighting comparison harness
+### 1. The harness's yield tabulation
 
-The design note names the experiment; a script makes it runnable. The
-next work adds the harness beside `compare_guidance_modes.sh`:
+The harness emits the raw evidence; the design note's ranking needs the
+tabulation. The next work computes it:
 
-- `scripts/compare_weighting_signals.sh` explores one workload seeded and
-  unseeded at one fixed budget, then tabulates property yield per run and
-  the choice-outcome shares per signal from the retained campaigns.
-- The parity row links the harness as the experiment the note requires.
-- Tests: the tutorial doc checks cover the script's `sh -n` pass.
+- The script (or a small `theseus` surface) reduces the two campaigns and
+  the choice catalog to one table: per signal, property witnesses and
+  failures per run, so the ranking is a row comparison rather than
+  hand-reading JSON.
+- Tests: `sh -n` plus the documentation checks.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
