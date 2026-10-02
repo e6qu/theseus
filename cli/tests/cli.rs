@@ -1293,6 +1293,62 @@ fn query_matches_structured_events_with_temporal_relations() {
 }
 
 #[test]
+fn history_catalogs_choice_values_with_failure_shares() {
+    let directory = tempfile::tempdir().unwrap();
+    for (name, statuses) in [
+        ("before", vec![("passed", 0), ("failed", 1)]),
+        ("after", vec![("failed", 1)]),
+    ] {
+        let bundle = directory.path().join(name);
+        fs::create_dir_all(&bundle).unwrap();
+        let runs: Vec<String> = statuses
+            .iter()
+            .map(|(status, mode)| {
+                format!(
+                    r#"{{"index":0,"status":"{status}","choice_feedback":{{"values":["chooser:mode:2:{mode}"]}}}}"#
+                )
+            })
+            .collect();
+        fs::write(
+            bundle.join("campaign-result.json"),
+            format!(r#"{{"status":"failed","runs":[{}]}}"#, runs.join(",")),
+        )
+        .unwrap();
+    }
+
+    let text = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["history", "before", "after", "--choices"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(text.status.success(), "{text:?}");
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("choices: 2"), "{text}");
+    assert!(
+        text.contains("choice chooser:mode:2:0: 1 run(s), 0 failed across 1 campaign(s)"),
+        "{text}"
+    );
+    assert!(text.contains("failed 1 (100%)"), "{text}");
+    assert!(text.contains("failed 0 (0%)"), "{text}");
+
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "history",
+            "before",
+            "after",
+            "--choices",
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let catalog: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(catalog["format"], "theseus-choice-catalog-v1");
+    assert_eq!(catalog["choices"].as_array().unwrap().len(), 2);
+}
+
 fn history_catalogs_assertion_identities_across_campaigns() {
     let directory = tempfile::tempdir().unwrap();
     for (name, lines) in [
