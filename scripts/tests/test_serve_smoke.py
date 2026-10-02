@@ -7,8 +7,10 @@ route answers with its documented status. Run from the repository root;
 the script launches the CLI binary through cargo.
 """
 
+import io
 import json
 import socket
+import tarfile
 import subprocess
 import sys
 import time
@@ -221,6 +223,27 @@ def main() -> None:
         expect(port, "/unified/query/preceded-by/write", 200)
         expect(port, "/unified/query/moment/7000@input-hash", 200, "op-000-write")
         expect(port, "/unified/query/moment/7000@input-hash?next", 404)
+
+        # The collect route answers one tar archive with the CLI's
+        # collected files: boundary record, journal prefix, digest manifest.
+        status, content_type, archive = fetch(
+            port, "/unified/query/moment/7000@input-hash?collect"
+        )
+        assert status == 200, status
+        assert content_type == "application/x-tar", content_type
+        with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
+            names = set(bundle.getnames())
+            assert "boundary.json" in names, names
+            assert "progress.jsonl" in names, names
+            assert "manifest.json" in names, names
+            boundary = json.load(bundle.extractfile("boundary.json"))
+            assert boundary["moment"] == "7000@input-hash", boundary["moment"]
+            journal = bundle.extractfile("progress.jsonl").read().decode().splitlines()
+            assert len(journal) == 3, journal
+            manifest = json.load(bundle.extractfile("manifest.json"))
+            assert manifest["format"] == "theseus-collected-artifacts-v1"
+            assert manifest["run"] == 0
+        expect(port, "/unified/query/moment/9000@input-hash?collect", 404)
         expect(port, "/unified/tree", 200, "theseus-bundle-tree-v1")
         expect(port, "/unified/serial/1.log", 200, "ready\n")
         expect(port, "/unified/file/serial/1.log", 200, "ready\n")
@@ -242,6 +265,7 @@ def main() -> None:
             "/<name>/progress",
             "/<name>/tree",
             "/<name>/query/moments",
+            "/<name>/query/moment/<moment>?collect",
             "/<name>/query/node/<seed-path>",
             "/history/events?service=NAME",
             "/compare?campaigns=a,b",
