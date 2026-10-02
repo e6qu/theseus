@@ -489,6 +489,29 @@ grep -n 'seed_choice_values' continuation/replay-plan.json | head -1
 novelty policy, so the new search prefers values the prior campaign never
 used, and the seed rides the locked plan for replay.
 
+### Weighting signals: a design note
+
+Unified guidance ranks candidates by first-seen novelty; the retained
+evidence already carries stronger signals waiting for an experiment:
+
+- **Context novelty** (shipped): a value's first pairing with each
+  schedule context counts, so neighborhoods matter.
+- **Choice-outcome correlation** (readable, unweighted): the choice
+  catalog's per-identity failed-run shares say which values correlated
+  with failures - candidates that reach failing values may deserve
+  weight.
+- **Property witnesses** (weighted): witness-bearing candidates already
+  rank above novelty alone.
+- **Checkpoint economics** (recorded, unweighted): the reuse curve says
+  what a candidate cost; cheap-but-novel prefixes could rank higher.
+
+The experiment before any policy change: explore one corpus seeded and
+unseeded at one fixed budget, then rank the signals by which best
+predicts the retained distributions' property yield per run - using the
+same `evaluate compare` and `history --choices` surfaces documented
+above. A signal ships into the policy only when that comparison shows it
+finds failures or witnesses sooner than first-seen novelty alone.
+
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without
 editing the Compose file. Comparing one file across guidance modes at one

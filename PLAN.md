@@ -736,20 +736,25 @@ reproducible investigation.
   paragraph names the serve route, and the guide's correlation paragraph
   references the aggregation by route.
 
+- The weighting design note: the exploration guide records the candidate
+  signals (context novelty, choice-outcome correlation, witnesses,
+  checkpoint economics) and the ranking experiment - no policy change
+  ships before it.
+
 ## Immediate next work
 
-### 1. The guidance-weighting experiment note
+### 1. The weighting comparison harness
 
-The parity row's remaining gap: unified guidance weights what is new,
-not what mattered. The next work explores the signal:
+The design note names the experiment; a script makes it runnable. The
+next work adds the harness beside `compare_guidance_modes.sh`:
 
-- A design note in the exploration guide records the candidate weighting
-  signals the evidence already carries - context novelty, choice-outcome
-  correlation, property witnesses, checkpoint economics - and the
-  experiment that would rank them: comparing seeded campaigns' retained
-  distributions across the signals.
-- No policy change ships without that comparison.
+- `scripts/compare_weighting_signals.sh` explores one workload seeded and
+  unseeded at one fixed budget, then tabulates property yield per run and
+  the choice-outcome shares per signal from the retained campaigns.
+- The parity row links the harness as the experiment the note requires.
+- Tests: the tutorial doc checks cover the script's `sh -n` pass.
 
+Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
 history routes, the comparison route, the grammar-locked bounds, serve
 discovery, bundle-kind coverage, the exploration node routes, and the
