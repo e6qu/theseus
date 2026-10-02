@@ -149,6 +149,15 @@ fn print_status_text(status: &theseus_cli::CampaignStatus) {
     if let Some(counterexample) = &status.counterexample {
         println!("counterexample: {counterexample}");
     }
+    if let Some(journal) = &status.journal {
+        println!(
+            "journal: {} progress, {} run record(s), {} checkpoint ledger(s)",
+            journal.progress_lines, journal.run_records, journal.checkpoint_ledgers
+        );
+        if let (Some(nodes), Some(reuses)) = (journal.last_nodes, journal.last_reuses) {
+            println!("journal last ledger: {nodes} node(s), {reuses} reuse(s)");
+        }
+    }
     println!(
         "artifacts: result {} plan {} runs {} checkpoint {}",
         status.artifacts.result,
