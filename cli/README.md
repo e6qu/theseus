@@ -906,7 +906,11 @@ theseus compose explore --shard 3/4 --output campaign-shard-3 compose.yaml
 
 Each retained campaign records its shard beside its policy, the corpus
 ordering is fixed, and the shards are disjoint — rerunning a shard
-reproduces it byte-stably. `theseus status` reports the shard so collectors
+reproduces it byte-stably. `theseus status` reports the shard so collectors.
+When the bundle retains a live journal, the summary counts its lines by
+kind - progress lines, run records, checkpoint ledgers - and records the
+last ledger's node and reuse counts, so the search's shape is readable
+without opening the JSONL.
 can concatenate the workers' verdicts.
 
 Pass `--notify COMMAND` to run a completion hook once after the campaign

@@ -108,11 +108,61 @@ pub struct CampaignStatus {
     /// The corpus shard the campaign explored, when the plan declared one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shard: Option<(u16, u16)>,
+    /// The live journal's shape, when the bundle retains one: line counts
+    /// by kind and the last checkpoint ledger's reuse curve.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub journal: Option<CampaignJournalSummary>,
     pub artifacts: ArtifactInventory,
+}
+
+/// The progress journal's shape: line counts by kind, plus the last
+/// checkpoint ledger's economics.
+#[derive(Debug, Serialize)]
+pub struct CampaignJournalSummary {
+    pub progress_lines: usize,
+    pub run_records: usize,
+    pub checkpoint_ledgers: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_nodes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_reuses: Option<u64>,
+}
+
+impl CampaignJournalSummary {
+    fn from_journal(journal: &str) -> Self {
+        let mut summary = Self {
+            progress_lines: 0,
+            run_records: 0,
+            checkpoint_ledgers: 0,
+            last_nodes: None,
+            last_reuses: None,
+        };
+        for line in journal.lines() {
+            let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            match record["format"].as_str().unwrap_or_default() {
+                "theseus-progress-v1" => summary.progress_lines += 1,
+                "theseus-run-record-v1" => summary.run_records += 1,
+                "theseus-checkpoint-ledger-v1" => {
+                    summary.checkpoint_ledgers += 1;
+                    summary.last_nodes = record["nodes"].as_u64();
+                    summary.last_reuses = record["reuses"].as_u64();
+                }
+                _ => {}
+            }
+        }
+        summary
+    }
 }
 
 fn optional_text(value: &serde_json::Value, key: &str) -> Option<String> {
     value[key].as_str().map(str::to_owned)
+}
+
+fn read_journal_summary(bundle: &Path) -> Option<CampaignJournalSummary> {
+    let journal = fs::read_to_string(bundle.join("progress.jsonl")).ok()?;
+    Some(CampaignJournalSummary::from_journal(&journal))
 }
 
 fn read_json(path: &Path) -> Result<Option<serde_json::Value>, StatusError> {
@@ -139,6 +189,7 @@ pub fn campaign_status(bundle: impl AsRef<Path>) -> Result<CampaignStatus, Statu
                 .unwrap_or("unknown")
                 .to_owned();
             return Ok(CampaignStatus {
+                journal: read_journal_summary(&bundle),
                 format: "theseus-campaign-status-v1",
                 source: bundle.display().to_string(),
                 campaign_format: None,
@@ -227,6 +278,7 @@ pub fn campaign_status(bundle: impl AsRef<Path>) -> Result<CampaignStatus, Statu
                 shard.get("total")?.as_u64()? as u16,
             ))
         }),
+        journal: read_journal_summary(&bundle),
         artifacts: artifact_inventory(&bundle),
     })
 }
@@ -266,6 +318,49 @@ mod tests {
             fs::write(directory.join("replay-plan.json"), plan).unwrap();
         }
         directory.to_path_buf()
+    }
+
+    #[test]
+    fn status_summarizes_the_live_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = write_bundle(
+            &directory,
+            Some(
+                r#"{"format":"theseus-compose-campaign-result-v1","status":"passed","runs":[{"index":0,"status":"passed"}]}"#,
+            ),
+            Some(
+                r#"{"format":"theseus-compose-plan-v1","campaign":{"driver":"api","max_runs":8}}"#,
+            ),
+        );
+        fs::write(
+            bundle.join("progress.jsonl"),
+            concat!(
+                r#"{"format":"theseus-progress-v1","completed":1,"index":0,"status":"passed"}"#,
+                "\n",
+                r#"{"format":"theseus-run-record-v1","index":0,"status":"passed","operations":["write"]}"#,
+                "\n",
+                r#"{"format":"theseus-checkpoint-ledger-v1","nodes":4,"reuses":3,"prefix_captures":2,"prefix_restores":1,"retained_memory_bytes":1048576}"#,
+                "\n",
+                "corrupt line\n",
+            ),
+        )
+        .unwrap();
+
+        let status = campaign_status(&bundle).unwrap();
+        let journal = status.journal.expect("journal summary");
+        assert_eq!(journal.progress_lines, 1);
+        assert_eq!(journal.run_records, 1);
+        assert_eq!(journal.checkpoint_ledgers, 1);
+        assert_eq!(journal.last_nodes, Some(4));
+        assert_eq!(journal.last_reuses, Some(3));
+
+        // A bundle without a journal summarizes without one.
+        let plain = write_bundle(
+            directory.path().join("plain"),
+            Some(r#"{"status":"passed","runs":[]}"#),
+            None,
+        );
+        assert!(campaign_status(&plain).unwrap().journal.is_none());
     }
 
     #[test]
