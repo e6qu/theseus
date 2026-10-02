@@ -470,6 +470,12 @@ generated case, so generated values and guest-consumed choices verify
 against one declaration. A bound with no matching choice variable, or a
 bound that excludes declared cases, is rejected at plan time by name.
 
+Two surfaces read the consumed values back across campaigns: `theseus
+history --choices` catalogs every consumed identity with per-campaign run
+and failure shares, and `theseus evaluate compare` records per-identity
+outcome columns per mode, so a comparison shows which generated values
+correlated with failures under which guidance.
+
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without
 editing the Compose file. Comparing one file across guidance modes at one
