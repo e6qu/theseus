@@ -712,18 +712,19 @@ reproducible investigation.
   campaign input, and inspects the locked plan - with the explore
   conversion pointed at tutorial 15's flow.
 
+- The Compose breadth audit: [docs/audits/2026-10-compose-breadth.md](docs/audits/2026-10-compose-breadth.md) records every unsupported common field with its out-of-scope reason, and the workload-packaging gap links it.
+
 ## Immediate next work
 
-### 1. The compose breadth backlog
+### 1. tmpfs sizing in the breadth subset
 
-The workload packaging row's remaining gap is "wider Compose breadth"
-without naming what is missing. The next work makes it a list:
+The subset accepts `tmpfs` paths; the specification's `tmpfs.size`
+option is refused with the rest. The next work supports the size:
 
-- An audit of the documented Compose subset against the Compose
-  specification's common fields, recording each unsupported field with
-  the reason it is out of scope (host-state, image-specific, or
-  scheduling-dependent), so breadth work picks from an honest list.
-- Tests: the documentation checks cover the audit table.
+- A memory-backed tmpfs mount accepts a declared byte size, locked into
+  the plan and enforced by the memory-only storage device.
+- Tests: translation fixtures over sized and unsized tmpfs mounts, and
+  the refusal of non-numeric sizes.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
