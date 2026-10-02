@@ -657,19 +657,25 @@ reproducible investigation.
   the failure share (percentage) beside the counts, and an integration
   test pins the text and JSON shapes end-to-end.
 
+- The correlation cross-references: the parity analysis records the
+  catalog and comparison columns as the addressed correlation surfaces,
+  and the exploration guide links both from the structured-choices
+  section.
+
 ## Immediate next work
 
-### 1. Choice-value correlations in the compare artifact docs
+### 1. The guidance-weighting follow-up
 
-The comparison artifact's per-identity outcome columns and the choice
-catalog's failure shares are documented separately. The next work
-cross-references them:
+Cross-campaign value correlations are readable; the guidance policy still
+weights novelty only within one campaign's search. The next work closes
+the recorded gap:
 
-- The parity analysis's structured-randomness row records the correlation
-  surfaces (catalog + comparison columns) as addressed, narrowing the
-  remaining gap to weighting, and the exploration guide's structured
-  choices section links both surfaces.
-- Tests: the documentation checks cover the cross-references.
+- `compose explore --guidance unified` accepts a prior campaign bundle
+  whose consumed choice identities seed the novelty policy, so a fresh
+  search treats already-consumed values as known and prefers unexplored
+  ones.
+- Tests: campaign fixtures over a prior bundle asserting the seeded
+  policy's ordering.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
