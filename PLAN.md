@@ -662,20 +662,23 @@ reproducible investigation.
   and the exploration guide links both from the structured-choices
   section.
 
+- The guidance-weighting follow-up: `compose explore --seed-choices
+  prior-campaign` reads the prior bundle's consumed choice identities
+  into unified guidance's novelty set, so a fresh search treats
+  already-consumed values as known and prefers unexplored ones; the
+  seeding rides the locked plan, so replay verifies the same input.
+
 ## Immediate next work
 
-### 1. The guidance-weighting follow-up
+### 1. Seeded-guidance ordering in the comparison
 
-Cross-campaign value correlations are readable; the guidance policy still
-weights novelty only within one campaign's search. The next work closes
-the recorded gap:
+The seeding flag lands; no walkthrough shows two seeded campaigns
+competing. The next work demonstrates it:
 
-- `compose explore --guidance unified` accepts a prior campaign bundle
-  whose consumed choice identities seed the novelty policy, so a fresh
-  search treats already-consumed values as known and prefers unexplored
-  ones.
-- Tests: campaign fixtures over a prior bundle asserting the seeded
-  policy's ordering.
+- The parity analysis's structured-randomness row narrows to the truly
+  open question (weighting signals beyond novelty), and the structured
+  choices section documents the seeded workflow with the flag.
+- Tests: the documentation checks cover the cross-references.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the

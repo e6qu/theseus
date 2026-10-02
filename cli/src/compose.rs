@@ -1387,6 +1387,11 @@ pub struct CampaignPlan {
     pub quiet: Vec<QuietWindowPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shard: Option<ShardPlan>,
+    /// Consumed choice identities from a prior campaign. Unified guidance
+    /// seeds its novelty set with them, so a fresh search treats
+    /// already-consumed values as known and prefers unexplored ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seed_choice_values: Vec<String>,
     pub max_runs: u16,
     pub max_faults_per_run: u8,
     pub max_operations_per_run: u8,
@@ -5572,6 +5577,7 @@ fn campaign_plan(
         faults,
         quiet,
         shard: None,
+        seed_choice_values: Vec::new(),
         properties,
         max_runs: campaign.max_runs,
         max_faults_per_run: campaign.max_faults_per_run,
@@ -7736,7 +7742,7 @@ pub fn explore_compose(
     path: impl AsRef<Path>,
     output: impl AsRef<Path>,
 ) -> Result<PathBuf, ComposeError> {
-    explore_compose_with(path, output, None, None, None, None)
+    explore_compose_with(path, output, None, None, None, None, None)
 }
 
 /// Execute the topology's declared campaign with explicit fixed-budget and
@@ -7749,6 +7755,7 @@ pub fn explore_compose_with(
     guidance: Option<CampaignGuidance>,
     notify: Option<&str>,
     shard: Option<(u16, u16)>,
+    seed_choices: Option<&Path>,
 ) -> Result<PathBuf, ComposeError> {
     let mut plan = load_compose_plan(&path)?;
     if plan.campaign.is_none() {
@@ -7765,6 +7772,9 @@ pub fn explore_compose_with(
             campaign.guidance = guidance;
         }
         campaign.shard = shard;
+        if let Some(prior) = seed_choices {
+            campaign.seed_choice_values = seeded_choice_values(prior)?;
+        }
     }
     plan.topology_runner = Some(installed_runner_artifact()?);
     let output = output.as_ref().to_path_buf();
@@ -7895,6 +7905,47 @@ pub fn explore_compose_expect_counterexample_with(
     let _ = fs::remove_file(&plan_file);
     notify_campaign_completion(notify, &output);
     result.map(|()| output)
+}
+
+/// Read a prior campaign's consumed choice identities for novelty seeding.
+/// The directory must retain a campaign result; the identities come from
+/// each run's recorded choice feedback, deduplicated and sorted.
+pub fn seeded_choice_values(prior: impl AsRef<Path>) -> Result<Vec<String>, ComposeError> {
+    let prior = prior.as_ref();
+    let bundle = fs::canonicalize(prior).map_err(|source| ComposeError::Read {
+        path: prior.to_path_buf(),
+        source,
+    })?;
+    let result_path = bundle.join("campaign-result.json");
+    let result: serde_json::Value = serde_json::from_slice(&fs::read(&result_path).map_err(
+        |source| ComposeError::Read {
+            path: result_path.clone(),
+            source,
+        },
+    )?)
+    .map_err(|error| {
+        ComposeError::Invalid(format!(
+            "{}: unparsable campaign result: {error}",
+            result_path.display()
+        ))
+    })?;
+    let mut values = std::collections::BTreeSet::new();
+    for run in result["runs"]
+        .as_array()
+        .map(|runs| runs.as_slice())
+        .unwrap_or(&[])
+    {
+        for value in run["choice_feedback"]["values"]
+            .as_array()
+            .map(|values| values.as_slice())
+            .unwrap_or(&[])
+        {
+            if let Some(value) = value.as_str() {
+                values.insert(value.to_owned());
+            }
+        }
+    }
+    Ok(values.into_iter().collect())
 }
 
 /// Validate one exploration shard: `index` out of `total` workers, with a
@@ -11175,6 +11226,33 @@ x-theseus:
             operation.input_grammar.as_ref().unwrap().bounds,
             BTreeMap::from([("value".to_owned(), 2), ("mode".to_owned(), 2)])
         );
+    }
+
+    #[test]
+    fn seeds_choice_novelty_from_a_prior_campaign() {
+        let directory = tempfile::tempdir().unwrap();
+        let prior = directory.path().join("prior");
+        fs::create_dir_all(&prior).unwrap();
+        fs::write(
+            prior.join("campaign-result.json"),
+            r#"{"format":"theseus-compose-campaign-result-v1","runs":[
+                {"index":0,"status":"passed","choice_feedback":{"values":["chooser:mode:2:1","chooser:retry:3:0"]}},
+                {"index":1,"status":"failed","choice_feedback":{"values":["chooser:mode:2:1"]}}
+            ]}"#,
+        )
+        .unwrap();
+        let values = seeded_choice_values(&prior).unwrap();
+        assert_eq!(
+            values,
+            vec![
+                "chooser:mode:2:1".to_owned(),
+                "chooser:retry:3:0".to_owned()
+            ]
+        );
+
+        let empty = directory.path().join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        assert!(seeded_choice_values(&empty).is_err());
     }
 
     #[test]

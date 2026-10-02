@@ -143,6 +143,11 @@ struct CampaignPlan {
     /// disjoint, byte-stable partitions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shard: Option<ShardPlan>,
+    /// Consumed choice identities from a prior campaign. Unified guidance
+    /// seeds its novelty set with them, so a fresh search treats
+    /// already-consumed values as known and prefers unexplored ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    seed_choice_values: Vec<String>,
 }
 
 /// One locked shard of the candidate corpus: `index` out of `total` workers.
@@ -150,6 +155,15 @@ struct CampaignPlan {
 struct ShardPlan {
     index: u16,
     total: u16,
+}
+
+/// Seed the novelty set with a prior campaign's consumed choice identities.
+/// Seeded values count as seen, so `novel_structured_choices` measures only
+/// what this search adds.
+fn apply_choice_seeds(seen: &mut std::collections::BTreeSet<String>, seeds: &[String]) {
+    for value in seeds {
+        seen.insert(value.clone());
+    }
 }
 
 /// The deterministic partition of a corpus for one shard: schedules whose
@@ -3861,6 +3875,7 @@ fn execute_campaign(
     let mut seen_application_blocks = std::collections::BTreeSet::new();
     let mut seen_application_edges = std::collections::BTreeSet::new();
     let mut seen_structured_choices = std::collections::BTreeSet::new();
+    apply_choice_seeds(&mut seen_structured_choices, &campaign.seed_choice_values);
     let mut seen_choice_contexts = std::collections::BTreeSet::new();
     let mut seen_scheduling_decisions = std::collections::BTreeSet::new();
     let mut pending = (0..schedules.len()).collect::<Vec<_>>();
@@ -18605,6 +18620,24 @@ mod tests {
         let mut changed = observations;
         changed[0].failed = true;
         assert_ne!(first, CampaignGuidanceLedger::from_observations(&changed));
+    }
+
+    #[test]
+    fn choice_seeds_count_as_seen_for_novelty() {
+        let mut seen = std::collections::BTreeSet::new();
+        apply_choice_seeds(
+            &mut seen,
+            &[
+                "chooser:mode:2:0".to_owned(),
+                "chooser:mode:2:1".to_owned(),
+            ],
+        );
+        let fresh = "chooser:retry:3:2".to_owned();
+        let seeded = "chooser:mode:2:1".clone();
+        assert!(!seen.contains(&fresh));
+        assert!(seen.contains(&seeded));
+        assert!(seen.insert(fresh.clone()));
+        assert!(!seen.insert(seeded));
     }
 
     #[test]

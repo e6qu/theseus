@@ -52,7 +52,7 @@ theseus coverage java --process NAME --module NAME --jar FILE --symbols DIR --ou
 theseus compose validate [compose.yaml]
 theseus compose plan [compose.yaml]
 theseus compose test [--output replay-dir] [compose.yaml]
-theseus compose explore [--max-runs N] [--guidance MODE] [--notify COMMAND] [--shard INDEX/TOTAL] [--output campaign-dir] [compose.yaml]
+theseus compose explore [--max-runs N] [--guidance MODE] [--seed-choices campaign-dir] [--notify COMMAND] [--shard INDEX/TOTAL] [--output campaign-dir] [compose.yaml]
 theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--notify COMMAND] [--shard INDEX/TOTAL] [--output campaign-dir] [compose.yaml]
 theseus compose explore --minimize campaign-dir [--output minimized-dir]
 theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
@@ -886,7 +886,10 @@ override the declared budget and guidance for one exploration without editing
 the Compose file: comparing the same file across guidance modes at one fixed
 budget is the reproducible search comparison the roadmap requires, and every
 retained campaign records which mode and budget produced it. Unified
-guidance weighs generated choices by context: each run records the consumed
+guidance can be seeded from a prior campaign: `--seed-choices
+prior-campaign` reads that bundle's consumed choice identities into the
+novelty policy, so a fresh search treats already-consumed values as known
+and prefers unexplored ones. Unified guidance weighs generated choices by context: each run records the consumed
 choice values beside its choice records, and the policy counts a value's
 first pairing with each schedule context (the operation, thread, and fault
 neighborhood it influenced), so a value revisited under a new neighborhood

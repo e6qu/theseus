@@ -66,7 +66,7 @@ const USAGE: &str = "Usage:
   theseus compose validate [compose.yaml]
   theseus compose plan [compose.yaml]
   theseus compose test [--output replay-dir] [compose.yaml]
-  theseus compose explore [--max-runs N] [--guidance MODE] [--notify COMMAND] [--shard INDEX/TOTAL] [--output campaign-dir] [compose.yaml]
+  theseus compose explore [--max-runs N] [--guidance MODE] [--seed-choices campaign-dir] [--notify COMMAND] [--shard INDEX/TOTAL] [--output campaign-dir] [compose.yaml]
   theseus compose explore --expect-counterexample property [--max-runs N] [--guidance MODE] [--notify COMMAND] [--shard INDEX/TOTAL] [--output campaign-dir] [compose.yaml]
   theseus compose explore --minimize campaign-dir [--output minimized-dir]
   theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
@@ -1285,6 +1285,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 overrides.guidance,
                 overrides.notify.as_deref(),
                 overrides.shard,
+                overrides.seed_choices.as_deref(),
             )
             .map_err(|error| error.to_string())?;
             println!("campaign passed: {}", result.display());
@@ -1303,6 +1304,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 overrides.guidance,
                 overrides.notify.as_deref(),
                 overrides.shard,
+                overrides.seed_choices.as_deref(),
             )
             .map_err(|error| error.to_string())?;
             println!("campaign passed: {}", result.display());
@@ -1332,6 +1334,7 @@ struct ExploreOverrides {
     guidance: Option<CampaignGuidance>,
     notify: Option<String>,
     shard: Option<(u16, u16)>,
+    seed_choices: Option<std::path::PathBuf>,
 }
 
 /// Parse `--max-runs N`, `--guidance MODE`, and `--notify COMMAND`
@@ -1354,6 +1357,11 @@ fn compose_explore_overrides(args: &[String]) -> Result<(PathBuf, ExploreOverrid
             "--guidance" => {
                 let value = args.get(index + 1).ok_or(USAGE.to_owned())?;
                 overrides.guidance = Some(parse_guidance(value)?);
+                index += 2;
+            }
+            "--seed-choices" => {
+                let value = args.get(index + 1).ok_or(USAGE.to_owned())?;
+                overrides.seed_choices = Some(std::path::PathBuf::from(value));
                 index += 2;
             }
             "--notify" => {
