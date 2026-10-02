@@ -510,7 +510,9 @@ unseeded at one fixed budget, then rank the signals by which best
 predicts the retained distributions' property yield per run - using the
 same `evaluate compare` and `history --choices` surfaces documented
 above. A signal ships into the policy only when that comparison shows it
-finds failures or witnesses sooner than first-seen novelty alone.
+finds failures or witnesses sooner than first-seen novelty alone;
+[scripts/compare_weighting_signals.sh](../scripts/compare_weighting_signals.sh)
+runs it.
 
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without
