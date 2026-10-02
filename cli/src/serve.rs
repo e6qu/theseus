@@ -191,14 +191,24 @@ fn handle_connection(stream: &mut TcpStream, campaigns: &[ServedCampaign]) -> st
             b"method not allowed; this surface is read-only",
         );
     }
-    // The live journal honors one Range form: `bytes=N-` answers with the
-    // journal's suffix, so a follower fetches only new bytes between
-    // polls. Everything else ignores the header.
+    // The live journal and the retained logs honor one Range form:
+    // `bytes=N-` answers with the file's suffix, so a follower fetches
+    // only new bytes between polls. Everything else ignores the header.
     if let Some(offset) = range {
         let trimmed = path.trim_start_matches('/');
-        if let Some((name, "progress")) = trimmed.split_once('/') {
-            if let Some(campaign) = campaigns.iter().find(|campaign| campaign.name == name) {
-                return range_progress(stream, &campaign.root, offset);
+        if let Some((name, target)) = trimmed.split_once('/') {
+            let suffix = match target.split('?').next() {
+                Some("progress") => Some("progress.jsonl".to_owned()),
+                Some(rest) => rest
+                    .strip_prefix("file/serial/")
+                    .map(|relative| format!("serial/{relative}")),
+                _ => None,
+            };
+            if let (Some(relative), Some(campaign)) = (
+                suffix,
+                campaigns.iter().find(|campaign| campaign.name == name),
+            ) {
+                return range_file(stream, &campaign.root.join(relative), offset);
             }
         }
     }
@@ -206,10 +216,10 @@ fn handle_connection(stream: &mut TcpStream, campaigns: &[ServedCampaign]) -> st
     write_response(stream, status, content_type, &body)
 }
 
-/// `Range: bytes=N-` over one journal: 206 with the suffix, or 416 with
-/// the current length when the offset reaches past the end.
-fn range_progress(stream: &mut TcpStream, root: &Path, offset: u64) -> std::io::Result<()> {
-    let bytes = match std::fs::read(root.join("progress.jsonl")) {
+/// `Range: bytes=N-` over one retained file: 206 with the suffix, or 416
+/// with the current length when the offset reaches past the end.
+fn range_file(stream: &mut TcpStream, path: &Path, offset: u64) -> std::io::Result<()> {
+    let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(_) => return write_response(stream, 404, "text/plain; charset=utf-8", b"not found"),
     };
@@ -1704,6 +1714,23 @@ mod tests {
         let (status, ..) = exchange_with(
             &address,
             "GET /campaign/progress HTTP/1.1\r\nHost: x\r\n\r\n",
+            &["Range: bytes=999999-"],
+        );
+        assert_eq!(status, 416);
+
+        // The serial-log route honors the same Range contract, so a
+        // follower tails a guest's log while the search runs.
+        let (status, _, tail) = exchange_with(
+            &address,
+            "GET /campaign/file/serial/1.log HTTP/1.1\r\nHost: x\r\n\r\n",
+            &["Range: bytes=2-"],
+        );
+        assert_eq!(status, 206);
+        assert_eq!(tail, "ady\n");
+
+        let (status, ..) = exchange_with(
+            &address,
+            "GET /campaign/file/serial/1.log HTTP/1.1\r\nHost: x\r\n\r\n",
             &["Range: bytes=999999-"],
         );
         assert_eq!(status, 416);
