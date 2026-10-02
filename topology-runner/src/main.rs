@@ -18634,7 +18634,7 @@ mod tests {
             ],
         );
         let fresh = "chooser:retry:3:2".to_owned();
-        let seeded = "chooser:mode:2:1".clone();
+        let seeded = "chooser:mode:2:1".to_owned();
         assert!(!seen.contains(&fresh));
         assert!(seen.contains(&seeded));
         assert!(seen.insert(fresh.clone()));

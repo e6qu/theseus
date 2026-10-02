@@ -668,17 +668,22 @@ reproducible investigation.
   already-consumed values as known and prefers unexplored ones; the
   seeding rides the locked plan, so replay verifies the same input.
 
+- The seeded-guidance documentation: the parity row narrows to weighting
+  signals beyond first-seen novelty, and the structured-choices guide
+  documents the `--seed-choices` continuation workflow.
+
 ## Immediate next work
 
-### 1. Seeded-guidance ordering in the comparison
+### 1. The seeded continuation in tutorial 36
 
-The seeding flag lands; no walkthrough shows two seeded campaigns
-competing. The next work demonstrates it:
+Tutorial 36 explores a bounded-choice workload; no tutorial shows a
+seeded continuation. The next work extends it:
 
-- The parity analysis's structured-randomness row narrows to the truly
-  open question (weighting signals beyond novelty), and the structured
-  choices section documents the seeded workflow with the flag.
-- Tests: the documentation checks cover the cross-references.
+- A closing step explores the same workload with
+  `--seed-choices campaign`, retaining only fresh assignments, and greps
+  the new campaign's choice records to show the seeded policy's
+  preference.
+- Tests: the tutorial doc checks cover the new step's files.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
