@@ -793,6 +793,9 @@ pub fn collect_moment(
     moment: &str,
     output: impl AsRef<Path>,
 ) -> Result<CollectedMoment, MomentError> {
+    // Locate and build first, so a missing moment outranks an existing
+    // output directory in the error a reader sees.
+    let (collected, files) = collect_moment_files(bundle, moment)?;
     let output = output.as_ref().to_path_buf();
     if output.exists() {
         return Err(MomentError::NotFound(format!(
@@ -801,7 +804,6 @@ pub fn collect_moment(
         )));
     }
     fs::create_dir_all(&output).map_err(MomentError::Read)?;
-    let (collected, files) = collect_moment_files(bundle, moment)?;
     for (relative, bytes) in &files {
         write_collected_file(&output, relative, bytes, &mut Vec::new())?;
     }
