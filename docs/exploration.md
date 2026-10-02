@@ -475,10 +475,18 @@ history --choices` catalogs every consumed identity with per-campaign run
 and failure shares, and `theseus evaluate compare` records per-identity
 outcome columns per mode, so a comparison shows which generated values
 correlated with failures under which guidance. A fresh search can also
-continue from a recorded campaign: `compose explore --seed-choices
-prior-campaign` feeds the prior bundle's consumed identities into the
+continue from a recorded campaign:
+
+```sh
+theseus compose explore --guidance unified --output campaign compose.yaml
+theseus compose explore --guidance unified --seed-choices campaign \
+  --output continuation compose.yaml
+grep -n 'seed_choice_values' continuation/replay-plan.json | head -1
+```
+
+`--seed-choices` feeds the prior bundle's consumed identities into the
 novelty policy, so the new search prefers values the prior campaign never
-used.
+used, and the seed rides the locked plan for replay.
 
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without
