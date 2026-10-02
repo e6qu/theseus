@@ -1824,6 +1824,78 @@ pub struct JsonConditionPlan {
     pub exists: Option<bool>,
 }
 
+/// Load one campaign input from a directory of Kubernetes manifests:
+/// sorted `.yaml`/`.yml` files concatenated with document separators. A
+/// directory without manifests, or one whose documents are not Kubernetes
+/// resources, is refused by name.
+fn load_compose_plan_directory(directory: &Path) -> Result<ComposePlan, ComposeError> {
+    let mut manifests = Vec::new();
+    collect_yaml_manifests(directory, 0, &mut manifests);
+    manifests.sort();
+    if manifests.is_empty() {
+        return Err(ComposeError::Invalid(format!(
+            "{}: no Kubernetes manifests found; a directory input needs .yaml or .yml files",
+            directory.display()
+        )));
+    }
+    let mut combined = String::new();
+    for manifest in &manifests {
+        let document = fs::read_to_string(manifest).map_err(|source| ComposeError::Read {
+            path: manifest.clone(),
+            source,
+        })?;
+        if !combined.is_empty() {
+            combined.push_str("\n---\n");
+        }
+        combined.push_str(&document);
+    }
+    if !crate::kubernetes::looks_like_kubernetes(&combined) {
+        return Err(ComposeError::Invalid(format!(
+            "{}: directory documents are not Kubernetes resources",
+            directory.display()
+        )));
+    }
+    let inputs =
+        crate::kubernetes::load_kubernetes_compose_str(&combined, directory, "theseus.toml")?;
+    load_compose_plan_parsed(
+        inputs.compose,
+        inputs.configs,
+        inputs.secrets,
+        directory,
+        directory,
+    )
+}
+
+/// Walk a rendered chart directory for `.yaml`/`.yml` manifests, sorted per
+/// directory so concatenation order is stable. Symlinks are skipped; depth
+/// stays bounded.
+fn collect_yaml_manifests(directory: &Path, depth: usize, manifests: &mut Vec<PathBuf>) {
+    if depth > 8 || manifests.len() > 256 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_yaml_manifests(&path, depth + 1, manifests);
+        } else if file_type.is_file()
+            && matches!(
+                path.extension().and_then(|extension| extension.to_str()),
+                Some("yaml") | Some("yml")
+            )
+        {
+            manifests.push(path);
+        }
+    }
+}
+
 /// Load a Compose topology and lock every referenced service artifact into a
 /// normalized plan. Relative paths are rooted at the Compose file and may not
 /// escape its directory.
@@ -1833,24 +1905,56 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         path: path.to_path_buf(),
         source,
     })?;
+    // A directory input is a rendered Helm chart or any Kubernetes manifest
+    // layout: every sorted `.yaml`/`.yml` file is concatenated in document
+    // order, so `helm template` output works as-is without invoking Helm.
+    if compose_path.is_dir() {
+        return load_compose_plan_directory(&compose_path);
+    }
     let compose_dir = compose_path.parent().expect("canonical path has a parent");
     let input = fs::read_to_string(&compose_path).map_err(|source| ComposeError::Read {
         path: compose_path.clone(),
         source,
     })?;
+    load_compose_plan_input(&compose_path, compose_dir, &input)
+}
+
+/// Parse and normalize one campaign input's text, rooted at `compose_dir`.
+fn load_compose_plan_input(
+    compose_path: &Path,
+    compose_dir: &Path,
+    input: &str,
+) -> Result<ComposePlan, ComposeError> {
     let (compose, inline_configs, inline_secrets) =
-        if crate::kubernetes::looks_like_kubernetes(&input) {
-            let inputs = crate::kubernetes::load_kubernetes_compose(&compose_path, "theseus.toml")?;
+        if crate::kubernetes::looks_like_kubernetes(input) {
+            let inputs = crate::kubernetes::load_kubernetes_compose(compose_path, "theseus.toml")?;
             (inputs.compose, inputs.configs, inputs.secrets)
         } else {
             let compose: ComposeFile =
-                serde_yaml::from_str(&input).map_err(|source| ComposeError::Parse {
-                    path: compose_path.clone(),
+                serde_yaml::from_str(input).map_err(|source| ComposeError::Parse {
+                    path: compose_path.to_path_buf(),
                     source,
                 })?;
             (compose, BTreeMap::new(), BTreeMap::new())
         };
+    load_compose_plan_parsed(
+        compose,
+        inline_configs,
+        inline_secrets,
+        compose_dir,
+        compose_path,
+    )
+}
 
+/// Validate and normalize an already-parsed campaign input, rooted at
+/// `compose_dir` and displayed as `display` in plan records and errors.
+fn load_compose_plan_parsed(
+    compose: ComposeFile,
+    inline_configs: BTreeMap<String, Vec<u8>>,
+    inline_secrets: BTreeMap<String, Vec<u8>>,
+    compose_dir: &Path,
+    display: &Path,
+) -> Result<ComposePlan, ComposeError> {
     if compose.services.is_empty() {
         return Err(ComposeError::Invalid(
             "services must not be empty".to_owned(),
@@ -2017,7 +2121,7 @@ pub fn load_compose_plan(path: impl AsRef<Path>) -> Result<ComposePlan, ComposeE
         .collect();
     Ok(ComposePlan {
         format: "theseus-compose-plan-v1".to_owned(),
-        compose: compose_path.display().to_string(),
+        compose: display.display().to_string(),
         name: compose.name,
         services,
         networks,
@@ -11225,6 +11329,97 @@ x-theseus:
         assert_eq!(
             operation.input_grammar.as_ref().unwrap().bounds,
             BTreeMap::from([("value".to_owned(), 2), ("mode".to_owned(), 2)])
+        );
+    }
+
+    #[test]
+    fn loads_a_kubernetes_manifest_directory_like_helm_template_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let rendered = directory.path().join("rendered");
+        let templates = rendered.join("templates");
+        fs::create_dir_all(&templates).unwrap();
+        for service in ["api", "worker"] {
+            let root = rendered.join(service);
+            fs::create_dir_all(&root).unwrap();
+            fs::write(
+                root.join("theseus.toml"),
+                "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+            )
+            .unwrap();
+            write_docker_image(&root.join("service.tar"), &[]);
+        }
+        fs::write(
+            rendered.join("README.txt"),
+            "helm template output notes; not a manifest",
+        )
+        .unwrap();
+        fs::write(
+            templates.join("deployment.yaml"),
+            "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\nspec:\n  template:\n    spec:\n      containers:\n        - name: api\n          image: api:1\n          command: [/work/api]\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: worker\nspec:\n  template:\n    spec:\n      containers:\n        - name: worker\n          image: worker:1\n          command: [/work/worker]\n",
+        )
+        .unwrap();
+        fs::write(
+            templates.join("service.yaml"),
+            "apiVersion: v1\nkind: Service\nmetadata:\n  name: backplane\nspec:\n  clusterIP: 10.0.0.1\n  selector: {app: api}\n",
+        )
+        .unwrap();
+        fs::create_dir_all(rendered.join("api/runtime")).unwrap();
+        fs::write(rendered.join("api/runtime/firecracker"), b"firecracker").unwrap();
+        fs::write(rendered.join("api/runtime/theseus-image"), b"adapter").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for artifact in ["api/runtime/firecracker", "api/runtime/theseus-image"] {
+                fs::set_permissions(
+                    rendered.join(artifact),
+                    std::fs::Permissions::from_mode(0o755),
+                )
+                .unwrap();
+            }
+        }
+        fs::create_dir_all(rendered.join("api/guest")).unwrap();
+        fs::write(rendered.join("api/guest/vmlinux"), b"kernel").unwrap();
+        let mut layer = tar::Builder::new(Vec::new());
+        tar_file(&mut layer, "entrypoint", b"#!/bin/sh\nexit 0\n", 0o755);
+        let layer = layer.into_inner().unwrap();
+        let manifest =
+            br#"[{"Config":"config.json","RepoTags":["test:latest"],"Layers":["layer.tar"]}]"#;
+        let config = br#"{"config":{"Entrypoint":["/bin/sh"],"Cmd":["-c","sleep 3600"]}}"#;
+        let mut image = tar::Builder::new(Vec::new());
+        tar_file(&mut image, "manifest.json", manifest, 0o644);
+        tar_file(&mut image, "config.json", config, 0o644);
+        tar_file(&mut image, "layer.tar", &layer, 0o644);
+        fs::write(
+            rendered.join("api/service.tar"),
+            image.into_inner().unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            rendered.join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'api/runtime/firecracker'\nimage_adapter = 'api/runtime/theseus-image'\n[guest]\nkernel = 'api/guest/vmlinux'\nimage = 'api/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(&rendered).unwrap();
+        assert_eq!(plan.services.len(), 2);
+        assert!(plan.services.contains_key("api"));
+        assert!(plan.services.contains_key("worker"));
+
+        let empty = directory.path().join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        let error = load_compose_plan(&empty).unwrap_err();
+        assert!(
+            error.to_string().contains("no Kubernetes manifests found"),
+            "{error}"
+        );
+
+        let notes = directory.path().join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        fs::write(notes.join("readme.txt"), "not yaml").unwrap();
+        let error = load_compose_plan(&notes).unwrap_err();
+        assert!(
+            error.to_string().contains("no Kubernetes manifests found"),
+            "{error}"
         );
     }
 

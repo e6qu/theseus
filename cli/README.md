@@ -728,7 +728,11 @@ A documented Kubernetes subset translates into the same locked plan the
 Compose path produces, so campaigns, sharding, and evidence are identical:
 
 - `Pod`, `Deployment`, `StatefulSet`, `DaemonSet`, `ReplicaSet`, and
-  `Job` workloads with **exactly one container**:
+  `Job` workloads with **exactly one container**. The campaign input may
+  also be a **directory** of Kubernetes manifests - a rendered Helm chart
+  (`helm template --output-dir`) works as-is: every sorted `.yaml`/`.yml`
+  file is concatenated in document order, non-YAML files are skipped, and
+  a directory with no manifests is refused:
   `image`, `command` + `args` (the execve argv), literal `env` entries
   (`valueFrom` is rejected), `workingDir`, and
   `securityContext.readOnlyRootFilesystem` (→ `read_only`).
