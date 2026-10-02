@@ -714,19 +714,32 @@ reproducible investigation.
 
 - The Compose breadth audit: [docs/audits/2026-10-compose-breadth.md](docs/audits/2026-10-compose-breadth.md) records every unsupported common field with its out-of-scope reason, and the workload-packaging gap links it.
 
+- tmpfs sizing, end to end: the short `tmpfs` form accepts a `size=`
+  suffix locked into the plan, and the guest init mounts with the
+  kernel-enforced byte cap.
+
+- Range on the journal and log routes: `bytes=N-` answers a 206 suffix
+  (416 past the end) on the journal, the serial route, and the file
+  route, so a follower tails a guest's log while the search runs; the
+  smoke script locks both follower patterns.
+
+- The breadth-audit link: the Compose subset section points at the
+  breadth audit's unsupported table, so a reader with an unsupported
+  field finds the reason instead of only the rejection.
+
 ## Immediate next work
 
-### 1. tmpfs sizing in the breadth subset
+### 1. The seeded-choice walkthrough in the guide
 
-The subset accepts `tmpfs` paths; the specification's `tmpfs.size`
-option is refused with the rest. The next work supports the size:
+The structured-choices guide documents seeding in one paragraph; a
+worked example shows the same two-command flow the tutorial uses. The
+next work adds it:
 
-- A memory-backed tmpfs mount accepts a declared byte size, locked into
-  the plan and enforced by the memory-only storage device.
-- Tests: translation fixtures over sized and unsized tmpfs mounts, and
-  the refusal of non-numeric sizes.
+- The guide's seeding paragraph gains the two commands (explore, then
+  explore with `--seed-choices`) and the grep that shows the recorded
+  seed riding the locked plan.
+- Tests: the documentation checks cover the commands.
 
-Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
 history routes, the comparison route, the grammar-locked bounds, serve
 discovery, bundle-kind coverage, the exploration node routes, and the

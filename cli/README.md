@@ -749,7 +749,10 @@ Compose path produces, so campaigns, sharding, and evidence are identical:
 Everything outside the subset is rejected with a naming error, never
 silently dropped: multiple containers, init containers, non-config/secret
 volume types, `subPath`, `valueFrom` references, ports and probes,
-non-ClusterIP Services, host networking, affinity, and tolerations. Pass a
+non-ClusterIP Services, host networking, affinity, and tolerations. For
+the Compose side, the
+[breadth audit](../docs/audits/2026-10-compose-breadth.md) records every
+unsupported common field with the reason it is out of scope. Pass a
 Kubernetes manifest to any Compose command — planning sniffs `apiVersion`:
 
 ```sh
