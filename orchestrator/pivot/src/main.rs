@@ -276,19 +276,34 @@ fn mount(source: &str, target: &str, fstype: &str) {
     }
 }
 
+/// One tmpfs entry's mount contract: the mount target and the data options
+/// string (`size=N`), when the entry declares a size.
+fn tmpfs_mount(entry: &str) -> (&str, Option<&str>) {
+    match entry.split_once(':') {
+        Some((path, options)) if options.starts_with("size=") => (path, Some(options)),
+        _ => (entry, None),
+    }
+}
+
 fn apply_filesystem_contract(spec: &InitSpec) -> Result<(), String> {
-    for path in &spec.tmpfs {
+    for entry in &spec.tmpfs {
+        let (path, options) = tmpfs_mount(entry);
         fs::create_dir_all(path).map_err(|error| format!("create tmpfs {path}: {error}"))?;
-        let path = CString::new(path.as_str()).map_err(|_| "tmpfs path contains NUL".to_owned())?;
+        let path = CString::new(path).map_err(|_| "tmpfs path contains NUL".to_owned())?;
         let source = CString::new("tmpfs").unwrap();
         let fstype = CString::new("tmpfs").unwrap();
+        let data = options
+            .map(|options| CString::new(options).map_err(|_| "tmpfs options contain NUL"))
+            .transpose()?;
         if unsafe {
             libc::mount(
                 source.as_ptr(),
                 path.as_ptr(),
                 fstype.as_ptr(),
                 0,
-                std::ptr::null(),
+                data.map(|data| data.as_ptr())
+                    .unwrap_or(std::ptr::null())
+                    .cast::<libc::c_void>(),
             )
         } != 0
         {
@@ -1825,6 +1840,18 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tmpfs_entries_split_paths_from_size_options() {
+        assert_eq!(tmpfs_mount("/run/cache"), ("/run/cache", None));
+        assert_eq!(
+            tmpfs_mount("/run/cache:size=1048576"),
+            ("/run/cache", Some("size=1048576"))
+        );
+        let (path, options) = tmpfs_mount("/tmp");
+        assert_eq!(path, "/tmp");
+        assert!(options.is_none());
+    }
+
     use super::*;
 
     #[test]
