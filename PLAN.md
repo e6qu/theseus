@@ -653,17 +653,23 @@ reproducible investigation.
   comparison shows which generated values correlated with failures in
   which mode.
 
+- The choice catalog's text output: each per-campaign count line carries
+  the failure share (percentage) beside the counts, and an integration
+  test pins the text and JSON shapes end-to-end.
+
 ## Immediate next work
 
-### 1. Choice outcomes in the history catalog text
+### 1. Choice-value correlations in the compare artifact docs
 
-The choice catalog aggregates per-campaign counts; its plain-text output
-lists them. The next work sharpens the audit reading:
+The comparison artifact's per-identity outcome columns and the choice
+catalog's failure shares are documented separately. The next work
+cross-references them:
 
-- The text output groups by consumed value and prints the failure share
-  per campaign beside the counts, so an investigator reads correlation
-  without opening the JSON.
-- Tests: text-format fixtures over the existing catalog fixtures.
+- The parity analysis's structured-randomness row records the correlation
+  surfaces (catalog + comparison columns) as addressed, narrowing the
+  remaining gap to weighting, and the exploration guide's structured
+  choices section links both surfaces.
+- Tests: the documentation checks cover the cross-references.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the

@@ -735,8 +735,15 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     );
                     for campaign in &entry.campaigns {
                         println!(
-                            "counts\t{}\truns {}\tfailed {}",
-                            campaign.source, campaign.runs, campaign.failed_runs
+                            "counts\t{}\truns {}\tfailed {} ({}%)",
+                            campaign.source,
+                            campaign.runs,
+                            campaign.failed_runs,
+                            if campaign.runs == 0 {
+                                0
+                            } else {
+                                campaign.failed_runs * 100 / campaign.runs
+                            }
                         );
                     }
                 }
