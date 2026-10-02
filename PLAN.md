@@ -672,18 +672,23 @@ reproducible investigation.
   signals beyond first-seen novelty, and the structured-choices guide
   documents the `--seed-choices` continuation workflow.
 
+- The seeded continuation in tutorial 36: a second exploration seeds its
+  novelty from the first campaign's consumed identities, and the tutorial
+  shows the seed riding the locked plan for replay.
+
 ## Immediate next work
 
-### 1. The seeded continuation in tutorial 36
+### 1. The seeded continuation under regression
 
-Tutorial 36 explores a bounded-choice workload; no tutorial shows a
-seeded continuation. The next work extends it:
+Tutorial 36's seeded step runs under KVM by hand; the serve smoke script
+pattern covers the read-only surface but no CI job replays a seeded
+campaign. The next work locks the behavior:
 
-- A closing step explores the same workload with
-  `--seed-choices campaign`, retaining only fresh assignments, and greps
-  the new campaign's choice records to show the seeded policy's
-  preference.
-- Tests: the tutorial doc checks cover the new step's files.
+- A CI step replays a seeded campaign bundle from the recorded runtime
+  artifacts, asserting the replay certifies the same seeded plan and
+  rejects a mutated seed.
+- Tests: the CI step is the test; the tutorial doc checks cover its
+  mention.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
