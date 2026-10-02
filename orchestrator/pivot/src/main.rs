@@ -301,7 +301,9 @@ fn apply_filesystem_contract(spec: &InitSpec) -> Result<(), String> {
                 path.as_ptr(),
                 fstype.as_ptr(),
                 0,
-                data.map(|data| data.as_ptr()).unwrap_or(std::ptr::null()),
+                data.map(|data| data.as_ptr())
+                    .unwrap_or(std::ptr::null())
+                    .cast::<libc::c_void>(),
             )
         } != 0
         {
