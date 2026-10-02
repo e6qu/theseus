@@ -729,16 +729,20 @@ reproducible investigation.
 
 ## Immediate next work
 
-### 1. The seeded-choice walkthrough in the guide
+- The seeded-choice walkthrough: the structured-choices guide's seeding
+  paragraph carries the two-command flow and the replay-plan grep.
 
-The structured-choices guide documents seeding in one paragraph; a
-worked example shows the same two-command flow the tutorial uses. The
-next work adds it:
+## Immediate next work
 
-- The guide's seeding paragraph gains the two commands (explore, then
-  explore with `--seed-choices`) and the grep that shows the recorded
-  seed riding the locked plan.
-- Tests: the documentation checks cover the commands.
+### 1. The choice catalog in the serve route docs
+
+`GET /history/choices` serves the choice catalog; the serve paragraph's
+history list names it, but the choice-catalog walkthrough lives only in
+the history section. The next work links them:
+
+- The history section's choice-catalog paragraph points at the serve
+  route, and the guide's correlation paragraph references the catalog by
+  command name, so a reader walks surface to surface.
 
 feedback, the report surface, the serve surface, moment navigation, the
 history routes, the comparison route, the grammar-locked bounds, serve
