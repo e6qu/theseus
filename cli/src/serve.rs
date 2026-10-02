@@ -201,7 +201,11 @@ fn handle_connection(stream: &mut TcpStream, campaigns: &[ServedCampaign]) -> st
                 Some("progress") => Some("progress.jsonl".to_owned()),
                 Some(rest) => rest
                     .strip_prefix("file/serial/")
-                    .map(|relative| format!("serial/{relative}")),
+                    .map(|relative| format!("serial/{relative}"))
+                    .or_else(|| {
+                        rest.strip_prefix("serial/")
+                            .map(|relative| format!("serial/{relative}"))
+                    }),
                 _ => None,
             };
             if let (Some(relative), Some(campaign)) = (
