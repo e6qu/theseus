@@ -1062,10 +1062,12 @@ theseus query theseus-compose-campaign --moment 12000@0f1c2b3d --collect --outpu
 
 The collected directory contains the boundary's full record
 (`boundary.json`), its neighboring boundaries when present, the
-decision-trace slice that produced it (`decision-trace.json`), and
-cumulative serial-log slices per service reconstructed from the retained
-run directory and verified against the boundary's serial digests
-(`serial/<service>.log`). `manifest.json` names the source bundle, run,
+decision-trace slice that produced it (`decision-trace.json`), the
+progress journal's prefix for the collected run (`progress.jsonl`: the
+progress line, run record, and checkpoint ledger lines up to and including
+that run), and cumulative serial-log slices per service reconstructed
+from the retained run directory and verified against the boundary's
+serial digests (`serial/<service>.log`). `manifest.json` names the source bundle, run,
 moment, and the SHA-256 of every collected file, so a recipient can audit
 the bundle offline without the original campaign. Collection is read-only
 against the source, refuses an existing output, and degrades honestly:

@@ -687,18 +687,23 @@ reproducible investigation.
   journal's lines by kind and records the last checkpoint ledger's node
   and reuse counts, so the search's shape is readable without JSONL.
 
+- The collect cross-references: the query section's collect paragraph
+  names `progress.jsonl` beside the boundary and serial slices, and the
+  parity delivery row records the live journal's four surfaces (serve
+  route, Range polls, collect prefix, status summary).
+
 ## Immediate next work
 
-### 1. The journal in the collect manifest docs
+### 1. The collect command in the serve surface
 
-The collected bundle now carries the journal prefix; the collect
-command's documentation lists the collected files. The next work names
-it:
+The collect bundle is a first-class artifact; fetching one over HTTP
+still needs the CLI. The next work serves it:
 
-- The query section's collect paragraph names `progress.jsonl` beside the
-  boundary and serial slices, and the parity analysis's live-surface
-  mention includes the collect path.
-- Tests: the documentation checks cover the mention.
+- `GET /<name>/query/moment/<moment>?collect` renders the same collected
+  directory in-memory and answers a single multipart or tar response, so
+  a recipient audits the bundle offline without the CLI.
+- Tests: listener fixtures asserting the archive contains the boundary,
+  journal prefix, and manifest entries.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
