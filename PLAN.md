@@ -736,6 +736,20 @@ reproducible investigation.
   paragraph names the serve route, and the guide's correlation paragraph
   references the aggregation by route.
 
+## Immediate next work
+
+### 1. The guidance-weighting experiment note
+
+The parity row's remaining gap: unified guidance weights what is new,
+not what mattered. The next work explores the signal:
+
+- A design note in the exploration guide records the candidate weighting
+  signals the evidence already carries - context novelty, choice-outcome
+  correlation, property witnesses, checkpoint economics - and the
+  experiment that would rank them: comparing seeded campaigns' retained
+  distributions across the signals.
+- No policy change ships without that comparison.
+
 feedback, the report surface, the serve surface, moment navigation, the
 history routes, the comparison route, the grammar-locked bounds, serve
 discovery, bundle-kind coverage, the exploration node routes, and the
