@@ -683,18 +683,22 @@ reproducible investigation.
   queue named was already covered: CI's KVM runner tests pin the seeding
   semantics.)
 
+- The journal in the status surface: `theseus status` counts the
+  journal's lines by kind and records the last checkpoint ledger's node
+  and reuse counts, so the search's shape is readable without JSONL.
+
 ## Immediate next work
 
-### 1. The journal in the status surface
+### 1. The journal in the collect manifest docs
 
-`theseus status` summarizes a campaign; the live journal is now a
-first-class artifact the collect path carries. The next work surfaces it:
+The collected bundle now carries the journal prefix; the collect
+command's documentation lists the collected files. The next work names
+it:
 
-- `theseus status` prints the journal's line counts by kind (progress,
-  run records, checkpoint ledgers) and the last run's economics, so a
-  reader sees the search's shape without reading JSONL.
-- Tests: status fixtures over a bundle with a journal asserting the
-  summary lines.
+- The query section's collect paragraph names `progress.jsonl` beside the
+  boundary and serial slices, and the parity analysis's live-surface
+  mention includes the collect path.
+- Tests: the documentation checks cover the mention.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
