@@ -889,6 +889,17 @@ pub fn collect_moment_files(
     // the transcript length at that moment, verified against the boundary's
     // cumulative digest. Missing or mismatching evidence degrades the
     // collection instead of failing it.
+    // The collected run's choice records: the consumed structured-choice
+    // values and their feedback, beside the boundary window.
+    let run_choices = &result["runs"][located.run];
+    let choice_record = serde_json::json!({
+        "format": "theseus-collected-choices-v1",
+        "run": located.run,
+        "structured_choices": run_choices["structured_choices"],
+        "choice_feedback": run_choices["choice_feedback"],
+    });
+    write("choices.json", &encoded(&choice_record)?)?;
+
     // The progress journal's prefix for this run: the progress line, run
     // record, and checkpoint-ledger lines up to and including the collected
     // run, so the evidence bundle carries the live account beside the
@@ -1341,7 +1352,7 @@ mod tests {
         let early = format!("{:x}", Sha256::digest(&transcript[..5]));
         let directory = bundle;
         fs::create_dir_all(directory.join("runs/000/services/counter")).unwrap();
-        fs::write(directory.join("campaign-result.json"), format!(r#"{{"runs":[{{"index":0,"decision_trace":["test_template:main","boundary:0:operation:write","boundary:1:operation:read"],"timeline":[
+        fs::write(directory.join("campaign-result.json"), format!(r#"{{"runs":[{{"index":0,"structured_choices":{{"api":[{{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}}]}},"decision_trace":["test_template:main","boundary:0:operation:write","boundary:1:operation:read"],"timeline":[
             {{"id":"op-000-write","operation":"write","service":"counter","moment":"7000@input-hash",
              "serial_sha256":{{"counter":"{early}"}},
              "serial_delta":{{"counter":{{"bytes":5,"sha256":"d0","excerpt":"READY","omitted_bytes":0}}}}}},
@@ -1402,6 +1413,12 @@ mod tests {
         assert!(journal.contains("theseus-checkpoint-ledger-v1"));
         assert!(!journal.contains(r#""completed":2"#));
 
+        let choices: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("choices.json")).unwrap()).unwrap();
+        assert_eq!(choices["format"], "theseus-collected-choices-v1");
+        assert_eq!(choices["run"], 0);
+        assert_eq!(choices["structured_choices"]["api"][0]["name"], "mode");
+
         // Every manifest entry matches the bytes on disk, and the manifest
         // lists everything except itself.
         let manifest: serde_json::Value =
@@ -1421,8 +1438,9 @@ mod tests {
         for name in ["boundary.json", "previous.json", "decision-trace.json"] {
             assert!(output.join(name).is_file(), "{name}");
         }
-        assert_eq!(collected.files.len(), 5);
+        assert_eq!(collected.files.len(), 6);
         assert!(output.join("progress.jsonl").is_file());
+        assert!(output.join("choices.json").is_file());
         assert!(!output.join("next.json").exists());
 
         // The serial slice is exactly the cumulative transcript at the
@@ -1471,8 +1489,9 @@ mod tests {
         let collected = collect_moment(&bundle, "9000@read-hash", &output).unwrap();
         assert_eq!(collected.serial_slices, "unavailable");
         assert!(!output.join("serial").exists());
-        assert_eq!(collected.files.len(), 4);
+        assert_eq!(collected.files.len(), 5);
         assert!(output.join("progress.jsonl").is_file());
+        assert!(output.join("choices.json").is_file());
 
         let error = collect_moment(&bundle, "9000@read-hash", &output).unwrap_err();
         assert!(
