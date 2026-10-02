@@ -284,6 +284,17 @@ pub fn load_kubernetes_compose(
         path: path.to_path_buf(),
         source,
     })?;
+    load_kubernetes_compose_str(&input, path, service_manifest)
+}
+
+/// Parse Kubernetes manifest text into the campaign input model. The
+/// display path appears only in errors.
+pub fn load_kubernetes_compose_str(
+    input: &str,
+    display_path: impl AsRef<Path>,
+    service_manifest: &str,
+) -> Result<KubernetesInputs, ComposeError> {
+    let path = display_path.as_ref();
     let mut services = BTreeMap::new();
     let mut selectors: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     let mut labels: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();

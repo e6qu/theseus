@@ -702,19 +702,22 @@ reproducible investigation.
   record, journal prefix, and digest manifest against the fixtures; the
   route manifest lists the collect shape.
 
+- Kubernetes manifest directories: a campaign input directory walks its
+  sorted `.yaml`/`.yml` manifests recursively - a rendered Helm chart
+  (`helm template --output-dir` layout) works as-is; empty directories,
+  non-YAML directories, and non-Kubernetes documents are refused by name.
+
 ## Immediate next work
 
-### 1. The seeded search in the smoke fixtures
+### 1. The Helm walkthrough in the tutorial set
 
-The smoke fixtures are static; the seeded-guidance flag has no
-end-to-end CI coverage. The next work locks it:
+Tutorial 21 covers Compose config; no tutorial renders a Helm chart into
+a Theseus campaign. The next work adds it:
 
-- A smoke segment writes a prior bundle, explores with
-  `--seed-choices` against a two-candidate corpus, and asserts the
-  retained runs prefer the unseeded candidate (run via the CLI binary
-  the script already drives, no KVM needed for a compose plan whose
-  campaign is unit-level... scoped to the plan lock: assert the locked
-  plan carries the seed).
+- A tutorial renders a one-service chart with `helm template
+  --output-dir`, explores the rendered directory as the campaign input,
+  and verifies the same replay contract as the Kubernetes tutorials.
+- Tests: the tutorial doc checks cover the new walkthrough's files.
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the
