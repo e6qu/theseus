@@ -474,7 +474,11 @@ Two surfaces read the consumed values back across campaigns: `theseus
 history --choices` catalogs every consumed identity with per-campaign run
 and failure shares, and `theseus evaluate compare` records per-identity
 outcome columns per mode, so a comparison shows which generated values
-correlated with failures under which guidance.
+correlated with failures under which guidance. A fresh search can also
+continue from a recorded campaign: `compose explore --seed-choices
+prior-campaign` feeds the prior bundle's consumed identities into the
+novelty policy, so the new search prefers values the prior campaign never
+used.
 
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without
