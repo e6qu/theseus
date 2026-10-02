@@ -473,7 +473,8 @@ bound that excludes declared cases, is rejected at plan time by name.
 Two surfaces read the consumed values back across campaigns: `theseus
 history --choices` catalogs every consumed identity with per-campaign run
 and failure shares, and `theseus evaluate compare` records per-identity
-outcome columns per mode, so a comparison shows which generated values
+outcome columns per mode (the serve surface answers the same aggregation
+at `GET /history/choices`), so a comparison shows which generated values
 correlated with failures under which guidance. A fresh search can also
 continue from a recorded campaign:
 

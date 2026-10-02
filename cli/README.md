@@ -1050,7 +1050,11 @@ An indexed event matches when every pointer resolves on its JSON object;
 occurrences carry the verbatim line, and the matches list the moments the
 event precedes or follows inside the same timeline.
 
-`history --assertions` builds the cross-run assertion catalog: every
+`history --choices` builds the cross-run choice catalog: every consumed
+structured-choice value per identity, with per-campaign run and failed-run
+counts - the same aggregation the serve surface answers at
+`GET /history/choices`. `history --assertions` builds the cross-run
+assertion catalog: every
 retained `THES:ASSERT:name:pass|fail` line in the named campaigns'
 serial logs aggregates per assertion name and per campaign:
 

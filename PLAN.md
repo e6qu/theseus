@@ -732,17 +732,9 @@ reproducible investigation.
 - The seeded-choice walkthrough: the structured-choices guide's seeding
   paragraph carries the two-command flow and the replay-plan grep.
 
-## Immediate next work
-
-### 1. The choice catalog in the serve route docs
-
-`GET /history/choices` serves the choice catalog; the serve paragraph's
-history list names it, but the choice-catalog walkthrough lives only in
-the history section. The next work links them:
-
-- The history section's choice-catalog paragraph points at the serve
-  route, and the guide's correlation paragraph references the catalog by
-  command name, so a reader walks surface to surface.
+- The choice-catalog cross-references: the history section's catalog
+  paragraph names the serve route, and the guide's correlation paragraph
+  references the aggregation by route.
 
 feedback, the report surface, the serve surface, moment navigation, the
 history routes, the comparison route, the grammar-locked bounds, serve
