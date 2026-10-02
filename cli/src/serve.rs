@@ -702,6 +702,15 @@ fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec
     }
     if let Some(moment) = route.strip_prefix("moment/") {
         let moment = percent_decode(moment);
+        if query_flag(query, "collect") {
+            return match crate::query::collect_moment_files(&campaign.root, &moment) {
+                Ok((_, files)) => {
+                    let archive = tar_archive(&files);
+                    (200, "application/x-tar", archive)
+                }
+                Err(_) => not_found(),
+            };
+        }
         let next = query_flag(query, "next");
         let previous = query_flag(query, "previous");
         if next && previous {
@@ -971,6 +980,53 @@ fn routes_manifest() -> serde_json::Value {
     })
 }
 
+/// Pack collected files into a minimal POSIX ustar archive: one 512-byte
+/// header per entry (name, mode 0644, octal size, checksum), the data
+/// padded to 512, and the two-block end marker. Enough for a recipient to
+/// untar with any standard tool; nothing beyond ustar.
+fn tar_archive(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut archive = Vec::new();
+    for (name, bytes) in files {
+        let mut header = [0u8; 512];
+        let name_bytes = name.as_bytes();
+        let name_length = name_bytes.len().min(100);
+        header[..name_length].copy_from_slice(&name_bytes[..name_length]);
+        header[100..107].copy_from_slice(b"0000644");
+        header[108..115].copy_from_slice(b"0000000");
+        header[116..123].copy_from_slice(b"0000000");
+        let size = bytes.len();
+        write_octal(&mut header[124..135], size as u64);
+        write_octal(&mut header[136..147], 0);
+        header[156] = b'0';
+        header[257..262].copy_from_slice(b"ustar");
+        header[263..265].copy_from_slice(b"00");
+        let checksum: u32 = header.iter().map(|byte| u32::from(*byte)).sum();
+        write_octal(&mut header[148..154], u64::from(checksum));
+        header[154] = 0;
+        header[155] = b' ';
+        archive.extend_from_slice(&header);
+        archive.extend_from_slice(bytes);
+        let padding = (512 - size % 512) % 512;
+        archive.extend(std::iter::repeat(0u8).take(padding));
+    }
+    archive.extend(std::iter::repeat(0u8).take(1024));
+    archive
+}
+
+fn write_octal(field: &mut [u8], value: u64) {
+    let text = format!("{:0o}", value);
+    let padding = field.len().saturating_sub(text.len() + 1);
+    for (index, byte) in field.iter_mut().enumerate() {
+        *byte = if index < padding {
+            b'0'
+        } else if index < padding + text.len() {
+            text.as_bytes()[index - padding]
+        } else {
+            0
+        };
+    }
+}
+
 /// The versioned result a bundle retains: a campaign result, a
 /// single-timeline or exploration result, or a topology result.
 fn retained_result(root: &Path) -> Option<&'static str> {
@@ -1171,6 +1227,30 @@ mod tests {
 
     fn exchange(address: &str, request: &str) -> (u16, String, String) {
         exchange_with(address, request, &[])
+    }
+
+    fn exchange_bytes(address: &str, request: &str) -> (u16, String, Vec<u8>) {
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        let head_end = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap_or(response.len());
+        let head = String::from_utf8_lossy(&response[..head_end]).into_owned();
+        let status: u16 = head
+            .split(' ')
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or_default();
+        let content_type = head
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("content-type"))
+            .map(|line| line.splitn(2, ": ").nth(1).unwrap_or_default().to_owned())
+            .unwrap_or_default();
+        let body = response[head_end + 4..].to_vec();
+        (status, content_type, body)
     }
 
     fn exchange_raw(address: &str, request: &str, headers: &[&str]) -> String {
@@ -1549,6 +1629,43 @@ mod tests {
         let (status, ..) = exchange(
             &address,
             "GET /exploration/query/moments HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 404);
+
+        // A collect request answers one tar archive: the boundary record,
+        // the journal prefix for the run, and the digest manifest.
+        let (status, content_type, body) = exchange_bytes(
+            &address,
+            "GET /campaign/query/moment/7000@input-hash?collect HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/x-tar");
+        let mut names = Vec::new();
+        let mut offset = 0;
+        while offset + 512 <= body.len() {
+            let header = &body[offset..offset + 512];
+            if header.iter().all(|byte| *byte == 0) {
+                break;
+            }
+            let size_text = std::str::from_utf8(&header[124..136])
+                .unwrap()
+                .trim_end_matches('\0');
+            let size = usize::from_str_radix(size_text.trim(), 8).unwrap();
+            names.push(
+                std::str::from_utf8(&header[..100])
+                    .unwrap()
+                    .trim_end_matches('\0')
+                    .to_owned(),
+            );
+            offset += 512 + size + ((512 - size % 512) % 512);
+        }
+        assert!(names.contains(&"boundary.json".to_owned()), "{names:?}");
+        assert!(names.contains(&"progress.jsonl".to_owned()), "{names:?}");
+        assert!(names.contains(&"manifest.json".to_owned()), "{names:?}");
+
+        let (status, ..) = exchange(
+            &address,
+            "GET /campaign/query/moment/7000@missing?collect HTTP/1.1\r\nHost: x\r\n\r\n",
         );
         assert_eq!(status, 404);
 

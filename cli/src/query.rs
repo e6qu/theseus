@@ -793,6 +793,28 @@ pub fn collect_moment(
     moment: &str,
     output: impl AsRef<Path>,
 ) -> Result<CollectedMoment, MomentError> {
+    let output = output.as_ref().to_path_buf();
+    if output.exists() {
+        return Err(MomentError::NotFound(format!(
+            "collected output already exists: {}",
+            output.display()
+        )));
+    }
+    fs::create_dir_all(&output).map_err(MomentError::Read)?;
+    let (collected, files) = collect_moment_files(bundle, moment)?;
+    for (relative, bytes) in &files {
+        write_collected_file(&output, relative, bytes, &mut Vec::new())?;
+    }
+    Ok(collected)
+}
+
+/// Collect one moment's evidence as in-memory files: the same set
+/// [`collect_moment`] writes to disk, so the serve surface can answer a
+/// collection without creating directories.
+pub fn collect_moment_files(
+    bundle: impl AsRef<Path>,
+    moment: &str,
+) -> Result<(CollectedMoment, Vec<(String, Vec<u8>)>), MomentError> {
     let bundle = fs::canonicalize(bundle.as_ref()).map_err(MomentError::Read)?;
     let path = bundle.join("campaign-result.json");
     let result: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
@@ -813,24 +835,24 @@ pub fn collect_moment(
         .and_then(|boundary| boundary["moment"].as_str())
         .map(str::to_owned);
 
-    let output = output.as_ref().to_path_buf();
-    if output.exists() {
-        return Err(MomentError::NotFound(format!(
-            "collected output already exists: {}",
-            output.display()
-        )));
-    }
-    fs::create_dir_all(&output).map_err(MomentError::Read)?;
-    let mut files = Vec::new();
-
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut record_files: Vec<CollectedFile> = Vec::new();
+    let mut write = |relative: &str, bytes: &[u8]| -> Result<(), MomentError> {
+        files.push((relative.to_owned(), bytes.to_vec()));
+        record_files.push(CollectedFile {
+            path: relative.to_owned(),
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+        });
+        Ok(())
+    };
     let encoded =
         |value: &serde_json::Value| serde_json::to_vec_pretty(value).map_err(MomentError::Parse);
-    write_collected_file(&output, "boundary.json", &encoded(boundary)?, &mut files)?;
+    write("boundary.json", &encoded(boundary)?)?;
     if let Some(previous) = located.previous {
-        write_collected_file(&output, "previous.json", &encoded(previous)?, &mut files)?;
+        write("previous.json", &encoded(previous)?)?;
     }
     if let Some(next) = located.next {
-        write_collected_file(&output, "next.json", &encoded(next)?, &mut files)?;
+        write("next.json", &encoded(next)?)?;
     }
 
     // The decision trace interleaves template headers with
@@ -859,12 +881,7 @@ pub fn collect_moment(
         "boundary_index": located.index,
         "entries": trace_slice,
     });
-    write_collected_file(
-        &output,
-        "decision-trace.json",
-        &encoded(&trace_record)?,
-        &mut files,
-    )?;
+    write("decision-trace.json", &encoded(&trace_record)?)?;
 
     // Cumulative serial slices: each boundary's delta bytes accumulate to
     // the transcript length at that moment, verified against the boundary's
@@ -889,7 +906,7 @@ pub fn collect_moment(
             }
         }
         if !prefix.is_empty() {
-            write_collected_file(&output, "progress.jsonl", prefix.as_bytes(), &mut files)?;
+            write("progress.jsonl", prefix.as_bytes())?;
         }
     }
     let run_dir = bundle.join("runs").join(format!("{:03}", located.run));
@@ -921,12 +938,7 @@ pub fn collect_moment(
             let verified = transcript.len() >= length
                 && format!("{:x}", Sha256::digest(&transcript[..length])) == *expected;
             if verified {
-                write_collected_file(
-                    &output,
-                    &format!("serial/{service}.log"),
-                    &transcript[..length],
-                    &mut files,
-                )?;
+                write(&format!("serial/{service}.log"), &transcript[..length])?;
             } else {
                 serial_slices = "unverified";
             }
@@ -945,15 +957,13 @@ pub fn collect_moment(
         next_moment,
         decision_trace_entries: trace_slice.len(),
         serial_slices,
-        files,
+        files: record_files,
     };
-    write_collected_file(
-        &output,
-        "manifest.json",
-        &encoded(&serde_json::to_value(&collected).map_err(MomentError::Parse)?)?,
-        &mut Vec::new(),
-    )?;
-    Ok(collected)
+    files.push((
+        "manifest.json".to_owned(),
+        encoded(&serde_json::to_value(&collected).map_err(MomentError::Parse)?)?,
+    ));
+    Ok((collected, files))
 }
 
 /// Reconstruct one service's complete serial transcript from a retained run
