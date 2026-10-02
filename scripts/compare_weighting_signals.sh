@@ -54,11 +54,61 @@ theseus evaluate compare \
 theseus history "$outdir/unseeded" "$outdir/seeded" \
     --choices --format json > "$outdir/choices.json"
 
+# Tabulate the experiment: per arm, runs, failed runs, property
+# witnesses, and witnesses per run; plus the top failed-run shares per
+# consumed identity. The ranking is a row comparison, not hand-read JSON.
+python3 - "$outdir" <<'TABULATE'
+import json
+import sys
+from pathlib import Path
+
+outdir = Path(sys.argv[1])
+rows = []
+for arm in ["unseeded", "seeded"]:
+    result = json.loads((outdir / arm / "campaign-result.json").read_text())
+    runs = result.get("runs", [])
+    total = len(runs)
+    failed = sum(1 for run in runs if run.get("status") == "failed")
+    witnesses = sum(len(run.get("property_witnesses", [])) for run in runs)
+    per_run = witnesses / total if total else 0.0
+    rows.append((arm, total, failed, witnesses, per_run))
+
+catalog = json.loads((outdir / "choices.json").read_text())
+shares = sorted(
+    catalog.get("choices", []),
+    key=lambda entry: (
+        entry.get("total_failed_runs", 0) / entry["total_runs"]
+        if entry.get("total_runs")
+        else 0,
+        -entry.get("total_runs", 0),
+    ),
+    reverse=True,
+)
+
+lines = [
+    "| arm | runs | failed runs | property witnesses | witnesses per run |",
+    "| --- | --- | --- | --- | --- |",
+]
+for arm, total, failed, witnesses, per_run in rows:
+    lines.append(
+        f"| {arm} | {total} | {failed} | {witnesses} | {per_run:.2f} |"
+    )
+lines += [
+    "",
+    "Top failed-run shares per consumed identity (choice / failed / runs):",
+]
+for entry in shares[:5]:
+    lines.append(
+        f"- {entry['choice']}: {entry['total_failed_runs']}"
+        f"/{entry['total_runs']}"
+    )
+(outdir / "tabulation.md").write_text("\n".join(lines) + "\n")
+print(f"tabulation: {outdir/'tabulation.md'}")
+TABULATE
+
 echo "campaigns:   $outdir/unseeded $outdir/seeded"
 echo "comparison:  $outdir/signals.md"
 echo "choice catalog: $outdir/choices.json"
 echo
-echo "property yield per run (from signals.json rows: failed properties"
-echo "and failed runs), and per-identity outcome shares (from"
-echo "choices.json): the experiment the design note requires before any"
+echo "The tabulation is the experiment the design note requires before any"
 echo "weighting signal ships into the policy."

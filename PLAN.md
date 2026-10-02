@@ -746,18 +746,23 @@ reproducible investigation.
   emits the comparison artifact plus the cross-campaign choice catalog;
   the parity row and the design note link it as the required experiment.
 
+- The harness's yield tabulation: the script reduces the two campaigns
+  and the choice catalog to `tabulation.md` - per arm, runs, failed runs,
+  witnesses, and witnesses per run, plus the top failed-run shares per
+  consumed identity.
+
 ## Immediate next work
 
-### 1. The harness's yield tabulation
+### 1. The recorded weighting experiment
 
-The harness emits the raw evidence; the design note's ranking needs the
-tabulation. The next work computes it:
+The harness is runnable on any KVM host; the plan records no experiment
+result. The next work records one:
 
-- The script (or a small `theseus` surface) reduces the two campaigns and
-  the choice catalog to one table: per signal, property witnesses and
-  failures per run, so the ranking is a row comparison rather than
-  hand-reading JSON.
-- Tests: `sh -n` plus the documentation checks.
+- A reference workload's harness output (campaigns, comparison,
+  tabulation) is retained beside its evaluation as the recorded
+  experiment, and the design note cites it.
+- Requires a KVM host; the recorded artifacts are the evidence, exactly
+  like the tutorials' recorded explorations.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
