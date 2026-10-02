@@ -697,18 +697,24 @@ reproducible investigation.
   journal prefix, decision trace, serial slices, digest manifest - built
   in-memory by the same collection logic.
 
+- The collect route in the smoke script: the CI script untars a
+  `?collect` archive with Python's `tarfile` and asserts the boundary
+  record, journal prefix, and digest manifest against the fixtures; the
+  route manifest lists the collect shape.
+
 ## Immediate next work
 
-### 1. The smoke script's collect route
+### 1. The seeded search in the smoke fixtures
 
-The serve smoke script asserts every documented route; the new collect
-route needs the same lock. The next work extends it:
+The smoke fixtures are static; the seeded-guidance flag has no
+end-to-end CI coverage. The next work locks it:
 
-- The smoke script fetches a `?collect` archive, untars it with Python's
-  `tarfile`, and asserts the boundary record, journal prefix, and
-  manifest entries against the fixtures.
-- Tests: the smoke script is the test; the manifest lists the collect
-  route beside the others.
+- A smoke segment writes a prior bundle, explores with
+  `--seed-choices` against a two-candidate corpus, and asserts the
+  retained runs prefer the unseeded candidate (run via the CLI binary
+  the script already drives, no KVM needed for a compose plan whose
+  campaign is unit-level... scoped to the plan lock: assert the locked
+  plan carries the seed).
 
 Sub-1x clock-rate windows, the Kubernetes controllers, the context-weighted
 feedback, the report surface, the serve surface, moment navigation, the

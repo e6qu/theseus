@@ -914,6 +914,12 @@ const ROUTES: &[RouteManifestEntry] = &[
     },
     RouteManifestEntry {
         method: "GET",
+        path: "/<name>/query/moment/<moment>?collect",
+        content_type: "application/x-tar",
+        description: "the collected evidence archive for one moment",
+    },
+    RouteManifestEntry {
+        method: "GET",
         path: "/<name>/query/preceded-by/<needle>",
         content_type: "application/json",
         description: "moments whose evidence the needle precedes",
@@ -1000,6 +1006,7 @@ fn tar_archive(files: &[(String, Vec<u8>)]) -> Vec<u8> {
         header[156] = b'0';
         header[257..262].copy_from_slice(b"ustar");
         header[263..265].copy_from_slice(b"00");
+        header[148..156].fill(b' ');
         let checksum: u32 = header.iter().map(|byte| u32::from(*byte)).sum();
         write_octal(&mut header[148..154], u64::from(checksum));
         header[154] = 0;
