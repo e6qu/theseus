@@ -16013,6 +16013,7 @@ mod tests {
             max_operations_per_run: 2,
             counterfactual: None,
             shard: None,
+        seed_choice_values: Vec::new(),
         };
         let checkpoint = CampaignCheckpoint {
             switches: BTreeMap::new(),
@@ -18624,7 +18625,7 @@ mod tests {
 
     #[test]
     fn choice_seeds_count_as_seen_for_novelty() {
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         apply_choice_seeds(
             &mut seen,
             &[
