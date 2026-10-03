@@ -53,27 +53,34 @@ Run steps 3-5 inside this shell.
 ## 3. Prepare the campaign input
 
 ```sh
-cat > rendered/theseus.toml <<'MANIFEST'
+for service in chooser forwarder; do
+  mkdir -p rendered/$service/runtime rendered/$service/guest
+  cp /usr/local/bin/firecracker rendered/$service/runtime/firecracker
+  cp /usr/local/bin/theseus-image rendered/$service/runtime/theseus-image
+  cp /opt/theseus/vmlinux rendered/$service/guest/vmlinux
+  cat > rendered/$service/theseus.toml <<MANIFEST
 version = 1
+
+[runtime]
+firecracker = "runtime/firecracker"
+image_adapter = "runtime/theseus-image"
+
+[guest]
+kernel = "guest/vmlinux"
+image = "/tutorial/service/work/service.tar"
 
 [run]
 seed = 42
-
-[container_service.ready]
-url = "http://127.0.0.1:8080/health"
-
-[[container_service.operations]]
-name = "calculate"
-url = "http://127.0.0.1:8080/calculate?mode=1&retry=2"
 MANIFEST
+done
 cat > rendered/campaign.toml <<'CAMPAIGN'
-driver = "chooser"
+driver = "chooser-chooser"
 max_runs = 6
 max_operations_per_run = 1
 
 [[operations]]
 name = "calculate"
-service = "chooser"
+service = "chooser-chooser"
 
 [operations.http]
 url = "http://127.0.0.1:8080/calculate?mode=1&retry=2"
@@ -84,7 +91,9 @@ theseus compose validate rendered
 A directory input walks every sorted `.yaml`/`.yml` file - the rendered
 Deployment and Service - through the documented Kubernetes subset, and
 reads `campaign.toml` (the same shape a Compose file puts under
-`x-theseus.campaign`) for the declared campaign.
+`x-theseus.campaign`) for the declared campaign. Multi-container pods
+translate into one service per container: the plan names
+`chooser-chooser` and `chooser-log-forwarder`.
 
 ## 4. Run the plan lock
 

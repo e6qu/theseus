@@ -760,16 +760,22 @@ reproducible investigation.
   services with the per-container manifest annotation, and the parity
   row's workload gap narrows to Compose breadth only.
 
+- Tutorial 44's sidecar step: the chart renders a log-forwarder
+  container beside the workload, each with its own manifest annotation,
+  and the walkthrough names the two `<pod>-<container>` services the
+  plan locks.
+
 ## Immediate next work
 
-### 1. The tutorial's multi-container step
+### 1. The compose breadth audit's next entry
 
-Tutorial 44's chart renders one Deployment; a second container would
-show the per-container contract end to end. The next work extends it:
+The audit's list is the breadth backlog; the next entry is the
+`depends_on` healthcondition form:
 
-- The chart gains a log-forwarder sidecar container with its own
-  manifest, the rendered input yields two services, and the tutorial
-  names the `<pod>-<container>` services in the plan grep.
+- `depends_on` with `condition: service_healthy` maps onto the existing
+  healthcheck contract (the dependent waits for the dependency's health
+  instead of ordering only), locked into the plan.
+- Tests: translation fixtures over condition-form dependencies.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
