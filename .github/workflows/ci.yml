@@ -201,8 +201,7 @@ jobs:
           docker save theseus-structured-choice-ci -o service/work/service.tar
           PATH="../../../cli/target/debug:$PATH" \
             sh ../../../scripts/compare_weighting_signals.sh \
-            compose.yaml 6 experiment \
-            --expect-counterexample corrupt_result_is_unreachable
+            compose.yaml 6 experiment corrupt_result_is_unreachable
           python3 -c 'import json; t=json.load(open("experiment/tabulation.md")); assert "arm" in t'
           test -f experiment/choices.json
           test -f experiment/signals.md

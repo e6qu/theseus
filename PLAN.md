@@ -779,6 +779,12 @@ reproducible investigation.
   as the `weighting-experiment` artifact; the harness passes extra
   explore args through (`--expect-counterexample`).
 
+- The recorded weighting experiment: CI's native-KVM job runs the
+  harness on tutorial 36's workload (seeded and unseeded at budget 6,
+  asserting the `corrupt_result_is_unreachable` counterexample) and
+  retains the campaigns, comparison, choice catalog, and tabulation as
+  the `weighting-experiment` artifact.
+
 ## Immediate next work
 
 ### 1. The recorded experiment's citation
