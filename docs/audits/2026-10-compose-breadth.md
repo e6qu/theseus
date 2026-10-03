@@ -13,7 +13,11 @@ backplanes), `depends_on`, `environment` (literal values), `env_file`
 (single and list), `command`, `entrypoint`, `working_dir`, `user`,
 `configs`, `secrets` (file-based), `volumes` (memory-backed),
 `healthcheck`, `hostname`, `extra_hosts`, `cpus`, `mem_limit`,
-`deploy.resources.limits`, `read_only`, `tmpfs`.
+`deploy.resources.limits`, `read_only`, `tmpfs` (with the optional
+`size=` suffix). Multiple containers per Compose service are not a
+Compose concept; on the Kubernetes side, multi-container pods translate
+into one service per container with the per-container
+`theseus.io/manifest` annotation.
 
 ## Unsupported, with reasons
 
