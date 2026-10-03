@@ -765,17 +765,26 @@ reproducible investigation.
   and the walkthrough names the two `<pod>-<container>` services the
   plan locks.
 
+- The breadth audit's multi-container entry: the supported list records
+  that Kubernetes multi-container pods translate into per-container
+  services with the per-container manifest annotation, and the parity
+  row's workload gap narrows to Compose breadth only.
+- `depends_on` conditions (`service_started`, `service_healthy` with the
+  health-evidence requirement) were already implemented and validated;
+  the speculative queue item is retired.
+
 ## Immediate next work
 
-### 1. The compose breadth audit's next entry
+### 1. The recorded weighting experiment
 
-The audit's list is the breadth backlog; the next entry is the
-`depends_on` healthcondition form:
+The harness is runnable on any KVM host; the plan records no experiment
+result. The next work records one:
 
-- `depends_on` with `condition: service_healthy` maps onto the existing
-  healthcheck contract (the dependent waits for the dependency's health
-  instead of ordering only), locked into the plan.
-- Tests: translation fixtures over condition-form dependencies.
+- A reference workload's harness output (campaigns, comparison,
+  tabulation) is retained beside its evaluation as the recorded
+  experiment, and the design note cites it.
+- Requires a KVM host; the recorded artifacts are the evidence, exactly
+  like the tutorials' recorded explorations.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
