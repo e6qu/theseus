@@ -92,10 +92,10 @@ fn named(metadata: &Option<Metadata>, what: &str) -> Result<String, ComposeError
         .ok_or_else(|| ComposeError::Invalid(format!("Kubernetes {what} has no metadata.name")))
 }
 
-fn one_container<'a>(
+fn pod_containers<'a>(
     service_name: &str,
     spec: &'a serde_json::Value,
-) -> Result<&'a serde_json::Value, ComposeError> {
+) -> Result<Vec<&'a serde_json::Value>, ComposeError> {
     let reject = |field: &str| {
         ComposeError::Invalid(format!(
             "Kubernetes service {service_name:?} is outside the supported subset: {field} is not supported"
@@ -122,33 +122,67 @@ fn one_container<'a>(
                 "Kubernetes service {service_name:?} has no containers"
             ))
         })?;
-    if containers.len() != 1 {
+    if containers.is_empty() {
         return Err(ComposeError::Invalid(format!(
-            "Kubernetes service {service_name:?} declares {} containers; the supported subset is exactly one",
-            containers.len()
+            "Kubernetes service {service_name:?} has no containers"
         )));
     }
-    let container = &containers[0];
-    for unsupported in ["ports", "livenessProbe", "readinessProbe"] {
+    for container in containers {
+        for unsupported in ["ports", "livenessProbe", "readinessProbe"] {
+            if container
+                .get(unsupported)
+                .is_some_and(|value| !value.is_null())
+            {
+                return Err(reject(unsupported));
+            }
+        }
         if container
-            .get(unsupported)
-            .is_some_and(|value| !value.is_null())
+            .get("env")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| entry.get("valueFrom").is_some_and(|v| !v.is_null()))
+            })
         {
-            return Err(reject(unsupported));
+            return Err(reject("env valueFrom references"));
         }
     }
-    if container
-        .get("env")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|entries| {
-            entries
-                .iter()
-                .any(|entry| entry.get("valueFrom").is_some_and(|v| !v.is_null()))
-        })
-    {
-        return Err(reject("env valueFrom references"));
+    Ok(containers.into_iter().collect())
+}
+
+/// One translated container's service name: the pod's name for a
+/// single-container pod, `pod-container` for each container of a
+/// multi-container pod.
+fn translated_service_name(
+    pod: &str,
+    container: &serde_json::Value,
+    count: usize,
+) -> Result<String, ComposeError> {
+    if count == 1 {
+        return Ok(pod.to_owned());
     }
-    Ok(container)
+    let name = container
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            ComposeError::Invalid(format!(
+                "Kubernetes pod {pod:?} declares multiple containers; every container needs a name"
+            ))
+        })?;
+    Ok(format!("{pod}-{name}"))
+}
+
+/// A container's manifest annotation: the container's own
+/// `theseus.io/manifest` wins, then the pod's, then the loader default.
+fn container_manifest(container: &serde_json::Value, pod_manifest: &str) -> String {
+    container
+        .get("metadata")
+        .and_then(|metadata| metadata.get("annotations"))
+        .and_then(|annotations| annotations.get(MANIFEST_ANNOTATION))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| pod_manifest.to_owned())
 }
 
 fn environment(container: &serde_json::Value) -> Option<ComposeEnvironment> {
@@ -343,68 +377,81 @@ pub fn load_kubernetes_compose_str(
                 } else {
                     &spec
                 };
-                let container = one_container(&name, pod_spec)?;
-                if container
-                    .get("image")
-                    .and_then(serde_json::Value::as_str)
-                    .is_none()
-                {
-                    return Err(ComposeError::Invalid(format!(
-                        "Kubernetes service {name:?} has no image"
-                    )));
-                }
-                let mut command: Vec<String> = container
-                    .get("command")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|argv| {
-                        argv.iter()
-                            .filter_map(serde_json::Value::as_str)
-                            .map(str::to_owned)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if let Some(args) = container.get("args").and_then(serde_json::Value::as_array) {
-                    command.extend(
-                        args.iter()
-                            .filter_map(serde_json::Value::as_str)
-                            .map(str::to_owned),
-                    );
-                }
-                let manifest = metadata
+                let containers = pod_containers(&name, pod_spec)?;
+                let pod_manifest = metadata
                     .as_ref()
                     .and_then(|metadata| metadata.annotations.get(MANIFEST_ANNOTATION))
                     .cloned()
                     .unwrap_or_else(|| service_manifest.to_owned());
-                let service_manifest_path = PathBuf::from(&manifest);
-                if service_manifest_path.is_absolute() {
-                    return Err(ComposeError::Invalid(format!(
+                let mut translated: Vec<(String, &serde_json::Value, String)> = Vec::new();
+                for container in &containers {
+                    let service_name = translated_service_name(&name, container, containers.len())?;
+                    if container
+                        .get("image")
+                        .and_then(serde_json::Value::as_str)
+                        .is_none()
+                    {
+                        return Err(ComposeError::Invalid(format!(
+                            "Kubernetes service {service_name:?} has no image"
+                        )));
+                    }
+                    translated.push((
+                        service_name,
+                        container,
+                        container_manifest(container, &pod_manifest),
+                    ));
+                }
+                for (service_name, container, manifest) in &translated {
+                    let container = *container;
+                    let name = service_name;
+                    let mut command: Vec<String> = container
+                        .get("command")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|argv| {
+                            argv.iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if let Some(args) = container.get("args").and_then(serde_json::Value::as_array)
+                    {
+                        command.extend(
+                            args.iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .map(str::to_owned),
+                        );
+                    }
+                    let service_manifest_path = PathBuf::from(manifest);
+                    if service_manifest_path.is_absolute() {
+                        return Err(ComposeError::Invalid(format!(
                         "service {name:?} manifest {manifest:?} must be relative to the Kubernetes manifest"
                     )));
-                }
-                let read_only = pod_spec
-                    .get("securityContext")
-                    .and_then(|context| context.get("readOnlyRootFilesystem"))
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                // ConfigMap and Secret volumes translate into per-key file
-                // mounts; every other volume type stays rejected by name.
-                let mut volume_sources: BTreeMap<String, PodVolume> = BTreeMap::new();
-                if let Some(volumes) = pod_spec
-                    .get("volumes")
-                    .and_then(serde_json::Value::as_array)
-                {
-                    for volume in volumes {
-                        let volume_name = volume
-                            .get("name")
-                            .and_then(serde_json::Value::as_str)
-                            .ok_or_else(|| {
-                                ComposeError::Invalid(format!(
-                                    "Kubernetes service {name:?} has a volume without a name"
-                                ))
-                            })?
-                            .to_owned();
-                        if let Some(config_map) = volume.get("configMap") {
-                            let source = config_map
+                    }
+                    let read_only = pod_spec
+                        .get("securityContext")
+                        .and_then(|context| context.get("readOnlyRootFilesystem"))
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    // ConfigMap and Secret volumes translate into per-key file
+                    // mounts; every other volume type stays rejected by name.
+                    let mut volume_sources: BTreeMap<String, PodVolume> = BTreeMap::new();
+                    if let Some(volumes) = pod_spec
+                        .get("volumes")
+                        .and_then(serde_json::Value::as_array)
+                    {
+                        for volume in volumes {
+                            let volume_name = volume
+                                .get("name")
+                                .and_then(serde_json::Value::as_str)
+                                .ok_or_else(|| {
+                                    ComposeError::Invalid(format!(
+                                        "Kubernetes service {name:?} has a volume without a name"
+                                    ))
+                                })?
+                                .to_owned();
+                            if let Some(config_map) = volume.get("configMap") {
+                                let source = config_map
                                 .get("name")
                                 .and_then(serde_json::Value::as_str)
                                 .ok_or_else(|| {
@@ -413,16 +460,16 @@ pub fn load_kubernetes_compose_str(
                                     ))
                                 })?
                                 .to_owned();
-                            volume_sources.insert(
-                                volume_name,
-                                PodVolume {
-                                    kind: "config".to_owned(),
-                                    source,
-                                    items: parse_volume_items(config_map.get("items"))?,
-                                },
-                            );
-                        } else if let Some(secret) = volume.get("secret") {
-                            let source = secret
+                                volume_sources.insert(
+                                    volume_name,
+                                    PodVolume {
+                                        kind: "config".to_owned(),
+                                        source,
+                                        items: parse_volume_items(config_map.get("items"))?,
+                                    },
+                                );
+                            } else if let Some(secret) = volume.get("secret") {
+                                let source = secret
                                 .get("secretName")
                                 .and_then(serde_json::Value::as_str)
                                 .ok_or_else(|| {
@@ -431,77 +478,78 @@ pub fn load_kubernetes_compose_str(
                                     ))
                                 })?
                                 .to_owned();
-                            volume_sources.insert(
-                                volume_name,
-                                PodVolume {
-                                    kind: "secret".to_owned(),
-                                    source,
-                                    items: parse_volume_items(secret.get("items"))?,
-                                },
-                            );
-                        } else {
-                            let kind = volume
-                                .as_object()
-                                .and_then(|object| {
-                                    object.keys().find(|key| key != &"name").cloned()
-                                })
-                                .unwrap_or_else(|| "unknown".to_owned());
-                            return Err(ComposeError::Invalid(format!(
+                                volume_sources.insert(
+                                    volume_name,
+                                    PodVolume {
+                                        kind: "secret".to_owned(),
+                                        source,
+                                        items: parse_volume_items(secret.get("items"))?,
+                                    },
+                                );
+                            } else {
+                                let kind = volume
+                                    .as_object()
+                                    .and_then(|object| {
+                                        object.keys().find(|key| key != &"name").cloned()
+                                    })
+                                    .unwrap_or_else(|| "unknown".to_owned());
+                                return Err(ComposeError::Invalid(format!(
                                 "Kubernetes service {name:?} volume {volume_name:?} has type {kind:?}; the supported subset is configMap and secret"
                             )));
+                            }
                         }
                     }
-                }
-                let service_name = name.clone();
-                services.insert(
-                    name.clone(),
-                    ComposeService {
-                        theseus: ServiceTheseus {
-                            manifest: service_manifest_path,
-                            faults: Vec::new(),
-                            coverage: Vec::new(),
+                    let service_name = name.clone();
+                    services.insert(
+                        name.clone(),
+                        ComposeService {
+                            theseus: ServiceTheseus {
+                                manifest: service_manifest_path,
+                                faults: Vec::new(),
+                                coverage: Vec::new(),
+                            },
+                            networks: Vec::new(),
+                            depends_on: None,
+                            environment: environment(container),
+                            env_file: None,
+                            command: Some(command),
+                            entrypoint: None,
+                            working_dir: container
+                                .get("workingDir")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned),
+                            user: container
+                                .get("securityContext")
+                                .and_then(|context| context.get("runAsUser"))
+                                .map(|user| user.to_string()),
+                            configs: Vec::new(),
+                            secrets: Vec::new(),
+                            volumes: Vec::new(),
+                            healthcheck: None,
+                            hostname: None,
+                            extra_hosts: None,
+                            cpus: None,
+                            mem_limit: None,
+                            deploy: None,
+                            read_only,
+                            tmpfs: Vec::new(),
                         },
-                        networks: Vec::new(),
-                        depends_on: None,
-                        environment: environment(container),
-                        env_file: None,
-                        command: Some(command),
-                        entrypoint: None,
-                        working_dir: container
-                            .get("workingDir")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_owned),
-                        user: container
-                            .get("securityContext")
-                            .and_then(|context| context.get("runAsUser"))
-                            .map(|user| user.to_string()),
-                        configs: Vec::new(),
-                        secrets: Vec::new(),
-                        volumes: Vec::new(),
-                        healthcheck: None,
-                        hostname: None,
-                        extra_hosts: None,
-                        cpus: None,
-                        mem_limit: None,
-                        deploy: None,
-                        read_only,
-                        tmpfs: Vec::new(),
-                    },
-                );
-                if let Some(metadata) = &metadata {
-                    labels.insert(service_name.clone(), metadata.labels.clone());
+                    );
+                    if let Some(metadata) = &metadata {
+                        labels.insert(service_name.clone(), metadata.labels.clone());
+                    }
+                    pod_mounts.insert(
+                        name.clone(),
+                        (
+                            container
+                                .get("volumeMounts")
+                                .and_then(serde_json::Value::as_array)
+                                .cloned()
+                                .unwrap_or_default(),
+                            volume_sources,
+                        ),
+                    );
                 }
-                pod_mounts.insert(
-                    name.clone(),
-                    (
-                        container
-                            .get("volumeMounts")
-                            .and_then(serde_json::Value::as_array)
-                            .cloned()
-                            .unwrap_or_default(),
-                        volume_sources,
-                    ),
-                );
             }
             "ConfigMap" => {
                 let name = named(&metadata, &kind)?;
