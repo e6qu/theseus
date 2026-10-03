@@ -755,16 +755,21 @@ reproducible investigation.
   service (`<pod>-<container>`) with a per-container manifest annotation,
   and the rejected-subset list narrows accordingly.
 
+- The breadth audit's multi-container entry: the supported list records
+  that Kubernetes multi-container pods translate into per-container
+  services with the per-container manifest annotation, and the parity
+  row's workload gap narrows to Compose breadth only.
+
 ## Immediate next work
 
-### 1. The breadth audit's multi-container entry
+### 1. The tutorial's multi-container step
 
-The audit records multi-container pods as unsupported; the subset now
-accepts them. The next work updates it:
+Tutorial 44's chart renders one Deployment; a second container would
+show the per-container contract end to end. The next work extends it:
 
-- The breadth audit's table moves multi-container pods into the
-  supported list with the per-container manifest contract, and the
-  parity row's gap narrows to Compose breadth only.
+- The chart gains a log-forwarder sidecar container with its own
+  manifest, the rendered input yields two services, and the tutorial
+  names the `<pod>-<container>` services in the plan grep.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
