@@ -751,18 +751,20 @@ reproducible investigation.
   witnesses, and witnesses per run, plus the top failed-run shares per
   consumed identity.
 
+- Multi-container pods: each container of a pod translates into its own
+  service (`<pod>-<container>`) with a per-container manifest annotation,
+  and the rejected-subset list narrows accordingly.
+
 ## Immediate next work
 
-### 1. The recorded weighting experiment
+### 1. The breadth audit's multi-container entry
 
-The harness is runnable on any KVM host; the plan records no experiment
-result. The next work records one:
+The audit records multi-container pods as unsupported; the subset now
+accepts them. The next work updates it:
 
-- A reference workload's harness output (campaigns, comparison,
-  tabulation) is retained beside its evaluation as the recorded
-  experiment, and the design note cites it.
-- Requires a KVM host; the recorded artifacts are the evidence, exactly
-  like the tutorials' recorded explorations.
+- The breadth audit's table moves multi-container pods into the
+  supported list with the per-container manifest contract, and the
+  parity row's gap narrows to Compose breadth only.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the

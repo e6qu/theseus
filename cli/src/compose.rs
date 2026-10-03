@@ -9215,14 +9215,6 @@ mod tests {
         assert!(error.to_string().contains("has no pod spec"), "{error}");
 
         let error = case(
-            "apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\nspec:\n  containers:\n    - name: a\n      image: a:1\n    - name: b\n      image: b:1\n",
-        );
-        assert!(
-            error.to_string().contains("declares 2 containers"),
-            "{error}"
-        );
-
-        let error = case(
             "apiVersion: v1\nkind: Pod\nmetadata:\n  name: api\nspec:\n  volumes:\n    - name: data\n      emptyDir: {}\n  containers:\n    - name: a\n      image: a:1\n",
         );
         assert!(
@@ -11406,6 +11398,84 @@ x-theseus:
         .unwrap();
         let error = load_compose_plan(zero.path().join("compose.yaml")).unwrap_err();
         assert!(error.to_string().contains("positive size"), "{error}");
+    }
+
+    #[test]
+    fn translates_multi_container_pods_into_per_container_services() {
+        let directory = image_fixture(
+            "services:\n  placeholder:\n    x-theseus:\n      manifest: api/theseus.toml\nnetworks:\n  default: {}\n",
+            &[],
+        );
+        for service in ["api", "api-sidecar", "worker"] {
+            let root = directory.path().join(&service);
+            fs::create_dir_all(root.join("runtime")).unwrap();
+            fs::create_dir_all(root.join("guest")).unwrap();
+            fs::write(root.join("runtime/firecracker"), b"firecracker").unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(
+                root.join("runtime/firecracker"),
+                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+            )
+            .unwrap();
+            fs::write(root.join("runtime/theseus-image"), b"adapter").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(
+                    root.join("runtime/theseus-image"),
+                    std::fs::Permissions::from_mode(0o755),
+                )
+                .unwrap();
+            }
+            fs::write(root.join("guest/vmlinux"), b"kernel").unwrap();
+            fs::write(
+                directory.path().join(&service).join("theseus.toml"),
+                "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+            )
+            .unwrap();
+            write_docker_image(&directory.path().join(&service).join("service.tar"), &[]);
+        }
+        fs::write(
+            directory.path().join("theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'api/runtime/firecracker'\nimage_adapter = 'api/runtime/theseus-image'\n[guest]\nkernel = 'api/guest/vmlinux'\nimage = 'api/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("k8s.yaml"),
+            "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\nspec:\n  template:\n    spec:\n      containers:\n        - name: api\n          image: api:1\n          command: [/work/api]\n          metadata:\n            annotations:\n              theseus.io/manifest: api/theseus.toml\n        - name: sidecar\n          image: sidecar:1\n          command: [/work/sidecar]\n          metadata:\n            annotations:\n              theseus.io/manifest: api-sidecar/theseus.toml\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: worker\nspec:\n  template:\n    spec:\n      containers:\n        - name: worker\n          image: worker:1\n          command: [/work/worker]\n",
+        )
+        .unwrap();
+
+        let plan = load_compose_plan(directory.path().join("k8s.yaml")).unwrap();
+        assert_eq!(plan.services.len(), 3);
+        assert!(plan.services.contains_key("api-api"));
+        assert!(plan.services.contains_key("api-sidecar"));
+        assert!(plan.services.contains_key("worker"));
+        let api = plan.services["api-api"].launch.as_ref().unwrap();
+        assert_eq!(api.command, Some(vec!["/work/api".to_owned()]));
+        let sidecar = plan.services["api-sidecar"].launch.as_ref().unwrap();
+        assert_eq!(sidecar.command, Some(vec!["/work/sidecar".to_owned()]));
+        assert!(plan.services["api-api"]
+            .manifest
+            .ends_with("api/theseus.toml"));
+        assert!(plan.services["api-sidecar"]
+            .manifest
+            .ends_with("api-sidecar/theseus.toml"));
+
+        let nameless = image_fixture(
+            "services:\n  placeholder:\n    x-theseus:\n      manifest: api/theseus.toml\nnetworks:\n  default: {}\n",
+            &[],
+        );
+        fs::write(
+            nameless.path().join("k8s.yaml"),
+            "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\nspec:\n  template:\n    spec:\n      containers:\n        - name: api\n          image: api:1\n        - image: sidecar:1\n",
+        )
+        .unwrap();
+        let error = load_compose_plan(nameless.path().join("k8s.yaml")).unwrap_err();
+        assert!(
+            error.to_string().contains("every container needs a name"),
+            "{error}"
+        );
     }
 
     #[test]

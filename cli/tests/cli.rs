@@ -1374,6 +1374,7 @@ fn history_catalogs_choice_values_with_failure_shares() {
     assert_eq!(catalog["choices"].as_array().unwrap().len(), 2);
 }
 
+#[test]
 fn history_catalogs_assertion_identities_across_campaigns() {
     let directory = tempfile::tempdir().unwrap();
     for (name, lines) in [
