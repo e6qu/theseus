@@ -796,16 +796,21 @@ reproducible investigation.
   tutorial's guest sizing, and the conversion path now fails loudly
   when a rootfs exceeds the declared guest memory.
 
+- The conversion guard in the image guide: the container-images guide's
+  conversion section names the rootfs-memory guard, the error text, and
+  the `mem_size_mib` fix.
+
 ## Immediate next work
 
-### 1. The conversion guard in the image guide
+### 1. The weighting experiment's first results
 
-The rootfs-memory guard is runner-side; readers converting images meet
-it at explore time. The next work documents it:
+CI records the experiment on every push; the design note's ranking
+awaits its first read. The next work reads it:
 
-- The container-images guide's conversion section names the guard: the
-  converted rootfs must fit the declared guest memory, with the error
-  text and the mem_size_mib fix.
+- Pull the retained `weighting-experiment` artifact from the latest
+  green run, read the tabulation's per-arm yields and the catalog's
+  outcome shares, and record the first observation beside the design
+  note (observational: one workload, one budget, no causal claim).
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
