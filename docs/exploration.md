@@ -524,10 +524,15 @@ difference is observable at saturation. At budget 3 the seeded run
 retained the same breadth-first prefix as the unseeded run (mode=0
 with retry 0, 1, 2): the novelty seed counts against the ranking only
 after observations accumulate, and three runs are not enough for the
-policy to depart from corpus order. Both recordings narrow the design
-question - the discriminating experiment needs either a larger budget
-(where the seed's effect on later runs is measurable) or a weighting
-signal that acts on the first observations.
+policy to depart from corpus order. A third recording — the budget-6 seeded rerun seeded from the budget-6
+unseeded campaign — retained the identical six-run sequence again. All
+three recordings narrow the design question to a specific mechanism:
+the novelty seed influences the ranking only through accumulated
+observations, and the corpus-order default dominates every run until
+those observations exist — so a seed alone never reorders a fresh
+search. The experiment a weighting change needs is therefore not
+seed-then-observe but a policy that consumes the seed at its first
+decision.
 
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without

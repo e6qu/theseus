@@ -810,18 +810,25 @@ reproducible investigation.
   affects the ranking only after observations accumulate - recorded
   beside the saturation observation.
 
+- The budget-6 seeded rerun: the third recording retained the identical
+  six-run sequence - the novelty seed acts only through accumulated
+  observations, so a seed alone never reorders a fresh search; the
+  comparison record is retained in the artifact.
+
 ## Immediate next work
 
-### 1. The budget-6 seeded rerun
+### 1. Seed consumption at the first decision
 
-The budget-3 pair shows the policy departs from corpus order only as
-observations accumulate; at budget 6 there is room for that departure.
-The next work measures it:
+The recordings isolate the mechanism: the seed must influence the first
+decision, not the ranking after observations. The next work changes
+that:
 
-- The CI experiment step adds a budget-6 seeded rerun seeded from the
-  budget-6 unseeded campaign, asserting the second campaign's run
-  sequence differs from the first's where novelty predicts, and the
-  design note extends with the observed reordering.
+- The unified scheduler consults `seed_choice_values` when ordering the
+  initial candidate corpus - candidates whose choice values are all
+  seeded rank below candidates with unseeded values - so a seeded fresh
+  search starts where the prior campaign stopped.
+- Tests: scheduler fixtures over a seeded corpus asserting the initial
+  ordering.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
