@@ -169,6 +169,20 @@ fn apply_choice_seeds(seen: &mut std::collections::BTreeSet<String>, seeds: &[St
 /// The deterministic partition of a corpus for one shard: schedules whose
 /// corpus position divides evenly, in corpus order. The union of all shards
 /// is the whole corpus, and the partitions are disjoint.
+/// The unpacked converted rootfs is ramfs the guest must hold in memory:
+/// a rootfs at or above the declared guest memory cannot boot. The error
+/// names both sizes so the fix is obvious.
+fn rootfs_fits_guest_memory(rootfs_bytes: u64, mem_size_mib: u32) -> Result<(), String> {
+    let guest_memory_bytes = u64::from(mem_size_mib) * 1024 * 1024;
+    if rootfs_bytes >= guest_memory_bytes {
+        return Err(format!(
+            "converted rootfs is {} bytes but the guest declares only {} MiB of memory; raise mem_size_mib above the rootfs size",
+            rootfs_bytes, mem_size_mib
+        ));
+    }
+    Ok(())
+}
+
 fn shard_of_corpus(corpus: usize, shard: &ShardPlan) -> Vec<usize> {
     (0..corpus)
         .filter(|position| {
@@ -14444,13 +14458,12 @@ fn lock_service_inputs(service_dir: &Path, service: &mut ServicePlan) -> Result<
                     format!("cannot stat {}: {error}", initramfs.display())
                 })?
                 .len();
-            let guest_memory_bytes = u64::from(service.run.run.mem_size_mib) * 1024 * 1024;
-            if rootfs_bytes >= guest_memory_bytes {
+            if let Err(error) =
+                rootfs_fits_guest_memory(rootfs_bytes, service.run.run.mem_size_mib)
+            {
                 return Err(format!(
-                    "converted rootfs {} is {} bytes but the guest declares only {} MiB of memory; raise mem_size_mib above the rootfs size",
-                    initramfs.display(),
-                    rootfs_bytes,
-                    service.run.run.mem_size_mib
+                    "{error} (converted rootfs {})",
+                    initramfs.display()
                 ));
             }
             service.run.guest.image = Some(artifact_at(image)?);
