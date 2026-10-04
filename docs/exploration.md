@@ -516,6 +516,15 @@ runs it, and CI's native-KVM job runs that harness on tutorial 36's
 workload on every push, retaining the campaigns, comparison, choice
 catalog, and tabulation as the recorded `weighting-experiment` artifact.
 
+The first recording is observational: at budget 6 over the workload's
+six-choice corpus the experiment saturates - seeded and unseeded
+retained identical coverage (each consumed every identity three times
+or twice, one witness each, zero failed runs) - so no ordering
+difference is observable at saturation. A discriminating experiment
+needs a budget below the corpus size, where the seeded policy's
+preference for unexplored values changes which combinations are
+retained.
+
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without
 editing the Compose file. Comparing one file across guidance modes at one

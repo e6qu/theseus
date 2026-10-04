@@ -800,17 +800,21 @@ reproducible investigation.
   conversion section names the rootfs-memory guard, the error text, and
   the `mem_size_mib` fix.
 
+- The experiment's first results: the first recording saturated the
+  six-choice corpus (identical coverage, no observable ordering), and
+  the design note records that a discriminating experiment needs a
+  budget below the corpus size.
+
 ## Immediate next work
 
-### 1. The weighting experiment's first results
+### 1. The sub-budget discrimination experiment
 
-CI records the experiment on every push; the design note's ranking
-awaits its first read. The next work reads it:
+The first recording saturated; ordering differences need a budget below
+the corpus size. The next work runs it:
 
-- Pull the retained `weighting-experiment` artifact from the latest
-  green run, read the tabulation's per-arm yields and the catalog's
-  outcome shares, and record the first observation beside the design
-  note (observational: one workload, one budget, no causal claim).
+- CI's experiment step adds a budget-3 seeded/unseeded pair, and the
+  design note's observation extends with the retained-distribution
+  comparison at that budget.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
