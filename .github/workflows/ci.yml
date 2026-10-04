@@ -213,12 +213,17 @@ jobs:
           # combination exits nonzero - tolerated, the retained runs are
           # the evidence.
           PATH="../../../cli/target/debug:$PATH" \
-            sh ../../../scripts/compare_weighting_signals.sh \
-            compose.yaml 3 subbudget corrupt_result_is_unreachable || \
+            theseus compose explore --output subbudget/unseeded \
+            --max-runs 3 --guidance unified compose.yaml || \
             test -f subbudget/unseeded/campaign-result.json
-          grep -q 'arm' subbudget/tabulation.md || true
-          test -f subbudget/unseeded/campaign-result.json
-          test -f subbudget/seeded/campaign-result.json
+          PATH="../../../cli/target/debug:$PATH" \
+            theseus compose explore --output subbudget/seeded \
+            --max-runs 3 --guidance unified \
+            --seed-choices subbudget/unseeded compose.yaml || \
+            test -f subbudget/seeded/campaign-result.json
+          PATH="../../../cli/target/debug:$PATH" \
+            theseus history subbudget/unseeded subbudget/seeded \
+            --choices --format json > subbudget/choices.json || true
 
       - name: Retain the weighting experiment diagnostics
         if: always()
