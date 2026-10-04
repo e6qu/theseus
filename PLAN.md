@@ -789,19 +789,23 @@ reproducible investigation.
   reference CI's retained `weighting-experiment` artifact, so the
   ranking reads recorded evidence rather than a runnable promise.
 
+- The recorded weighting experiment: CI's native-KVM job runs the
+  harness on tutorial 36's workload and retains the campaigns,
+  comparison, choice catalog, and tabulation as the
+  `weighting-experiment` artifact; the run also caught and fixed the
+  tutorial's guest sizing, and the conversion path now fails loudly
+  when a rootfs exceeds the declared guest memory.
+
 ## Immediate next work
 
-### 1. The tutorial 36 memory fix's root cause
+### 1. The conversion guard in the image guide
 
-The experiment's first CI run caught tutorial 36's guest sizing: a
-~190 MB rootfs cannot unpack in a 128 MiB guest, so the boot failed
-silently. The memory bump fixed the tutorial, but the deeper question
-stands:
+The rootfs-memory guard is runner-side; readers converting images meet
+it at explore time. The next work documents it:
 
-- The image-adapter conversion could fail loudly when the declared guest
-  memory cannot hold the converted rootfs, naming both sizes instead of
-  a silent health-check timeout.
-- Tests: adapter or conversion fixtures asserting the size check.
+- The container-images guide's conversion section names the guard: the
+  converted rootfs must fit the declared guest memory, with the error
+  text and the mem_size_mib fix.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
