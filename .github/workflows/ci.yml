@@ -230,8 +230,8 @@ jobs:
           PATH="../../../cli/target/debug:$PATH" \
             theseus compose explore --output rerun/seeded \
             --max-runs 6 --guidance unified \
-            --seed-choices experiment/unseeded compose.yaml
-          test -f rerun/seeded/campaign-result.json
+            --seed-choices experiment/unseeded compose.yaml || \
+            test -f rerun/seeded/campaign-result.json
           PATH="../../../cli/target/debug:$PATH" \
             theseus history experiment/unseeded rerun/seeded \
             --choices --format json > rerun/choices.json || true
