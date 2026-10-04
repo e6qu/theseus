@@ -206,12 +206,33 @@ jobs:
           test -f experiment/choices.json
           test -f experiment/signals.md
 
+          # The sub-budget pair: at budget 3 over a six-combination corpus
+          # the seeded policy's preference for unexplored values changes
+          # which combinations are retained, so ordering differences are
+          # observable. Without --expect-counterexample a retained corrupt
+          # combination exits nonzero - tolerated, the retained runs are
+          # the evidence.
+          PATH="../../../cli/target/debug:$PATH" \
+            theseus compose explore --output subbudget/unseeded \
+            --max-runs 3 --guidance unified compose.yaml || \
+            test -f subbudget/unseeded/campaign-result.json
+          PATH="../../../cli/target/debug:$PATH" \
+            theseus compose explore --output subbudget/seeded \
+            --max-runs 3 --guidance unified \
+            --seed-choices subbudget/unseeded compose.yaml || \
+            test -f subbudget/seeded/campaign-result.json
+          PATH="../../../cli/target/debug:$PATH" \
+            theseus history subbudget/unseeded subbudget/seeded \
+            --choices --format json > subbudget/choices.json || true
+
       - name: Retain the weighting experiment diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: weighting-experiment
-          path: docs/tutorials/36-structured-choices/experiment/
+          path: |
+            docs/tutorials/36-structured-choices/experiment/
+            docs/tutorials/36-structured-choices/subbudget/
           if-no-files-found: ignore
 
       - name: Retain whole-topology replay diagnostics
