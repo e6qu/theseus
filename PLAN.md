@@ -785,16 +785,23 @@ reproducible investigation.
   retains the campaigns, comparison, choice catalog, and tabulation as
   the `weighting-experiment` artifact.
 
+- The recorded experiment's citation: the design note and the parity row
+  reference CI's retained `weighting-experiment` artifact, so the
+  ranking reads recorded evidence rather than a runnable promise.
+
 ## Immediate next work
 
-### 1. The recorded experiment's citation
+### 1. The tutorial 36 memory fix's root cause
 
-CI now records the experiment on every push; the design note still
-describes it prospectively. The next work cites it:
+The experiment's first CI run caught tutorial 36's guest sizing: a
+~190 MB rootfs cannot unpack in a 128 MiB guest, so the boot failed
+silently. The memory bump fixed the tutorial, but the deeper question
+stands:
 
-- The design note and the parity row reference the retained
-  `weighting-experiment` artifact, so the ranking reads recorded
-  evidence rather than a runnable promise.
+- The image-adapter conversion could fail loudly when the declared guest
+  memory cannot hold the converted rootfs, naming both sizes instead of
+  a silent health-check timeout.
+- Tests: adapter or conversion fixtures asserting the size check.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the

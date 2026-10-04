@@ -512,7 +512,9 @@ same `evaluate compare` and `history --choices` surfaces documented
 above. A signal ships into the policy only when that comparison shows it
 finds failures or witnesses sooner than first-seen novelty alone;
 [scripts/compare_weighting_signals.sh](../scripts/compare_weighting_signals.sh)
-runs it.
+runs it, and CI's native-KVM job runs that harness on tutorial 36's
+workload on every push, retaining the campaigns, comparison, choice
+catalog, and tabulation as the recorded `weighting-experiment` artifact.
 
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without
