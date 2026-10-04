@@ -14435,6 +14435,24 @@ fn lock_service_inputs(service_dir: &Path, service: &mut ServicePlan) -> Result<
             if !status.success() {
                 return Err(format!("container image adapter exited with {status}"));
             }
+            // The unpacked rootfs is ramfs the guest must hold in memory:
+            // a converted image larger than the declared guest memory
+            // cannot boot, so fail here naming both sizes instead of a
+            // silent health-check timeout on an empty serial line.
+            let rootfs_bytes = fs::metadata(&initramfs)
+                .map_err(|error| {
+                    format!("cannot stat {}: {error}", initramfs.display())
+                })?
+                .len();
+            let guest_memory_bytes = u64::from(service.run.run.mem_size_mib) * 1024 * 1024;
+            if rootfs_bytes >= guest_memory_bytes {
+                return Err(format!(
+                    "converted rootfs {} is {} bytes but the guest declares only {} MiB of memory; raise mem_size_mib above the rootfs size",
+                    initramfs.display(),
+                    rootfs_bytes,
+                    service.run.run.mem_size_mib
+                ));
+            }
             service.run.guest.image = Some(artifact_at(image)?);
             service.run.runtime.image_adapter = Some(artifact_at(adapter)?);
             service.run.guest.initramfs = Some(artifact_at(initramfs)?);
@@ -18621,6 +18639,20 @@ mod tests {
         let mut changed = observations;
         changed[0].failed = true;
         assert_ne!(first, CampaignGuidanceLedger::from_observations(&changed));
+    }
+
+    #[test]
+    fn rootfs_larger_than_guest_memory_fails_with_both_sizes() {
+        let error =
+            rootfs_fits_guest_memory(199_229_440, 128).expect_err("oversized rootfs");
+        assert!(error.contains("converted rootfs is 199229440 bytes"), "{error}");
+        assert!(error.contains("only 128 MiB"), "{error}");
+        assert!(error.contains("raise mem_size_mib"), "{error}");
+
+        // The acceptance boundary: a rootfs strictly below the guest
+        // memory passes the same comparison.
+        assert!(rootfs_fits_guest_memory(100 * 1024 * 1024, 128).is_ok());
+        assert!(rootfs_fits_guest_memory(128 * 1024 * 1024, 128).is_err());
     }
 
     #[test]
