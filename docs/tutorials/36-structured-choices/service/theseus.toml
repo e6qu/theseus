@@ -11,7 +11,7 @@ image = "work/service.tar"
 [run]
 seed = 42
 vcpu_count = 1
-mem_size_mib = 128
+mem_size_mib = 1024
 timeout_secs = 30
 
 [container_service.ready]

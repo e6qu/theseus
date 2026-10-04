@@ -7,7 +7,10 @@
 # Requires Linux with KVM, a theseus binary on PATH, and a workload whose
 # campaign declares bounded choices with a property (see tutorial 36).
 # Usage:
-#   compare_weighting_signals.sh compose.yaml budget outdir
+#   compare_weighting_signals.sh compose.yaml budget outdir property
+#
+# The property is asserted with --expect-counterexample in both
+# explorations, so a retained counterexample counts as success.
 #
 # Resumable like compare_guidance_modes.sh: existing campaigns are kept.
 # The retained campaigns and signals.md are the evidence; a signal ships
@@ -21,13 +24,16 @@ outdir=${3:?usage: compare_weighting_signals.sh compose.yaml budget outdir}
 
 mkdir -p "$outdir"
 
+property=${4:?usage: compare_weighting_signals.sh compose.yaml budget outdir property}
+
 if [ -d "$outdir/unseeded" ]; then
     echo "keeping $outdir/unseeded"
 else
     theseus compose explore \
+        --expect-counterexample "$property" \
+        --output "$outdir/unseeded" \
         --max-runs "$budget" \
         --guidance unified \
-        --output "$outdir/unseeded" \
         "$compose"
 fi
 
@@ -37,10 +43,11 @@ else
     # The seeded run continues from the unseeded campaign's consumed
     # identities, so it prefers values the first exploration used.
     theseus compose explore \
+        --expect-counterexample "$property" \
+        --output "$outdir/seeded" \
         --max-runs "$budget" \
         --guidance unified \
         --seed-choices "$outdir/unseeded" \
-        --output "$outdir/seeded" \
         "$compose"
 fi
 

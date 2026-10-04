@@ -173,6 +173,47 @@ jobs:
           if ../../../cli/target/debug/theseus compose replay certificate/startup-divergence --output certificate/startup-rejected; then exit 1; fi
           python3 -c 'import json; e=json.load(open("certificate/startup-rejected/services/service/execution-error.json")); assert e["replay_error"] and e["boundary"]=="runtime_error"; assert "dependency startup" not in e["replay_error"]'
 
+      - name: Record the weighting experiment on native KVM
+        working-directory: docs/tutorials/36-structured-choices
+        run: |
+          test -c /dev/kvm
+          if ! test -r /dev/kvm || ! test -w /dev/kvm; then
+            sudo chmod 666 /dev/kvm
+          fi
+          (cd ../../../firecracker && cargo build -p firecracker)
+          cargo build --manifest-path ../../../cli/Cargo.toml --locked
+          cargo build --manifest-path ../../../image-runner/Cargo.toml --locked
+          release=$(mktemp -d)
+          tag=7eee61be7fd8
+          url="https://github.com/e6qu/theseus/releases/download/$tag"
+          curl -fsSL "$url/theseus-$tag-linux-amd64.tar.gz" -o "$release/theseus-$tag-linux-amd64.tar.gz"
+          curl -fsSL "$url/SHA256SUMS" -o "$release/SHA256SUMS"
+          (cd "$release" && sha256sum --check --ignore-missing SHA256SUMS)
+          tar -xzf "$release/theseus-$tag-linux-amd64.tar.gz" -C "$release"
+          mkdir -p service/work/runtime service/work/guest
+          cp ../../../firecracker/build/cargo_target/debug/firecracker service/work/runtime/firecracker
+          strip service/work/runtime/firecracker
+          cp ../../../image-runner/target/debug/theseus-image service/work/runtime/theseus-image
+          cp "$release/theseus-$tag-linux-amd64/vmlinux" service/work/guest/vmlinux
+          gcc -O2 -Wall -Wextra -o service/work/chooser service/main.c
+          gcc -O2 -Wall -Wextra -o service/work/ready service/ready.c
+          docker build --load --platform linux/amd64 -t theseus-structured-choice-ci service
+          docker save theseus-structured-choice-ci -o service/work/service.tar
+          PATH="../../../cli/target/debug:$PATH" \
+            sh ../../../scripts/compare_weighting_signals.sh \
+            compose.yaml 6 experiment corrupt_result_is_unreachable
+          grep -q 'arm' experiment/tabulation.md
+          test -f experiment/choices.json
+          test -f experiment/signals.md
+
+      - name: Retain the weighting experiment diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: weighting-experiment
+          path: docs/tutorials/36-structured-choices/experiment/
+          if-no-files-found: ignore
+
       - name: Retain whole-topology replay diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

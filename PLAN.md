@@ -773,18 +773,28 @@ reproducible investigation.
   health-evidence requirement) were already implemented and validated;
   the speculative queue item is retired.
 
+- The recorded weighting experiment: CI's native-KVM job runs the
+  harness on tutorial 36's workload (seeded and unseeded at budget 6)
+  and retains the campaigns, comparison, choice catalog, and tabulation
+  as the `weighting-experiment` artifact; the harness passes extra
+  explore args through (`--expect-counterexample`).
+
+- The recorded weighting experiment: CI's native-KVM job runs the
+  harness on tutorial 36's workload (seeded and unseeded at budget 6,
+  asserting the `corrupt_result_is_unreachable` counterexample) and
+  retains the campaigns, comparison, choice catalog, and tabulation as
+  the `weighting-experiment` artifact.
+
 ## Immediate next work
 
-### 1. The recorded weighting experiment
+### 1. The recorded experiment's citation
 
-The harness is runnable on any KVM host; the plan records no experiment
-result. The next work records one:
+CI now records the experiment on every push; the design note still
+describes it prospectively. The next work cites it:
 
-- A reference workload's harness output (campaigns, comparison,
-  tabulation) is retained beside its evaluation as the recorded
-  experiment, and the design note cites it.
-- Requires a KVM host; the recorded artifacts are the evidence, exactly
-  like the tutorials' recorded explorations.
+- The design note and the parity row reference the retained
+  `weighting-experiment` artifact, so the ranking reads recorded
+  evidence rather than a runnable promise.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
