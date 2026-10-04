@@ -805,16 +805,23 @@ reproducible investigation.
   the design note records that a discriminating experiment needs a
   budget below the corpus size.
 
+- The sub-budget experiment: at budget 3 the seeded run retained the
+  same breadth-first prefix as the unseeded run - the novelty seed
+  affects the ranking only after observations accumulate - recorded
+  beside the saturation observation.
+
 ## Immediate next work
 
-### 1. The sub-budget discrimination experiment
+### 1. The budget-6 seeded rerun
 
-The first recording saturated; ordering differences need a budget below
-the corpus size. The next work runs it:
+The budget-3 pair shows the policy departs from corpus order only as
+observations accumulate; at budget 6 there is room for that departure.
+The next work measures it:
 
-- CI's experiment step adds a budget-3 seeded/unseeded pair, and the
-  design note's observation extends with the retained-distribution
-  comparison at that budget.
+- The CI experiment step adds a budget-6 seeded rerun seeded from the
+  budget-6 unseeded campaign, asserting the second campaign's run
+  sequence differs from the first's where novelty predicts, and the
+  design note extends with the observed reordering.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the

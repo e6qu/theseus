@@ -516,14 +516,18 @@ runs it, and CI's native-KVM job runs that harness on tutorial 36's
 workload on every push, retaining the campaigns, comparison, choice
 catalog, and tabulation as the recorded `weighting-experiment` artifact.
 
-The first recording is observational: at budget 6 over the workload's
+Two recordings are observational. At budget 6 over the workload's
 six-choice corpus the experiment saturates - seeded and unseeded
 retained identical coverage (each consumed every identity three times
 or twice, one witness each, zero failed runs) - so no ordering
-difference is observable at saturation. A discriminating experiment
-needs a budget below the corpus size, where the seeded policy's
-preference for unexplored values changes which combinations are
-retained.
+difference is observable at saturation. At budget 3 the seeded run
+retained the same breadth-first prefix as the unseeded run (mode=0
+with retry 0, 1, 2): the novelty seed counts against the ranking only
+after observations accumulate, and three runs are not enough for the
+policy to depart from corpus order. Both recordings narrow the design
+question - the discriminating experiment needs either a larger budget
+(where the seed's effect on later runs is measurable) or a weighting
+signal that acts on the first observations.
 
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without
