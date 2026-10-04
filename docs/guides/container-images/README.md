@@ -57,6 +57,14 @@ check for each result, then stops the service. The regular test, Compose, and
 replay paths then use that locked image; the lower-level Rust API remains
 `orchestrator::oci::flatten`.
 
+The unpacked rootfs is ramfs the guest holds in memory, so it must fit the
+declared guest memory. If the converted rootfs reaches
+`mem_size_mib` (for example, a 190 MB Debian rootfs in a 128 MiB guest),
+conversion fails immediately with both sizes named -
+`converted rootfs is N bytes but the guest declares only M MiB of memory;
+raise mem_size_mib above the rootfs size` - instead of a silent boot
+failure masquerading as a ready-check timeout.
+
 ## Drive an HTTP operation
 
 Run named requests after readiness and before the final assertions. Theseus
