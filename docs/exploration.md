@@ -565,6 +565,17 @@ and applied actions. Replay checks that trace and the typed evidence. This is a
 bounded campaign decision plane; it does not yet control arbitrary Linux
 process, futex, syscall, timer, or interrupt scheduling.
 
+## Reading retained campaigns over HTTP and offline
+
+The evidence every command above retains is portable and readable three
+ways: locally through `theseus status`, `theseus query` (moments, events,
+collect), and `theseus history` (properties, assertions, choices); over
+HTTP with `theseus serve` (read-only index, verbatim results and logs,
+rendered reports, live progress journals, moment and choice queries,
+comparisons); and offline through collected moment bundles and the
+retained artifacts CI uploads. The weighting experiment's design note
+above records what those artifacts have shown so far.
+
 ## Reproduce one timeline
 
 Every timeline in a static exploration report includes a copyable command for

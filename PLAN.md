@@ -839,18 +839,24 @@ reproducible investigation.
   the unified campaign, so committed comparison tables include seeded
   ordering beside the modes.
 
+- The reading-surface cross-reference: the exploration guide links the
+  three reading paths (CLI, `serve` HTTP, offline collected bundles) so
+  the retained evidence is discoverable from the document readers
+  already use.
+
 ## Immediate next work
 
-### 1. The documentation sweep for landed slices
+### 1. The remaining documented-surface audit
 
-Several landed slices (choice feedback sections, manifest directories,
-the serve surface, seeded ordering) are documented in place; a final
-sweep confirms each has tutorial, guide, and reference coverage where
-readers would look. The next work audits the coverage:
+The exploration guide now cross-references the reading paths; the
+remaining landed slices (choice feedback in reports, manifest-directory
+inputs, seeded ordering) have reference and guide coverage but no
+tutorial walkthroughs beyond tutorial 44. The next work records which
+slices a tutorial would serve:
 
-- A pass over the tutorials/guides/reference triad for the slices landed
-  this cycle, recording which surfaces each is documented on and adding
-  the missing pointers.
+- A short audit table beside the parity matrix naming each landed slice,
+  its current documentation surfaces, and whether a tutorial step exists,
+  so tutorial work picks from an honest list.
 
 Sub-1x clock-rate windows
 
