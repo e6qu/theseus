@@ -537,7 +537,11 @@ decision. With the first-decision ordering in place, a fourth recording
 consequence: seeding from a campaign that already consumed every
 identity leaves no fresh candidate to prefer, and corpus order holds
 exactly as the mechanism predicts. The discriminating configuration is
-a partial-coverage seed.
+a partial-coverage seed. The recording confirms the prediction: seeded
+from the budget-3 campaign (mode=0 identities consumed), the budget-6
+rerun retained a fresh candidate first - mode=1/retry=0, the combination
+the prior campaign never used - before filling in the seeded
+combinations. The seed now demonstrably reorders the first decision.
 
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without
