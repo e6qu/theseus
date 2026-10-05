@@ -41,3 +41,26 @@ into one service per container with the per-container
 Adding a field means adding its deterministic contract: a field is
 supported when its behavior is fully specified by the locked plan and the
 guest input, never by the host.
+
+## Landed-slice documentation audit - 2026-10
+
+Each slice landed this cycle, the surfaces it is documented on today, and
+whether a tutorial step exists. The honest gaps are the tutorial column:
+everything else is covered.
+
+| Slice | Reference | Guide/tutorial | Tutorial step? |
+| --- | --- | --- | --- |
+| Guest journals (progress, run records, checkpoint ledger) | cli/README live-surface paragraph | exploration.md live-journal notes | none - candidates: 10, 36 |
+| Serve surface (registry, manifest, tree, file, Range) | cli/README serve section + USAGE | exploration.md reading-paths section | 43 covers it |
+| Seeded guidance (`--seed-choices`, first-decision ordering) | cli/README guidance paragraph | exploration.md design note + weighting harness | 36 step 4 |
+| Choice feedback (catalog, comparison outcomes, status/collect) | cli/README history + compare paragraphs | exploration.md correlation paragraphs | none - candidates: 36 |
+| Manifest directories (rendered Helm charts) | cli/README subset bullet | parity workload row | 44 covers it |
+| Multi-container pods (per-container services) | cli/README subset bullet | parity workload row | none - candidates: 44 sidecar |
+| tmpfs sizing (compose + guest enforcement) | breadth audit supported list | container-images guide guard note | none - candidates: 28 |
+| Sub-1x clock rates | cli/README clock paragraph | exploration.md clock section | 06 covers it |
+| Rootfs memory guard | container-images guide conversion section | - | 14 covers it |
+
+The audit's verdict: reference and guide coverage is complete; the honest
+tutorial gaps are the guest journal (10/36), choice feedback (36), the
+sidecar (44), and tmpfs sizing (28) - each an additive step to an
+existing tutorial rather than a new one.
