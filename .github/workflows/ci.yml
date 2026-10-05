@@ -225,18 +225,19 @@ jobs:
             theseus history subbudget/unseeded subbudget/seeded \
             --choices --format json > subbudget/choices.json || true
 
-          # The budget-6 seeded rerun: enough runs for the novelty seed to
-          # measurably depart from corpus order on later runs.
+          # The budget-6 seeded rerun: seeded from the partial-coverage
+          # budget-3 campaign, whose consumed identities leave the three
+          # mode=1 candidates fresh - the discriminating configuration.
           PATH="../../../cli/target/debug:$PATH" \
             theseus compose explore --output rerun/seeded \
             --max-runs 6 --guidance unified \
-            --seed-choices experiment/unseeded compose.yaml || \
+            --seed-choices subbudget/unseeded compose.yaml || \
             test -f rerun/seeded/campaign-result.json
           PATH="../../../cli/target/debug:$PATH" \
-            theseus history experiment/unseeded rerun/seeded \
+            theseus history subbudget/unseeded rerun/seeded \
             --choices --format json > rerun/choices.json || true
           python3 ../../../scripts/seeded_rerun_comparison.py \
-            experiment/unseeded rerun/seeded rerun
+            subbudget/unseeded rerun/seeded rerun
 
 
       - name: Retain the weighting experiment diagnostics

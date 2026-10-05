@@ -821,17 +821,20 @@ reproducible investigation.
   seeded fresh search starts where the prior campaign stopped; the
   ordering test pins both polarities.
 
+- The partial-coverage seed: CI's rerun seeds from the budget-3
+  campaign (mode=0 identities consumed), so the three mode=1 candidates
+  are fresh and the seeded policy must prefer them.
+
 ## Immediate next work
 
-### 1. The partial-coverage seed recording
+### 1. The partial-seed observation
 
-The discriminating configuration is a seed that leaves fresh
-candidates. The next work runs it:
+The discriminating configuration runs in CI; the design note awaits
+its result. The next work reads and records it:
 
-- CI's experiment step seeds a budget-6 rerun from the budget-3
-  unseeded campaign (which consumed only the mode=0 identities), so the
-  three mode=1 candidates are fresh and the seeded policy must prefer
-  them; the design note records the resulting distribution.
+- The design note's observation extends with the partial-seed
+  distribution: whether the mode=1 candidates are retained before the
+  mode=0 repeats, which the first-decision ordering predicts.
 
   ordering.
 
