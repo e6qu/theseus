@@ -72,15 +72,27 @@ theseus compose replay stale-read-replay --output stale-read-rerun
 grep -a 'counterexample: consistent_read' stale-read-rerun/services/api/result.json
 ```
 
-## 5. Render the retained evidence
+## 5. Read the live journal and render the evidence
+
+While the exploration ran, the runner journaled every completed timeline
+into `progress.jsonl`: one `theseus-progress-v1` line per run, one
+`theseus-run-record-v1` line with the retained operations, and one
+`theseus-checkpoint-ledger-v1` line with the checkpoint economics.
 
 ```sh
+grep -c 'theseus-progress-v1' theseus-compose-campaign/progress.jsonl
+grep 'theseus-checkpoint-ledger-v1' theseus-compose-campaign/progress.jsonl | tail -1
+theseus status theseus-compose-campaign | grep journal
 theseus report --output campaign-report theseus-compose-campaign
 theseus report --output minimized-report stale-read-replay
 test -f campaign-report/index.html
 test -f minimized-report/index.html
 exit
 ```
+
+The status summary counts the journal's line kinds and records the last
+ledger's node and reuse counts - the live account the runner wrote while
+the search ran.
 
 ## 6. Clean up (optional)
 
