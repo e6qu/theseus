@@ -844,19 +844,21 @@ reproducible investigation.
   the retained evidence is discoverable from the document readers
   already use.
 
+- The documented-surface audit: the breadth-audit file now carries the
+  landed-slice table - reference and guide coverage complete, with four
+  additive tutorial steps named as the honest gaps.
+
 ## Immediate next work
 
-### 1. The remaining documented-surface audit
+### 1. The guest-journal tutorial step
 
-The exploration guide now cross-references the reading paths; the
-remaining landed slices (choice feedback in reports, manifest-directory
-inputs, seeded ordering) have reference and guide coverage but no
-tutorial walkthroughs beyond tutorial 44. The next work records which
-slices a tutorial would serve:
+The audit's first gap: tutorial 10's campaign exploration journals
+everything but the tutorial never reads the journal. The next work adds
+the step:
 
-- A short audit table beside the parity matrix naming each landed slice,
-  its current documentation surfaces, and whether a tutorial step exists,
-  so tutorial work picks from an honest list.
+- Tutorial 10 gains a closing step that greps the progress journal's
+  line kinds and the last checkpoint ledger from the retained campaign,
+  so readers see the live account the runner wrote.
 
 Sub-1x clock-rate windows
 
