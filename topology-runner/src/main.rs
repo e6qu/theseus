@@ -7366,6 +7366,13 @@ fn select_campaign_schedule_seeded(
             && !observations
                 .iter()
                 .any(|observation| observation.operations == candidate.operations)
+            && !candidate_all_choices_seeded(
+                expected_identities
+                    .get(**schedule_index)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+                seen_structured_choices,
+            )
     }) {
         return (
             pending_index,
