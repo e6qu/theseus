@@ -834,16 +834,23 @@ reproducible investigation.
   (seed opt-in today vs a partial-coverage default) and names the wider
   comparison the default flip would need.
 
+- The seeded arm in the guidance comparison:
+  `compare_guidance_modes.sh` adds a `unified-seeded` arm seeded from
+  the unified campaign, so committed comparison tables include seeded
+  ordering beside the modes.
+
 ## Immediate next work
 
-### 1. The seeded flag in the compare guidance set
+### 1. The documentation sweep for landed slices
 
-`compare_guidance_modes.sh` explores one workload under every guidance
-mode; the seeded variant is a natural arm. The next work adds it:
+Several landed slices (choice feedback sections, manifest directories,
+the serve surface, seeded ordering) are documented in place; a final
+sweep confirms each has tutorial, guide, and reference coverage where
+readers would look. The next work audits the coverage:
 
-- The script gains an optional seeded arm (`--seed-choices` from the
-  unified campaign) so the committed comparison tables include seeded
-  ordering beside the modes, resuming like the other arms.
+- A pass over the tutorials/guides/reference triad for the slices landed
+  this cycle, recording which surfaces each is documented on and adding
+  the missing pointers.
 
 Sub-1x clock-rate windows
 
