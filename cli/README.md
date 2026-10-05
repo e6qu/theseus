@@ -232,7 +232,8 @@ theseus evaluate evaluations/my-system/theseus-evaluation.toml
 roadmap requires: explore one public workload under each guidance mode at
 one fixed budget (for example with
 [scripts/compare_guidance_modes.sh](../scripts/compare_guidance_modes.sh),
-which is resumable), retain every campaign, then:
+which is resumable and adds a `unified-seeded` arm seeded from the unified
+campaign), retain every campaign, then:
 
 ```sh
 theseus evaluate compare guidance/unified guidance/coverage guidance/adaptive   --format markdown > guidance/comparison.md

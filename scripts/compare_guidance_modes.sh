@@ -30,10 +30,24 @@ for mode in $modes; do
         "$compose"
 done
 
+# The seeded arm: unified guidance continuing from the unified campaign's
+# consumed identities, so the comparison tables include seeded ordering.
+if [ -d "$outdir/unified-seeded" ]; then
+    echo "keeping $outdir/unified-seeded"
+else
+    theseus compose explore \
+        --max-runs "$budget" \
+        --guidance unified \
+        --seed-choices "$outdir/unified" \
+        --output "$outdir/unified-seeded" \
+        "$compose"
+fi
+
 paths=""
 for mode in $modes; do
     paths="$paths $outdir/$mode"
 done
+paths="$paths $outdir/unified-seeded"
 # shellcheck disable=SC2086
 theseus evaluate compare $paths --format json > "$outdir/comparison.json"
 # shellcheck disable=SC2086
