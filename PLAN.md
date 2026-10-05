@@ -825,16 +825,23 @@ reproducible investigation.
   campaign (mode=0 identities consumed), so the three mode=1 candidates
   are fresh and the seeded policy must prefer them.
 
+- The partial-seed observation: the recording confirms the prediction -
+  the budget-6 rerun seeded from the partial-coverage campaign retained
+  a fresh candidate (mode=1/retry=0) first, before filling in the seeded
+  combinations.
+
 ## Immediate next work
 
-### 1. The partial-seed observation
+### 1. The weighting policy's next decision
 
-The discriminating configuration runs in CI; the design note awaits
-its result. The next work reads and records it:
+The seed demonstrably reorders the first decision; whether the full
+policy should ship to all users is a product call, not an evidence
+one. The next work frames it:
 
-- The design note's observation extends with the partial-seed
-  distribution: whether the mode=1 candidates are retained before the
-  mode=0 repeats, which the first-decision ordering predicts.
+- The design note records the decision point: keep the seed opt-in via
+  `--seed-choices` (current), or make partial-coverage seeding the
+  default for unified guidance, and what evidence the default flip
+  would need.
 
   ordering.
 
