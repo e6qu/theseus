@@ -3944,7 +3944,7 @@ fn execute_campaign(
         } else {
             let expected_identities: Vec<Vec<String>> = schedules
                 .iter()
-                .map(|schedule| candidate_choice_identities(campaign, schedule))
+                .map(|schedule| candidate_choice_identities(&campaign, schedule))
                 .collect();
             let (pending_index, selection) = select_campaign_schedule_seeded(
                 &schedules,
@@ -7483,7 +7483,7 @@ fn select_campaign_schedule_seeded(
             }
             CampaignGuidance::Unified => {
                 let identities = expected_identities
-                    .get(*pending_index)
+                    .get(pending_index)
                     .cloned()
                     .unwrap_or_default();
                 let all_choices_seeded =
@@ -7531,7 +7531,7 @@ fn select_campaign_schedule_seeded(
         let fresh_advantage = !matches!(guidance, CampaignGuidance::Unified)
             || !candidate_all_choices_seeded(
                 expected_identities
-                    .get(*pending_index)
+                    .get(pending_index)
                     .map(Vec::as_slice)
                     .unwrap_or_default(),
                 seen_structured_choices,
