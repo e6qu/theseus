@@ -848,17 +848,20 @@ reproducible investigation.
   landed-slice table - reference and guide coverage complete, with four
   additive tutorial steps named as the honest gaps.
 
+- The guest-journal tutorial step: tutorial 10's inspection step now
+  greps the progress journal's line kinds and the last checkpoint
+  ledger, and reads the status summary's journal block.
+
 ## Immediate next work
 
-### 1. The guest-journal tutorial step
+### 1. The choice-feedback tutorial step
 
-The audit's first gap: tutorial 10's campaign exploration journals
-everything but the tutorial never reads the journal. The next work adds
-the step:
+The audit's second gap: tutorial 36 explores bounded choices but never
+reads the consumed-value records back. The next work adds the step:
 
-- Tutorial 10 gains a closing step that greps the progress journal's
-  line kinds and the last checkpoint ledger from the retained campaign,
-  so readers see the live account the runner wrote.
+- Tutorial 36 gains a step reading `theseus history --choices` over its
+  two campaigns and the report's choice-feedback section, so readers see
+  the per-identity outcome shares the experiment consumed.
 
 Sub-1x clock-rate windows
 
