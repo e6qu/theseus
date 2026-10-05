@@ -543,6 +543,13 @@ rerun retained a fresh candidate first - mode=1/retry=0, the combination
 the prior campaign never used - before filling in the seeded
 combinations. The seed now demonstrably reorders the first decision.
 
+**Decision point.** The seed remains opt-in through `--seed-choices`.
+Making partial-coverage seeding the default for unified guidance is a
+product call that needs wider evidence: the one-workload, one-budget
+comparison shows ordering, not that ordering finds failures or
+witnesses sooner across workloads. The recorded artifacts are the
+baseline a broader comparison would extend.
+
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without
 editing the Compose file. Comparing one file across guidance modes at one
