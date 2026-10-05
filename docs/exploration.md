@@ -532,7 +532,12 @@ observations, and the corpus-order default dominates every run until
 those observations exist — so a seed alone never reorders a fresh
 search. The experiment a weighting change needs is therefore not
 seed-then-observe but a policy that consumes the seed at its first
-decision.
+decision. With the first-decision ordering in place, a fourth recording
+(seed-from-full-coverage, budget 6) confirmed the mechanical
+consequence: seeding from a campaign that already consumed every
+identity leaves no fresh candidate to prefer, and corpus order holds
+exactly as the mechanism predicts. The discriminating configuration is
+a partial-coverage seed.
 
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without

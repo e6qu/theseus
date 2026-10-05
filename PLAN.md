@@ -815,19 +815,24 @@ reproducible investigation.
   observations, so a seed alone never reorders a fresh search; the
   comparison record is retained in the artifact.
 
+- Seed consumption at the first decision: the unified scheduler consults
+  the seed when ordering candidates - a candidate whose choice values are
+  all already consumed ranks below candidates with fresh values - so a
+  seeded fresh search starts where the prior campaign stopped; the
+  ordering test pins both polarities.
+
 ## Immediate next work
 
-### 1. Seed consumption at the first decision
+### 1. The partial-coverage seed recording
 
-The recordings isolate the mechanism: the seed must influence the first
-decision, not the ranking after observations. The next work changes
-that:
+The discriminating configuration is a seed that leaves fresh
+candidates. The next work runs it:
 
-- The unified scheduler consults `seed_choice_values` when ordering the
-  initial candidate corpus - candidates whose choice values are all
-  seeded rank below candidates with unseeded values - so a seeded fresh
-  search starts where the prior campaign stopped.
-- Tests: scheduler fixtures over a seeded corpus asserting the initial
+- CI's experiment step seeds a budget-6 rerun from the budget-3
+  unseeded campaign (which consumed only the mode=0 identities), so the
+  three mode=1 candidates are fresh and the seeded policy must prefer
+  them; the design note records the resulting distribution.
+
   ordering.
 
 Sub-1x clock-rate windows
