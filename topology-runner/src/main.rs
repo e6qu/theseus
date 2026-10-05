@@ -3942,12 +3942,18 @@ fn execute_campaign(
                 },
             )
         } else {
-            let (pending_index, selection) = select_campaign_schedule(
+            let expected_identities: Vec<Vec<String>> = schedules
+                .iter()
+                .map(|schedule| candidate_choice_identities(campaign, schedule))
+                .collect();
+            let (pending_index, selection) = select_campaign_schedule_seeded(
                 &schedules,
                 &pending,
                 &observations,
                 campaign.guidance,
                 campaign.coverage,
+                &expected_identities,
+                &seen_structured_choices,
             );
             (
                 schedules[pending.remove(pending_index)].clone(),
@@ -7284,12 +7290,74 @@ fn campaign_uart_barrier_is_absent(barrier: &CampaignUartBarrier) -> bool {
 /// guidance additionally rank a final operation by its observed yield across
 /// prior contexts. Fault variants remain separate leaves and all ties fall
 /// back to stable corpus order.
+/// The choice identities a candidate schedule is expected to consume,
+/// derived from its operations' locked input assignments. Identities the
+/// seed or earlier runs already consumed rank candidates below fresh ones.
+fn candidate_choice_identities(
+    campaign: &CampaignPlan,
+    schedule: &CampaignSchedule,
+) -> Vec<String> {
+    let mut identities = Vec::new();
+    for choice in &schedule.operations {
+        let operation = &campaign.operations[choice.operation];
+        let Some(input) = operation.inputs.get(choice.input) else {
+            continue;
+        };
+        let service = campaign_operation_service(campaign, *choice);
+        for (name, selected) in &input.choices {
+            let Some(upper) = operation.choice_bounds.get(name) else {
+                continue;
+            };
+            identities.push(format!("{service}:{name}:{upper}:{selected}"));
+        }
+    }
+    identities.sort();
+    identities.dedup();
+    identities
+}
+
+/// Whether every choice identity a candidate schedule is expected to
+/// consume has already been consumed (by the seed or by earlier runs).
+fn candidate_all_choices_seeded(
+    identities: &[String],
+    seen_structured_choices: &std::collections::BTreeSet<String>,
+) -> bool {
+    !identities.is_empty()
+        && identities
+            .iter()
+            .all(|identity| seen_structured_choices.contains(identity))
+}
+
 fn select_campaign_schedule(
     schedules: &[CampaignSchedule],
     pending: &[usize],
     observations: &[CampaignGuidanceObservation],
     guidance: CampaignGuidance,
     coverage: CampaignCoverage,
+) -> (usize, String) {
+    select_campaign_schedule_seeded(
+        schedules,
+        pending,
+        observations,
+        guidance,
+        coverage,
+        &[],
+        &std::collections::BTreeSet::new(),
+    )
+}
+
+/// The seeded variant: candidates whose expected choice identities are all
+/// already consumed rank below candidates with a fresh value, so a seeded
+/// fresh search starts where the prior campaign stopped.
+#[allow(clippy::too_many_arguments)]
+fn select_campaign_schedule_seeded(
+    schedules: &[CampaignSchedule],
+    pending: &[usize],
+    observations: &[CampaignGuidanceObservation],
+    guidance: CampaignGuidance,
+    coverage: CampaignCoverage,
+    expected_identities: &[Vec<String>],
+    seen_structured_choices: &std::collections::BTreeSet<String>,
 ) -> (usize, String) {
     if let Some((pending_index, _)) = pending.iter().enumerate().find(|(_, schedule_index)| {
         let candidate = &schedules[**schedule_index];
@@ -7308,6 +7376,7 @@ fn select_campaign_schedule(
     let mut selected_score = 0_usize;
     let mut selected_property_witnesses = 0_usize;
     let mut selected_reason = "canonical breadth-first seed".to_owned();
+    let mut selected_fresh_advantage = true;
     for (pending_index, schedule_index) in pending.iter().enumerate() {
         let candidate = &schedules[*schedule_index];
         let mut coverage_score = 0_usize;
@@ -7413,6 +7482,12 @@ fn select_campaign_schedule(
                 )
             }
             CampaignGuidance::Unified => {
+                let identities = expected_identities
+                    .get(*pending_index)
+                    .cloned()
+                    .unwrap_or_default();
+                let all_choices_seeded =
+                    candidate_all_choices_seeded(&identities, seen_structured_choices);
                 let prefix = campaign_schedule_decision_prefix(candidate);
                 let related = observations
                     .iter()
@@ -7453,12 +7528,28 @@ fn select_campaign_schedule(
                 )
             }
         };
+        let fresh_advantage = !matches!(guidance, CampaignGuidance::Unified)
+            || !candidate_all_choices_seeded(
+                expected_identities
+                    .get(*pending_index)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+                seen_structured_choices,
+            );
         if property_witnesses > selected_property_witnesses
-            || (property_witnesses == selected_property_witnesses && score > selected_score)
+            || (property_witnesses == selected_property_witnesses
+                && (fresh_advantage && !selected_fresh_advantage
+                    || fresh_advantage == selected_fresh_advantage
+                        && score > selected_score))
         {
             selected = pending_index;
             selected_score = score;
+            selected_fresh_advantage = fresh_advantage;
             selected_property_witnesses = property_witnesses;
+            let mut reason = reason;
+            if !fresh_advantage {
+                reason.push_str("; all choice values already consumed");
+            }
             selected_reason = reason;
         }
     }
@@ -20399,5 +20490,53 @@ mod tests {
 
         assert_eq!(clocks["api"], Some(vec![1000]));
         fs::remove_dir_all(bundle).unwrap();
+    }
+
+    #[test]
+    fn seeded_candidates_rank_below_fresh_ones_under_unified_guidance() {
+        let schedules = vec![
+            CampaignSchedule {
+                operations: vec![choice(0)],
+                faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new()],
+            },
+            CampaignSchedule {
+                operations: vec![choice(1)],
+                faults: Vec::new(),
+                thread_schedule_prefixes: vec![Vec::new()],
+            },
+        ];
+        let expected = vec![
+            vec!["api:mode:2:0".to_owned()],
+            vec!["api:mode:2:1".to_owned()],
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        apply_choice_seeds(&mut seen, &["api:mode:2:0".to_owned()]);
+
+        let (selected, reason) = select_campaign_schedule_seeded(
+            &schedules,
+            &[0, 1],
+            &[],
+            CampaignGuidance::Unified,
+            CampaignCoverage::Markers,
+            &expected,
+            &seen,
+        );
+        assert_eq!(selected, 1);
+        assert!(!reason.contains("already consumed"), "{reason}");
+
+        let mut seen_reversed = std::collections::BTreeSet::new();
+        apply_choice_seeds(&mut seen_reversed, &["api:mode:2:1".to_owned()]);
+        let (selected, reason) = select_campaign_schedule_seeded(
+            &schedules,
+            &[0, 1],
+            &[],
+            CampaignGuidance::Unified,
+            CampaignCoverage::Markers,
+            &expected,
+            &seen_reversed,
+        );
+        assert_eq!(selected, 0);
+        assert!(reason.contains("already consumed"), "{reason}");
     }
 }
