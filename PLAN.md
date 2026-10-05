@@ -830,20 +830,22 @@ reproducible investigation.
   a fresh candidate (mode=1/retry=0) first, before filling in the seeded
   combinations.
 
+- The weighting decision point: the design note frames the product call
+  (seed opt-in today vs a partial-coverage default) and names the wider
+  comparison the default flip would need.
+
 ## Immediate next work
 
-### 1. The weighting policy's next decision
+### 1. The seeded flag in the compare guidance set
 
-The seed demonstrably reorders the first decision; whether the full
-policy should ship to all users is a product call, not an evidence
-one. The next work frames it:
+`compare_guidance_modes.sh` explores one workload under every guidance
+mode; the seeded variant is a natural arm. The next work adds it:
 
-- The design note records the decision point: keep the seed opt-in via
-  `--seed-choices` (current), or make partial-coverage seeding the
-  default for unified guidance, and what evidence the default flip
-  would need.
+- The script gains an optional seeded arm (`--seed-choices` from the
+  unified campaign) so the committed comparison tables include seeded
+  ordering beside the modes, resuming like the other arms.
 
-  ordering.
+Sub-1x clock-rate windows
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
