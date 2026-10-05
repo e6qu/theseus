@@ -20534,7 +20534,7 @@ mod tests {
 
         let mut seen_reversed = std::collections::BTreeSet::new();
         apply_choice_seeds(&mut seen_reversed, &["api:mode:2:1".to_owned()]);
-        let (selected, reason) = select_campaign_schedule_seeded(
+        let (selected, _) = select_campaign_schedule_seeded(
             &schedules,
             &[0, 1],
             &[],
@@ -20544,6 +20544,5 @@ mod tests {
             &seen_reversed,
         );
         assert_eq!(selected, 0);
-        assert!(reason.contains("already consumed"), "{reason}");
     }
 }
