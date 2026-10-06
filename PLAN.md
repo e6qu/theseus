@@ -864,15 +864,23 @@ reproducible investigation.
   `chooser-chooser` and `chooser-log-forwarder` services in the locked
   plan, completing the audit's four tutorial gaps.
 
+- The tutorial-gap closure: all four audit gaps are closed (guest
+  journal in tutorial 10, choice feedback in 36, tmpfs sizing in 28,
+  sidecar naming in 44); the audit records complete reference, guide,
+  and tutorial coverage.
+
 ## Immediate next work
 
-### 1. The tutorial-gap closure audit refresh
+### 1. The cycle-retrospective entry beside the parity matrix
 
-All four audit gaps are closed. The next work records it:
+A cycle's worth of slices landed (experiment loop, serve surface, choice
+tooling, workload breadth). The next work records the retrospective:
 
-- The audit table's tutorial column flips to "covered" for the four
-  rows, leaving the audit's honest verdict: reference, guide, and
-  tutorial coverage complete for every landed slice.
+- A retrospective section in the exploration guide summarizing what the
+  cycle's evidence loop produced - the weighting mechanism, the seeded
+  ordering, the recorded artifacts - and naming the standing gated work
+  (KVM-scale comparison, demand-driven breadth) as the deliberate next
+  horizon.
 
 Sub-1x clock-rate windows
 

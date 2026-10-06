@@ -60,7 +60,7 @@ everything else is covered.
 | Sub-1x clock rates | cli/README clock paragraph | exploration.md clock section | 06 covers it |
 | Rootfs memory guard | container-images guide conversion section | - | 14 covers it |
 
-The audit's verdict: reference and guide coverage is complete; the honest
-tutorial gaps are the guest journal (10/36), choice feedback (36), the
-sidecar (44), and tmpfs sizing (28) - each an additive step to an
-existing tutorial rather than a new one.
+The audit's verdict, after the follow-up steps landed: reference, guide,
+and tutorial coverage is complete for every landed slice. The four
+tutorial gaps named above were closed in tutorials 10 (guest journal),
+36 (choice feedback), 44 (sidecar naming), and 28 (tmpfs sizing).
