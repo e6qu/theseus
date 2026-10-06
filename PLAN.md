@@ -856,16 +856,21 @@ reproducible investigation.
   `theseus history --choices` over its campaigns and the report's
   choice-feedback section before minimizing.
 
+- The tmpfs sizing tutorial step: tutorial 28's service mounts
+  `/run/scratch:size=1048576`, the plan grep shows the locked entry, and
+  the README names the refusal contract.
+
 ## Immediate next work
 
-### 1. The tmpfs sizing tutorial step
+### 1. The sidecar in tutorial 44
 
-The audit's third gap: tutorial 28 covers Compose resources but never
-the tmpfs size suffix. The next work adds it:
+The audit's last gap: tutorial 44's chart renders the sidecar but the
+walkthrough can name the per-container contract in its plan grep. The
+next work adds it:
 
-- Tutorial 28 gains a tmpfs mount with `size=` in its service, the
-  refusal case for a bad size, and a grep of the locked plan's tmpfs
-  entry.
+- Tutorial 44's plan grep names both `chooser-chooser` and
+  `chooser-log-forwarder` services, completing the audit's four tutorial
+  gaps.
 
 Sub-1x clock-rate windows
 

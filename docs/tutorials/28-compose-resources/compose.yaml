@@ -9,6 +9,8 @@ services:
         limits:
           cpus: "2"
           memory: 192MiB
+    tmpfs:
+      - /run/scratch:size=1048576
     networks: [backplane]
 
 networks:
