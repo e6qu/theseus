@@ -869,18 +869,21 @@ reproducible investigation.
   sidecar naming in 44); the audit records complete reference, guide,
   and tutorial coverage.
 
+- The cycle retrospective: the exploration guide records what the
+  evidence loop produced and names the deliberate next horizon
+  (multi-workload KVM comparison, demand-driven breadth).
+
 ## Immediate next work
 
-### 1. The cycle-retrospective entry beside the parity matrix
+### 1. The comparison harness's multi-workload pass
 
-A cycle's worth of slices landed (experiment loop, serve surface, choice
-tooling, workload breadth). The next work records the retrospective:
+The harness runs one workload; the wider comparison the decision point
+names needs more. The next work extends it:
 
-- A retrospective section in the exploration guide summarizing what the
-  cycle's evidence loop produced - the weighting mechanism, the seeded
-  ordering, the recorded artifacts - and naming the standing gated work
-  (KVM-scale comparison, demand-driven breadth) as the deliberate next
-  horizon.
+- `compare_weighting_signals.sh` accepts a workload list, running the
+  seeded/unseeded pair per workload and tabulating per workload, so a
+  KVM-host session produces the multi-workload evidence the default-flip
+  decision consumes.
 
 Sub-1x clock-rate windows
 
