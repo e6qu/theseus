@@ -202,9 +202,9 @@ jobs:
           PATH="../../../cli/target/debug:$PATH" \
             sh ../../../scripts/compare_weighting_signals.sh \
             6 experiment corrupt_result_is_unreachable compose.yaml
-          grep -q 'arm' experiment/tabulation.md
-          test -f experiment/choices.json
-          test -f experiment/signals.md
+          grep -q 'arm' experiment/compose/tabulation.md
+          test -f experiment/compose/choices.json
+          test -f experiment/compose/signals.md
 
           # The sub-budget pair: at budget 3 over a six-combination corpus
           # the seeded policy's preference for unexplored values changes
