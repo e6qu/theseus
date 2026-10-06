@@ -61,9 +61,15 @@ replay does not silently select newer binaries from the container.
 
 ## 4. Run, inspect, and replay
 
+The service also mounts a memory-backed tmpfs at `/run/scratch` capped at
+1 MiB (`size=1048576` rides the locked plan, and the guest init enforces
+the cap). A size that is not numeric, or zero, is rejected by name at
+plan time:
+
 ```sh
 theseus compose explore --output campaign compose.yaml
 grep -aF 'THES:SHELL:operation:inspect_cpus:PASS' campaign/services/api/serial.log
+theseus compose plan compose.yaml | grep -a 'scratch:size=1048576'
 theseus compose replay campaign --output rerun
 grep -aF 'THES:SHELL:operation:inspect_cpus:PASS' rerun/services/api/serial.log
 echo 'PASS: Theseus locked Compose resource limits into the VM'
