@@ -852,16 +852,20 @@ reproducible investigation.
   greps the progress journal's line kinds and the last checkpoint
   ledger, and reads the status summary's journal block.
 
+- The choice-feedback tutorial step: tutorial 36 now reads
+  `theseus history --choices` over its campaigns and the report's
+  choice-feedback section before minimizing.
+
 ## Immediate next work
 
-### 1. The choice-feedback tutorial step
+### 1. The tmpfs sizing tutorial step
 
-The audit's second gap: tutorial 36 explores bounded choices but never
-reads the consumed-value records back. The next work adds the step:
+The audit's third gap: tutorial 28 covers Compose resources but never
+the tmpfs size suffix. The next work adds it:
 
-- Tutorial 36 gains a step reading `theseus history --choices` over its
-  two campaigns and the report's choice-feedback section, so readers see
-  the per-identity outcome shares the experiment consumed.
+- Tutorial 28 gains a tmpfs mount with `size=` in its service, the
+  refusal case for a bad size, and a grep of the locked plan's tmpfs
+  entry.
 
 Sub-1x clock-rate windows
 

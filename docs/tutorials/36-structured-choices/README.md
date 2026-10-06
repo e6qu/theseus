@@ -94,9 +94,16 @@ the new campaign journals its own choice feedback exactly like the first.
 
 ## 5. Inspect, minimize, and replay the failure
 
+Read the consumed choices back first: `theseus history campaign seeded
+--choices` aggregates every consumed value per identity with
+per-campaign run and failed-run counts, and the report renders the same
+records in the choice-feedback section - the per-identity outcome
+shares the weighting experiment reads.
+
 ```sh
-theseus report --format markdown --output report/report.md campaign
-grep -n 'Structured choices\|corrupt_result_is_unreachable' report/report.md
+theseus history campaign seeded --choices --format json | grep -c 'chooser:'
+theseus report --format markdown --output report.md seeded
+grep -n 'Choice feedback' report.md
 theseus compose explore --minimize campaign \
   --expect-counterexample corrupt_result_is_unreachable --output minimized
 theseus compose replay minimized --output rerun
