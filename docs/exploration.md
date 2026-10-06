@@ -550,6 +550,17 @@ comparison shows ordering, not that ordering finds failures or
 witnesses sooner across workloads. The recorded artifacts are the
 baseline a broader comparison would extend.
 
+### Cycle retrospective
+
+This cycle's evidence loop produced, in order: the guest journal (live
+progress, run records, checkpoint economics), the exploration journal
+and serial tails, the recorded weighting experiment, and the seeded
+ordering. The mechanism emerged from the recordings - novelty acts only
+through accumulated observations - and the policy response consumes the
+seed at the first decision. The partial-coverage recording confirmed
+the reordering. What remains deliberate: the multi-workload comparison
+on a KVM host, and demand-driven breadth for further SDK languages.
+
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without
 editing the Compose file. Comparing one file across guidance modes at one
