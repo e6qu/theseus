@@ -99,8 +99,14 @@ translate into one service per container: the plan names
 
 ```sh
 theseus compose plan rendered > plan.json
-grep -n '"chooser"\|calculate' plan.json | head -6
+grep -c '"chooser-chooser"' plan.json
+grep -c '"chooser-log-forwarder"' plan.json
+grep -n 'calculate' plan.json | head -4
 ```
+
+The two greps confirm the per-container contract: the multi-container pod
+translates into `chooser-chooser` (the workload) and
+`chooser-log-forwarder` (the sidecar), each with its own manifest.
 
 The plan names the rendered directory as its input, keeps both Kubernetes
 documents' workloads, and locks the declared HTTP operation. To explore

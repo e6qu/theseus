@@ -860,17 +860,19 @@ reproducible investigation.
   `/run/scratch:size=1048576`, the plan grep shows the locked entry, and
   the README names the refusal contract.
 
+- Tutorial 44's per-container plan grep: the walkthrough confirms both
+  `chooser-chooser` and `chooser-log-forwarder` services in the locked
+  plan, completing the audit's four tutorial gaps.
+
 ## Immediate next work
 
-### 1. The sidecar in tutorial 44
+### 1. The tutorial-gap closure audit refresh
 
-The audit's last gap: tutorial 44's chart renders the sidecar but the
-walkthrough can name the per-container contract in its plan grep. The
-next work adds it:
+All four audit gaps are closed. The next work records it:
 
-- Tutorial 44's plan grep names both `chooser-chooser` and
-  `chooser-log-forwarder` services, completing the audit's four tutorial
-  gaps.
+- The audit table's tutorial column flips to "covered" for the four
+  rows, leaving the audit's honest verdict: reference, guide, and
+  tutorial coverage complete for every landed slice.
 
 Sub-1x clock-rate windows
 
