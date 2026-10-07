@@ -873,17 +873,21 @@ reproducible investigation.
   evidence loop produced and names the deliberate next horizon
   (multi-workload KVM comparison, demand-driven breadth).
 
+- The harness's multi-workload pass: the weighting harness accepts a
+  workload list (seeded/unseeded per workload, nested, tabulated, with a
+  cross-workload summary) and CI's KVM job runs it on every push.
+
 ## Immediate next work
 
-### 1. The comparison harness's multi-workload pass
+### 1. The weighting summary's citation in the compare docs
 
-The harness runs one workload; the wider comparison the decision point
-names needs more. The next work extends it:
+The harness writes a cross-workload summary; the evaluate-compare docs
+describe only per-campaign tables. The next work names it:
 
-- `compare_weighting_signals.sh` accepts a workload list, running the
-  seeded/unseeded pair per workload and tabulating per workload, so a
-  KVM-host session produces the multi-workload evidence the default-flip
-  decision consumes.
+- cli/README's comparison paragraph references the harness summary and
+  the multi-workload invocation, so a reader producing the wider
+  evidence finds both.
+
 
 Sub-1x clock-rate windows
 
