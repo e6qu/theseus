@@ -268,7 +268,10 @@ directories retaining no versioned result refused by name. `GET /routes` answers
 every route with its method, path shape, content type, and description -
 so scripts render the API from one source. The index page
 labels every served bundle with its kind - campaign, exploration, or
-topology. A moment route also collects:
+topology. The dialect is plain HTTP/1.1: GET-only (other methods answer
+405), `Range: bytes=N-` on journals and logs answered 206 with the
+suffix or 416 past the end, `Connection: close` on every response - so
+any HTTP client works without a special library. A moment route also collects:
 \`GET /<name>/query/moment/<moment>?collect\` answers one \`application/x-tar\`
 archive containing the same files the CLI writes - boundary record,
 journal prefix, decision trace, serial slices, and the digest manifest -
