@@ -196,12 +196,14 @@ jobs:
           cp ../../../image-runner/target/debug/theseus-image service/work/runtime/theseus-image
           cp "$release/theseus-$tag-linux-amd64/vmlinux" service/work/guest/vmlinux
           gcc -O2 -Wall -Wextra -o service/work/chooser service/main.c
+          gcc -O2 -Wall -Wextra -o service/work/second service/second.c
           gcc -O2 -Wall -Wextra -o service/work/ready service/ready.c
           docker build --load --platform linux/amd64 -t theseus-structured-choice-ci service
           docker save theseus-structured-choice-ci -o service/work/service.tar
           PATH="../../../cli/target/debug:$PATH" \
             sh ../../../scripts/compare_weighting_signals.sh \
-            6 experiment corrupt_result_is_unreachable compose.yaml
+            6 experiment corrupt_result_is_unreachable \
+            compose.yaml second.yaml
           python3 ../../../scripts/assert_tabulation.py \
             experiment/compose/tabulation.md 6
           test -f experiment/compose/choices.json

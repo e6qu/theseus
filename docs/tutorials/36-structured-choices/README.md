@@ -27,6 +27,7 @@ mkdir -p service/work
 docker run --rm --platform "linux/$THESEUS_ARCH" \
   -v "$PWD":/tutorial -w /tutorial "$THESEUS_IMAGE" \
   gcc -O2 -Wall -Wextra -o service/work/chooser service/main.c
+  gcc -O2 -Wall -Wextra -o service/work/second service/second.c
 docker run --rm --platform "linux/$THESEUS_ARCH" \
   -v "$PWD":/tutorial -w /tutorial "$THESEUS_IMAGE" \
   gcc -O2 -Wall -Wextra -o service/work/ready service/ready.c
