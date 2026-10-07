@@ -561,7 +561,10 @@ ordering. The mechanism emerged from the recordings - novelty acts only
 through accumulated observations - and the policy response consumes the
 seed at the first decision. The partial-coverage recording confirmed
 the reordering. What remains deliberate: the multi-workload comparison
-on a KVM host, and demand-driven breadth for further SDK languages.
+on a KVM host, and demand-driven breadth for further SDK languages. The
+harness writes the cross-workload table to `summary.md` beside the
+per-workload tabulations, so a KVM-host session produces the wider
+evidence in one pass.
 
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without

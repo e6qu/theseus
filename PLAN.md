@@ -885,16 +885,21 @@ reproducible investigation.
   dialect - HTTP/1.1, GET-only, Range on journals and logs,
   Connection: close - so client authors know it without reading source.
 
+- The cross-workload summary citation: the design note names the
+  `summary.md` the multi-workload harness writes beside the per-workload
+  tabulations.
+
 ## Immediate next work
 
-### 1. The weighting experiment's cross-workload citation
+### 1. The parity matrix's weighting row refresh
 
-The harness emits a cross-workload summary; the design note's recorded
-observations predate it. The next work cites it:
+The weighting row's gap text still says "signals beyond first-seen
+novelty"; the landed work narrowed the honest gap further. The next
+work tightens it:
 
-- The design note's recorded-artifact paragraph names the
-  `summary.md` the multi-workload harness writes, so the wider
-  comparison reads one table.
+- The parity row's addressed column names the first-decision ordering
+  (seeds consumed at candidate ranking), and the remaining gap becomes
+  the multi-workload evidence for a default flip.
 
 Sub-1x clock-rate windows
 Sub-1x clock-rate windows
