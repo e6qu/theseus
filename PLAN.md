@@ -881,18 +881,20 @@ reproducible investigation.
   names the weighting harness and its cross-workload summary beside the
   guidance-modes harness.
 
+- The serve protocol note: cli/README's serve paragraph pins the
+  dialect - HTTP/1.1, GET-only, Range on journals and logs,
+  Connection: close - so client authors know it without reading source.
+
 ## Immediate next work
 
-### 1. The serve surface's protocol note
+### 1. The weighting experiment's cross-workload citation
 
-The serve surface speaks HTTP/1.1 with a couple of documented
-extensions (Range on journals, GET-only). The next work pins the
-dialect:
+The harness emits a cross-workload summary; the design note's recorded
+observations predate it. The next work cites it:
 
-- cli/README's serve paragraph gains a short protocol note: HTTP/1.1,
-  GET-only with 405 for other methods, `Range: bytes=N-` on journals
-  and logs answered 206/416, and `Connection: close` per response, so
-  client authors know the dialect without reading source.
+- The design note's recorded-artifact paragraph names the
+  `summary.md` the multi-workload harness writes, so the wider
+  comparison reads one table.
 
 Sub-1x clock-rate windows
 Sub-1x clock-rate windows
