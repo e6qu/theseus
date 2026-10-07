@@ -889,17 +889,21 @@ reproducible investigation.
   `summary.md` the multi-workload harness writes beside the per-workload
   tabulations.
 
+- The parity weighting-row refresh: the addressed column names the
+  landed work (first-decision ordering, harness, four recordings) and
+  the remaining gap is the multi-workload evidence for a default flip.
+
 ## Immediate next work
 
-### 1. The parity matrix's weighting row refresh
+### 1. The weighting experiment's CI tabulation assertion
 
-The weighting row's gap text still says "signals beyond first-seen
-novelty"; the landed work narrowed the honest gap further. The next
-work tightens it:
+The CI experiment step greps the tabulation for "arm" but does not
+assert the per-arm numbers. The next work tightens it:
 
-- The parity row's addressed column names the first-decision ordering
-  (seeds consumed at candidate ranking), and the remaining gap becomes
-  the multi-workload evidence for a default flip.
+- The step's Python check parses `tabulation.md`, asserts both arms
+  retained `budget` runs each, and fails on zero-witness zero-failure
+  tables that indicate a saturated corpus, so the recorded experiment
+  stays discriminating.
 
 Sub-1x clock-rate windows
 Sub-1x clock-rate windows
