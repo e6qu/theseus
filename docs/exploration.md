@@ -512,9 +512,11 @@ same `evaluate compare` and `history --choices` surfaces documented
 above. A signal ships into the policy only when that comparison shows it
 finds failures or witnesses sooner than first-seen novelty alone;
 [scripts/compare_weighting_signals.sh](../scripts/compare_weighting_signals.sh)
-runs it, and CI's native-KVM job runs that harness on tutorial 36's
-workload on every push, retaining the campaigns, comparison, choice
-catalog, and tabulation as the recorded `weighting-experiment` artifact.
+runs it for a list of workloads - seeded and unseeded per workload,
+tabulated per workload, with a cross-workload summary - and CI's
+native-KVM job runs that harness on every push, retaining the campaigns,
+comparisons, choice catalogs, tabulations, and summary as the recorded
+`weighting-experiment` artifact.
 
 Two recordings are observational. At budget 6 over the workload's
 six-choice corpus the experiment saturates - seeded and unseeded
