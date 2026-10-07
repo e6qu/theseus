@@ -877,18 +877,24 @@ reproducible investigation.
   workload list (seeded/unseeded per workload, nested, tabulated, with a
   cross-workload summary) and CI's KVM job runs it on every push.
 
+- The weighting summary's citation: cli/README's comparison paragraph
+  names the weighting harness and its cross-workload summary beside the
+  guidance-modes harness.
+
 ## Immediate next work
 
-### 1. The weighting summary's citation in the compare docs
+### 1. The serve surface's protocol note
 
-The harness writes a cross-workload summary; the evaluate-compare docs
-describe only per-campaign tables. The next work names it:
+The serve surface speaks HTTP/1.1 with a couple of documented
+extensions (Range on journals, GET-only). The next work pins the
+dialect:
 
-- cli/README's comparison paragraph references the harness summary and
-  the multi-workload invocation, so a reader producing the wider
-  evidence finds both.
+- cli/README's serve paragraph gains a short protocol note: HTTP/1.1,
+  GET-only with 405 for other methods, `Range: bytes=N-` on journals
+  and logs answered 206/416, and `Connection: close` per response, so
+  client authors know the dialect without reading source.
 
-
+Sub-1x clock-rate windows
 Sub-1x clock-rate windows
 
 Sub-1x clock-rate windows
