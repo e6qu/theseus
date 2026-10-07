@@ -543,7 +543,12 @@ a partial-coverage seed. The recording confirms the prediction: seeded
 from the budget-3 campaign (mode=0 identities consumed), the budget-6
 rerun retained a fresh candidate first - mode=1/retry=0, the combination
 the prior campaign never used - before filling in the seeded
-combinations. The seed now demonstrably reorders the first decision.
+combinations. The seed now demonstrably reorders the first decision,
+and the same partial-coverage configuration reproduces the reordering
+on the second workload: seeded from a budget-3 depth=0 campaign, the
+depth/strategy workload's budget-6 rerun retained depth=2/strategy=0
+first - a combination whose depth identity the seed never consumed -
+before filling in the rest.
 
 **Decision point.** The seed remains opt-in through `--seed-choices`.
 Making partial-coverage seeding the default for unified guidance is a

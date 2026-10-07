@@ -893,17 +893,21 @@ reproducible investigation.
   landed work (first-decision ordering, harness, four recordings) and
   the remaining gap is the multi-workload evidence for a default flip.
 
+- The multi-workload recording: the harness's per-workload loop ran both
+  bounded-choice workloads, and the partial-coverage reordering
+  reproduced on the second workload (depth=2/strategy=0 retained first
+  from a depth=0-only seed).
+
 ## Immediate next work
 
-### 1. The weighting experiment's CI tabulation assertion
+### 1. The weighting observation's cross-workload citation
 
-The CI experiment step greps the tabulation for "arm" but does not
-assert the per-arm numbers. The next work tightens it:
+Two workloads now reproduce the reordering. The next work ties the
+record to the harness summary:
 
-- The step's Python check parses `tabulation.md`, asserts both arms
-  retained `budget` runs each, and fails on zero-witness zero-failure
-  tables that indicate a saturated corpus, so the recorded experiment
-  stays discriminating.
+- The design note cites the multi-workload `summary.md` and
+  `sequence-comparison.json` records as the per-workload evidence, so
+  the ranking reads both files rather than the narrative.
 
 Sub-1x clock-rate windows
 Sub-1x clock-rate windows
