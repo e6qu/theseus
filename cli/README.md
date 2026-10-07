@@ -233,7 +233,11 @@ roadmap requires: explore one public workload under each guidance mode at
 one fixed budget (for example with
 [scripts/compare_guidance_modes.sh](../scripts/compare_guidance_modes.sh),
 which is resumable and adds a `unified-seeded` arm seeded from the unified
-campaign), retain every campaign, then:
+campaign), retain every campaign, then. For the weighting-signal
+experiment,
+[scripts/compare_weighting_signals.sh](../scripts/compare_weighting_signals.sh)
+runs the seeded/unseeded pair per named workload and writes a
+cross-workload summary beside the per-workload tabulations.
 
 ```sh
 theseus evaluate compare guidance/unified guidance/coverage guidance/adaptive   --format markdown > guidance/comparison.md
