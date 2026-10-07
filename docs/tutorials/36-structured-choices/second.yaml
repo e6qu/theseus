@@ -1,0 +1,30 @@
+name: weighted-second
+
+services:
+  chooser:
+    x-theseus:
+      manifest: service/theseus.toml
+    networks: [test]
+
+networks:
+  test: {}
+
+x-theseus:
+  campaign:
+    driver: chooser
+    guidance: unified
+    max_runs: 6
+    max_operations_per_run: 1
+    operations:
+      - name: calculate
+        shell:
+          command: [/usr/local/bin/second]
+          output_json: true
+          choices:
+            depth: 3
+            strategy: 2
+    properties:
+      - name: corrupt_result_is_unreachable
+        kind: unreachable
+        service: chooser
+        contains: '"status":"corrupt"'
