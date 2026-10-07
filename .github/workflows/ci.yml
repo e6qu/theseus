@@ -202,7 +202,8 @@ jobs:
           PATH="../../../cli/target/debug:$PATH" \
             sh ../../../scripts/compare_weighting_signals.sh \
             6 experiment corrupt_result_is_unreachable compose.yaml
-          grep -q 'arm' experiment/compose/tabulation.md
+          python3 ../../../scripts/assert_tabulation.py \
+            experiment/compose/tabulation.md 6
           test -f experiment/compose/choices.json
           test -f experiment/compose/signals.md
 
