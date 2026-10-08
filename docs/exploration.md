@@ -548,7 +548,10 @@ and the same partial-coverage configuration reproduces the reordering
 on the second workload: seeded from a budget-3 depth=0 campaign, the
 depth/strategy workload's budget-6 rerun retained depth=2/strategy=0
 first - a combination whose depth identity the seed never consumed -
-before filling in the rest.
+before filling in the rest. The per-workload evidence is the retained
+`weighting-experiment` artifact's `summary.md` (per-workload yields)
+and `sequence-comparison.json` (per-run choice sequences), so the
+ranking reads recorded records rather than narratives.
 
 **Decision point.** The seed remains opt-in through `--seed-choices`.
 Making partial-coverage seeding the default for unified guidance is a

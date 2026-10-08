@@ -898,16 +898,21 @@ reproducible investigation.
   reproduced on the second workload (depth=2/strategy=0 retained first
   from a depth=0-only seed).
 
+- The weighting record citation: the design note's experiment record
+  names the retained `summary.md` and `sequence-comparison.json` as the
+  per-workload evidence.
+
 ## Immediate next work
 
-### 1. The weighting observation's cross-workload citation
+### 1. The tutorial 44 sidecar journal step
 
-Two workloads now reproduce the reordering. The next work ties the
-record to the harness summary:
+Tutorial 44's walkthrough validates and plans the two-container input
+but never reads the sidecar's retained evidence. The next work adds the
+step:
 
-- The design note cites the multi-workload `summary.md` and
-  `sequence-comparison.json` records as the per-workload evidence, so
-  the ranking reads both files rather than the narrative.
+- The walkthrough's inspection greps the plan for both per-container
+  services (already landed) and the report for the sidecar's runtime
+  record, completing the per-container contract end to end.
 
 Sub-1x clock-rate windows
 Sub-1x clock-rate windows
