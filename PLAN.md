@@ -902,19 +902,22 @@ reproducible investigation.
   names the retained `summary.md` and `sequence-comparison.json` as the
   per-workload evidence.
 
+- Tutorial 44's sidecar evidence step: the walkthrough's inspection
+  greps the plan for both per-container services and the report for the
+  sidecar's runtime record, completing the per-container contract end to
+  end.
+
 ## Immediate next work
 
-### 1. The tutorial 44 sidecar journal step
+### 1. The second workload in tutorial 36
 
-Tutorial 44's walkthrough validates and plans the two-container input
-but never reads the sidecar's retained evidence. The next work adds the
-step:
+The CI experiment now runs two workloads; tutorial 36 explores only the
+first. The next work documents both:
 
-- The walkthrough's inspection greps the plan for both per-container
-  services (already landed) and the report for the sidecar's runtime
-  record, completing the per-container contract end to end.
+- Tutorial 36's exploration step names the second workload file
+  (`second.yaml`) as an alternative input, so readers can reproduce the
+  cross-workload comparison the harness records.
 
-Sub-1x clock-rate windows
 Sub-1x clock-rate windows
 
 Sub-1x clock-rate windows
