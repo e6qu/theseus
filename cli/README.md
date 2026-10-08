@@ -910,11 +910,16 @@ retained campaign records which mode and budget produced it. Unified
 guidance can be seeded from a prior campaign: `--seed-choices
 prior-campaign` reads that bundle's consumed choice identities into the
 novelty policy, so a fresh search treats already-consumed values as known
-and prefers unexplored ones. Unified guidance weighs generated choices by context: each run records the consumed
-choice values beside its choice records, and the policy counts a value's
-first pairing with each schedule context (the operation, thread, and fault
-neighborhood it influenced), so a value revisited under a new neighborhood
-still feeds the search while repeats in the same context stop counting.
+and prefers unexplored ones - including at the first decision, where a
+candidate whose choice values are all consumed ranks below candidates
+with fresh values.
+
+Unified guidance also weighs generated choices by context: each run
+records the consumed choice values beside its choice records, and the
+policy counts a value's first pairing with each schedule context (the
+operation, thread, and fault neighborhood it influenced), so a value
+revisited under a new neighborhood still feeds the search while repeats
+in the same context stop counting.
 
 Pass `--shard INDEX/TOTAL` to explore one worker's deterministic partition
 of the candidate corpus, so several machines or CI jobs explore the same

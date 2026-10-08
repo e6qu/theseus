@@ -510,48 +510,35 @@ unseeded at one fixed budget, then rank the signals by which best
 predicts the retained distributions' property yield per run - using the
 same `evaluate compare` and `history --choices` surfaces documented
 above. A signal ships into the policy only when that comparison shows it
-finds failures or witnesses sooner than first-seen novelty alone;
+finds failures or witnesses sooner than first-seen novelty alone.
 [scripts/compare_weighting_signals.sh](../scripts/compare_weighting_signals.sh)
 runs it for a list of workloads - seeded and unseeded per workload,
-tabulated per workload, with a cross-workload summary - and CI's
+tabulated per workload, with a cross-workload `summary.md` - and CI's
 native-KVM job runs that harness on every push, retaining the campaigns,
 comparisons, choice catalogs, tabulations, and summary as the recorded
 `weighting-experiment` artifact.
 
-Two recordings are observational. At budget 6 over the workload's
-six-choice corpus the experiment saturates - seeded and unseeded
-retained identical coverage (each consumed every identity three times
-or twice, one witness each, zero failed runs) - so no ordering
-difference is observable at saturation. At budget 3 the seeded run
-retained the same breadth-first prefix as the unseeded run (mode=0
-with retry 0, 1, 2): the novelty seed counts against the ranking only
-after observations accumulate, and three runs are not enough for the
-policy to depart from corpus order. A third recording — the budget-6 seeded rerun seeded from the budget-6
-unseeded campaign — retained the identical six-run sequence again. All
-three recordings narrow the design question to a specific mechanism:
-the novelty seed influences the ranking only through accumulated
-observations, and the corpus-order default dominates every run until
-those observations exist — so a seed alone never reorders a fresh
-search. The experiment a weighting change needs is therefore not
-seed-then-observe but a policy that consumes the seed at its first
-decision. With the first-decision ordering in place, a fourth recording
-(seed-from-full-coverage, budget 6) confirmed the mechanical
-consequence: seeding from a campaign that already consumed every
-identity leaves no fresh candidate to prefer, and corpus order holds
-exactly as the mechanism predicts. The discriminating configuration is
-a partial-coverage seed. The recording confirms the prediction: seeded
-from the budget-3 campaign (mode=0 identities consumed), the budget-6
-rerun retained a fresh candidate first - mode=1/retry=0, the combination
-the prior campaign never used - before filling in the seeded
-combinations. The seed now demonstrably reorders the first decision,
-and the same partial-coverage configuration reproduces the reordering
-on the second workload: seeded from a budget-3 depth=0 campaign, the
-depth/strategy workload's budget-6 rerun retained depth=2/strategy=0
-first - a combination whose depth identity the seed never consumed -
-before filling in the rest. The per-workload evidence is the retained
-`weighting-experiment` artifact's `summary.md` (per-workload yields)
-and `sequence-comparison.json` (per-run choice sequences), so the
-ranking reads recorded records rather than narratives.
+Recordings so far (per-run choice sequences in the artifact's
+`sequence-comparison.json`, yields in `summary.md`):
+
+- **Budget 6, unseeded seed** - saturates the six-combination corpus;
+  seeded and unseeded retain identical coverage.
+- **Budget 3, unseeded seed** - the seeded run keeps the same
+  breadth-first prefix (mode=0, retry 0/1/2): the seed counts against
+  the ranking only after observations accumulate.
+- **Budget 6 rerun, seeded from the budget-6 campaign** - identical
+  sequence again: a full-coverage seed leaves nothing fresh to prefer.
+- **Budget 6 rerun, partial-coverage seed (budget-3 campaign)** - the
+  first run is a fresh candidate (mode=1/retry=0), reproducing on the
+  second workload (depth=2/strategy=0 first): the seed reorders the
+  first decision exactly when the prior campaign left values unexplored.
+
+**Decision point.** The seed remains opt-in through `--seed-choices`.
+Making partial-coverage seeding the default for unified guidance is a
+product call that needs wider evidence: the one-workload, one-budget
+comparison shows ordering, not that ordering finds failures or
+witnesses sooner across workloads. The recorded artifacts are the
+baseline a broader comparison would extend.
 
 **Decision point.** The seed remains opt-in through `--seed-choices`.
 Making partial-coverage seeding the default for unified guidance is a
