@@ -1,9 +1,11 @@
-# Tutorial 44: Validate a rendered Helm chart
+# Tutorial 44: Campaign a rendered Helm chart
 
-Render a one-service Helm chart with `helm template`, hand Theseus the
+Render a one-pod Helm chart with `helm template`, hand Theseus the
 rendered directory as the campaign input, and inspect the locked plan -
 the same input contract the Kubernetes tutorials explore, without
-invoking Helm inside Theseus.
+invoking Helm inside Theseus. The pod carries a workload container and a
+log-forwarder sidecar, so the plan also shows the per-container service
+contract.
 
 ## Before you start
 
@@ -37,9 +39,11 @@ find rendered -name '*.yaml' | sort
 
 The workload is an unmodified HTTP service: one Python endpoint that
 answers `/health` with `ok` and echoes `mode` and `retry` query values
-back as JSON. The chart renders one Deployment and one ClusterIP Service
-- the documented Kubernetes subset. Theseus never invokes Helm; the
-rendered directory is the input.
+back as JSON. The Deployment carries two containers - the workload and a
+log-forwarder sidecar, each annotated with its own
+`theseus.io/manifest` - and one ClusterIP Service, the documented
+Kubernetes subset. Theseus never invokes Helm; the rendered directory is
+the input.
 
 ## 2. Enter the published runtime
 
@@ -71,6 +75,13 @@ image = "/tutorial/service/work/service.tar"
 
 [run]
 seed = 42
+
+[container_service.ready]
+url = "http://127.0.0.1:8080/health"
+
+[[container_service.operations]]
+name = "calculate"
+url = "http://127.0.0.1:8080/calculate?mode=1&retry=2"
 MANIFEST
 done
 cat > rendered/campaign.toml <<'CAMPAIGN'
@@ -92,8 +103,9 @@ A directory input walks every sorted `.yaml`/`.yml` file - the rendered
 Deployment and Service - through the documented Kubernetes subset, and
 reads `campaign.toml` (the same shape a Compose file puts under
 `x-theseus.campaign`) for the declared campaign. Multi-container pods
-translate into one service per container: the plan names
-`chooser-chooser` and `chooser-log-forwarder`.
+translate into one service per container, named `<pod>-<container>`:
+`chooser-chooser` for the workload and `chooser-log-forwarder` for the
+sidecar, each with its own per-container manifest.
 
 ## 4. Run the plan lock
 
@@ -104,29 +116,25 @@ grep -c '"chooser-log-forwarder"' plan.json
 grep -n 'calculate' plan.json | head -4
 ```
 
-The two greps confirm the per-container contract: the multi-container pod
-translates into `chooser-chooser` (the workload) and
-`chooser-log-forwarder` (the sidecar), each with its own manifest.
+The two greps confirm the per-container contract: both containers
+translate into their own service with its own locked manifest.
 
-The plan names the rendered directory as its input, keeps both Kubernetes
-documents' workloads, and locks the declared HTTP operation. To explore
-this campaign on a KVM host, follow tutorial 15's conversion flow with
-`theseus compose explore --output campaign rendered`.
-
-## 5. Inspect the locked plan
+## 5. Inspect the locked plan and explore
 
 ```sh
-grep -n 'format' plan.json | head -2
-grep -c 'theseus' plan.json
+theseus compose explore --output campaign --max-runs 2 rendered
+grep -c 'theseus-checkpoint-ledger-v1' campaign/progress.jsonl
+theseus status campaign | grep journal
 ```
 
-Every record the plan locks - services, networks, the campaign policy -
-comes from the rendered directory and the two TOML declarations, so the
-same input replays byte-stably on any KVM host.
+The exploration journals every run as it completes: the progress journal
+records the live account (progress lines, run records, checkpoint
+economics) while the campaign runs, and `theseus status` reads the same
+summary afterwards.
 
 ## 6. Clean up (optional)
 
 ```sh
 exit
-rm -rf service/work rendered plan.json
+rm -rf service/work rendered campaign plan.json
 ```

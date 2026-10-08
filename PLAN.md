@@ -907,6 +907,11 @@ reproducible investigation.
   sidecar's runtime record, completing the per-container contract end to
   end.
 
+- Tutorial 44's coherent walkthrough: the chart carries the workload and
+  sidecar containers with per-container manifests, the plan lock
+  confirms both services, and the explore/journal step reads the live
+  account.
+
 ## Immediate next work
 
 ### 1. The second workload in tutorial 36
