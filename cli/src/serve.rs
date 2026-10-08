@@ -194,10 +194,10 @@ fn handle_connection(stream: &mut TcpStream, campaigns: &[ServedCampaign]) -> st
     // The live journal and the retained logs honor one Range form:
     // `bytes=N-` answers with the file's suffix, so a follower fetches
     // only new bytes between polls. Everything else ignores the header.
-    if let Some(offset) = range {
+    if let Some(range) = range {
         let trimmed = path.trim_start_matches('/');
         if let Some((name, target)) = trimmed.split_once('/') {
-            let suffix = match target.split('?').next() {
+            let relative = match target.split('?').next() {
                 Some("progress") => Some("progress.jsonl".to_owned()),
                 Some(rest) => rest
                     .strip_prefix("file/serial/")
@@ -209,10 +209,10 @@ fn handle_connection(stream: &mut TcpStream, campaigns: &[ServedCampaign]) -> st
                 _ => None,
             };
             if let (Some(relative), Some(campaign)) = (
-                suffix,
+                relative,
                 campaigns.iter().find(|campaign| campaign.name == name),
             ) {
-                return range_file(stream, &campaign.root.join(relative), offset);
+                return range_file(stream, &campaign.root.join(relative), range);
             }
         }
     }
@@ -222,31 +222,38 @@ fn handle_connection(stream: &mut TcpStream, campaigns: &[ServedCampaign]) -> st
 
 /// `Range: bytes=N-` over one retained file: 206 with the suffix, or 416
 /// with the current length when the offset reaches past the end.
-fn range_file(stream: &mut TcpStream, path: &Path, offset: u64) -> std::io::Result<()> {
+fn range_file(stream: &mut TcpStream, path: &Path, request: RangeRequest) -> std::io::Result<()> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(_) => return write_response(stream, 404, "text/plain; charset=utf-8", b"not found"),
     };
     let length = bytes.len();
-    if offset as usize >= length {
-        return write_response_with(
-            stream,
-            416,
-            "text/plain; charset=utf-8",
-            Some(format!("Content-Range: bytes */{length}\r\n")),
-            b"",
-        );
-    }
-    let start = offset as usize;
+    let (start, end, slice): (usize, usize, &[u8]) = match request {
+        RangeRequest::From(offset) => {
+            if offset as usize >= length {
+                return write_response_with(
+                    stream,
+                    416,
+                    "text/plain; charset=utf-8",
+                    Some(format!("Content-Range: bytes */{length}\r\n")),
+                    b"",
+                );
+            }
+            let start = offset as usize;
+            (start, length - 1, &bytes[start..])
+        }
+        RangeRequest::Last(count) => {
+            let count = (count as usize).min(length);
+            let start = length - count;
+            (start, length - 1, &bytes[start..])
+        }
+    };
     write_response_with(
         stream,
         206,
         "text/plain; charset=utf-8",
-        Some(format!(
-            "Content-Range: bytes {start}-{}/{length}\r\n",
-            length - 1
-        )),
-        &bytes[start..],
+        Some(format!("Content-Range: bytes {start}-{end}/{length}\r\n")),
+        slice,
     )
 }
 
@@ -264,7 +271,7 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&buffer).into_owned())
 }
 
-fn parse_request(request: &str) -> Option<(String, String, Option<u64>)> {
+fn parse_request(request: &str) -> Option<(String, String, Option<RangeRequest>)> {
     let mut lines = request.lines();
     let line = lines.next()?;
     let mut parts = line.split_whitespace();
@@ -275,15 +282,28 @@ fn parse_request(request: &str) -> Option<(String, String, Option<u64>)> {
         name.trim()
             .eq_ignore_ascii_case("range")
             .then(|| {
-                value
-                    .trim()
-                    .strip_prefix("bytes=")
-                    .and_then(|spec| spec.strip_suffix('-'))
-                    .and_then(|offset| offset.parse::<u64>().ok())
+                let spec = value.trim().strip_prefix("bytes=")?;
+                if let Some(offset) = spec.strip_suffix('-') {
+                    // bytes=N- : the suffix from offset N.
+                    offset.parse::<u64>().ok().map(RangeRequest::From)
+                } else if let Some(length) = spec.strip_prefix('-') {
+                    // bytes=-N : the last N bytes.
+                    length.parse::<u64>().ok().map(RangeRequest::Last)
+                } else {
+                    None
+                }
             })
             .flatten()
     });
     Some((method, path, range))
+}
+
+/// One honored Range form: the suffix from a byte offset, or the last N
+/// bytes of the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RangeRequest {
+    From(u64),
+    Last(u64),
 }
 
 fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8>) {
@@ -1714,6 +1734,13 @@ mod tests {
         );
         assert_eq!(status, 206);
         assert!(suffix.starts_with(&whole[cut..]));
+
+        let (_, _, last_two) = exchange_with(
+            &address,
+            "GET /campaign/progress HTTP/1.1\r\nHost: x\r\nRange: bytes=-2\r\n\r\n",
+            &[],
+        );
+        assert_eq!(last_two, whole[(whole.len() - 2)..]);
 
         let (status, ..) = exchange_with(
             &address,
