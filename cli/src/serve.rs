@@ -582,6 +582,32 @@ fn choice_outcomes(root: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// The canonical decision-trace digest over one bundle's retained runs:
+/// SHA-256 over the sorted `run:trace-sha256` pairs, so any change to any
+/// run's recorded decisions changes the digest.
+fn decision_trace_digest(root: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+
+    let result = std::fs::read(root.join("campaign-result.json")).ok()?;
+    let result: serde_json::Value = serde_json::from_slice(&result).ok()?;
+    let mut pairs = Vec::new();
+    for run in result["runs"].as_array()? {
+        let index = run["index"].as_u64()?;
+        let trace = run["decision_trace"].as_array()?;
+        let mut hasher = Sha256::new();
+        for entry in trace {
+            hasher.update(entry.as_str()?.as_bytes());
+        }
+        pairs.push(format!("{}:{:x}", index, hasher.finalize()));
+    }
+    pairs.sort();
+    let mut hasher = Sha256::new();
+    for pair in &pairs {
+        hasher.update(pair.as_bytes());
+    }
+    Some(format!("{:x}", hasher.finalize()))
+}
+
 fn api_campaign(campaigns: &[ServedCampaign], name: &str) -> (u16, &'static str, Vec<u8>) {
     let Some(campaign) = campaigns.iter().find(|campaign| campaign.name == name) else {
         return not_found();
@@ -604,6 +630,10 @@ fn api_campaign(campaigns: &[ServedCampaign], name: &str) -> (u16, &'static str,
                 // consumed values correlated with failed runs in this
                 // campaign. Absent when the runs carry no choice feedback.
                 "choice_outcomes": choice_outcomes(&campaign.root),
+                // The canonical decision-trace digest from the retained
+                // runs, so a gate verifies the audited record matches the
+                // journal without fetching the full run.
+                "decision_trace_digest": decision_trace_digest(&campaign.root),
             });
             json_response(&record)
         }
@@ -1339,7 +1369,7 @@ mod tests {
             r#"{"format":"theseus-compose-plan-v1","campaign":{"driver":"api","operations":[{"name":"calculate"}],"max_runs":8}}"#,
         )
         .unwrap();
-        let result = r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"chooser","guidance":"GUIDANCE","generated_candidates":CANDIDATES,"structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"status":"failed","choice_feedback":{"values":["chooser:mode:2:1"],"novel_contexts":1},"structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"timeline":[{"id":"op-000-calculate","operation":"calculate[mode-1]","service":"chooser","round":7,"markers":["42"],"new_markers":["42"],"serial_delta":{"chooser":{"bytes":16,"sha256":"delta-hash","excerpt":"calculate ready\n","omitted_bytes":0}},"state_sha256":"state-hash","moment":"7000@input-hash","events":{"chooser":["{\"event\":\"request\",\"seq\":1}"]}},{"id":"op-001-calculate","operation":"calculate[mode-1]","service":"chooser","round":9,"markers":["42","a1"],"new_markers":["a1"],"serial_delta":{"chooser":{"bytes":11,"sha256":"tail-hash","excerpt":"calculate done\n","omitted_bytes":0}},"state_sha256":"tail-state","moment":"9000@input-hash"}]}],"properties":[{"name":"consistent_read","kind":"always","status":"passed","detail":"2 of 2 retained timelines contained pass"}]}"#;
+        let result = r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"chooser","guidance":"GUIDANCE","generated_candidates":CANDIDATES,"structured_choice_decisions":1,"runs":[{"index":0,"decision_trace":["test_template:main","boundary:0:operation:calculate[mode-1]"],"operations":["calculate[mode-1]"],"status":"failed","choice_feedback":{"values":["chooser:mode:2:1"],"novel_contexts":1},"structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"timeline":[{"id":"op-000-calculate","operation":"calculate[mode-1]","service":"chooser","round":7,"markers":["42"],"new_markers":["42"],"serial_delta":{"chooser":{"bytes":16,"sha256":"delta-hash","excerpt":"calculate ready\n","omitted_bytes":0}},"state_sha256":"state-hash","moment":"7000@input-hash","events":{"chooser":["{\"event\":\"request\",\"seq\":1}"]}},{"id":"op-001-calculate","operation":"calculate[mode-1]","service":"chooser","round":9,"markers":["42","a1"],"new_markers":["a1"],"serial_delta":{"chooser":{"bytes":11,"sha256":"tail-hash","excerpt":"calculate done\n","omitted_bytes":0}},"state_sha256":"tail-state","moment":"9000@input-hash"}]}],"properties":[{"name":"consistent_read","kind":"always","status":"passed","detail":"2 of 2 retained timelines contained pass"}]}"#;
         let result = result
             .replace("GUIDANCE", guidance)
             .replace("CANDIDATES", &candidates.to_string());
@@ -1702,6 +1732,15 @@ mod tests {
         assert!(body.contains("\"run_count\": 1"), "{body}");
         assert!(body.contains("\"status\": \"failed\""), "{body}");
         assert!(body.contains("\"choice\": \"chooser:mode:2:1\""), "{body}");
+
+        let (status, _, body_again) = exchange(
+            &address,
+            "GET /api/campaign/campaign HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(body, body_again, "the API record must be stable");
+        assert!(body.contains("\"decision_trace_digest\": \""), "{body}");
+        assert_eq!(body.matches("decision_trace_digest").count(), 1);
 
         let (status, ..) = exchange(
             &address,

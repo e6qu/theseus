@@ -942,16 +942,27 @@ reproducible investigation.
   versioned record, so a gate reads the experiment summary and the
   campaign records from one surface.
 
+- The API record's decision-trace digest: the campaign API record
+  carries the SHA-256 digest over the retained runs' canonical decision
+  traces, so a gate verifies the audited record matches the journal
+  without fetching the full run.
+
+- The API record's decision-trace digest: the campaign API record
+  carries the SHA-256 digest over the retained runs' canonical decision
+  traces, so a gate verifies the audited record matches the journal
+  without fetching the full run.
+
 ## Immediate next work
 
-### 1. The campaign API record's per-run journal digest
+### 1. The gate example workflow
 
-The API record carries the journal summary; the per-run records it
-summarizes are separate. The next work joins them:
+The campaign API record is the gate surface; CI integration needs a
+concrete example. The next work lands it:
 
-- The API record gains the last run's decision-trace digest beside the
-  journal shape, so a gate can verify the audited record matches the
-  journal without fetching the full run.
+- A documented reusable workflow (or documented job snippet in
+  ci-gating) that fetches `/api/campaign/<name>`, asserts the format
+  string and status, and fails the CI job on a failed campaign -
+  completing Priority 6's CI-integration item.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
