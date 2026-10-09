@@ -947,6 +947,11 @@ reproducible investigation.
   traces, so a gate verifies the audited record matches the journal
   without fetching the full run.
 
+- The API record's decision-trace digest: the campaign API record
+  carries the SHA-256 digest over the retained runs' canonical decision
+  traces, so a gate verifies the audited record matches the journal
+  without fetching the full run.
+
 ## Immediate next work
 
 ### 1. The gate example workflow
