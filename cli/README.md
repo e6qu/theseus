@@ -268,8 +268,10 @@ directories retaining no versioned result refused by name. `GET /routes` answers
 every route with its method, path shape, content type, and description -
 so scripts render the API from one source. The stable campaign API is
 `GET /api/campaign/<name>`: one versioned `theseus-campaign-api-v1`
-record joining the status summary, policy, run counts, and journal
-shape - the surface CI gates on, pinned by its format string. The index
+record joining the status summary, policy, run counts, journal shape,
+and choice-outcome counts - and `GET /api/weighting-summary`
+aggregates per-workload yields across every served campaign. Both are
+the surfaces CI gates on, pinned by their format strings. The index
 page labels every served bundle with its kind - campaign, exploration,
 or topology. The dialect is plain HTTP/1.1: GET-only (other methods answer
 405), `Range: bytes=N-` on journals and logs answered 206 with the
