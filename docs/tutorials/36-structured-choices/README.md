@@ -73,8 +73,24 @@ grep -n 'structured_choices\|corrupt_result_is_unreachable' \
   campaign/campaign-result.json
 ```
 
+The weighting harness also runs this workload as one arm of its
+seeded/unseeded comparison. A second workload - `service/second.c`
+compiled to `service/work/second`, exposed through `second.yaml` with
+`depth: 3` and `strategy: 2` choices and the same corrupt condition at
+depth=2 & strategy=1 - gives the comparison a second arm pair:
+
+```sh
+theseus compose explore --expect-counterexample corrupt_result_is_unreachable \
+  --output second-campaign second.yaml
+grep -n 'structured_choices' second-campaign/campaign-result.json | head -2
+```
+
 The failure needs `mode=1` and `retry=2`. The result records both values,
-bounds, service, operation boundary, and observation order.
+bounds, service, operation boundary, and observation order. A second
+workload - `second.yaml` with `service/second.c` - exercises the same
+protocol with `depth: 3` and `strategy: 2` choices and its own corrupt
+condition at depth=2 & strategy=1, giving the weighting experiment a
+cross-workload comparison arm.
 
 Seed a continuation from that campaign: the consumed choice identities
 ride the locked plan, unified guidance counts them as already seen, and
