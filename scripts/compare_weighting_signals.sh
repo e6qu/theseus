@@ -38,12 +38,15 @@ for compose in "$@"; do
     if [ -d "$work/unseeded" ]; then
         echo "keeping $work/unseeded"
     else
+        # A budget sweep may not retain the counterexample at smaller
+        # budgets; the retained campaign is still the evidence.
         theseus compose explore \
             --expect-counterexample "$property" \
             --output "$work/unseeded" \
             --max-runs "$budget" \
             --guidance unified \
-            "$compose"
+            "$compose" || \
+            test -f "$work/unseeded/campaign-result.json"
     fi
 
     if [ -d "$work/seeded" ]; then
@@ -57,7 +60,8 @@ for compose in "$@"; do
             --max-runs "$budget" \
             --guidance unified \
             --seed-choices "$work/unseeded" \
-            "$compose"
+            "$compose" || \
+            test -f "$work/seeded/campaign-result.json"
     fi
 
     theseus evaluate compare \
