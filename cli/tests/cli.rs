@@ -1477,14 +1477,8 @@ fn history_lists_guest_events_across_campaigns() {
     assert_eq!(history["format"], "theseus-event-history-v1");
     let events = history["events"].as_array().unwrap();
     assert_eq!(events.len(), 4);
-    assert_eq!(
-        events[0]["source"].as_str().unwrap().ends_with("/before"),
-        true
-    );
-    assert_eq!(
-        events[2]["source"].as_str().unwrap().ends_with("/after"),
-        true
-    );
+    assert!(events[0]["source"].as_str().unwrap().ends_with("/before"));
+    assert!(events[2]["source"].as_str().unwrap().ends_with("/after"));
     assert_eq!(events[0]["service"], "api");
     assert_eq!(events[1]["service"], "counter");
     assert_eq!(events[2]["service"], "api");

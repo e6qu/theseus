@@ -66,8 +66,8 @@ pub use manifest::{
 pub use query::{
     collect_moment, event_temporal_query, find_moment, list_events, list_moments, next_moment,
     next_moment_in, previous_moment, previous_moment_in, query_moment, query_temporal,
-    temporal_query, CollectedFile, CollectedMoment, EventRecord, EventTemporalQuery, MomentError,
-    MomentHit, MomentSummary, NeedleOccurrence, TemporalQuery, TemporalRelation,
+    temporal_query, CollectedMoment, EventRecord, EventTemporalQuery, MomentError, MomentHit,
+    MomentSummary, NeedleOccurrence, TemporalQuery, TemporalRelation,
 };
 pub use report::{report, report_file, report_html_text, report_text, ReportError, ReportFormat};
 pub use runner::{replay, replay_to, test, ReplayResult, RunError, TestResult};

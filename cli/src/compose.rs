@@ -686,15 +686,11 @@ struct ComposeSerialJoin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ComposeSerialJoinQuantifier {
+    #[default]
     Any,
     Every,
-}
-
-impl Default for ComposeSerialJoinQuantifier {
-    fn default() -> Self {
-        Self::Any
-    }
 }
 
 /// Require a pair of JSON endpoint values to satisfy one relation.
@@ -4842,7 +4838,7 @@ fn campaign_plan(
                     ));
                 }
                 if let Some(every_n) = candidate.every_n_rounds {
-                    if every_n < 2 || every_n > 64 {
+                    if !(2..=64).contains(&every_n) {
                         return Err(ComposeError::Invalid(
                             "campaign cpu_throttle every_n_rounds must be between 2 and 64"
                                 .to_owned(),
@@ -5692,9 +5688,11 @@ fn campaign_plan(
         driver: campaign.driver,
         fault_profile: campaign.fault_profile,
         test_template: (selected_templates.len() == 1).then(|| selected_templates[0].clone()),
-        test_templates: (selected_templates.len() > 1)
-            .then_some(selected_templates)
-            .unwrap_or_default(),
+        test_templates: if selected_templates.len() > 1 {
+            selected_templates
+        } else {
+            Default::default()
+        },
         max_parallel_commands: campaign.max_parallel_commands,
         guidance: campaign.guidance,
         coverage: campaign.coverage,
@@ -7077,10 +7075,13 @@ fn validate_campaign_operation_rules(
         let blocked = operations
             .iter()
             .flat_map(|operation| {
-                operation.inputs.iter().filter_map(|input| {
-                    (!reachable_inputs.contains(&(operation.name.as_str(), input.name.as_str())))
-                        .then(|| format!("{}[{}]", operation.name, input.name))
-                })
+                operation
+                    .inputs
+                    .iter()
+                    .filter(|&input| {
+                        !reachable_inputs.contains(&(operation.name.as_str(), input.name.as_str()))
+                    })
+                    .map(|input| format!("{}[{}]", operation.name, input.name))
             })
             .collect::<Vec<_>>();
         if blocked.is_empty() {
@@ -7630,10 +7631,11 @@ fn normalize_operation_input_grammar(
         let rules = grammar.cases.get(&name).cloned().unwrap_or_default();
         inputs.push(OperationInputPlan {
             name,
-            input_hex: captures
-                .is_empty()
-                .then(|| hex(input.as_bytes()))
-                .unwrap_or_default(),
+            input_hex: if captures.is_empty() {
+                hex(input.as_bytes())
+            } else {
+                Default::default()
+            },
             choices: source_bounds.clone(),
             thread_schedule: Vec::new(),
             input_template: (!captures.is_empty()).then_some(input),
@@ -8757,7 +8759,8 @@ mod tests {
     /// standard profile can propose custom candidates for either.
     fn two_image_fixture(compose: &str) -> tempfile::TempDir {
         let directory = image_fixture(compose, &[]);
-        for service in ["worker"] {
+        {
+            let service = "worker";
             fs::write(
                 directory.path().join(service).join("runtime/theseus-image"),
                 b"adapter",
@@ -9159,7 +9162,8 @@ mod tests {
             "version = 1\n[runtime]\nfirecracker = 'api/runtime/firecracker'\nimage_adapter = 'api/runtime/theseus-image'\n[guest]\nkernel = 'api/guest/vmlinux'\nimage = 'api/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
         )
         .unwrap();
-        for service in ["worker"] {
+        {
+            let service = "worker";
             // image_fixture only arms the api service with the adapter.
             fs::write(
                 directory.path().join(service).join("runtime/theseus-image"),
@@ -9288,7 +9292,8 @@ mod tests {
             "version = 1\n[runtime]\nfirecracker = 'api/runtime/firecracker'\nimage_adapter = 'api/runtime/theseus-image'\n[guest]\nkernel = 'api/guest/vmlinux'\nimage = 'api/service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
         )
         .unwrap();
-        for service in ["api"] {
+        {
+            let service = "api";
             fs::write(
                 directory.path().join(service).join("theseus.toml"),
                 "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
@@ -9956,7 +9961,9 @@ mod tests {
         let input = &plan.campaign.as_ref().unwrap().operations[0].inputs[0].input_hex;
         let bytes = input
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect::<Vec<_>>();
         let command = String::from_utf8(bytes).unwrap();
@@ -9997,7 +10004,9 @@ mod tests {
         let input = &plan.campaign.as_ref().unwrap().operations[0].inputs[0].input_hex;
         let bytes = input
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect::<Vec<_>>();
         let command = String::from_utf8(bytes).unwrap();
@@ -10054,7 +10063,9 @@ mod tests {
         let input = &operation.inputs[0].input_hex;
         let bytes = input
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect::<Vec<_>>();
         let command = String::from_utf8(bytes).unwrap();
@@ -10102,7 +10113,9 @@ mod tests {
         let bytes = lost_update
             .input_hex
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect::<Vec<_>>();
         let command = String::from_utf8(bytes).unwrap();
@@ -10139,7 +10152,9 @@ mod tests {
         let bytes = operation.inputs[0]
             .input_hex
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect::<Vec<_>>();
         let command = String::from_utf8(bytes).unwrap();
@@ -10274,7 +10289,9 @@ mod tests {
         let completion = operations[1].inputs[0]
             .input_hex
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect::<Vec<_>>();
         let completion = String::from_utf8(completion).unwrap();
@@ -11407,7 +11424,7 @@ x-theseus:
             &[],
         );
         for service in ["api", "api-sidecar", "worker"] {
-            let root = directory.path().join(&service);
+            let root = directory.path().join(service);
             fs::create_dir_all(root.join("runtime")).unwrap();
             fs::create_dir_all(root.join("guest")).unwrap();
             fs::write(root.join("runtime/firecracker"), b"firecracker").unwrap();
@@ -11429,11 +11446,11 @@ x-theseus:
             }
             fs::write(root.join("guest/vmlinux"), b"kernel").unwrap();
             fs::write(
-                directory.path().join(&service).join("theseus.toml"),
+                directory.path().join(service).join("theseus.toml"),
                 "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
             )
             .unwrap();
-            write_docker_image(&directory.path().join(&service).join("service.tar"), &[]);
+            write_docker_image(&directory.path().join(service).join("service.tar"), &[]);
         }
         fs::write(
             directory.path().join("theseus.toml"),

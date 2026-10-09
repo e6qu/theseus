@@ -361,7 +361,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     }
                     "--preceded-by" | "--followed-by" => {
                         if needle.is_some() {
-                            return Err(USAGE.to_owned().into());
+                            return Err(USAGE.to_owned());
                         }
                         let relation = if rest[index] == "--preceded-by" {
                             TemporalRelation::PrecededBy
@@ -370,14 +370,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         };
                         let value = rest.get(index + 1).ok_or(USAGE.to_owned())?.clone();
                         if value.is_empty() {
-                            return Err(USAGE.to_owned().into());
+                            return Err(USAGE.to_owned());
                         }
                         needle = Some((relation, value));
                         index += 2;
                     }
                     "--preceded-by-event" | "--followed-by-event" => {
                         if event_predicate.is_some() {
-                            return Err(USAGE.to_owned().into());
+                            return Err(USAGE.to_owned());
                         }
                         let relation = if rest[index] == "--preceded-by-event" {
                             TemporalRelation::PrecededBy
@@ -404,19 +404,19 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         format = match rest.get(index + 1).map(String::as_str) {
                             Some("json") => "json",
                             Some("text") => "text",
-                            _ => return Err(USAGE.to_owned().into()),
+                            _ => return Err(USAGE.to_owned()),
                         };
                         index += 2;
                     }
                     other => {
                         let _ = other;
-                        return Err(USAGE.to_owned().into());
+                        return Err(USAGE.to_owned());
                     }
                 }
             }
             if let Some((relation, predicate)) = event_predicate {
                 if list || collect || moment.is_some() || navigation.is_some() || needle.is_some() {
-                    return Err(USAGE.to_owned().into());
+                    return Err(USAGE.to_owned());
                 }
                 let query =
                     event_temporal_query(&result, relation, &predicate, service_filter.as_deref())
@@ -446,7 +446,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
             if let Some((relation, needle)) = needle {
                 if list || collect || moment.is_some() || navigation.is_some() {
-                    return Err(USAGE.to_owned().into());
+                    return Err(USAGE.to_owned());
                 }
                 let query = temporal_query(&result, relation, &needle, service_filter.as_deref())
                     .map_err(|error| error.to_string())?;
@@ -475,7 +475,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
             if events {
                 if list || collect || needle.is_some() || moment.is_some() || navigation.is_some() {
-                    return Err(USAGE.to_owned().into());
+                    return Err(USAGE.to_owned());
                 }
                 let records = list_events(&result, service_filter.as_deref())
                     .map_err(|error| error.to_string())?;
@@ -496,10 +496,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
             if collect {
                 if list || needle.is_some() || navigation.is_some() {
-                    return Err(USAGE.to_owned().into());
+                    return Err(USAGE.to_owned());
                 }
                 let Some(moment) = moment else {
-                    return Err(USAGE.to_owned().into());
+                    return Err(USAGE.to_owned());
                 };
                 let output = output.unwrap_or_else(|| format!("{bundle}-collected"));
                 let collected =
@@ -541,7 +541,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 return Ok(());
             }
             let Some(moment) = moment else {
-                return Err(USAGE.to_owned().into());
+                return Err(USAGE.to_owned());
             };
             let hit = match navigation {
                 Some("next") => next_moment_in(&result, &moment),
@@ -748,11 +748,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
                             campaign.source,
                             campaign.runs,
                             campaign.failed_runs,
-                            if campaign.runs == 0 {
-                                0
-                            } else {
-                                campaign.failed_runs * 100 / campaign.runs
-                            }
+                            campaign
+                                .failed_runs
+                                .checked_mul(100)
+                                .map_or(0, |n| n / campaign.runs)
                         );
                     }
                 }

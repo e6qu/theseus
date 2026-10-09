@@ -672,6 +672,10 @@ pub fn query_temporal(
     temporal_query(&result, relation, needle, service)
 }
 
+/// One in-memory collected file awaiting digest and manifest: the path
+/// relative to the collection root and its bytes.
+type CollectedFileBytes = (String, Vec<u8>);
+
 /// One file inside a collected artifact bundle, with the digest that makes
 /// the bundle auditable without the original campaign.
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -764,17 +768,17 @@ fn write_collected_file(
     let path = output.join(relative);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| {
-            MomentError::Read(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("cannot create {}: {source}", parent.display()),
-            ))
+            MomentError::Read(std::io::Error::other(format!(
+                "cannot create {}: {source}",
+                parent.display()
+            )))
         })?;
     }
     fs::write(&path, bytes).map_err(|source| {
-        MomentError::Read(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("cannot write {}: {source}", path.display()),
-        ))
+        MomentError::Read(std::io::Error::other(format!(
+            "cannot write {}: {source}",
+            path.display()
+        )))
     })?;
     files.push(CollectedFile {
         path: relative.to_owned(),
@@ -816,7 +820,7 @@ pub fn collect_moment(
 pub fn collect_moment_files(
     bundle: impl AsRef<Path>,
     moment: &str,
-) -> Result<(CollectedMoment, Vec<(String, Vec<u8>)>), MomentError> {
+) -> Result<(CollectedMoment, Vec<CollectedFileBytes>), MomentError> {
     let bundle = fs::canonicalize(bundle.as_ref()).map_err(MomentError::Read)?;
     let path = bundle.join("campaign-result.json");
     let result: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
