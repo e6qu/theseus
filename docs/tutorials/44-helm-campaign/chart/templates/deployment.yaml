@@ -9,3 +9,12 @@ spec:
         - name: chooser
           image: theseus-helm-tutorial:latest
           command: ["/usr/local/bin/chooser"]
+          metadata:
+            annotations:
+              theseus.io/manifest: chooser/theseus.toml
+        - name: log-forwarder
+          image: theseus-helm-tutorial:latest
+          command: ["/bin/sh", "-c", "sleep infinity"]
+          metadata:
+            annotations:
+              theseus.io/manifest: forwarder/theseus.toml
