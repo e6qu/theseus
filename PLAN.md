@@ -927,16 +927,21 @@ reproducible investigation.
   corpus, and the seeded arms kept corpus order at both budgets (the
   partial-coverage seed remains the reordering case).
 
+- The campaign API record: `GET /api/campaign/<name>` serves the
+  versioned `theseus-campaign-api-v1` document - status, policy, run
+  counts, and journal shape - pinned by its format string as the stable
+  surface CI gates on.
+
 ## Immediate next work
 
-### 1. The second workload in tutorial 36
+### 1. The API record's journal and route-manifest citation
 
-The CI experiment now runs two workloads; tutorial 36 explores only the
-first. The next work documents both:
+The API record joins the status and journal; the route manifest lists
+it. The next work completes the skeleton:
 
-- Tutorial 36's exploration step names the second workload file
-  (`second.yaml`) as an alternative input, so readers can reproduce the
-  cross-workload comparison the harness records.
+- The API record gains the run-level choice-outcome counts beside the
+  journal shape, and cli/README's CI-gating section cites the record as
+  the gate surface.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
