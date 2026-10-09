@@ -7,12 +7,14 @@
 # Requires Linux with KVM, a theseus binary on PATH, and a workload whose
 # campaign declares bounded choices with a property (see tutorial 36).
 # Usage:
-#   compare_weighting_signals.sh budget outdir property compose.yaml [compose.yaml...]
+#   compare_weighting_signals.sh budgets outdir property compose.yaml [compose.yaml...]
 #
-# Runs the seeded/unseeded pair for EVERY named workload, nesting each
-# under outdir/<workload-name>, and tabulates per workload. The property
-# is asserted with --expect-counterexample in both explorations, so a
-# retained counterexample counts as success.
+# budgets is a comma-separated list (e.g. 3,6): the seeded/unseeded pair
+# runs for EVERY named workload at EVERY budget, nested under
+# outdir/<workload>/budget<N>, tabulated per workload per budget, with a
+# cross-workload summary at the end. The property is asserted with
+# --expect-counterexample in both explorations, so a retained
+# counterexample counts as success.
 #
 # Resumable like compare_guidance_modes.sh: existing campaigns are kept.
 # The retained campaigns and per-workload tabulations are the evidence;
@@ -20,17 +22,18 @@
 # finds failures or witnesses sooner than first-seen novelty alone.
 set -e
 
-budget=${1:?usage: compare_weighting_signals.sh budget outdir property compose.yaml [compose.yaml...]}
-outdir=${2:?usage: compare_weighting_signals.sh budget outdir property compose.yaml [compose.yaml...]}
-property=${3:?usage: compare_weighting_signals.sh budget outdir property compose.yaml [compose.yaml...]}
+budgets=${1:?usage: compare_weighting_signals.sh budgets outdir property compose.yaml [compose.yaml...]}
+outdir=${2:?usage: compare_weighting_signals.sh budgets outdir property compose.yaml [compose.yaml...]}
+property=${3:?usage: compare_weighting_signals.sh budgets outdir property compose.yaml [compose.yaml...]}
 shift 3
-[ $# -ge 1 ] || { echo "usage: compare_weighting_signals.sh budget outdir property compose.yaml [compose.yaml...]" >&2; exit 2; }
+[ $# -ge 1 ] || { echo "usage: compare_weighting_signals.sh budgets outdir property compose.yaml [compose.yaml...]" >&2; exit 2; }
 
 mkdir -p "$outdir"
 
+for budget in $(echo "$budgets" | tr ',' ' '); do
 for compose in "$@"; do
     name=$(basename "$compose" .yaml)
-    work="$outdir/$name"
+    work="$outdir/$name/budget$budget"
 
     if [ -d "$work/unseeded" ]; then
         echo "keeping $work/unseeded"
@@ -119,8 +122,10 @@ for entry in shares[:5]:
 print(f"tabulation: {outdir/'tabulation.md'}")
 TABULATE
 done
+done
 
-# Summary across workloads: one row per workload per arm.
+# Summary across workloads and budgets: one row per workload per arm per
+# budget, with the budget column making the saturation boundary visible.
 python3 - "$outdir" <<'SUMMARIZE'
 import json
 import sys
@@ -128,28 +133,31 @@ from pathlib import Path
 
 outdir = Path(sys.argv[1])
 lines = [
-    "| workload | arm | runs | failed runs | property witnesses | witnesses per run |",
-    "| --- | --- | --- | --- | --- | --- |",
+    "| workload | budget | arm | runs | failed runs | property witnesses | witnesses per run |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
 ]
-for work in sorted(outdir.iterdir()):
-    if not work.is_dir():
-        continue
-    for arm in ["unseeded", "seeded"]:
-        result_path = work / arm / "campaign-result.json"
-        if not result_path.is_file():
+for work in sorted(p for p in outdir.iterdir() if p.is_dir()):
+    for budget_dir in sorted(p for p in work.iterdir() if p.is_dir()):
+        if not budget_dir.name.startswith("budget"):
             continue
-        result = json.loads(result_path.read_text())
-        runs = result.get("runs", [])
-        total = len(runs)
-        failed = sum(1 for run in runs if run.get("status") == "failed")
-        witnesses = sum(len(run.get("property_witnesses", [])) for run in runs)
-        per_run = witnesses / total if total else 0.0
-        lines.append(
-            f"| {work.name} | {arm} | {total} | {failed} | {witnesses} | {per_run:.2f} |"
-        )
+        budget = budget_dir.name[len("budget"):]
+        for arm in ["unseeded", "seeded"]:
+            result_path = budget_dir / arm / "campaign-result.json"
+            if not result_path.is_file():
+                continue
+            result = json.loads(result_path.read_text())
+            runs = result.get("runs", [])
+            total = len(runs)
+            failed = sum(1 for run in runs if run.get("status") == "failed")
+            witnesses = sum(len(run.get("property_witnesses", [])) for run in runs)
+            per_run = witnesses / total if total else 0.0
+            lines.append(
+                f"| {work.name} | {budget} | {arm} | {total} | {failed} "
+                f"| {witnesses} | {per_run:.2f} |"
+            )
 summary = outdir / "summary.md"
 summary.write_text(
-    "# Weighting-signal summary across workloads\n\n"
+    "# Weighting-signal summary across workloads and budgets\n\n"
     + "\n".join(lines)
     + "\n"
 )
