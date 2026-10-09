@@ -937,16 +937,21 @@ reproducible investigation.
   beside the journal shape, and cli/README's CI-gating section cites the
   record as the gate surface.
 
+- The weighting-summary API route: `GET /api/weighting-summary`
+  aggregates per-workload yields across every served campaign into one
+  versioned record, so a gate reads the experiment summary and the
+  campaign records from one surface.
+
 ## Immediate next work
 
-### 1. The weighting-summary API record
+### 1. The campaign API record's per-run journal digest
 
-The harness writes the cross-workload summary as markdown; the API
-serves per-campaign records. The next work joins them:
+The API record carries the journal summary; the per-run records it
+summarizes are separate. The next work joins them:
 
-- `GET /api/weighting-summary` aggregates per-workload yields across
-  every served campaign into one versioned record, so a gate reads the
-  experiment summary and the campaign records from one surface.
+- The API record gains the last run's decision-trace digest beside the
+  journal shape, so a gate can verify the audited record matches the
+  journal without fetching the full run.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
