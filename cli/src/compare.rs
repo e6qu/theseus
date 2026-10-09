@@ -988,9 +988,7 @@ mod tests {
     #[test]
     fn at_moment_dumps_both_boundary_records() {
         let baseline = r#"[{"index":0,"operations":["write"],"state_sha256":"final","timeline":[{"id":"op-000-write","operation":"write","service":"api","state_sha256":"state","moment":"7000@input-hash","actions":[{"kind":"partition"}],"markers":["42"],"serial_sha256":{"api":"serial"},"program_counters":{"api":["0x10"]}}]}]"#;
-        let right = baseline
-            .replace("\"state_sha256\":\"state\"", "\"state_sha256\":\"changed\"")
-            .replace("7000@input-hash", "7000@input-hash");
+        let right = baseline.replace("\"state_sha256\":\"state\"", "\"state_sha256\":\"changed\"");
         let (left, right) = write_pair(&result(baseline, "[]"), &result(&right, "[]"));
         let diff = boundary_at_moment(left.path(), right.path(), "7000@input-hash").unwrap();
         assert_eq!(diff.run, 0);

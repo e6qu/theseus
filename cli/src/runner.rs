@@ -754,6 +754,7 @@ fn materialize_initramfs(
     Ok(output)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn configure_and_wait(
     child: &mut Child,
     plan: &RunPlan,
@@ -796,6 +797,7 @@ fn configure_and_wait(
     send_events_and_wait(child, plan, socket, serial_log, capture)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn configure_boot(
     child: &mut Child,
     plan: &RunPlan,

@@ -148,7 +148,7 @@ fn pod_containers<'a>(
             return Err(reject("env valueFrom references"));
         }
     }
-    Ok(containers.into_iter().collect())
+    Ok(containers.iter().collect())
 }
 
 /// One translated container's service name: the pod's name for a
@@ -338,7 +338,7 @@ pub fn load_kubernetes_compose_str(
     let mut secrets: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut pod_mounts: BTreeMap<String, (Vec<serde_json::Value>, VolumeSources)> = BTreeMap::new();
 
-    for document in serde_yaml::Deserializer::from_str(&input) {
+    for document in serde_yaml::Deserializer::from_str(input) {
         let document =
             ManifestDocument::deserialize(document).map_err(|source| ComposeError::Parse {
                 path: path.to_path_buf(),
@@ -356,7 +356,7 @@ pub fn load_kubernetes_compose_str(
         let metadata = document.metadata;
         match kind {
             "Pod" | "Deployment" | "StatefulSet" | "DaemonSet" | "ReplicaSet" | "Job" => {
-                let name = named(&metadata, &kind)?;
+                let name = named(&metadata, kind)?;
                 if services.contains_key(&name) {
                     return Err(ComposeError::Invalid(format!(
                         "Kubernetes declares service {name:?} more than once"
@@ -552,7 +552,7 @@ pub fn load_kubernetes_compose_str(
                 }
             }
             "ConfigMap" => {
-                let name = named(&metadata, &kind)?;
+                let name = named(&metadata, kind)?;
                 let mut entries = InlineEntries::new();
                 if let Some(data) = document
                     .data
@@ -593,7 +593,7 @@ pub fn load_kubernetes_compose_str(
                 config_entries.insert(name, entries);
             }
             "Secret" => {
-                let name = named(&metadata, &kind)?;
+                let name = named(&metadata, kind)?;
                 let mut entries = InlineEntries::new();
                 if let Some(data) = document
                     .data
@@ -631,7 +631,7 @@ pub fn load_kubernetes_compose_str(
                 secret_entries.insert(name, entries);
             }
             "Service" => {
-                let name = named(&metadata, &kind)?;
+                let name = named(&metadata, kind)?;
                 let service_type = document
                     .spec
                     .get("type")

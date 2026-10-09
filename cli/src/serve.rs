@@ -768,10 +768,10 @@ fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec
     }
     let relation = if let Some(needle) = route.strip_prefix("preceded-by/") {
         Some((crate::query::TemporalRelation::PrecededBy, needle))
-    } else if let Some(needle) = route.strip_prefix("followed-by/") {
-        Some((crate::query::TemporalRelation::FollowedBy, needle))
     } else {
-        None
+        route
+            .strip_prefix("followed-by/")
+            .map(|needle| (crate::query::TemporalRelation::FollowedBy, needle))
     };
     if let Some((relation, needle)) = relation {
         return answer(crate::query::temporal_query(
@@ -1048,9 +1048,9 @@ fn tar_archive(files: &[(String, Vec<u8>)]) -> Vec<u8> {
         archive.extend_from_slice(&header);
         archive.extend_from_slice(bytes);
         let padding = (512 - size % 512) % 512;
-        archive.extend(std::iter::repeat(0u8).take(padding));
+        archive.extend(std::iter::repeat_n(0u8, padding));
     }
-    archive.extend(std::iter::repeat(0u8).take(1024));
+    archive.extend(std::iter::repeat_n(0u8, 1024));
     archive
 }
 
@@ -1071,16 +1071,14 @@ fn write_octal(field: &mut [u8], value: u64) {
 /// The versioned result a bundle retains: a campaign result, a
 /// single-timeline or exploration result, or a topology result.
 fn retained_result(root: &Path) -> Option<&'static str> {
-    for name in [
+    [
         "campaign-result.json",
         "result.json",
         "topology-result.json",
-    ] {
-        if root.join(name).is_file() {
-            return Some(name);
-        }
-    }
-    None
+    ]
+    .into_iter()
+    .find(|&name| root.join(name).is_file())
+    .map(|v| v as _)
 }
 
 fn serve_serial(root: &Path, relative: &str) -> (u16, &'static str, Vec<u8>) {
@@ -1113,12 +1111,11 @@ fn index_page(campaigns: &[ServedCampaign]) -> Vec<u8> {
     );
     for campaign in campaigns {
         let name = escape_html(&campaign.name);
-        let plan_link = campaign
-            .root
-            .join("replay-plan.json")
-            .is_file()
-            .then(|| format!(" · <a href=\"/{name}/plan\">plan</a>"))
-            .unwrap_or_default();
+        let plan_link = if campaign.root.join("replay-plan.json").is_file() {
+            format!(" · <a href=\"/{name}/plan\">plan</a>")
+        } else {
+            Default::default()
+        };
         page.push_str(&format!(
             "<li>{} · <a href=\"/{name}/report.html\">{name}</a> · <a href=\"/{name}/report\">markdown</a> · <a href=\"/{name}/result\">result</a>{plan_link}</li>",
             campaign.kind
@@ -1288,7 +1285,12 @@ mod tests {
         let content_type = head
             .lines()
             .find(|line| line.to_ascii_lowercase().starts_with("content-type"))
-            .map(|line| line.splitn(2, ": ").nth(1).unwrap_or_default().to_owned())
+            .map(|line| {
+                line.split_once(": ")
+                    .map(|x| x.1)
+                    .unwrap_or_default()
+                    .to_owned()
+            })
             .unwrap_or_default();
         let body = response[head_end + 4..].to_vec();
         (status, content_type, body)
@@ -1327,7 +1329,12 @@ mod tests {
         let content_type = response
             .lines()
             .find(|line| line.to_ascii_lowercase().starts_with("content-type"))
-            .map(|line| line.splitn(2, ": ").nth(1).unwrap_or_default().to_owned())
+            .map(|line| {
+                line.split_once(": ")
+                    .map(|x| x.1)
+                    .unwrap_or_default()
+                    .to_owned()
+            })
             .unwrap_or_default();
         let body = response
             .split("\r\n\r\n")

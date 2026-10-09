@@ -1720,9 +1720,11 @@ fn campaign_serial_delta_label(boundary: &CampaignTimelineBoundary) -> String {
         .serial_delta
         .iter()
         .map(|(service, delta)| {
-            let omitted = (delta.omitted_bytes > 0)
-                .then(|| format!("; +{} bytes", delta.omitted_bytes))
-                .unwrap_or_default();
+            let omitted = if delta.omitted_bytes > 0 {
+                format!("; +{} bytes", delta.omitted_bytes)
+            } else {
+                Default::default()
+            };
             format!(
                 "{service}: {} [{} bytes; sha256 {}{}]",
                 delta.excerpt, delta.bytes, delta.sha256, omitted
@@ -1791,9 +1793,11 @@ fn campaign_input_label(boundary: &CampaignTimelineBoundary) -> String {
         boundary.input.excerpt,
         boundary.input.bytes,
         boundary.input.sha256,
-        (boundary.input.omitted_bytes > 0)
-            .then(|| format!("; +{} bytes", boundary.input.omitted_bytes))
-            .unwrap_or_default(),
+        if boundary.input.omitted_bytes > 0 {
+            format!("; +{} bytes", boundary.input.omitted_bytes)
+        } else {
+            Default::default()
+        },
     )
 }
 
@@ -1828,9 +1832,11 @@ fn campaign_uart_barrier_label(boundary: &CampaignTimelineBoundary) -> String {
         response.excerpt,
         response.bytes,
         response.sha256,
-        (response.omitted_bytes > 0)
-            .then(|| format!("; +{} bytes", response.omitted_bytes))
-            .unwrap_or_default(),
+        if response.omitted_bytes > 0 {
+            format!("; +{} bytes", response.omitted_bytes)
+        } else {
+            Default::default()
+        },
     )
 }
 

@@ -2857,7 +2857,7 @@ mod tests {
         let archive = fs::File::create(directory.join(archive_name)).unwrap();
         let encoder = GzEncoder::new(archive, Compression::default());
         let mut builder = tar::Builder::new(encoder);
-        builder.append_dir_all("validation", &root).unwrap();
+        builder.append_dir_all("validation", root).unwrap();
         builder.into_inner().unwrap().finish().unwrap();
     }
 
