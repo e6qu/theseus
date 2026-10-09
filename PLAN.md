@@ -912,16 +912,21 @@ reproducible investigation.
   confirms both services, and the explore/journal step reads the live
   account.
 
+- Tutorial 36's second workload: the walkthrough names `second.yaml` +
+  `service/second.c` (depth/strategy choices, its own corrupt condition)
+  as the cross-workload arm the weighting experiment consumes.
+
 ## Immediate next work
 
-### 1. The second workload in tutorial 36
+### 1. The weighting comparison's budget runner
 
-The CI experiment now runs two workloads; tutorial 36 explores only the
-first. The next work documents both:
+Two workloads at fixed budget 6 is the start; the harness should sweep
+budgets. The next work adds the sweep:
 
-- Tutorial 36's exploration step names the second workload file
-  (`second.yaml`) as an alternative input, so readers can reproduce the
-  cross-workload comparison the harness records.
+- `compare_weighting_signals.sh` gains an optional budget list,
+  running the full workload set per budget and extending the summary
+  with per-budget rows, so the saturation boundary (budget 6 vs 3)
+  becomes a first-class comparison axis.
 
 Sub-1x clock-rate windows
 
