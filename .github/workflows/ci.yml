@@ -195,17 +195,18 @@ jobs:
           strip service/work/runtime/firecracker
           cp ../../../image-runner/target/debug/theseus-image service/work/runtime/theseus-image
           cp "$release/theseus-$tag-linux-amd64/vmlinux" service/work/guest/vmlinux
-          gcc -O2 -Wall -Wextra -o service/work/chooser service/main.c
-          gcc -O2 -Wall -Wextra -o service/work/second service/second.c
-          gcc -O2 -Wall -Wextra -o service/work/ready service/ready.c
-          # The shared runner IP hits Docker Hub's anonymous pull limit;
-          # retry the base-image pull and build with backoff.
-          for attempt in 1 2 3 4 5; do
-            docker pull debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 && break
-            echo "base pull attempt $attempt failed; retrying in 60s" >&2
-            sleep 60
-          done
-          docker build --load --platform linux/amd64 -t theseus-structured-choice-ci service
+          gcc -O2 -Wall -Wextra -static -o service/work/chooser service/main.c
+          gcc -O2 -Wall -Wextra -static -o service/work/second service/second.c
+          gcc -O2 -Wall -Wextra -static -o service/work/ready service/ready.c
+          # The binaries are static, so the workload image builds FROM
+          # scratch - no Docker Hub pull, no rate limit on shared runners.
+          docker build --load --platform linux/amd64 -t theseus-structured-choice-ci -f - service <<'DOCKERFILE'
+FROM scratch
+COPY work/chooser /usr/local/bin/chooser
+COPY work/second /usr/local/bin/second
+COPY work/ready /usr/local/bin/ready
+CMD ["/usr/local/bin/ready"]
+DOCKERFILE
           docker save theseus-structured-choice-ci -o service/work/service.tar
           PATH="../../../cli/target/debug:$PATH" \
             sh ../../../scripts/compare_weighting_signals.sh \
