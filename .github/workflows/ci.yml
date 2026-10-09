@@ -195,10 +195,19 @@ jobs:
           strip service/work/runtime/firecracker
           cp ../../../image-runner/target/debug/theseus-image service/work/runtime/theseus-image
           cp "$release/theseus-$tag-linux-amd64/vmlinux" service/work/guest/vmlinux
-          gcc -O2 -Wall -Wextra -o service/work/chooser service/main.c
-          gcc -O2 -Wall -Wextra -o service/work/second service/second.c
-          gcc -O2 -Wall -Wextra -o service/work/ready service/ready.c
-          docker build --load --platform linux/amd64 -t theseus-structured-choice-ci service
+          gcc -O2 -Wall -Wextra -static -o service/work/chooser service/main.c
+          gcc -O2 -Wall -Wextra -static -o service/work/second service/second.c
+          gcc -O2 -Wall -Wextra -static -o service/work/ready service/ready.c
+          # The binaries are static, so the workload image builds FROM
+          # scratch - no Docker Hub pull, no rate limit on shared runners.
+          printf '%s\n' \
+            'FROM scratch' \
+            'COPY work/chooser /usr/local/bin/chooser' \
+            'COPY work/second /usr/local/bin/second' \
+            'COPY work/ready /usr/local/bin/ready' \
+            'CMD ["/usr/local/bin/ready"]' > service/Dockerfile.ci
+          docker build --load --platform linux/amd64 \
+            -t theseus-structured-choice-ci -f service/Dockerfile.ci service
           docker save theseus-structured-choice-ci -o service/work/service.tar
           PATH="../../../cli/target/debug:$PATH" \
             sh ../../../scripts/compare_weighting_signals.sh \
