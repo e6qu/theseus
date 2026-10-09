@@ -318,6 +318,10 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
     if trimmed.split('?').next() == Some("routes") {
         return json_response(&routes_manifest());
     }
+    if let Some(rest) = trimmed.strip_prefix("api/campaign/") {
+        let name = rest.split('?').next().unwrap_or_default();
+        return api_campaign(campaigns, name);
+    }
     if trimmed.split('?').next() == Some("compare") {
         let query = trimmed
             .split_once('?')
@@ -472,6 +476,35 @@ fn collect_tree(
         }
     }
     Ok(())
+}
+
+/// The stable campaign API record: one versioned document joining the
+/// status summary, journal shape, and run/property counts for a served
+/// campaign. This is the machine-readable surface CI gates on; its format
+/// string is the compatibility contract.
+fn api_campaign(campaigns: &[ServedCampaign], name: &str) -> (u16, &'static str, Vec<u8>) {
+    let Some(campaign) = campaigns.iter().find(|campaign| campaign.name == name) else {
+        return not_found();
+    };
+    match crate::status::campaign_status(&campaign.root) {
+        Ok(status) => {
+            let record = serde_json::json!({
+                "format": "theseus-campaign-api-v1",
+                "name": campaign.name,
+                "kind": campaign.kind,
+                "status": status.status,
+                "driver": status.driver,
+                "guidance": status.guidance,
+                "budget": status.budget,
+                "run_count": status.run_count,
+                "failed_runs": status.failed_runs,
+                "failed_properties": status.failed_properties,
+                "journal": status.journal,
+            });
+            json_response(&record)
+        }
+        Err(_) => (500, "text/plain; charset=utf-8", b"status failed".to_vec()),
+    }
 }
 
 /// The comparison route: the committed guidance-comparison artifact over
@@ -999,6 +1032,12 @@ const ROUTES: &[RouteManifestEntry] = &[
         path: "/history/choices",
         content_type: "application/json",
         description: "consumed choice values with per-campaign outcomes",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/api/campaign/<name>",
+        content_type: "application/json",
+        description: "the stable campaign API record: status, policy, runs, and journal shape",
     },
     RouteManifestEntry {
         method: "GET",
@@ -1540,6 +1579,24 @@ mod tests {
             "GET /campaign/query/moment/7000@input-hash?next&previous HTTP/1.1\r\nHost: x\r\n\r\n",
         );
         assert_eq!(status, 400);
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /api/campaign/campaign HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert!(body.contains("theseus-campaign-api-v1"), "{body}");
+        assert!(body.contains("\"name\": \"campaign\""), "{body}");
+        assert!(body.contains("\"kind\": \"campaign\""), "{body}");
+        assert!(body.contains("\"run_count\": 1"), "{body}");
+        assert!(body.contains("\"status\": \"failed\""), "{body}");
+
+        let (status, ..) = exchange(
+            &address,
+            "GET /api/campaign/nope HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 404);
 
         let (status, content_type, body) = exchange(
             &address,
