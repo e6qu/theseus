@@ -922,18 +922,21 @@ reproducible investigation.
   with per-budget rows - the saturation boundary is a first-class
   comparison axis.
 
+- The budget-sweep recording: the sweep's per-budget rows are recorded —
+  budget 3 saturates one axis per workload, budget 6 covers the full
+  corpus, and the seeded arms kept corpus order at both budgets (the
+  partial-coverage seed remains the reordering case).
+
 ## Immediate next work
 
-### 1. The budget-sweep recording
+### 1. The second workload in tutorial 36
 
-The sweep runs in CI with budgets 3 and 6 across both workloads. The
-next work reads and records it:
+The CI experiment now runs two workloads; tutorial 36 explores only the
+first. The next work documents both:
 
-- The design note's recordings list extends with the per-budget rows:
-  which budgets saturate per workload, and where the seeded arms'
-  fresh-first ordering appears, citing the cross-workload summary.
-
-Sub-1x clock-rate windows
+- Tutorial 36's exploration step names the second workload file
+  (`second.yaml`) as an alternative input, so readers can reproduce the
+  cross-workload comparison the harness records.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
