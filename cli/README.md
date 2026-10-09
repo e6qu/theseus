@@ -266,9 +266,12 @@ array of `name` -> `directory` pairs whose directories resolve from the
 registry file's directory, with duplicate names, missing directories, and
 directories retaining no versioned result refused by name. `GET /routes` answers a versioned `theseus-serve-routes-v1` manifest -
 every route with its method, path shape, content type, and description -
-so scripts render the API from one source. The index page
-labels every served bundle with its kind - campaign, exploration, or
-topology. The dialect is plain HTTP/1.1: GET-only (other methods answer
+so scripts render the API from one source. The stable campaign API is
+`GET /api/campaign/<name>`: one versioned `theseus-campaign-api-v1`
+record joining the status summary, policy, run counts, and journal
+shape - the surface CI gates on, pinned by its format string. The index
+page labels every served bundle with its kind - campaign, exploration,
+or topology. The dialect is plain HTTP/1.1: GET-only (other methods answer
 405), `Range: bytes=N-` on journals and logs answered 206 with the
 suffix or 416 past the end, `Connection: close` on every response - so
 any HTTP client works without a special library. A moment route also collects:
