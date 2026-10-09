@@ -322,6 +322,10 @@ fn route(campaigns: &[ServedCampaign], path: &str) -> (u16, &'static str, Vec<u8
         let name = rest.split('?').next().unwrap_or_default();
         return api_campaign(campaigns, name);
     }
+    if trimmed.split('?').next() == Some("api/weighting-summary") {
+        let query = path.split_once('?').map(|(_, query)| query).unwrap_or("");
+        return api_weighting_summary(campaigns, query);
+    }
     if trimmed.split('?').next() == Some("compare") {
         let query = trimmed
             .split_once('?')
@@ -476,6 +480,58 @@ fn collect_tree(
         }
     }
     Ok(())
+}
+
+/// The weighting-summary route: the harness's per-workload per-budget
+/// yields aggregated across every served campaign that retains a
+/// weighting-signal campaign result, as one versioned record.
+fn api_weighting_summary(
+    campaigns: &[ServedCampaign],
+    query: &str,
+) -> (u16, &'static str, Vec<u8>) {
+    let _ = query;
+    let mut rows = Vec::new();
+    for campaign in campaigns {
+        if campaign.kind != "campaign" {
+            continue;
+        }
+        let Ok(result) = std::fs::read(campaign.root.join("campaign-result.json")) else {
+            continue;
+        };
+        let Ok(result) = serde_json::from_slice::<serde_json::Value>(&result) else {
+            continue;
+        };
+        let runs = result["runs"].as_array().cloned().unwrap_or_default();
+        let total = runs.len();
+        let failed = runs.iter().filter(|run| run["status"] == "failed").count();
+        let witnesses: usize = runs
+            .iter()
+            .map(|run| {
+                run["property_witnesses"]
+                    .as_array()
+                    .map(|w| w.len())
+                    .unwrap_or(0)
+            })
+            .sum();
+        let per_run = if total > 0 {
+            witnesses as f64 / total as f64
+        } else {
+            0.0
+        };
+        rows.push(serde_json::json!({
+            "workload": campaign.name,
+            "arm": result["guidance"].as_str().unwrap_or("unknown"),
+            "runs": total,
+            "failed_runs": failed,
+            "property_witnesses": witnesses,
+            "witnesses_per_run": per_run,
+        }));
+    }
+    let record = serde_json::json!({
+        "format": "theseus-weighting-summary-api-v1",
+        "rows": rows,
+    });
+    json_response(&record)
 }
 
 /// The stable campaign API record: one versioned document joining the
@@ -1089,6 +1145,12 @@ const ROUTES: &[RouteManifestEntry] = &[
     },
     RouteManifestEntry {
         method: "GET",
+        path: "/api/weighting-summary",
+        content_type: "application/json",
+        description: "per-workload yields across every served campaign",
+    },
+    RouteManifestEntry {
+        method: "GET",
         path: "/compare?campaigns=a,b",
         content_type: "application/json",
         description: "the guidance comparison artifact over named campaigns",
@@ -1646,6 +1708,16 @@ mod tests {
             "GET /api/campaign/nope HTTP/1.1\r\nHost: x\r\n\r\n",
         );
         assert_eq!(status, 404);
+
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /api/weighting-summary HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "application/json");
+        assert!(body.contains("theseus-weighting-summary-api-v1"), "{body}");
+        assert!(body.contains("\"workload\": \"campaign\""), "{body}");
+        assert!(body.contains("\"arm\": \"unified\""), "{body}");
 
         let (status, content_type, body) = exchange(
             &address,
