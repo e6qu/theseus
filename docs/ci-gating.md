@@ -110,6 +110,47 @@ jobs:
 
 The asserted `format` string is the compatibility contract: a gate
 written against `theseus-campaign-api-v1` keeps working as the surface
-evolves behind it. `--seed-choices` continues from the prior campaign's
-consumed identities when the gate runs the exploration itself (see the
-weighted-signals harness for the full seeded/unseeded pattern).
+evolves behind it.
+
+## 5. The seeded continuation arm
+
+A scheduled gate can also run the next exploration itself, continuing
+from the prior run's consumed identities via `--seed-choices` — each
+scheduled run explores fresh territory rather than repeating the corpus:
+
+```yaml
+name: theseus-campaign-continuation
+on:
+  schedule:
+    - cron: "30 * * * *"
+
+jobs:
+  continuation:
+    runs-on: [self-hosted, theseus-kvm]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the seeded continuation
+        working-directory: docs/tutorials/30-multiservice-lost-update
+        env:
+          THESEUS_IMAGE: ghcr.io/e6qu/theseus:SHA12CHARACTERS-amd64
+        run: |
+          docker run --rm --privileged --platform linux/amd64             -v "$PWD":/tutorial -w /tutorial "$THESEUS_IMAGE" sh -ec '
+              theseus compose explore --max-runs 32                 --seed-choices campaign                 --expect-counterexample lost_update_is_unreachable                 --output continuation compose.yaml
+            '
+
+      - name: Publish the continuation evidence
+        if: always()
+        working-directory: docs/tutorials/30-multiservice-lost-update
+        run: |
+          docker run --rm --platform linux/amd64             -v "$PWD":/tutorial -w /tutorial "$THESEUS_IMAGE" sh -ec '
+              theseus report --format github continuation >> "$GITHUB_STEP_SUMMARY"
+            '
+```
+
+The seeded continuation prefers candidates the prior campaign never
+used, so repeated scheduled runs walk fresh territory instead of
+re-deriving the same failing combination.
+
+## 6. What each piece gives you (gates)

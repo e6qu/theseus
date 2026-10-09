@@ -957,16 +957,20 @@ reproducible investigation.
   string and status - completing Priority 6's CI-integration item
   without KVM or Docker on the gating runner.
 
+- The gate's seeded continuation arm: ci-gating documents the scheduled
+  continuation job — `--seed-choices campaign` explores fresh territory
+  each run, with the summary published to the step summary.
+
 ## Immediate next work
 
-### 1. The gate workflow's seeded rerun arm
+### 1. The parity row's seeded-ordering citation
 
-The gate asserts a completed campaign; a scheduled gate can also run the
-next exploration itself. The next work extends it:
+The seeded continuation is documented in ci-gating; the parity row's
+seeded-ordering cell should cite it. The next work ties the surfaces:
 
-- The gate workflow's schedule variant seeds from the prior campaign's
-  consumed identities (`--seed-choices nightly`), so each scheduled run
-  explores fresh territory rather than repeating the corpus.
+- The parity row's seeded-ordering cell references the ci-gating gate
+  workflow and tutorial 36's continuation step, so the documented
+  surfaces are discoverable from the matrix.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
