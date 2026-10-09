@@ -482,6 +482,50 @@ fn collect_tree(
 /// status summary, journal shape, and run/property counts for a served
 /// campaign. This is the machine-readable surface CI gates on; its format
 /// string is the compatibility contract.
+/// Per-identity outcome counts from one bundle's runs: each consumed
+/// choice identity with its run and failed-run counts, sorted by identity.
+fn choice_outcomes(root: &Path) -> Vec<serde_json::Value> {
+    let mut outcome_runs: std::collections::BTreeMap<String, (u64, u64)> =
+        std::collections::BTreeMap::new();
+    let Ok(result) = std::fs::read(root.join("campaign-result.json")) else {
+        return Vec::new();
+    };
+    let Ok(result) = serde_json::from_slice::<serde_json::Value>(&result) else {
+        return Vec::new();
+    };
+    for run in result["runs"]
+        .as_array()
+        .map(|runs| runs.as_slice())
+        .unwrap_or(&[])
+    {
+        let failed = run["status"] == "failed";
+        for value in run["choice_feedback"]["values"]
+            .as_array()
+            .map(|values| values.as_slice())
+            .unwrap_or(&[])
+        {
+            let Some(value) = value.as_str() else {
+                continue;
+            };
+            let entry = outcome_runs.entry(value.to_owned()).or_insert((0, 0));
+            entry.0 += 1;
+            if failed {
+                entry.1 += 1;
+            }
+        }
+    }
+    outcome_runs
+        .into_iter()
+        .map(|(choice, (runs, failed_runs))| {
+            serde_json::json!({
+                "choice": choice,
+                "runs": runs,
+                "failed_runs": failed_runs,
+            })
+        })
+        .collect()
+}
+
 fn api_campaign(campaigns: &[ServedCampaign], name: &str) -> (u16, &'static str, Vec<u8>) {
     let Some(campaign) = campaigns.iter().find(|campaign| campaign.name == name) else {
         return not_found();
@@ -500,6 +544,10 @@ fn api_campaign(campaigns: &[ServedCampaign], name: &str) -> (u16, &'static str,
                 "failed_runs": status.failed_runs,
                 "failed_properties": status.failed_properties,
                 "journal": status.journal,
+                // Per-identity outcome counts from the run records: which
+                // consumed values correlated with failed runs in this
+                // campaign. Absent when the runs carry no choice feedback.
+                "choice_outcomes": choice_outcomes(&campaign.root),
             });
             json_response(&record)
         }
@@ -1229,7 +1277,7 @@ mod tests {
             r#"{"format":"theseus-compose-plan-v1","campaign":{"driver":"api","operations":[{"name":"calculate"}],"max_runs":8}}"#,
         )
         .unwrap();
-        let result = r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"chooser","guidance":"GUIDANCE","generated_candidates":CANDIDATES,"structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"status":"failed","structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"timeline":[{"id":"op-000-calculate","operation":"calculate[mode-1]","service":"chooser","round":7,"markers":["42"],"new_markers":["42"],"serial_delta":{"chooser":{"bytes":16,"sha256":"delta-hash","excerpt":"calculate ready\n","omitted_bytes":0}},"state_sha256":"state-hash","moment":"7000@input-hash","events":{"chooser":["{\"event\":\"request\",\"seq\":1}"]}},{"id":"op-001-calculate","operation":"calculate[mode-1]","service":"chooser","round":9,"markers":["42","a1"],"new_markers":["a1"],"serial_delta":{"chooser":{"bytes":11,"sha256":"tail-hash","excerpt":"calculate done\n","omitted_bytes":0}},"state_sha256":"tail-state","moment":"9000@input-hash"}]}],"properties":[{"name":"consistent_read","kind":"always","status":"passed","detail":"2 of 2 retained timelines contained pass"}]}"#;
+        let result = r#"{"format":"theseus-compose-campaign-result-v1","status":"failed","driver":"chooser","guidance":"GUIDANCE","generated_candidates":CANDIDATES,"structured_choice_decisions":1,"runs":[{"index":0,"operations":["calculate[mode-1]"],"status":"failed","choice_feedback":{"values":["chooser:mode:2:1"],"novel_contexts":1},"structured_choices":{"chooser":[{"ordinal":0,"name":"mode","upper_exclusive":2,"selected":1}]},"timeline":[{"id":"op-000-calculate","operation":"calculate[mode-1]","service":"chooser","round":7,"markers":["42"],"new_markers":["42"],"serial_delta":{"chooser":{"bytes":16,"sha256":"delta-hash","excerpt":"calculate ready\n","omitted_bytes":0}},"state_sha256":"state-hash","moment":"7000@input-hash","events":{"chooser":["{\"event\":\"request\",\"seq\":1}"]}},{"id":"op-001-calculate","operation":"calculate[mode-1]","service":"chooser","round":9,"markers":["42","a1"],"new_markers":["a1"],"serial_delta":{"chooser":{"bytes":11,"sha256":"tail-hash","excerpt":"calculate done\n","omitted_bytes":0}},"state_sha256":"tail-state","moment":"9000@input-hash"}]}],"properties":[{"name":"consistent_read","kind":"always","status":"passed","detail":"2 of 2 retained timelines contained pass"}]}"#;
         let result = result
             .replace("GUIDANCE", guidance)
             .replace("CANDIDATES", &candidates.to_string());
@@ -1591,6 +1639,7 @@ mod tests {
         assert!(body.contains("\"kind\": \"campaign\""), "{body}");
         assert!(body.contains("\"run_count\": 1"), "{body}");
         assert!(body.contains("\"status\": \"failed\""), "{body}");
+        assert!(body.contains("\"choice\": \"chooser:mode:2:1\""), "{body}");
 
         let (status, ..) = exchange(
             &address,
