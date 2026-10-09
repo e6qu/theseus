@@ -202,12 +202,14 @@ jobs:
           docker save theseus-structured-choice-ci -o service/work/service.tar
           PATH="../../../cli/target/debug:$PATH" \
             sh ../../../scripts/compare_weighting_signals.sh \
-            6 experiment corrupt_result_is_unreachable \
+            3,6 experiment corrupt_result_is_unreachable \
             compose.yaml second.yaml
           python3 ../../../scripts/assert_tabulation.py \
-            experiment/compose/tabulation.md 6
-          test -f experiment/compose/choices.json
-          test -f experiment/compose/signals.md
+            experiment/compose/budget6/tabulation.md 6
+          test -f experiment/compose/budget3/unseeded/campaign-result.json
+          test -f experiment/compose/budget6/choices.json
+          test -f experiment/compose/budget6/signals.md
+          test -f experiment/second/budget6/tabulation.md
 
           # The sub-budget pair: at budget 3 over a six-combination corpus
           # the seeded policy's preference for unexplored values changes

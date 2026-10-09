@@ -916,17 +916,22 @@ reproducible investigation.
   `service/second.c` (depth/strategy choices, its own corrupt condition)
   as the cross-workload arm the weighting experiment consumes.
 
+- The budget sweep: the weighting harness accepts a comma-separated
+  budget list, running the workload set per budget (nested
+  `budget<N>/` directories) and extending the cross-workload summary
+  with per-budget rows - the saturation boundary is a first-class
+  comparison axis.
+
 ## Immediate next work
 
-### 1. The weighting comparison's budget runner
+### 1. The budget-sweep recording
 
-Two workloads at fixed budget 6 is the start; the harness should sweep
-budgets. The next work adds the sweep:
+The sweep runs in CI with budgets 3 and 6 across both workloads. The
+next work reads and records it:
 
-- `compare_weighting_signals.sh` gains an optional budget list,
-  running the full workload set per budget and extending the summary
-  with per-budget rows, so the saturation boundary (budget 6 vs 3)
-  becomes a first-class comparison axis.
+- The design note's recordings list extends with the per-budget rows:
+  which budgets saturate per workload, and where the seeded arms'
+  fresh-first ordering appears, citing the cross-workload summary.
 
 Sub-1x clock-rate windows
 
