@@ -532,6 +532,12 @@ Recordings so far (per-run choice sequences in the artifact's
   first run is a fresh candidate (mode=1/retry=0), reproducing on the
   second workload (depth=2/strategy=0 first): the seed reorders the
   first decision exactly when the prior campaign left values unexplored.
+- **Budget sweep (3, 6 across both workloads)** - the budget-3 cells
+  saturate one axis per workload (mode=0 x retry 0/1/2; depth 0/0, 0/1,
+  1/0), budget 6 covers the full corpus, and the seeded arms retained
+  corpus-order sequences at both budgets in this recording; the
+  fresh-first reordering remains the partial-coverage recording
+  (#382's artifact), whose seed left a fresh identity unexplored.
 
 **Decision point.** The seed remains opt-in through `--seed-choices`.
 Making partial-coverage seeding the default for unified guidance is a
