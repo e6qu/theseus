@@ -81,3 +81,35 @@ jobs:
   same published runtime, without re-running the exploration.
 - `--max-runs` and `--guidance` pin the budget and search policy so CI
   results stay comparable across runs.
+
+## 4. Gate on the campaign API record
+
+If the campaign already ran (locally, on a schedule, or on another
+runner), `theseus serve` exposes a stable API record a lightweight CI job
+can gate on — no KVM, no Docker, no Theseus checkout:
+
+```yaml
+name: theseus-campaign-gate
+on:
+  schedule:
+    - cron: "0 * * * *"
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert the campaign API record
+        run: |
+          theseus serve --index registry.json --address 127.0.0.1:8098 &
+          sleep 2
+          record=$(curl -sf http://127.0.0.1:8098/api/campaign/nightly)
+          echo "$record"
+          echo "$record" | grep -q '"format": "theseus-campaign-api-v1"'
+          echo "$record" | grep -q '"status": "passed"'
+```
+
+The asserted `format` string is the compatibility contract: a gate
+written against `theseus-campaign-api-v1` keeps working as the surface
+evolves behind it. `--seed-choices` continues from the prior campaign's
+consumed identities when the gate runs the exploration itself (see the
+weighted-signals harness for the full seeded/unseeded pattern).

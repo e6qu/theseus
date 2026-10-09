@@ -952,17 +952,21 @@ reproducible investigation.
   traces, so a gate verifies the audited record matches the journal
   without fetching the full run.
 
+- The gate example workflow: ci-gating documents the API-record gate -
+  serve the registry, fetch `/api/campaign/<name>`, assert the format
+  string and status - completing Priority 6's CI-integration item
+  without KVM or Docker on the gating runner.
+
 ## Immediate next work
 
-### 1. The gate example workflow
+### 1. The gate workflow's seeded rerun arm
 
-The campaign API record is the gate surface; CI integration needs a
-concrete example. The next work lands it:
+The gate asserts a completed campaign; a scheduled gate can also run the
+next exploration itself. The next work extends it:
 
-- A documented reusable workflow (or documented job snippet in
-  ci-gating) that fetches `/api/campaign/<name>`, asserts the format
-  string and status, and fails the CI job on a failed campaign -
-  completing Priority 6's CI-integration item.
+- The gate workflow's schedule variant seeds from the prior campaign's
+  consumed identities (`--seed-choices nightly`), so each scheduled run
+  explores fresh territory rather than repeating the corpus.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
