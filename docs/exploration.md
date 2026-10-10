@@ -399,7 +399,11 @@ needle printed and every moment it influenced. `--where
 with those relations: a match must both relate to a needle occurrence and
 carry a guest event on its own boundary whose fields all match, so value
 questions ("which completions followed the stale read and emitted the
-retry request from worker a?") are one query. `theseus query --moment
+retry request from worker a?") are one query. The fields shape composes
+with the event relations as well — `--where FIELDS
+--preceded-by-event FIELDS` binds two predicates: the relation predicate
+locates the anchor events, and the where predicate filters the matches'
+own boundaries. `theseus query --moment
 <address> --collect` turns one moment into a self-contained,
 digest-auditable artifact bundle — the boundary's full record, its
 neighbors, the decision-trace slice that produced it, and verified

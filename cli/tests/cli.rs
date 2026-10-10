@@ -1380,15 +1380,114 @@ fn query_composes_where_predicates_with_needle_relations() {
         vec!["query", ".", "--where", "not-json", "--preceded-by", "x"],
         vec!["query", ".", "--where", "{}", "--preceded-by", "x"],
         vec!["query", ".", "--where", predicate],
+        vec!["query", ".", "--where", predicate, "--list"],
+    ] {
+        let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args(&args)
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(!bad.success(), "{args:?}");
+    }
+}
+
+#[test]
+fn query_composes_where_predicates_with_event_relations() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("campaign-result.json"),
+        r#"{"runs":[{"index":0,"timeline":[
+            {"id":"op-000-write","operation":"write","service":"api","moment":"7000@input-hash",
+             "events":{"api":["{\"event\":\"request\",\"seq\":1}"]}},
+            {"id":"op-001-read","operation":"read","service":"counter","moment":"9000@read-hash",
+             "events":{"counter":["{\"event\":\"stale\",\"seq\":2}"]}},
+            {"id":"op-002-verify","operation":"verify","service":"api","moment":"12000@verify-hash",
+             "events":{"api":["{\"event\":\"verify\",\"seq\":3}"]}},
+            {"id":"op-003-final","operation":"final","service":"api","moment":"15000@final-hash",
+             "events":{"api":["{\"event\":\"request\",\"retry\":true}"]}}
+        ]}]}"#,
+    )
+    .unwrap();
+
+    let where_json = r#"{"fields":{"/event":"request","/retry":true}}"#;
+    let relation_json = r#"{"fields":{"/event":"stale"}}"#;
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--where",
+            where_json,
+            "--preceded-by-event",
+            relation_json,
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let answer: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(answer["format"], "theseus-query-event-predicate-v1");
+    assert_eq!(answer["occurrences"][0]["boundary"], "op-001-read");
+    assert_eq!(answer["matches"][0]["boundary"], "op-003-final");
+
+    // A simpler where for the followed-by direction: the write boundary
+    // precedes the stale marker and carries a plain request event.
+    let plain_where = r#"{"fields":{"/event":"request"}}"#;
+    let text = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--where",
+            plain_where,
+            "--followed-by-event",
+            relation_json,
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(text.status.success(), "{text:?}");
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("relation: followed_by"), "{text}");
+    assert!(text.contains("where_predicate: {"), "{text}");
+    assert!(
+        text.contains("match	7000@input-hash	0	op-000-write	api"),
+        "{text}"
+    );
+
+    // Malformed predicates are usage errors; the plain event relation
+    // without a where still works.
+    let plain = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--preceded-by-event",
+            relation_json,
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(plain.status.success(), "{plain:?}");
+
+    for args in [
         vec![
             "query",
             ".",
             "--where",
-            predicate,
+            "{}",
             "--preceded-by-event",
-            predicate,
+            relation_json,
         ],
-        vec!["query", ".", "--where", predicate, "--list"],
+        vec![
+            "query",
+            ".",
+            "--where",
+            where_json,
+            "--preceded-by-event",
+            "{}",
+        ],
     ] {
         let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
             .args(&args)

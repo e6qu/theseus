@@ -36,6 +36,8 @@ theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
 theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
 theseus query campaign-dir --where FIELDS --preceded-by NEEDLE [--service NAME] [--format json]
 theseus query campaign-dir --where FIELDS --followed-by NEEDLE [--service NAME] [--format json]
+theseus query campaign-dir --where FIELDS --preceded-by-event FIELDS [--service NAME] [--format json]
+theseus query campaign-dir --where FIELDS --followed-by-event FIELDS [--service NAME] [--format json]
 theseus query campaign-dir --preceded-by-event FIELDS [--service NAME] [--format json]
 theseus query campaign-dir --followed-by-event FIELDS [--service NAME] [--format json]
 theseus serve [campaign-dir... | --index registry.json] [--address ADDR]
@@ -1085,7 +1087,16 @@ theseus query campaign --where \
 The answer (`theseus-query-predicate-v1`) keeps the needle occurrences and
 lists only the moments passing both filters, so a value question - which
 completions followed the stale read and emitted the retry request from
-worker a - is one query.
+worker a - is one query. `--where` composes with the event relations too:
+`--where FIELDS --preceded-by-event FIELDS` locates the anchor events with
+the relation predicate and keeps the moments whose own boundary carries a
+where-matching event - two predicates binding on distinct boundaries
+(`theseus-query-event-predicate-v1`):
+
+```sh
+theseus query campaign --where '{"fields":{"/event":"request","/retry":true}}' \
+  --preceded-by-event '{"fields":{"/event":"stale"}}' --format json
+```
 
 `history --choices` builds the cross-run choice catalog: every consumed
 structured-choice value per identity, with per-campaign run and failed-run
