@@ -1318,6 +1318,88 @@ fn query_matches_structured_events_with_temporal_relations() {
 }
 
 #[test]
+fn query_composes_where_predicates_with_needle_relations() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("campaign-result.json"),
+        r#"{"runs":[{"index":0,"timeline":[
+            {"id":"op-000-write","operation":"write","service":"api","moment":"7000@input-hash",
+             "events":{"api":["{\"event\":\"request\",\"seq\":1,\"worker\":\"a\"}"]}},
+            {"id":"op-001-read","operation":"read","service":"counter","moment":"9000@read-hash",
+             "serial_delta":{"counter":{"bytes":11,"sha256":"h1","excerpt":"THES:M:stale\n","omitted_bytes":0}}},
+            {"id":"op-002-verify","operation":"verify","service":"api","moment":"12000@verify-hash",
+             "events":{"api":["{\"event\":\"verify\",\"seq\":2}"]}},
+            {"id":"op-003-final","operation":"final","service":"api","moment":"15000@final-hash",
+             "events":{"api":["{\"event\":\"request\",\"seq\":3,\"worker\":\"a\"}"]}}
+        ]}]}"#,
+    )
+    .unwrap();
+
+    let predicate = r#"{"fields":{"/event":"request","/worker":"a"}}"#;
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--where",
+            predicate,
+            "--preceded-by",
+            "stale",
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let answer: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(answer["format"], "theseus-query-predicate-v1");
+    assert_eq!(answer["needle"], "stale");
+    assert_eq!(answer["occurrences"][0]["boundary"], "op-001-read");
+    // The verify boundary follows the needle but carries a verify event;
+    // only the final boundary satisfies both filters.
+    assert_eq!(answer["matches"][0]["boundary"], "op-003-final");
+    assert_eq!(answer["matches"][0]["moment"], "15000@final-hash");
+
+    let text = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["query", ".", "--where", predicate, "--followed-by", "stale"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(text.status.success(), "{text:?}");
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("relation: followed_by"), "{text}");
+    assert!(text.contains("predicate: {\"fields\""), "{text}");
+    assert!(
+        text.contains("match\t7000@input-hash\t0\top-000-write\tapi"),
+        "{text}"
+    );
+
+    // A malformed predicate, a where without a needle relation, and a
+    // where beside the event relations are usage errors.
+    for args in [
+        vec!["query", ".", "--where", "not-json", "--preceded-by", "x"],
+        vec!["query", ".", "--where", "{}", "--preceded-by", "x"],
+        vec!["query", ".", "--where", predicate],
+        vec![
+            "query",
+            ".",
+            "--where",
+            predicate,
+            "--preceded-by-event",
+            predicate,
+        ],
+        vec!["query", ".", "--where", predicate, "--list"],
+    ] {
+        let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args(&args)
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(!bad.success(), "{args:?}");
+    }
+}
+
+#[test]
 fn history_catalogs_choice_values_with_failure_shares() {
     let directory = tempfile::tempdir().unwrap();
     for (name, statuses) in [

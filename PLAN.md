@@ -221,6 +221,12 @@ Theseus currently has:
   0.1-0.9 slowdowns in milli-unit vclock arithmetic, and `compose
   explore --shard INDEX/TOTAL` locks one worker's deterministic,
   disjoint partition of the candidate corpus into the replay plan.
+- Composed value predicates across moments: `theseus query --where
+  FIELDS --preceded-by|--followed-by NEEDLE` keeps the needle
+  occurrences and lists only moments whose own boundary carried a guest
+  event matching every RFC 6901 field, answering two-clause value
+  questions as one query (`theseus-query-predicate-v1`).
+
 - The evidence-surface cycle: the reading-path cross-reference, the
   landed-slice audit, the budget sweep, tutorial 10's journal step,
   tutorial 36's choice-catalog step, tutorial 28's tmpfs step,
@@ -451,15 +457,18 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ### 1. Rich value predicates across moments
 
-The moment-addressing and retrieval layer is complete; the open work is
-value predicates evaluated across moments, on top of that retrieval:
+The composed query landed: `theseus query --where FIELDS` filters the
+needle relations through per-boundary event-field predicates. The next
+value-predicate work composes the fields shape with the event-field
+relations themselves - `--where` beside `--preceded-by-event` - so a
+match must carry one event satisfying the relation and another (or the
+same) satisfying the where-predicate:
 
-- `theseus query --where FIELDS --preceded-by NEEDLE` composes the
-  property layer's RFC 6901 `fields` shape with the existing needle
-  relations, so a moment qualifies only when its neighboring events
-  carry the expected values.
-- Tests: query fixtures over retained campaigns asserting the composed
-  predicate answers against the documented fixtures.
+- `theseus query --where FIELDS --preceded-by-event RELATION-FIELDS`
+  answers two-predicate questions ("moments that emitted the retry
+  request after the stale marker printed").
+- Tests: composed fixtures asserting both predicates bind on distinct
+  boundaries.
 
 ## Priority 6: product surface and workload compatibility
 
