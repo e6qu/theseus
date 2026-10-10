@@ -233,6 +233,13 @@ Theseus currently has:
   comparisons, exists), `arrays` quantifiers, nested `all`/`any`/`none` -
   evaluated in the property layer's order; capture keys and unknown keys
   are refused by name.
+- Occurrence addressing and the both-sides relation: `--anchor N`
+  drives a relation from one specific occurrence (1-based, per run,
+  echoed in the answer), and `--surrounded-by NEEDLE` /
+  `--surrounded-by-event FIELDS` answer the moments an anchor brackets
+  with occurrences strictly on both sides - on the CLI, the where
+  forms, and the serve routes (`?anchor=N`,
+  `query/surrounded-by/...`).
 - Windowed temporal relations: `--within N` bounds the needle
   relations, the event relations, and the composed where forms to N
   boundaries between the anchor and the match (1 = the immediately
@@ -480,18 +487,19 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ### 1. Rich value predicates across moments
 
-The grammar is one shape everywhere and the relations are windowable:
-`--within N` bounds every relation to N boundaries between the anchor
-and the match, on the CLI, the where forms, and the serve routes. The
-remaining temporal-operator work in the parity row is occurrence
-addressing and transitive between-moments relations - "the second time
-the marker printed", "the moment both markers had printed":
+The value-predicate and temporal-operator layers are complete: one
+grammar everywhere, windowed relations, occurrence addressing, and the
+both-sides relation, on the CLI and the serve routes. The next work in
+Priority 5's investigation loop moves from querying to authoring: the
+query surfaces answer questions, but nothing turns a good query into a
+retained artifact others can consume:
 
-- Extend the needle and event relations with an occurrence ordinal
-  (the Nth anchor) and a both-sides relation (anchors on both sides of
-  the match), keeping the strictness contract.
-- Land them on `theseus query` and the serve grammar routes together,
-  with fixtures on both surfaces.
+- `theseus query --export DIR` writes the answer (relation, predicate,
+  occurrences, matches) beside its source digests as a versioned,
+  verifiable bundle, and `serve` answers it at
+  `GET /<name>/query/export/...`.
+- Tests: export over the existing fixtures, verify-through-reload, and
+  the serve route asserted in the smoke script.
 
 ## Priority 6: product surface and workload compatibility
 

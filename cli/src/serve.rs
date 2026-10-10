@@ -941,9 +941,9 @@ fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec
             .map(|needle| (crate::query::TemporalRelation::FollowedBy, needle))
     };
     if let Some((relation, needle)) = relation {
-        let within = match parse_within(query) {
-            Ok(within) => within,
-            Err(message) => {
+        let (within, anchor) = match (parse_within(query), parse_anchor(query)) {
+            (Ok(within), Ok(anchor)) => (within, anchor),
+            (Err(message), _) | (_, Err(message)) => {
                 return (
                     400,
                     "text/plain; charset=utf-8",
@@ -956,6 +956,7 @@ fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec
             relation,
             &percent_decode(needle),
             service.as_deref(),
+            anchor,
             within,
         ));
     }
@@ -984,9 +985,9 @@ fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec
                     b"event predicate is not JSON".to_vec(),
                 );
             };
-            let within = match parse_within(query) {
-                Ok(within) => within,
-                Err(message) => {
+            let (within, anchor) = match (parse_within(query), parse_anchor(query)) {
+                (Ok(within), Ok(anchor)) => (within, anchor),
+                (Err(message), _) | (_, Err(message)) => {
                     return (
                         400,
                         "text/plain; charset=utf-8",
@@ -999,6 +1000,58 @@ fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec
                 relation,
                 &predicate,
                 service.as_deref(),
+                anchor,
+                within,
+            ));
+        }
+    }
+    // The both-sides relation: anchors on both boundaries of the match.
+    if let Some(needle) = route.strip_prefix("surrounded-by/") {
+        let (within, anchor) = match (parse_within(query), parse_anchor(query)) {
+            (Ok(within), Ok(anchor)) => (within, anchor),
+            (Err(message), _) | (_, Err(message)) => {
+                return (
+                    400,
+                    "text/plain; charset=utf-8",
+                    message.as_bytes().to_vec(),
+                )
+            }
+        };
+        return answer(crate::query::temporal_query(
+            &result,
+            crate::query::TemporalRelation::SurroundedBy,
+            &percent_decode(needle),
+            service.as_deref(),
+            anchor,
+            within,
+        ));
+    }
+    for prefix in ["surrounded-by-event/"] {
+        if let Some(encoded) = route.strip_prefix(prefix) {
+            let Ok(predicate) = serde_json::from_str::<serde_json::Value>(&percent_decode(encoded))
+            else {
+                return (
+                    400,
+                    "text/plain; charset=utf-8",
+                    b"event predicate is not JSON".to_vec(),
+                );
+            };
+            let (within, anchor) = match (parse_within(query), parse_anchor(query)) {
+                (Ok(within), Ok(anchor)) => (within, anchor),
+                (Err(message), _) | (_, Err(message)) => {
+                    return (
+                        400,
+                        "text/plain; charset=utf-8",
+                        message.as_bytes().to_vec(),
+                    )
+                }
+            };
+            return answer(crate::query::event_temporal_query(
+                &result,
+                crate::query::TemporalRelation::SurroundedBy,
+                &predicate,
+                service.as_deref(),
+                anchor,
                 within,
             ));
         }
@@ -1015,6 +1068,22 @@ fn parse_within(query: &str) -> Result<Option<usize>, &'static str> {
             .parse()
             .map(Some)
             .map_err(|_| "within must be a boundary count of at least 1"),
+    }
+}
+
+/// Parse the optional `?anchor=N` occurrence ordinal; a malformed ordinal
+/// is an error rather than being ignored.
+fn parse_anchor(query: &str) -> Result<Option<usize>, &'static str> {
+    match query_parameter(query, "anchor") {
+        None => Ok(None),
+        Some(value) => value
+            .parse::<usize>()
+            .map(Some)
+            .map_err(|_| "anchor must be a 1-based occurrence ordinal")
+            .and_then(|anchor| match anchor {
+                Some(0) => Err("anchor must be a 1-based occurrence ordinal"),
+                other => Ok(other),
+            }),
     }
 }
 
@@ -1035,9 +1104,9 @@ fn route_where(
             b"where predicate is not JSON".to_vec(),
         );
     };
-    let within = match parse_within(query) {
-        Ok(within) => within,
-        Err(message) => {
+    let (within, anchor) = match (parse_within(query), parse_anchor(query)) {
+        (Ok(within), Ok(anchor)) => (within, anchor),
+        (Err(message), _) | (_, Err(message)) => {
             return (
                 400,
                 "text/plain; charset=utf-8",
@@ -1052,6 +1121,7 @@ fn route_where(
             needle,
             &where_predicate,
             service,
+            anchor,
             within,
         ));
     }
@@ -1062,6 +1132,7 @@ fn route_where(
             needle,
             &where_predicate,
             service,
+            anchor,
             within,
         ));
     }
@@ -1091,6 +1162,7 @@ fn route_where(
                 &relation_predicate,
                 &where_predicate,
                 service,
+                anchor,
                 within,
             ));
         }
@@ -1306,6 +1378,18 @@ const ROUTES: &[RouteManifestEntry] = &[
         path: "/<name>/query/where/<predicate>?preceded-by-event|followed-by-event=<predicate>",
         content_type: "application/json",
         description: "moments binding the where predicate and the event relation",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/surrounded-by/<needle>",
+        content_type: "application/json",
+        description: "moments the needle brackets on both sides",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/surrounded-by-event/<predicate>",
+        content_type: "application/json",
+        description: "moments the matching events bracket on both sides",
     },
     RouteManifestEntry {
         method: "GET",
@@ -1749,6 +1833,27 @@ mod tests {
             "GET /campaign/query/preceded-by/ready?within=abc HTTP/1.1\r\nHost: x\r\n\r\n",
         );
         assert_eq!(status, 400, "{body}");
+
+        // The surrounded-by route and the anchor ordinal: the ready
+        // needle prints on op-000 only, so nothing is bracketed; anchor 1
+        // equals the default answer.
+        let (status, _, body) = exchange(
+            &address,
+            "GET /campaign/query/surrounded-by/ready HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("surrounded_by"), "{body}");
+        let (status, _, body) = exchange(
+            &address,
+            "GET /campaign/query/preceded-by/ready?anchor=1 HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("\"anchor\": 1"), "{body}");
+        let (status, _, _) = exchange(
+            &address,
+            "GET /campaign/query/preceded-by/ready?anchor=0 HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 400);
 
         let predicate = percent_encode(r#"{"fields":{"/event":"request"}}"#);
         // The request event prints on op-000; preceded-by-event lists the

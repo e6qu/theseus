@@ -1318,6 +1318,92 @@ fn query_matches_structured_events_with_temporal_relations() {
 }
 
 #[test]
+fn query_surrounds_moments_and_addresses_occurrences() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("campaign-result.json"),
+        r#"{"runs":[{"index":0,"timeline":[
+            {"id":"op-000-write","operation":"write","service":"api","moment":"7000@input-hash","serial_delta":{"api":{"bytes":16,"sha256":"h0","excerpt":"begin marker\n","omitted_bytes":0}}},
+            {"id":"op-001-read","operation":"read","service":"counter","moment":"9000@read-hash","serial_delta":{"counter":{"bytes":11,"sha256":"h1","excerpt":"middle marker\n","omitted_bytes":0}}},
+            {"id":"op-002-verify","operation":"verify","service":"api","moment":"12000@verify-hash","serial_delta":{"api":{"bytes":8,"sha256":"h2","excerpt":"end marker\n","omitted_bytes":0}}}
+        ]}]}"#,
+    )
+    .unwrap();
+
+    // Surrounded-by: the middle boundary has a marker on both sides; the
+    // ends do not.
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--surrounded-by",
+            "marker",
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let answer: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(answer["relation"], "surrounded_by");
+    assert_eq!(answer["matches"][0]["boundary"], "op-001-read");
+    assert_eq!(answer["matches"].as_array().unwrap().len(), 1);
+
+    // The occurrence ordinal picks the second marker, which precedes
+    // only the verify boundary.
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--preceded-by",
+            "marker",
+            "--anchor",
+            "2",
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let answer: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(answer["anchor"], 2);
+    assert_eq!(answer["matches"][0]["boundary"], "op-002-verify");
+
+    // The surrounded-by relation composes with where predicates.
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--where",
+            r#"{"fields":{"/event":"request"}}"#,
+            "--surrounded-by",
+            "marker",
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+
+    // Ordinal 0 and anchor beside non-relation forms are usage errors.
+    for args in [
+        vec!["query", ".", "--preceded-by", "marker", "--anchor", "0"],
+        vec!["query", ".", "--list", "--anchor", "1"],
+        vec!["query", ".", "--surrounded-by", ""],
+    ] {
+        let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args(&args)
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(!bad.success(), "{args:?}");
+    }
+}
+
+#[test]
 fn query_windows_bound_the_temporal_relations() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(
