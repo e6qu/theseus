@@ -50,10 +50,10 @@ const USAGE: &str = "Usage:
   theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
   theseus query campaign-dir --where FIELDS --preceded-by NEEDLE [--service NAME] [--format json]
   theseus query campaign-dir --where FIELDS --followed-by NEEDLE [--service NAME] [--format json]
-  theseus query campaign-dir --where FIELDS --preceded-by-event FIELDS [--service NAME] [--format json]
-  theseus query campaign-dir --where FIELDS --followed-by-event FIELDS [--service NAME] [--format json]
-  theseus query campaign-dir --preceded-by-event FIELDS [--service NAME] [--format json]
-  theseus query campaign-dir --followed-by-event FIELDS [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --preceded-by-event FIELDS [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --followed-by-event FIELDS [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --preceded-by-event FIELDS [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --followed-by-event FIELDS [--within N] [--service NAME] [--format json]
   theseus serve [campaign-dir... | --index registry.json] [--address ADDR]
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
   theseus evaluate lock [theseus-evaluation.toml]
@@ -330,6 +330,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let mut needle: Option<(TemporalRelation, String)> = None;
             let mut event_predicate: Option<(TemporalRelation, serde_json::Value)> = None;
             let mut where_predicate: Option<serde_json::Value> = None;
+            let mut within: Option<usize> = None;
             let mut events = false;
             let mut collect = false;
             let mut output: Option<String> = None;
@@ -398,6 +399,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         event_predicate = Some((relation, predicate));
                         index += 2;
                     }
+                    "--within" => {
+                        if within.is_some() {
+                            return Err(USAGE.to_owned());
+                        }
+                        let value = rest.get(index + 1).ok_or(USAGE.to_owned())?;
+                        let parsed: usize = value
+                            .parse()
+                            .map_err(|error| format!("invalid --within: {error}"))?;
+                        within = Some(parsed);
+                        index += 2;
+                    }
                     "--where" => {
                         if where_predicate.is_some() {
                             return Err(USAGE.to_owned());
@@ -440,6 +452,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         &predicate,
                         where_fields,
                         service_filter.as_deref(),
+                        within,
                     )
                     .map_err(|error| error.to_string())?;
                     if format == "json" {
@@ -470,9 +483,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     }
                     return Ok(());
                 }
-                let query =
-                    event_temporal_query(&result, relation, &predicate, service_filter.as_deref())
-                        .map_err(|error| error.to_string())?;
+                let query = event_temporal_query(
+                    &result,
+                    relation,
+                    &predicate,
+                    service_filter.as_deref(),
+                    within,
+                )
+                .map_err(|error| error.to_string())?;
                 if format == "json" {
                     println!(
                         "{}",
@@ -507,6 +525,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         &needle,
                         predicate,
                         service_filter.as_deref(),
+                        within,
                     )
                     .map_err(|error| error.to_string())?;
                     if format == "json" {
@@ -537,8 +556,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     }
                     return Ok(());
                 }
-                let query = temporal_query(&result, relation, &needle, service_filter.as_deref())
-                    .map_err(|error| error.to_string())?;
+                let query = temporal_query(
+                    &result,
+                    relation,
+                    &needle,
+                    service_filter.as_deref(),
+                    within,
+                )
+                .map_err(|error| error.to_string())?;
                 if format == "json" {
                     println!(
                         "{}",
@@ -567,6 +592,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     || collect
                     || needle.is_some()
                     || where_predicate.is_some()
+                    || within.is_some()
                     || moment.is_some()
                     || navigation.is_some()
                 {
@@ -590,7 +616,12 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 return Ok(());
             }
             if collect {
-                if list || needle.is_some() || where_predicate.is_some() || navigation.is_some() {
+                if list
+                    || needle.is_some()
+                    || where_predicate.is_some()
+                    || within.is_some()
+                    || navigation.is_some()
+                {
                     return Err(USAGE.to_owned());
                 }
                 let Some(moment) = moment else {
@@ -617,7 +648,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 return Ok(());
             }
             if list {
-                if where_predicate.is_some() {
+                if where_predicate.is_some() || within.is_some() {
                     return Err(USAGE.to_owned());
                 }
                 let summaries = list_moments(&result, service_filter.as_deref())
@@ -638,7 +669,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 }
                 return Ok(());
             }
-            if where_predicate.is_some() {
+            if where_predicate.is_some() || within.is_some() {
                 return Err(USAGE.to_owned());
             }
             let Some(moment) = moment else {

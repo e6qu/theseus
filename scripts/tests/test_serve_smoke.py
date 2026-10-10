@@ -221,6 +221,9 @@ def main() -> None:
         expect(port, "/unified/query/moments", 200, "7000@input-hash")
         expect(port, "/unified/query/events", 200, '\\"event\\":\\"request\\"')
         expect(port, "/unified/query/preceded-by/write", 200)
+        expect(port, "/unified/query/preceded-by/write?within=1", 200,
+               '"within": 1')
+        expect(port, "/unified/query/preceded-by/write?within=abc", 400)
 
         # The grammar routes answer the shared predicate shapes: a
         # fields predicate on the event relation, and a where predicate
