@@ -660,6 +660,184 @@ pub fn event_temporal_query(
     })
 }
 
+/// The answer to one composed query: every moment whose own boundary
+/// carried a guest event matching the predicate, related to a needle
+/// occurrence strictly before (or after) it in the same run. This composes
+/// the property layer's RFC 6901 `fields` shape with the needle relations,
+/// so a moment qualifies only when its neighboring events carry the
+/// expected values.
+#[derive(Debug, Serialize)]
+pub struct PredicateQuery {
+    pub format: &'static str,
+    pub relation: &'static str,
+    pub needle: String,
+    /// The event predicate the matches' boundaries must satisfy.
+    pub predicate: serde_json::Value,
+    /// The service scope filter, echoed back when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    /// Every needle occurrence, verbatim.
+    pub occurrences: Vec<NeedleOccurrence>,
+    /// Every moment satisfying both the relation and the predicate.
+    pub matches: Vec<MomentSummary>,
+}
+
+/// True when the boundary's indexed guest events contain at least one line
+/// matching every pointer in the predicate.
+fn boundary_carries_matching_event(
+    boundary: &serde_json::Value,
+    fields: &serde_json::Map<String, serde_json::Value>,
+    service: Option<&str>,
+) -> bool {
+    let Some(events) = boundary["events"].as_object() else {
+        return false;
+    };
+    events.iter().any(|(event_service, lines)| {
+        if let Some(filter) = service {
+            if event_service != filter {
+                return false;
+            }
+        }
+        lines
+            .as_array()
+            .map(|lines| lines.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .any(|line| {
+                line.as_str()
+                    .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .is_some_and(|event| event_matches_predicate(&event, fields))
+            })
+    })
+}
+
+/// Evaluate one composed needle-plus-event-predicate query. The needle
+/// locates occurrences in serial deltas exactly like the plain temporal
+/// query; a match additionally requires its own boundary to carry a guest
+/// event matching every field pointer.
+pub fn predicate_query(
+    result: &serde_json::Value,
+    relation: TemporalRelation,
+    needle: &str,
+    predicate: &serde_json::Value,
+    service: Option<&str>,
+) -> Result<PredicateQuery, MomentError> {
+    if needle.is_empty() {
+        return Err(MomentError::NotFound(
+            "temporal query requires a non-empty needle".to_owned(),
+        ));
+    }
+    let Some(fields) = predicate
+        .get("fields")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Err(MomentError::NotFound(
+            "event predicate must be a JSON object with a fields map of pointer-to-value entries"
+                .to_owned(),
+        ));
+    };
+    if fields.is_empty() {
+        return Err(MomentError::NotFound(
+            "event predicate needs at least one pointer field".to_owned(),
+        ));
+    }
+    for pointer in fields.keys() {
+        if !pointer.starts_with('/') {
+            return Err(MomentError::NotFound(format!(
+                "event predicate fields must use RFC 6901 pointers starting with '/': {pointer:?}"
+            )));
+        }
+    }
+    let escaped_needle = String::from_utf8(
+        needle
+            .bytes()
+            .flat_map(std::ascii::escape_default)
+            .collect::<Vec<u8>>(),
+    )
+    .expect("escaped needles are ASCII");
+    let runs = result["runs"]
+        .as_array()
+        .ok_or_else(|| MomentError::NotFound("result has no runs".to_owned()))?;
+    let mut occurrences = Vec::new();
+    let mut matches = Vec::new();
+    for (run_index, run) in runs.iter().enumerate() {
+        let timeline = run["timeline"]
+            .as_array()
+            .ok_or_else(|| MomentError::NotFound(format!("run {run_index} has no timeline")))?;
+        let mut occurrence_indices = Vec::new();
+        for (boundary_index, boundary) in timeline.iter().enumerate() {
+            let mut delta_matches = false;
+            if let Some(deltas) = boundary["serial_delta"].as_object() {
+                for (delta_service, delta) in deltas {
+                    if let Some(filter) = service {
+                        if delta_service != filter {
+                            continue;
+                        }
+                    }
+                    let excerpt = delta["excerpt"].as_str().unwrap_or_default();
+                    if excerpt.contains(escaped_needle.as_str()) {
+                        delta_matches = true;
+                        occurrences.push(NeedleOccurrence {
+                            run: run_index,
+                            boundary: boundary["id"].as_str().unwrap_or_default().to_owned(),
+                            operation: boundary["operation"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned(),
+                            service: delta_service.clone(),
+                            moment: boundary["moment"].as_str().unwrap_or_default().to_owned(),
+                        });
+                    }
+                }
+            }
+            if delta_matches {
+                occurrence_indices.push(boundary_index);
+            }
+        }
+        for (boundary_index, boundary) in timeline.iter().enumerate() {
+            let related = match relation {
+                TemporalRelation::PrecededBy => occurrence_indices
+                    .iter()
+                    .any(|occurrence| *occurrence < boundary_index),
+                TemporalRelation::FollowedBy => occurrence_indices
+                    .iter()
+                    .any(|occurrence| *occurrence > boundary_index),
+            };
+            if !related {
+                continue;
+            }
+            let boundary_service = boundary["service"].as_str().unwrap_or_default().to_owned();
+            if let Some(filter) = service {
+                if boundary_service != filter {
+                    continue;
+                }
+            }
+            if !boundary_carries_matching_event(boundary, fields, service) {
+                continue;
+            }
+            matches.push(MomentSummary {
+                run: run_index,
+                boundary: boundary["id"].as_str().unwrap_or_default().to_owned(),
+                service: boundary_service,
+                operation: boundary["operation"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                moment: boundary["moment"].as_str().unwrap_or_default().to_owned(),
+            });
+        }
+    }
+    Ok(PredicateQuery {
+        format: "theseus-query-predicate-v1",
+        relation: relation.as_str(),
+        needle: escaped_needle,
+        predicate: predicate.clone(),
+        service: service.map(str::to_owned),
+        occurrences,
+        matches,
+    })
+}
+
 /// Load a bundle's campaign result and evaluate the temporal query.
 pub fn query_temporal(
     bundle: impl AsRef<Path>,
@@ -1346,6 +1524,146 @@ mod tests {
         let error = temporal_query(&temporal_fixture(), TemporalRelation::PrecededBy, "", None)
             .unwrap_err();
         assert!(error.to_string().contains("non-empty needle"), "{error}");
+    }
+
+    /// A bundle whose write boundary carries a request event, the verify
+    /// boundary carries a verify event, and the counter's stale marker
+    /// anchors the needle relation in the middle of the timeline.
+    fn predicate_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "runs": [{"index": 0, "timeline": [
+                {"id": "op-000-write", "operation": "write", "service": "api",
+                 "moment": "7000@input-hash",
+                 "events": {"api": [
+                     "{\"event\":\"request\",\"seq\":1,\"worker\":\"a\"}",
+                     "{\"event\":\"request\",\"seq\":2,\"worker\":\"b\"}"
+                 ]}},
+                {"id": "op-001-read", "operation": "read", "service": "counter",
+                 "moment": "9000@read-hash",
+                 "serial_delta": {"counter": {"bytes": 11, "sha256": "h1",
+                                              "excerpt": "THES:M:stale\\n",
+                                              "omitted_bytes": 0}}},
+                {"id": "op-002-verify", "operation": "verify", "service": "api",
+                 "moment": "12000@verify-hash",
+                 "events": {"api": ["{\"event\":\"verify\",\"seq\":3}"]}},
+                {"id": "op-003-final", "operation": "final", "service": "api",
+                 "moment": "15000@final-hash",
+                 "events": {"api": ["{\"event\":\"request\",\"seq\":4,\"worker\":\"a\"}"]}}
+            ]}]
+        })
+    }
+
+    #[test]
+    fn predicate_queries_compose_needle_relations_with_event_fields() {
+        let result = predicate_fixture();
+        let query = predicate_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            "stale",
+            &serde_json::json!({"fields": {"/event": "request", "/worker": "a"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(query.format, "theseus-query-predicate-v1");
+        assert_eq!(query.relation, "preceded_by");
+        assert_eq!(query.needle, "stale");
+        assert_eq!(query.occurrences.len(), 1);
+        assert_eq!(query.occurrences[0].boundary, "op-001-read");
+        // Strictly after the stale marker: the verify boundary carries a
+        // verify event (not a request), the final boundary carries a
+        // request from worker a - only the final boundary survives both
+        // filters. The write boundary is before the needle, and the
+        // needle's own boundary is related to nothing.
+        assert_eq!(query.matches.len(), 1);
+        assert_eq!(query.matches[0].boundary, "op-003-final");
+        assert_eq!(query.matches[0].service, "api");
+
+        let followed = predicate_query(
+            &result,
+            TemporalRelation::FollowedBy,
+            "stale",
+            &serde_json::json!({"fields": {"/event": "request", "/worker": "a"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(followed.matches.len(), 1);
+        assert_eq!(followed.matches[0].boundary, "op-000-write");
+
+        // A predicate no boundary satisfies empties the matches but keeps
+        // the occurrences.
+        let empty = predicate_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            "stale",
+            &serde_json::json!({"fields": {"/event": "absent"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(empty.occurrences.len(), 1);
+        assert!(empty.matches.is_empty());
+    }
+
+    #[test]
+    fn predicate_queries_scope_service_on_needle_and_events() {
+        let result = predicate_fixture();
+        // The counter filter keeps the stale needle (the delta is on
+        // counter) but every later boundary is api, so the boundary
+        // service filter empties the matches.
+        let scoped = predicate_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            "stale",
+            &serde_json::json!({"fields": {"/event": "request"}}),
+            Some("counter"),
+        )
+        .unwrap();
+        assert_eq!(scoped.occurrences.len(), 1);
+        assert!(scoped.matches.is_empty());
+
+        // The api filter keeps the needle occurrences (the delta is on
+        // counter, so it disappears) - assert the negative instead: an api
+        // needle prints nowhere in this fixture.
+        let api_needle = predicate_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            "stale",
+            &serde_json::json!({"fields": {"/event": "request"}}),
+            Some("api"),
+        )
+        .unwrap();
+        assert!(api_needle.occurrences.is_empty());
+        assert!(api_needle.matches.is_empty());
+    }
+
+    #[test]
+    fn predicate_queries_reject_malformed_input() {
+        let result = predicate_fixture();
+        assert!(predicate_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            "",
+            &serde_json::json!({"fields": {"/a": 1}}),
+            None
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("non-empty needle"));
+        for predicate in [
+            serde_json::json!("request"),
+            serde_json::json!({}),
+            serde_json::json!({"fields": {}}),
+            serde_json::json!({"fields": {"event": "request"}}),
+        ] {
+            let error = predicate_query(
+                &result,
+                TemporalRelation::PrecededBy,
+                "stale",
+                &predicate,
+                None,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("event predicate"), "{error}");
+        }
     }
 
     /// A one-run bundle whose second boundary carries a verified cumulative

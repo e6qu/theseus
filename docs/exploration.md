@@ -394,7 +394,12 @@ serial evidence in the same timeline contains the needle, `--followed-by
 NEEDLE` every moment whose following evidence does — the same strict
 before/after semantics the property guards use, evaluated over the same
 bounded excerpts the moment log shows, with the answer recording where the
-needle printed and every moment it influenced. `theseus query --moment
+needle printed and every moment it influenced. `--where
+'{"fields":{...}}'` composes the property layer's RFC 6901 fields shape
+with those relations: a match must both relate to a needle occurrence and
+carry a guest event on its own boundary whose fields all match, so value
+questions ("which completions followed the stale read and emitted the
+retry request from worker a?") are one query. `theseus query --moment
 <address> --collect` turns one moment into a self-contained,
 digest-auditable artifact bundle — the boundary's full record, its
 neighbors, the decision-trace slice that produced it, and verified

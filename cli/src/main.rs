@@ -13,7 +13,7 @@ use theseus_cli::{
     explore_compose_with, find_moment, go_coverage, java_coverage, list_events, list_moments,
     load_compose_plan, load_plan, minimize_compose_campaign,
     minimize_compose_campaign_expect_counterexample, minimize_exploration_path, next_moment_in,
-    previous_moment_in, property_history, query_campaigns, replay, replay_compose,
+    predicate_query, previous_moment_in, property_history, query_campaigns, replay, replay_compose,
     replay_exploration, replay_exploration_path, replay_to, report, report_file, report_text,
     serve_campaigns, serve_registry, snapshot_exploration_path, temporal_query, test, test_compose,
     verify_native_evidence, verify_topology_bundle, write_evaluation_lock, CampaignGuidance,
@@ -48,6 +48,8 @@ const USAGE: &str = "Usage:
   theseus query campaign-dir --events [--service NAME] [--format json]
   theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
   theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --preceded-by NEEDLE [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --followed-by NEEDLE [--service NAME] [--format json]
   theseus query campaign-dir --preceded-by-event FIELDS [--service NAME] [--format json]
   theseus query campaign-dir --followed-by-event FIELDS [--service NAME] [--format json]
   theseus serve [campaign-dir... | --index registry.json] [--address ADDR]
@@ -325,6 +327,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let mut service_filter: Option<String> = None;
             let mut needle: Option<(TemporalRelation, String)> = None;
             let mut event_predicate: Option<(TemporalRelation, serde_json::Value)> = None;
+            let mut where_predicate: Option<serde_json::Value> = None;
             let mut events = false;
             let mut collect = false;
             let mut output: Option<String> = None;
@@ -396,6 +399,22 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         event_predicate = Some((relation, predicate));
                         index += 2;
                     }
+                    "--where" => {
+                        if where_predicate.is_some() {
+                            return Err(USAGE.to_owned());
+                        }
+                        let value = rest.get(index + 1).ok_or(USAGE.to_owned())?;
+                        let predicate: serde_json::Value = serde_json::from_str(value)
+                            .map_err(|error| format!("invalid event predicate: {error}"))?;
+                        if !predicate
+                            .as_object()
+                            .is_some_and(|object| object.contains_key("fields"))
+                        {
+                            return Err(USAGE.to_owned());
+                        }
+                        where_predicate = Some(predicate);
+                        index += 2;
+                    }
                     "--service" => {
                         service_filter = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
                         index += 2;
@@ -415,7 +434,13 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 }
             }
             if let Some((relation, predicate)) = event_predicate {
-                if list || collect || moment.is_some() || navigation.is_some() || needle.is_some() {
+                if list
+                    || collect
+                    || moment.is_some()
+                    || navigation.is_some()
+                    || needle.is_some()
+                    || where_predicate.is_some()
+                {
                     return Err(USAGE.to_owned());
                 }
                 let query =
@@ -448,6 +473,43 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 if list || collect || moment.is_some() || navigation.is_some() {
                     return Err(USAGE.to_owned());
                 }
+                if let Some(predicate) = where_predicate.as_ref() {
+                    let query = predicate_query(
+                        &result,
+                        relation,
+                        &needle,
+                        predicate,
+                        service_filter.as_deref(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                    if format == "json" {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&query)
+                                .map_err(|error| error.to_string())?
+                        );
+                        return Ok(());
+                    }
+                    println!("relation: {}", query.relation);
+                    println!("needle: {}", query.needle);
+                    println!("predicate: {}", query.predicate);
+                    for occurrence in &query.occurrences {
+                        println!(
+                            "occurrence\t{}\t{}\t{}\t{}",
+                            occurrence.moment,
+                            occurrence.run,
+                            occurrence.boundary,
+                            occurrence.service
+                        );
+                    }
+                    for summary in &query.matches {
+                        println!(
+                            "match\t{}\t{}\t{}\t{}",
+                            summary.moment, summary.run, summary.boundary, summary.service
+                        );
+                    }
+                    return Ok(());
+                }
                 let query = temporal_query(&result, relation, &needle, service_filter.as_deref())
                     .map_err(|error| error.to_string())?;
                 if format == "json" {
@@ -474,7 +536,13 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 return Ok(());
             }
             if events {
-                if list || collect || needle.is_some() || moment.is_some() || navigation.is_some() {
+                if list
+                    || collect
+                    || needle.is_some()
+                    || where_predicate.is_some()
+                    || moment.is_some()
+                    || navigation.is_some()
+                {
                     return Err(USAGE.to_owned());
                 }
                 let records = list_events(&result, service_filter.as_deref())
@@ -495,7 +563,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 return Ok(());
             }
             if collect {
-                if list || needle.is_some() || navigation.is_some() {
+                if list || needle.is_some() || where_predicate.is_some() || navigation.is_some() {
                     return Err(USAGE.to_owned());
                 }
                 let Some(moment) = moment else {
@@ -522,6 +590,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 return Ok(());
             }
             if list {
+                if where_predicate.is_some() {
+                    return Err(USAGE.to_owned());
+                }
                 let summaries = list_moments(&result, service_filter.as_deref())
                     .map_err(|error| error.to_string())?;
                 if format == "json" {
@@ -539,6 +610,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     }
                 }
                 return Ok(());
+            }
+            if where_predicate.is_some() {
+                return Err(USAGE.to_owned());
             }
             let Some(moment) = moment else {
                 return Err(USAGE.to_owned());
