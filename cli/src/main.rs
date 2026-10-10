@@ -46,16 +46,16 @@ const USAGE: &str = "Usage:
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
   theseus query campaign-dir --list [--service NAME] [--format json]
   theseus query campaign-dir --events [--service NAME] [--format json]
-  theseus query campaign-dir --preceded-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
-  theseus query campaign-dir --followed-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
-  theseus query campaign-dir --surrounded-by NEEDLE [--within N] [--service NAME] [--format json]
-  theseus query campaign-dir --where FIELDS --preceded-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
-  theseus query campaign-dir --where FIELDS --followed-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
-  theseus query campaign-dir --preceded-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
-  theseus query campaign-dir --followed-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
-  theseus query campaign-dir --surrounded-by-event FIELDS [--within N] [--service NAME] [--format json]
-  theseus query campaign-dir --where FIELDS --preceded-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
-  theseus query campaign-dir --where FIELDS --followed-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --preceded-by NEEDLE [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+  theseus query campaign-dir --followed-by NEEDLE [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+  theseus query campaign-dir --surrounded-by NEEDLE [--within N] [--export DIR] [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --preceded-by NEEDLE [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --followed-by NEEDLE [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+  theseus query campaign-dir --preceded-by-event FIELDS [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+  theseus query campaign-dir --followed-by-event FIELDS [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+  theseus query campaign-dir --surrounded-by-event FIELDS [--within N] [--export DIR] [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --preceded-by-event FIELDS [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --followed-by-event FIELDS [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
   theseus serve [campaign-dir... | --index registry.json] [--address ADDR]
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
   theseus evaluate lock [theseus-evaluation.toml]
@@ -334,6 +334,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let mut where_predicate: Option<serde_json::Value> = None;
             let mut within: Option<usize> = None;
             let mut anchor: Option<usize> = None;
+            let mut export: Option<String> = None;
             let mut events = false;
             let mut collect = false;
             let mut output: Option<String> = None;
@@ -437,6 +438,13 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         within = Some(parsed);
                         index += 2;
                     }
+                    "--export" => {
+                        if export.is_some() {
+                            return Err(USAGE.to_owned());
+                        }
+                        export = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
+                        index += 2;
+                    }
                     "--anchor" => {
                         if anchor.is_some() {
                             return Err(USAGE.to_owned());
@@ -531,6 +539,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     within,
                 )
                 .map_err(|error| error.to_string())?;
+                if let Some(dir) = export.as_deref() {
+                    write_export(bundle, &query, dir)?;
+                    println!("exported: {dir}");
+                }
                 if format == "json" {
                     println!(
                         "{}",
@@ -569,6 +581,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         within,
                     )
                     .map_err(|error| error.to_string())?;
+                    if let Some(dir) = export.as_deref() {
+                        write_export(bundle, &query, dir)?;
+                        println!("exported: {dir}");
+                    }
                     if format == "json" {
                         println!(
                             "{}",
@@ -606,6 +622,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     within,
                 )
                 .map_err(|error| error.to_string())?;
+                if let Some(dir) = export.as_deref() {
+                    write_export(bundle, &query, dir)?;
+                    println!("exported: {dir}");
+                }
                 if format == "json" {
                     println!(
                         "{}",
@@ -636,6 +656,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     || where_predicate.is_some()
                     || within.is_some()
                     || anchor.is_some()
+                    || export.is_some()
                     || moment.is_some()
                     || navigation.is_some()
                 {
@@ -664,6 +685,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     || where_predicate.is_some()
                     || within.is_some()
                     || anchor.is_some()
+                    || export.is_some()
                     || navigation.is_some()
                 {
                     return Err(USAGE.to_owned());
@@ -692,7 +714,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 return Ok(());
             }
             if list {
-                if where_predicate.is_some() || within.is_some() || anchor.is_some() {
+                if where_predicate.is_some()
+                    || within.is_some()
+                    || anchor.is_some()
+                    || export.is_some()
+                {
                     return Err(USAGE.to_owned());
                 }
                 let summaries = list_moments(&result, service_filter.as_deref())
@@ -713,7 +739,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 }
                 return Ok(());
             }
-            if where_predicate.is_some() || within.is_some() || anchor.is_some() {
+            if where_predicate.is_some() || within.is_some() || anchor.is_some() || export.is_some()
+            {
                 return Err(USAGE.to_owned());
             }
             let Some(moment) = moment else {
@@ -1611,6 +1638,19 @@ mod tests {
         assert!(seed_path("42,,9").is_err());
         assert!(seed_path("").is_err());
     }
+}
+
+/// Export one query answer beside its digest manifest, reporting the
+/// written bundle in the command's error channel on failure.
+fn write_export(bundle: &str, query: &impl serde::Serialize, dir: &str) -> Result<(), String> {
+    let answer = serde_json::to_value(query).map_err(|error| error.to_string())?;
+    theseus_cli::export_query(
+        std::path::Path::new(bundle),
+        &answer,
+        std::path::Path::new(dir),
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 fn main() -> ExitCode {

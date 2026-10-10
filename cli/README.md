@@ -32,16 +32,16 @@ theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previo
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
 theseus query campaign-dir --list [--service NAME] [--format json]
 theseus query campaign-dir --events [--service NAME] [--format json]
-theseus query campaign-dir --preceded-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
-theseus query campaign-dir --followed-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
-theseus query campaign-dir --surrounded-by NEEDLE [--within N] [--service NAME] [--format json]
-theseus query campaign-dir --where FIELDS --preceded-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
-theseus query campaign-dir --where FIELDS --followed-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
-theseus query campaign-dir --preceded-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
-theseus query campaign-dir --followed-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
-theseus query campaign-dir --surrounded-by-event FIELDS [--within N] [--service NAME] [--format json]
-theseus query campaign-dir --where FIELDS --preceded-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
-theseus query campaign-dir --where FIELDS --followed-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
+theseus query campaign-dir --preceded-by NEEDLE [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+theseus query campaign-dir --followed-by NEEDLE [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+theseus query campaign-dir --surrounded-by NEEDLE [--within N] [--export DIR] [--service NAME] [--format json]
+theseus query campaign-dir --where FIELDS --preceded-by NEEDLE [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+theseus query campaign-dir --where FIELDS --followed-by NEEDLE [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+theseus query campaign-dir --preceded-by-event FIELDS [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+theseus query campaign-dir --followed-by-event FIELDS [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+theseus query campaign-dir --surrounded-by-event FIELDS [--within N] [--export DIR] [--service NAME] [--format json]
+theseus query campaign-dir --where FIELDS --preceded-by-event FIELDS [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
+theseus query campaign-dir --where FIELDS --followed-by-event FIELDS [--anchor N] [--within N] [--export DIR] [--service NAME] [--format json]
 theseus serve [campaign-dir... | --index registry.json] [--address ADDR]
 theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
 theseus evaluate lock [theseus-evaluation.toml]
@@ -1090,7 +1090,12 @@ the relation, so "the second time the marker printed" is
 `--preceded-by marker --anchor 2`. `--surrounded-by NEEDLE` (and
 `--surrounded-by-event FIELDS`) answers the both-sides relation - the
 moments an anchor brackets, with occurrences strictly on both sides -
-listed in the serve routes as `query/surrounded-by/...`.
+listed in the serve routes as `query/surrounded-by/...`. `--export DIR`
+retains the answer beside its digest manifest as a versioned bundle
+(`theseus-query-export-v1`: the answer document, the source result's
+SHA-256, and the answer's SHA-256), and any relation route answers the
+same bundle as one tar archive with `?export` - so an investigation
+step's answer is verifiable without the original campaign.
 
 An indexed event matches when every pointer resolves on its JSON object;
 occurrences carry the verbatim line, and the matches list the moments the

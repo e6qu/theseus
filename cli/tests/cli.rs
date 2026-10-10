@@ -1318,6 +1318,74 @@ fn query_matches_structured_events_with_temporal_relations() {
 }
 
 #[test]
+fn query_exports_answers_beside_their_digest_manifest() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("campaign-result.json"),
+        r#"{"runs":[{"index":0,"timeline":[
+            {"id":"op-000-write","operation":"write","service":"api","moment":"7000@input-hash","serial_delta":{"api":{"bytes":16,"sha256":"h0","excerpt":"write\n","omitted_bytes":0}}},
+            {"id":"op-001-read","operation":"read","service":"counter","moment":"9000@read-hash","serial_delta":{"counter":{"bytes":11,"sha256":"h1","excerpt":"THES:M:stale\n","omitted_bytes":0}}}
+        ]}]}"#,
+    )
+    .unwrap();
+    let output = directory.path().join("exported");
+
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--preceded-by",
+            "stale",
+            "--export",
+            output.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let text = String::from_utf8(json.stdout).unwrap();
+    assert!(text.contains("exported:"), "{text}");
+    let answer: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("query-answer.json")).unwrap()).unwrap();
+    assert_eq!(answer["format"], "theseus-query-temporal-v1");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["format"], "theseus-query-export-v1");
+    assert_eq!(manifest["answer_format"], "theseus-query-temporal-v1");
+    assert_eq!(manifest["answer"], "query-answer.json");
+
+    // The manifest digests verify both files.
+    use sha2::{Digest, Sha256};
+    let answer_bytes = fs::read(output.join("query-answer.json")).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&answer_bytes)),
+        manifest["answer_sha256"].as_str().unwrap()
+    );
+    let source = fs::read(directory.path().join("campaign-result.json")).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&source)),
+        manifest["source_sha256"].as_str().unwrap()
+    );
+
+    // A second export into the same directory refuses to overwrite.
+    let again = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--followed-by",
+            "stale",
+            "--export",
+            output.to_str().unwrap(),
+        ])
+        .current_dir(directory.path())
+        .status()
+        .unwrap();
+    assert!(!again.success());
+}
+
+#[test]
 fn query_surrounds_moments_and_addresses_occurrences() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(

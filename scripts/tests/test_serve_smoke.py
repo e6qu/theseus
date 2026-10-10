@@ -230,6 +230,31 @@ def main() -> None:
         expect(port, "/unified/query/surrounded-by/marker", 200,
                "surrounded_by")
 
+        # The export flag answers the tar bundle with the digest manifest.
+        status, content_type, archive = fetch(
+            port, "/unified/query/preceded-by/marker?export"
+        )
+        assert status == 200, status
+        assert content_type == "application/x-tar", content_type
+        with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
+            names = set(bundle.getnames())
+        assert names == {"query-answer.json", "manifest.json"}, names
+        manifest = json.loads(
+            tarfile.open(fileobj=io.BytesIO(archive))
+            .extractfile("manifest.json")
+            .read()
+        )
+        assert manifest["format"] == "theseus-query-export-v1", manifest
+        answer = tarfile.open(fileobj=io.BytesIO(archive)).extractfile(
+            "query-answer.json"
+        )
+        import hashlib
+
+        assert (
+            hashlib.sha256(answer.read()).hexdigest()
+            == manifest["answer_sha256"]
+        ), manifest
+
         # The grammar routes answer the shared predicate shapes: a
         # fields predicate on the event relation, and a where predicate
         # composed with a needle.

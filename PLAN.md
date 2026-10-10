@@ -233,6 +233,11 @@ Theseus currently has:
   comparisons, exists), `arrays` quantifiers, nested `all`/`any`/`none` -
   evaluated in the property layer's order; capture keys and unknown keys
   are refused by name.
+- Query export bundles: `theseus query --export DIR` writes the answer
+  document beside a digest manifest (`theseus-query-export-v1`: source
+  result SHA-256, answer SHA-256, answer format) without overwriting,
+  and any relation route answers the same bundle as a tar archive with
+  `?export`, asserted in the serve smoke script.
 - Occurrence addressing and the both-sides relation: `--anchor N`
   drives a relation from one specific occurrence (1-based, per run,
   echoed in the answer), and `--surrounded-by NEEDLE` /
@@ -487,19 +492,18 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ### 1. Rich value predicates across moments
 
-The value-predicate and temporal-operator layers are complete: one
-grammar everywhere, windowed relations, occurrence addressing, and the
-both-sides relation, on the CLI and the serve routes. The next work in
-Priority 5's investigation loop moves from querying to authoring: the
-query surfaces answer questions, but nothing turns a good query into a
-retained artifact others can consume:
+The investigation loop is closed end to end: the query surfaces answer
+value and temporal questions through one grammar, and `--export DIR` (or
+`?export`) retains any answer as a digest-verifiable bundle. The next
+work in Priority 5 returns to the roadmap's remaining gap - navigating
+to an arbitrary retained checkpoint and changing a controlled choice:
 
-- `theseus query --export DIR` writes the answer (relation, predicate,
-  occurrences, matches) beside its source digests as a versioned,
-  verifiable bundle, and `serve` answers it at
-  `GET /<name>/query/export/...`.
-- Tests: export over the existing fixtures, verify-through-reload, and
-  the serve route asserted in the smoke script.
+- `compose explore --fork-run N --at-moment <address> --set-choice
+  IDENTITY=VALUE` forks from the checkpoint nearest the named moment
+  with one choice replaced, extending the fault forks to choice forks.
+- Tests: fork fixtures asserting the forked run's consumed values,
+  replay verification of the forked plan, and the comparison diffing
+  the choice futures.
 
 ## Priority 6: product surface and workload compatibility
 

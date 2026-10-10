@@ -1656,6 +1656,78 @@ pub fn collect_moment_files(
     Ok((collected, files))
 }
 
+/// The manifest of one query exported as a self-contained bundle: the
+/// answer document and the digest tying it to the source result, so a
+/// consumer verifies the export without the original campaign.
+#[derive(Debug, Serialize, serde::Deserialize)]
+pub struct QueryExport {
+    pub format: String,
+    /// The SHA-256 of the source bundle's campaign result.
+    pub source_sha256: String,
+    /// The answer file's name inside the bundle.
+    pub answer: String,
+    /// The SHA-256 of the answer document.
+    pub answer_sha256: String,
+    /// The answer's own versioned format string.
+    pub answer_format: String,
+}
+
+/// Build one query export's file set in memory: the answer document and
+/// the digest manifest tying it to the source result.
+pub fn export_query_files(
+    source_result: &[u8],
+    answer: &serde_json::Value,
+) -> Result<Vec<(String, Vec<u8>)>, MomentError> {
+    use sha2::{Digest, Sha256};
+    let encode =
+        |value: &serde_json::Value| serde_json::to_vec_pretty(value).map_err(MomentError::Parse);
+    let answer_bytes = encode(answer)?;
+    let answer_sha256 = format!("{:x}", Sha256::digest(&answer_bytes));
+    let export = QueryExport {
+        format: "theseus-query-export-v1".to_owned(),
+        source_sha256: format!("{:x}", Sha256::digest(source_result)),
+        answer: "query-answer.json".to_owned(),
+        answer_sha256,
+        answer_format: answer["format"].as_str().unwrap_or_default().to_owned(),
+    };
+    Ok(vec![
+        ("query-answer.json".to_owned(), answer_bytes),
+        (
+            "manifest.json".to_owned(),
+            encode(&serde_json::to_value(&export).map_err(MomentError::Parse)?)?,
+        ),
+    ])
+}
+
+/// Write one query export bundle to disk: the answer document beside the
+/// digest manifest, refusing to overwrite an existing directory.
+pub fn export_query(
+    bundle: impl AsRef<Path>,
+    answer: &serde_json::Value,
+    output: impl AsRef<Path>,
+) -> Result<QueryExport, MomentError> {
+    let source_result = fs::read(bundle.as_ref().join("campaign-result.json"))?;
+    let files = export_query_files(&source_result, answer)?;
+    let output = output.as_ref();
+    if output.exists() {
+        return Err(MomentError::NotFound(format!(
+            "export output already exists: {}",
+            output.display()
+        )));
+    }
+    fs::create_dir_all(output).map_err(MomentError::Read)?;
+    for (relative, bytes) in &files {
+        let path = output.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(MomentError::Read)?;
+        }
+        fs::write(path, bytes).map_err(MomentError::Read)?;
+    }
+    // The manifest is the last file; parse it back out of the file set so
+    // the caller answers with exactly what was written.
+    serde_json::from_slice(&files[1].1).map_err(MomentError::Parse)
+}
+
 /// Reconstruct one service's complete serial transcript from a retained run
 /// directory, in the same rotation order the runner writes and reads it.
 pub(crate) fn run_serial_contents(run: &Path, service: &str) -> Vec<u8> {
@@ -2145,6 +2217,54 @@ mod tests {
             .unwrap_err();
             assert!(error.to_string().contains("window"), "{error}");
         }
+    }
+
+    #[test]
+    fn exports_tie_answers_to_their_source_digest() {
+        let result = temporal_fixture();
+        let query = temporal_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            "stale",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let answer = serde_json::to_value(&query).unwrap();
+
+        let encoded = serde_json::to_vec_pretty(&result).unwrap();
+        let files = export_query_files(&encoded, &answer).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].0, "query-answer.json");
+        assert_eq!(files[1].0, "manifest.json");
+        let manifest: QueryExport = serde_json::from_slice(&files[1].1).unwrap();
+        assert_eq!(manifest.format, "theseus-query-export-v1");
+        assert_eq!(manifest.answer, "query-answer.json");
+        assert_eq!(manifest.answer_format, "theseus-query-temporal-v1");
+
+        // The manifest digest verifies the answer bytes.
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&files[0].1)),
+            manifest.answer_sha256
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&encoded)),
+            manifest.source_sha256
+        );
+
+        // Writing refuses an existing directory and answers with the
+        // written manifest.
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("campaign-result.json"), &encoded).unwrap();
+        let out = directory.path().join("export");
+        let written = export_query(directory.path(), &answer, &out).unwrap();
+        assert_eq!(written.answer_sha256, manifest.answer_sha256);
+        assert!(out.join("query-answer.json").is_file());
+        assert!(out.join("manifest.json").is_file());
+        let again = export_query(directory.path(), &answer, &out);
+        assert!(again.is_err());
     }
 
     #[test]
