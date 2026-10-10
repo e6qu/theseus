@@ -17,7 +17,8 @@ use theseus_cli::{
     replay_exploration, replay_exploration_path, replay_to, report, report_file, report_text,
     serve_campaigns, serve_registry, snapshot_exploration_path, temporal_query, test, test_compose,
     verify_native_evidence, verify_topology_bundle, write_evaluation_lock, CampaignGuidance,
-    ReportFormat, TemporalRelation, CARGO_COVERAGE_USAGE, GO_COVERAGE_USAGE, JAVA_COVERAGE_USAGE,
+    CounterfactualSubstitution, ReportFormat, TemporalRelation, CARGO_COVERAGE_USAGE,
+    GO_COVERAGE_USAGE, JAVA_COVERAGE_USAGE,
 };
 
 const USAGE: &str = "Usage:
@@ -77,6 +78,7 @@ const USAGE: &str = "Usage:
   theseus compose explore --minimize campaign-dir [--output minimized-dir]
   theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
   theseus compose explore --fork-run N --replace-fault OLD=NEW campaign-dir [--output forked-dir] [--notify COMMAND]
+  theseus compose explore --fork-run N --set-choice OPERATION=INPUT campaign-dir [--output forked-dir] [--notify COMMAND]
   theseus compose replay replay-dir [--output replay-dir]
   theseus compose verify checkpoint-bundle-dir
 
@@ -1395,6 +1397,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         {
             let mut run: Option<usize> = None;
             let mut replacement: Option<String> = None;
+            let mut set_choice: Option<String> = None;
             let mut output: Option<String> = None;
             let mut notify: Option<String> = None;
             let mut bundles: Vec<String> = Vec::new();
@@ -1408,6 +1411,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     }
                     "--replace-fault" => {
                         replacement = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
+                        index += 2;
+                    }
+                    "--set-choice" => {
+                        set_choice = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
                         index += 2;
                     }
                     "--output" => {
@@ -1433,11 +1440,26 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
             let bundle = &bundles[0];
             let run = run.ok_or(USAGE.to_owned())?;
-            let (fault, replacement) =
-                parse_replace_fault(replacement.as_deref().ok_or(USAGE.to_owned())?)?;
+            let substitution = match (replacement.as_deref(), set_choice.as_deref()) {
+                (Some(replacement), None) => {
+                    let (fault, replacement) = parse_replace_fault(replacement)?;
+                    CounterfactualSubstitution::Fault {
+                        fault,
+                        replace: replacement,
+                    }
+                }
+                (None, Some(set_choice)) => {
+                    let (operation, input) = parse_set_choice(set_choice)?;
+                    CounterfactualSubstitution::Choice { operation, input }
+                }
+                (Some(_), Some(_)) => {
+                    return Err("choose either --replace-fault or --set-choice, not both".to_owned())
+                }
+                (None, None) => return Err(USAGE.to_owned()),
+            };
             let output = output.unwrap_or_else(|| format!("{bundle}-forked"));
             let result =
-                explore_compose_forked(bundle, run, fault, replacement, &output, notify.as_deref())
+                explore_compose_forked(bundle, run, substitution, &output, notify.as_deref())
                     .map_err(|error| error.to_string())?;
             println!("counterfactual fork retained: {}", result.display());
             Ok(())
@@ -1612,6 +1634,18 @@ fn parse_guidance(value: &str) -> Result<CampaignGuidance, String> {
         "unified" => Ok(CampaignGuidance::Unified),
         _ => Err(USAGE.to_owned()),
     }
+}
+
+/// Split a `--set-choice OPERATION=INPUT` argument into the operation name
+/// and the declared input case.
+fn parse_set_choice(value: &str) -> Result<(&str, &str), String> {
+    let (operation, input) = value
+        .split_once('=')
+        .ok_or_else(|| format!("--set-choice requires OPERATION=INPUT: {value:?}"))?;
+    if operation.is_empty() || input.is_empty() {
+        return Err(format!("--set-choice requires OPERATION=INPUT: {value:?}"));
+    }
+    Ok((operation, input))
 }
 
 /// Split a `--replace-fault OLD=NEW` argument into the recorded fault name

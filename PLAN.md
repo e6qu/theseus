@@ -233,6 +233,12 @@ Theseus currently has:
   comparisons, exists), `arrays` quantifiers, nested `all`/`any`/`none` -
   evaluated in the property layer's order; capture keys and unknown keys
   are refused by name.
+- Choice forks: `theseus compose explore --fork-run N --set-choice
+  OPERATION=INPUT` locks one operation's input-case substitution into
+  the forked replay plan, the runner swaps the schedule's input at the
+  named operation, and `compare --forked` carries the choice provenance
+  (set_operation/set_input) while diffing the re-run future's diverging
+  boundary identity with both sides' moment addresses.
 - Query export bundles: `theseus query --export DIR` writes the answer
   document beside a digest manifest (`theseus-query-export-v1`: source
   result SHA-256, answer SHA-256, answer format) without overwriting,
@@ -492,18 +498,19 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ### 1. Rich value predicates across moments
 
-The investigation loop is closed end to end: the query surfaces answer
-value and temporal questions through one grammar, and `--export DIR` (or
-`?export`) retains any answer as a digest-verifiable bundle. The next
-work in Priority 5 returns to the roadmap's remaining gap - navigating
-to an arbitrary retained checkpoint and changing a controlled choice:
+Choice forks landed: `--fork-run N --set-choice OPERATION=INPUT` re-runs
+one recorded operation under another declared input case from the shared
+deterministic prefix, and `compare --forked` diffs the re-run future
+like every fork. The remaining Priority 5 gap is moment-addressed
+forking - naming the checkpoint instead of the run:
 
 - `compose explore --fork-run N --at-moment <address> --set-choice
-  IDENTITY=VALUE` forks from the checkpoint nearest the named moment
-  with one choice replaced, extending the fault forks to choice forks.
-- Tests: fork fixtures asserting the forked run's consumed values,
-  replay verification of the forked plan, and the comparison diffing
-  the choice futures.
+  OPERATION=INPUT` slices the recorded run to the operations up to the
+  named moment's boundary and re-executes from the checkpoint nearest
+  it, so a fork starts where the question lives rather than at the
+  run's start.
+- Tests: fork fixtures asserting the sliced schedule, the divergence
+  report, and the refusal when the moment is outside the forked run.
 
 ## Priority 6: product surface and workload compatibility
 

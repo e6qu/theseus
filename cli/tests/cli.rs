@@ -1318,6 +1318,60 @@ fn query_matches_structured_events_with_temporal_relations() {
 }
 
 #[test]
+fn fork_cli_rejects_choice_forms_that_cannot_mean_anything() {
+    let directory = tempfile::tempdir().unwrap();
+    // No bundle needed: parse-level refusals fire first.
+    for args in [
+        vec![
+            "compose",
+            "explore",
+            "--fork-run",
+            "0",
+            "--set-choice",
+            "no-separator",
+            "bundle",
+        ],
+        vec![
+            "compose",
+            "explore",
+            "--fork-run",
+            "0",
+            "--set-choice",
+            "=mode-0",
+            "bundle",
+        ],
+        vec![
+            "compose",
+            "explore",
+            "--fork-run",
+            "0",
+            "--set-choice",
+            "calculate=",
+            "bundle",
+        ],
+        vec![
+            "compose",
+            "explore",
+            "--fork-run",
+            "0",
+            "--replace-fault",
+            "a=b",
+            "--set-choice",
+            "calculate=mode-0",
+            "bundle",
+        ],
+        vec!["compose", "explore", "--fork-run", "0", "bundle"],
+    ] {
+        let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args(&args)
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(!bad.success(), "{args:?}");
+    }
+}
+
+#[test]
 fn query_exports_answers_beside_their_digest_manifest() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(

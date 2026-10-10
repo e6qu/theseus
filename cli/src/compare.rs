@@ -54,9 +54,13 @@ struct CounterfactualProvenance {
     #[serde(default)]
     run: usize,
     #[serde(default)]
-    fault: String,
+    fault: Option<String>,
     #[serde(default)]
-    replace: String,
+    replace: Option<String>,
+    #[serde(default)]
+    operation: Option<String>,
+    #[serde(default)]
+    input: Option<String>,
 }
 #[derive(Deserialize, PartialEq, Serialize)]
 struct Property {
@@ -643,8 +647,14 @@ pub struct ForkedComparison {
     pub status: &'static str,
     /// Run index in the base campaign whose recorded future was re-executed.
     pub forked_run: usize,
-    pub replaced_fault: String,
-    pub replacement_fault: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaced_fault: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replacement_fault: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub set_operation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub set_input: Option<String>,
     pub left_runs: usize,
     pub right_runs: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -687,8 +697,11 @@ fn forked_boundary_divergence(
 /// expected to differ, so run-level decision records (faults, actions,
 /// decision trace, machine traces, accumulated coverage) are not divergences:
 /// the retained boundaries are where the futures become distinguishable.
-fn forked_divergence(base: &Run, fork: &Run) -> Option<ForkedDivergence> {
-    if base.operations != fork.operations {
+fn forked_divergence(base: &Run, fork: &Run, choice_fork: bool) -> Option<ForkedDivergence> {
+    if base.operations != fork.operations && !choice_fork {
+        // A choice fork legitimately re-runs one operation under another
+        // declared input case, so its operation history changes by
+        // construction; the boundary identities still diverge below.
         return Some(ForkedDivergence {
             boundary: None,
             reason: "the fork left its recorded operation history".to_owned(),
@@ -877,7 +890,7 @@ pub fn compare_forked_campaigns(
         }
         (None, None) => {
             return Err(CompareError::Invalid(
-                "neither result records counterfactual provenance; fork a future with `theseus compose explore --fork-run N --replace-fault OLD=NEW` first".to_owned(),
+                "neither result records counterfactual provenance; fork a future with `theseus compose explore --fork-run N --replace-fault OLD=NEW` or `--fork-run N --set-choice OPERATION=INPUT` first".to_owned(),
             ));
         }
     };
@@ -892,7 +905,8 @@ pub fn compare_forked_campaigns(
         .runs
         .first()
         .ok_or_else(|| CompareError::Invalid("forked campaign has no runs".to_owned()))?;
-    let divergence = forked_divergence(base_run, fork_run).map(|divergence| {
+    let choice_fork = provenance.operation.is_some();
+    let divergence = forked_divergence(base_run, fork_run, choice_fork).map(|divergence| {
         let (left, right, moments) = if fork_is_right {
             (divergence.base, divergence.fork, divergence.moments)
         } else {
@@ -923,6 +937,8 @@ pub fn compare_forked_campaigns(
         forked_run: provenance.run,
         replaced_fault: provenance.fault,
         replacement_fault: provenance.replace,
+        set_operation: provenance.operation,
+        set_input: provenance.input,
         left_runs: left.runs.len(),
         right_runs: right.runs.len(),
         divergence,
@@ -1250,6 +1266,12 @@ mod tests {
         )
     }
 
+    fn choice_forked_result(runs: &str, run: usize, operation: &str, input: &str) -> String {
+        format!(
+            r#"{{"counterfactual":{{"run":{run},"operation":"{operation}","input":"{input}"}},"runs":{runs},"properties":[]}}"#
+        )
+    }
+
     const FORKED_BASE_RUN: &str = r#"[{"index":0,"operations":["write"],"faults":["backplane:partition@write"],"state_sha256":"base-final","timeline":[
             {"id":"op-000-write","operation":"write","service":"api","state_sha256":"state","moment":"7000@input-hash","actions":[{"kind":"partition"}],"markers":["42"],"serial_sha256":{"api":"serial"},"program_counters":{"api":["0x10"]}},
             {"id":"op-001-read","operation":"read","service":"api","state_sha256":"state","moment":"7200@second-hash","actions":[],"markers":[],"serial_sha256":{"api":"serial"}}
@@ -1275,14 +1297,39 @@ mod tests {
         let comparison = compare_forked_campaigns(base.path(), forked.path()).unwrap();
         assert_eq!(comparison.status, "diverged");
         assert_eq!(comparison.forked_run, 0);
-        assert_eq!(comparison.replaced_fault, "backplane:partition@write");
-        assert_eq!(comparison.replacement_fault, "backplane:heal@write");
+        assert_eq!(
+            comparison.replaced_fault,
+            Some("backplane:partition@write".to_owned())
+        );
+        assert_eq!(
+            comparison.replacement_fault,
+            Some("backplane:heal@write".to_owned())
+        );
+    }
+
+    #[test]
+    fn forked_comparison_carries_the_choice_form() {
+        let fork_runs = FORKED_BASE_RUN
+            .replace(r#""operations":["write"]"#, r#""operations":["read"]"#)
+            .replace("op-000-write", "op-000-read")
+            .replace(r#""operation":"write""#, r#""operation":"read""#)
+            .replace("7000@input-hash", "7100@fork-hash");
+        let (base, forked) = write_pair(
+            &result(FORKED_BASE_RUN, "[]"),
+            &choice_forked_result(&fork_runs, 0, "write", "mode-0"),
+        );
+
+        let comparison = compare_forked_campaigns(base.path(), forked.path()).unwrap();
+        assert_eq!(comparison.status, "diverged");
+        assert_eq!(comparison.set_operation, Some("write".to_owned()));
+        assert_eq!(comparison.set_input, Some("mode-0".to_owned()));
+        assert_eq!(comparison.replaced_fault, None);
+        assert_eq!(comparison.replacement_fault, None);
         let divergence = comparison.divergence.unwrap();
         assert_eq!(divergence.boundary, Some(0));
-        assert_eq!(
-            divergence.reason,
-            "operation-boundary fault actions diverge"
-        );
+        // The choice fork diverges at the re-run boundary's identity: the
+        // operation re-executes under its other declared input case.
+        assert_eq!(divergence.reason, "operation-boundary identities diverge");
         assert_eq!(
             divergence.moments,
             Some(("7000@input-hash".to_owned(), "7100@fork-hash".to_owned()))
