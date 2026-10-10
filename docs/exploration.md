@@ -452,6 +452,12 @@ diverging operation boundary with both sides' moment addresses — the same
 addresses `theseus query` resolves. Identical boundary evidence reports
 `"same"`: the substitution did not change anything the campaign retained.
 
+Forks also address choices, not only faults: `--set-choice
+OPERATION=INPUT` re-runs one recorded operation under another declared
+input case, so "what if this operation had generated its other value?"
+is one command. The forked comparison reports the re-run boundary's
+diverging identity with both sides' moment addresses.
+
 Forked futures replay like any campaign bundle, and the fork differs from
 its recording in exactly that one locked decision. The fork still shares
 the model's limits: guest behavior between controlled boundaries can drift,

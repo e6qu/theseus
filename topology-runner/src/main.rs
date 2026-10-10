@@ -234,12 +234,49 @@ struct QuietWindowPlan {
 }
 
 /// One locked counterfactual decision, recorded in the replay plan like any
-/// other override so a forked future documents its own provenance.
+/// other override so a forked future documents its own provenance. A fork
+/// substitutes either one fault decision (`fault` replaced by `replace`) or
+/// one operation input case (`operation` re-run with `input`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct CounterfactualPlan {
     run: usize,
-    fault: String,
-    replace: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fault: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    operation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input: Option<String>,
+}
+
+impl CounterfactualPlan {
+    /// The substitution's one-line description for run selection records.
+    fn description(&self) -> String {
+        match (&self.fault, &self.replace) {
+            (Some(fault), Some(replace)) => format!(
+                "counterfactual fork of run {} replacing {} with {}",
+                self.run, fault, replace
+            ),
+            _ => format!(
+                "counterfactual fork of run {} setting operation {} to input case {}",
+                self.run,
+                self.operation.as_deref().unwrap_or_default(),
+                self.input.as_deref().unwrap_or_default()
+            ),
+        }
+    }
+
+    /// The substitution must name exactly one form, complete on both sides.
+    fn validate(&self) -> Result<(), String> {
+        match (&self.fault, &self.replace, &self.operation, &self.input) {
+            (Some(_), Some(_), None, None) | (None, None, Some(_), Some(_)) => Ok(()),
+            _ => Err(
+                "counterfactual fork must set either fault and replace, or operation and input"
+                    .to_owned(),
+            ),
+        }
+    }
 }
 
 fn default_campaign_faults_per_run() -> u8 {
@@ -3920,10 +3957,7 @@ fn execute_campaign(
             let recorded = recorded.expect("replay schedules have recorded evidence");
             let expected = recorded.runs.get(index);
             let selection = match (&counterfactual, expected) {
-                (Some(fork), _) => format!(
-                    "counterfactual fork of run {} replacing {} with {}",
-                    fork.run, fork.fault, fork.replace
-                ),
+                (Some(fork), _) => fork.description(),
                 (None, Some(expected)) if !expected.selection.is_empty() => {
                     expected.selection.clone()
                 }
@@ -4372,10 +4406,18 @@ fn execute_campaign(
                 status: if replay_verified { "passed" } else { "failed" },
                 detail: if replay_verified {
                     if let Some(fork) = &counterfactual {
-                        format!(
-                            "counterfactual fork of recorded run {} re-executed with {} replaced by {}",
-                            fork.run, fork.fault, fork.replace
-                        )
+                        match (&fork.fault, &fork.replace) {
+                            (Some(fault), Some(replace)) => format!(
+                                "counterfactual fork of recorded run {} re-executed with {} replaced by {}",
+                                fork.run, fault, replace
+                            ),
+                            _ => format!(
+                                "counterfactual fork of recorded run {} re-executed with operation {} set to input case {}",
+                                fork.run,
+                                fork.operation.as_deref().unwrap_or_default(),
+                                fork.input.as_deref().unwrap_or_default()
+                            ),
+                        }
                     } else {
                         format!("{} recorded campaign timelines reproduced", runs.len())
                     }
@@ -6866,27 +6908,52 @@ fn apply_counterfactual_substitution(
     fork: &CounterfactualPlan,
     schedule: &mut CampaignSchedule,
 ) -> Result<(), String> {
-    let replaced = campaign_fault_index_by_name(campaign, &fork.fault)
-        .map_err(|error| format!("counterfactual replaced {error}"))?;
-    let replacement = campaign_fault_index_by_name(campaign, &fork.replace)
-        .map_err(|error| format!("counterfactual replacement {error}"))?;
-    if replaced == replacement {
-        return Err(format!(
-            "counterfactual replacement must differ from the replaced fault: {}",
-            fork.fault
-        ));
+    fork.validate()?;
+    if let (Some(fault), Some(replace)) = (&fork.fault, &fork.replace) {
+        let replaced = campaign_fault_index_by_name(campaign, fault)
+            .map_err(|error| format!("counterfactual replaced {error}"))?;
+        let replacement = campaign_fault_index_by_name(campaign, replace)
+            .map_err(|error| format!("counterfactual replacement {error}"))?;
+        if replaced == replacement {
+            return Err(format!(
+                "counterfactual replacement must differ from the replaced fault: {fault}"
+            ));
+        }
+        let position = schedule
+            .faults
+            .iter()
+            .position(|index| *index == replaced)
+            .ok_or_else(|| format!("recorded run does not select the replaced fault: {fault}"))?;
+        schedule.faults[position] = replacement;
+        return Ok(());
     }
+    let operation_name = fork.operation.as_deref().unwrap_or_default();
+    let input_name = fork.input.as_deref().unwrap_or_default();
     let position = schedule
-        .faults
+        .operations
         .iter()
-        .position(|index| *index == replaced)
+        .position(|choice| campaign.operations[choice.operation].name == operation_name)
+        .ok_or_else(|| {
+            format!("recorded run does not select the operation: {operation_name}")
+        })?;
+    let operation = &campaign.operations[schedule.operations[position].operation];
+    let inputs = campaign_operation_inputs(operation);
+    let input_index = inputs
+        .iter()
+        .position(|input| input.name == input_name)
         .ok_or_else(|| {
             format!(
-                "recorded run does not select the replaced fault: {}",
-                fork.fault
+                "operation {} declares no input case {}: {}",
+                operation_name,
+                input_name,
+                inputs
+                    .iter()
+                    .map(|input| input.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         })?;
-    schedule.faults[position] = replacement;
+    schedule.operations[position].input = input_index;
     Ok(())
 }
 
@@ -19079,8 +19146,10 @@ mod tests {
     fn counterfactual_plan(fault: &str, replace: &str) -> CounterfactualPlan {
         CounterfactualPlan {
             run: 0,
-            fault: fault.to_owned(),
-            replace: replace.to_owned(),
+            fault: Some(fault.to_owned()),
+            replace: Some(replace.to_owned()),
+            operation: None,
+            input: None,
         }
     }
 
@@ -19186,8 +19255,10 @@ mod tests {
             &recorded,
             &CounterfactualPlan {
                 run: 1,
-                fault: "backplane:partition@write".to_owned(),
-                replace: "backplane:api->worker:link_partition@write".to_owned(),
+                fault: Some("backplane:partition@write".to_owned()),
+                replace: Some("backplane:api->worker:link_partition@write".to_owned()),
+                operation: None,
+                input: None,
             },
         )
         .unwrap();
@@ -19200,8 +19271,10 @@ mod tests {
             &recorded,
             &CounterfactualPlan {
                 run: 2,
-                fault: "backplane:partition@write".to_owned(),
-                replace: "backplane:api->worker:link_partition@write".to_owned(),
+                fault: Some("backplane:partition@write".to_owned()),
+                replace: Some("backplane:api->worker:link_partition@write".to_owned()),
+                operation: None,
+                input: None,
             },
         )
         .unwrap_err();

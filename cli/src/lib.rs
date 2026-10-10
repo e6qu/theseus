@@ -41,6 +41,7 @@ pub use compose::{
     explore_compose_expect_counterexample_with, explore_compose_forked, explore_compose_with,
     load_compose_plan, minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
     replay_compose, test_compose, CampaignGuidance, ComposeError, ComposePlan,
+    CounterfactualSubstitution,
 };
 pub use evaluation::{
     capture_evaluation, evaluate, evaluate_compare, write_evaluation_lock, EvaluationError,

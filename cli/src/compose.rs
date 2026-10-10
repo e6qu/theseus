@@ -8185,8 +8185,7 @@ pub fn minimize_compose_campaign_expect_counterexample(
 pub fn explore_compose_forked(
     bundle: impl AsRef<Path>,
     run: usize,
-    fault: &str,
-    replace: &str,
+    substitution: CounterfactualSubstitution<'_>,
     output: impl AsRef<Path>,
     notify: Option<&str>,
 ) -> Result<PathBuf, ComposeError> {
@@ -8213,7 +8212,7 @@ pub fn explore_compose_forked(
             output.display()
         )));
     }
-    let plan = forked_counterfactual_plan(&bundle, run, fault, replace)?;
+    let plan = forked_counterfactual_plan(&bundle, run, substitution)?;
     // The runner reads the recorded campaign result and resolves relative
     // artifact paths beside its plan file, so the substituted plan is staged
     // next to the output with artifact paths rewritten to their retained
@@ -8256,30 +8255,72 @@ pub fn explore_compose_forked(
     result.map(|()| output)
 }
 
+/// One counterfactual substitution: replace one recorded fault decision, or
+/// re-run one operation with a different declared input case.
+#[derive(Debug, Clone, Copy)]
+pub enum CounterfactualSubstitution<'a> {
+    Fault { fault: &'a str, replace: &'a str },
+    Choice { operation: &'a str, input: &'a str },
+}
+
+impl CounterfactualSubstitution<'_> {
+    /// The substitution's JSON shape in the forked replay plan.
+    fn to_json(self, run: usize) -> serde_json::Value {
+        match self {
+            CounterfactualSubstitution::Fault { fault, replace } => {
+                serde_json::json!({"run": run, "fault": fault, "replace": replace})
+            }
+            CounterfactualSubstitution::Choice { operation, input } => {
+                serde_json::json!({"run": run, "operation": operation, "input": input})
+            }
+        }
+    }
+}
+
 /// Validate one counterfactual fork against the retained bundle and return
-/// the bundle's replay plan with the locked substitution injected. The
-/// replaced fault must be one the recorded run selected and the replacement
-/// must differ from it; the replacement's existence is resolved against the
-/// plan's declared faults by the runner, which owns the fault-naming
-/// contract.
+/// the bundle's replay plan with the locked substitution injected. A fault
+/// fork must replace a fault the recorded run selected with a different
+/// one; a choice fork must re-run an operation the recorded run selected
+/// with a different declared input case. Either substitution's target
+/// existence is resolved against the plan's declarations by the runner,
+/// which owns the naming contracts.
 fn forked_counterfactual_plan(
     bundle: &Path,
     run: usize,
-    fault: &str,
-    replace: &str,
+    substitution: CounterfactualSubstitution<'_>,
 ) -> Result<serde_json::Value, ComposeError> {
     let result = read_bundle_json(bundle, "campaign-result.json")?;
     let mut plan = read_bundle_json(bundle, "replay-plan.json")?;
-    if fault == replace {
-        return Err(ComposeError::Invalid(
-            "counterfactual replacement must differ from the replaced fault".to_owned(),
-        ));
-    }
-    let recorded_faults = recorded_run_faults(&result, run)?;
-    if !recorded_faults.iter().any(|name| name == fault) {
-        return Err(ComposeError::Invalid(format!(
-            "recorded run {run} does not select fault {fault:?}"
-        )));
+    match substitution {
+        CounterfactualSubstitution::Fault { fault, replace } => {
+            if fault == replace {
+                return Err(ComposeError::Invalid(
+                    "counterfactual replacement must differ from the replaced fault".to_owned(),
+                ));
+            }
+            let recorded_faults = recorded_run_faults(&result, run)?;
+            if !recorded_faults.iter().any(|name| name == fault) {
+                return Err(ComposeError::Invalid(format!(
+                    "recorded run {run} does not select fault {fault:?}"
+                )));
+            }
+        }
+        CounterfactualSubstitution::Choice { operation, input } => {
+            let recorded_operations = recorded_run_operations(&result, run)?;
+            if !recorded_operations
+                .iter()
+                .any(|name| name.split('[').next() == Some(operation))
+            {
+                return Err(ComposeError::Invalid(format!(
+                    "recorded run {run} does not select operation {operation:?}"
+                )));
+            }
+            if !plan_declares_input_case(&plan, operation, input) {
+                return Err(ComposeError::Invalid(format!(
+                    "operation {operation:?} declares no input case {input:?}"
+                )));
+            }
+        }
     }
     if plan
         .get("campaign")
@@ -8291,12 +8332,62 @@ fn forked_counterfactual_plan(
         ));
     }
     absolutize_artifact_paths(&mut plan, bundle)?;
-    plan["campaign"]["counterfactual"] = serde_json::json!({
-        "run": run,
-        "fault": fault,
-        "replace": replace,
-    });
+    plan["campaign"]["counterfactual"] = substitution.to_json(run);
     Ok(plan)
+}
+
+/// The operation names one recorded run selected, without input suffixes.
+fn recorded_run_operations(
+    result: &serde_json::Value,
+    run: usize,
+) -> Result<Vec<String>, ComposeError> {
+    let runs = result
+        .get("runs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| ComposeError::Invalid("campaign result has no runs".to_owned()))?;
+    let run = runs.get(run).ok_or_else(|| {
+        ComposeError::Invalid(format!(
+            "run index {run} is outside the recorded campaign ({} runs)",
+            runs.len()
+        ))
+    })?;
+    Ok(run
+        .get("operations")
+        .and_then(serde_json::Value::as_array)
+        .map(|operations| {
+            operations
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// True when the plan's campaign declares one named input case on the named
+/// operation, so a choice fork names a real substitution target.
+fn plan_declares_input_case(plan: &serde_json::Value, operation: &str, input: &str) -> bool {
+    plan.get("campaign")
+        .and_then(|campaign| campaign.get("operations"))
+        .and_then(serde_json::Value::as_array)
+        .map(|operations| {
+            operations.iter().any(|operation_value| {
+                operation_value
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(operation)
+                    && operation_value
+                        .get("inputs")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|inputs| {
+                            inputs.iter().any(|input_value| {
+                                input_value.get("name").and_then(serde_json::Value::as_str)
+                                    == Some(input)
+                            })
+                        })
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn read_bundle_json(bundle: &Path, name: &str) -> Result<serde_json::Value, ComposeError> {
@@ -12721,8 +12812,10 @@ x-theseus:
         let plan = forked_counterfactual_plan(
             directory.path(),
             1,
-            "backplane:heal@read",
-            "backplane:partition@write",
+            CounterfactualSubstitution::Fault {
+                fault: "backplane:heal@read",
+                replace: "backplane:partition@write",
+            },
         )
         .unwrap();
         assert_eq!(
@@ -12736,6 +12829,75 @@ x-theseus:
     }
 
     #[test]
+    fn injects_the_locked_choice_fork_into_the_forked_plan() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("campaign-result.json"),
+            r#"{"format":"theseus-compose-campaign-result-v1","runs":[
+                {"index":0,"operations":["calculate[mode-1]"]}
+            ]}"#,
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("replay-plan.json"),
+            r#"{"format":"theseus-compose-plan-v1","campaign":{
+                "driver":"api","max_runs":2,"max_operations_per_run":1,
+                "operations":[{"name":"calculate","inputs":[{"name":"mode-0"},{"name":"mode-1"}]}],
+                "faults":[],"properties":[]
+            }}"#,
+        )
+        .unwrap();
+
+        let plan = forked_counterfactual_plan(
+            directory.path(),
+            0,
+            CounterfactualSubstitution::Choice {
+                operation: "calculate",
+                input: "mode-0",
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            plan["campaign"]["counterfactual"],
+            serde_json::json!({"run": 0, "operation": "calculate", "input": "mode-0"})
+        );
+
+        // The operation must be one the recorded run selected.
+        let error = forked_counterfactual_plan(
+            directory.path(),
+            0,
+            CounterfactualSubstitution::Choice {
+                operation: "absent",
+                input: "mode-0",
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("run 0 does not select operation \"absent\""),
+            "{error}"
+        );
+
+        // The input case must be one the plan declares.
+        let error = forked_counterfactual_plan(
+            directory.path(),
+            0,
+            CounterfactualSubstitution::Choice {
+                operation: "calculate",
+                input: "mode-9",
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("declares no input case \"mode-9\""),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn rejects_counterfactual_faults_that_are_unknown_unchanged_or_unselected() {
         let directory = counterfactual_bundle();
 
@@ -12743,8 +12905,10 @@ x-theseus:
         let error = forked_counterfactual_plan(
             directory.path(),
             0,
-            "backplane:heal@read",
-            "backplane:partition@write",
+            CounterfactualSubstitution::Fault {
+                fault: "backplane:heal@read",
+                replace: "backplane:partition@write",
+            },
         )
         .unwrap_err();
         assert!(
@@ -12758,8 +12922,10 @@ x-theseus:
         let error = forked_counterfactual_plan(
             directory.path(),
             0,
-            "backplane:partition@write",
-            "backplane:partition@write",
+            CounterfactualSubstitution::Fault {
+                fault: "backplane:partition@write",
+                replace: "backplane:partition@write",
+            },
         )
         .unwrap_err();
         assert!(
@@ -12773,8 +12939,10 @@ x-theseus:
         let error = forked_counterfactual_plan(
             directory.path(),
             7,
-            "backplane:partition@write",
-            "backplane:heal@read",
+            CounterfactualSubstitution::Fault {
+                fault: "backplane:partition@write",
+                replace: "backplane:heal@read",
+            },
         )
         .unwrap_err();
         assert!(error.to_string().contains("no run 7"), "{error}");
@@ -12783,8 +12951,10 @@ x-theseus:
         let error = forked_counterfactual_plan(
             directory.path(),
             1,
-            "backplane:partition@write",
-            "backplane:heal@read",
+            CounterfactualSubstitution::Fault {
+                fault: "backplane:partition@write",
+                replace: "backplane:heal@read",
+            },
         )
         .unwrap_err();
         assert!(
