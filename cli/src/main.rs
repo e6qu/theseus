@@ -392,10 +392,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         let value = rest.get(index + 1).ok_or(USAGE.to_owned())?;
                         let predicate: serde_json::Value = serde_json::from_str(value)
                             .map_err(|error| format!("invalid event predicate: {error}"))?;
-                        if !predicate
-                            .as_object()
-                            .is_some_and(|object| object.contains_key("fields"))
-                        {
+                        if !predicate.is_object() {
                             return Err(USAGE.to_owned());
                         }
                         event_predicate = Some((relation, predicate));
@@ -408,10 +405,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         let value = rest.get(index + 1).ok_or(USAGE.to_owned())?;
                         let predicate: serde_json::Value = serde_json::from_str(value)
                             .map_err(|error| format!("invalid event predicate: {error}"))?;
-                        if !predicate
-                            .as_object()
-                            .is_some_and(|object| object.contains_key("fields"))
-                        {
+                        if !predicate.is_object() {
                             return Err(USAGE.to_owned());
                         }
                         where_predicate = Some(predicate);
