@@ -19146,8 +19146,10 @@ mod tests {
     fn counterfactual_plan(fault: &str, replace: &str) -> CounterfactualPlan {
         CounterfactualPlan {
             run: 0,
-            fault: fault.to_owned(),
-            replace: replace.to_owned(),
+            fault: Some(fault.to_owned()),
+            replace: Some(replace.to_owned()),
+            operation: None,
+            input: None,
         }
     }
 
@@ -19253,8 +19255,10 @@ mod tests {
             &recorded,
             &CounterfactualPlan {
                 run: 1,
-                fault: "backplane:partition@write".to_owned(),
-                replace: "backplane:api->worker:link_partition@write".to_owned(),
+                fault: Some("backplane:partition@write".to_owned()),
+                replace: Some("backplane:api->worker:link_partition@write".to_owned()),
+                operation: None,
+                input: None,
             },
         )
         .unwrap();
@@ -19267,8 +19271,10 @@ mod tests {
             &recorded,
             &CounterfactualPlan {
                 run: 2,
-                fault: "backplane:partition@write".to_owned(),
-                replace: "backplane:api->worker:link_partition@write".to_owned(),
+                fault: Some("backplane:partition@write".to_owned()),
+                replace: Some("backplane:api->worker:link_partition@write".to_owned()),
+                operation: None,
+                input: None,
             },
         )
         .unwrap_err();
