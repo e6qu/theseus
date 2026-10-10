@@ -32,14 +32,16 @@ theseus query campaign-dir --moment <vtime_ns>@<input_sha256> [--next | --previo
 theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
 theseus query campaign-dir --list [--service NAME] [--format json]
 theseus query campaign-dir --events [--service NAME] [--format json]
-theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
-theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
-theseus query campaign-dir --where FIELDS --preceded-by NEEDLE [--service NAME] [--format json]
-theseus query campaign-dir --where FIELDS --followed-by NEEDLE [--service NAME] [--format json]
-theseus query campaign-dir --where FIELDS --preceded-by-event FIELDS [--within N] [--service NAME] [--format json]
-theseus query campaign-dir --where FIELDS --followed-by-event FIELDS [--within N] [--service NAME] [--format json]
-theseus query campaign-dir --preceded-by-event FIELDS [--within N] [--service NAME] [--format json]
-theseus query campaign-dir --followed-by-event FIELDS [--within N] [--service NAME] [--format json]
+theseus query campaign-dir --preceded-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
+theseus query campaign-dir --followed-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
+theseus query campaign-dir --surrounded-by NEEDLE [--within N] [--service NAME] [--format json]
+theseus query campaign-dir --where FIELDS --preceded-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
+theseus query campaign-dir --where FIELDS --followed-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
+theseus query campaign-dir --preceded-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
+theseus query campaign-dir --followed-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
+theseus query campaign-dir --surrounded-by-event FIELDS [--within N] [--service NAME] [--format json]
+theseus query campaign-dir --where FIELDS --preceded-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
+theseus query campaign-dir --where FIELDS --followed-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
 theseus serve [campaign-dir... | --index registry.json] [--address ADDR]
 theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
 theseus evaluate lock [theseus-evaluation.toml]
@@ -1082,7 +1084,13 @@ curl "localhost:8098/campaign/query/where/%7B%22where%22%3A%5B%7B%22pointer%22%3
 `--within N` bounds any relation to a window of N boundaries between the
 anchor and the match - 1 is the immediately adjacent boundary - on the
 CLI, the where forms, and the serve routes (`?within=N`); window 0 and
-windows past 4096 boundaries are named errors.
+windows past 4096 boundaries are named errors. `--anchor N` addresses
+one specific occurrence: only the Nth anchor (1-based, per run) drives
+the relation, so "the second time the marker printed" is
+`--preceded-by marker --anchor 2`. `--surrounded-by NEEDLE` (and
+`--surrounded-by-event FIELDS`) answers the both-sides relation - the
+moments an anchor brackets, with occurrences strictly on both sides -
+listed in the serve routes as `query/surrounded-by/...`.
 
 An indexed event matches when every pointer resolves on its JSON object;
 occurrences carry the verbatim line, and the matches list the moments the

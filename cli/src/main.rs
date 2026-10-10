@@ -46,14 +46,16 @@ const USAGE: &str = "Usage:
   theseus query campaign-dir --moment <vtime_ns>@<input_sha256> --collect [--output collected-dir] [--format json]
   theseus query campaign-dir --list [--service NAME] [--format json]
   theseus query campaign-dir --events [--service NAME] [--format json]
-  theseus query campaign-dir --preceded-by NEEDLE [--service NAME] [--format json]
-  theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
-  theseus query campaign-dir --where FIELDS --preceded-by NEEDLE [--service NAME] [--format json]
-  theseus query campaign-dir --where FIELDS --followed-by NEEDLE [--service NAME] [--format json]
-  theseus query campaign-dir --where FIELDS --preceded-by-event FIELDS [--within N] [--service NAME] [--format json]
-  theseus query campaign-dir --where FIELDS --followed-by-event FIELDS [--within N] [--service NAME] [--format json]
-  theseus query campaign-dir --preceded-by-event FIELDS [--within N] [--service NAME] [--format json]
-  theseus query campaign-dir --followed-by-event FIELDS [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --preceded-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --followed-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --surrounded-by NEEDLE [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --preceded-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --followed-by NEEDLE [--anchor N] [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --preceded-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --followed-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --surrounded-by-event FIELDS [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --preceded-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --followed-by-event FIELDS [--anchor N] [--within N] [--service NAME] [--format json]
   theseus serve [campaign-dir... | --index registry.json] [--address ADDR]
   theseus evaluate [--format json|markdown] [theseus-evaluation.toml]
   theseus evaluate lock [theseus-evaluation.toml]
@@ -331,6 +333,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let mut event_predicate: Option<(TemporalRelation, serde_json::Value)> = None;
             let mut where_predicate: Option<serde_json::Value> = None;
             let mut within: Option<usize> = None;
+            let mut anchor: Option<usize> = None;
             let mut events = false;
             let mut collect = false;
             let mut output: Option<String> = None;
@@ -365,6 +368,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         output = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
                         index += 2;
                     }
+                    "--surrounded-by" => {
+                        if needle.is_some() {
+                            return Err(USAGE.to_owned());
+                        }
+                        let value = rest.get(index + 1).ok_or(USAGE.to_owned())?.clone();
+                        if value.is_empty() {
+                            return Err(USAGE.to_owned());
+                        }
+                        needle = Some((TemporalRelation::SurroundedBy, value));
+                        index += 2;
+                    }
                     "--preceded-by" | "--followed-by" => {
                         if needle.is_some() {
                             return Err(USAGE.to_owned());
@@ -379,6 +393,19 @@ fn run(args: Vec<String>) -> Result<(), String> {
                             return Err(USAGE.to_owned());
                         }
                         needle = Some((relation, value));
+                        index += 2;
+                    }
+                    "--surrounded-by-event" => {
+                        if event_predicate.is_some() {
+                            return Err(USAGE.to_owned());
+                        }
+                        let value = rest.get(index + 1).ok_or(USAGE.to_owned())?;
+                        let predicate: serde_json::Value = serde_json::from_str(value)
+                            .map_err(|error| format!("invalid event predicate: {error}"))?;
+                        if !predicate.is_object() {
+                            return Err(USAGE.to_owned());
+                        }
+                        event_predicate = Some((TemporalRelation::SurroundedBy, predicate));
                         index += 2;
                     }
                     "--preceded-by-event" | "--followed-by-event" => {
@@ -408,6 +435,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
                             .parse()
                             .map_err(|error| format!("invalid --within: {error}"))?;
                         within = Some(parsed);
+                        index += 2;
+                    }
+                    "--anchor" => {
+                        if anchor.is_some() {
+                            return Err(USAGE.to_owned());
+                        }
+                        let value = rest.get(index + 1).ok_or(USAGE.to_owned())?;
+                        let parsed: usize = value
+                            .parse()
+                            .map_err(|error| format!("invalid --anchor: {error}"))?;
+                        anchor = Some(parsed);
                         index += 2;
                     }
                     "--where" => {
@@ -452,6 +490,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         &predicate,
                         where_fields,
                         service_filter.as_deref(),
+                        anchor,
                         within,
                     )
                     .map_err(|error| error.to_string())?;
@@ -488,6 +527,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     relation,
                     &predicate,
                     service_filter.as_deref(),
+                    anchor,
                     within,
                 )
                 .map_err(|error| error.to_string())?;
@@ -525,6 +565,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                         &needle,
                         predicate,
                         service_filter.as_deref(),
+                        anchor,
                         within,
                     )
                     .map_err(|error| error.to_string())?;
@@ -561,6 +602,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     relation,
                     &needle,
                     service_filter.as_deref(),
+                    anchor,
                     within,
                 )
                 .map_err(|error| error.to_string())?;
@@ -593,6 +635,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     || needle.is_some()
                     || where_predicate.is_some()
                     || within.is_some()
+                    || anchor.is_some()
                     || moment.is_some()
                     || navigation.is_some()
                 {
@@ -620,6 +663,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     || needle.is_some()
                     || where_predicate.is_some()
                     || within.is_some()
+                    || anchor.is_some()
                     || navigation.is_some()
                 {
                     return Err(USAGE.to_owned());
@@ -648,7 +692,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 return Ok(());
             }
             if list {
-                if where_predicate.is_some() || within.is_some() {
+                if where_predicate.is_some() || within.is_some() || anchor.is_some() {
                     return Err(USAGE.to_owned());
                 }
                 let summaries = list_moments(&result, service_filter.as_deref())
@@ -669,7 +713,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 }
                 return Ok(());
             }
-            if where_predicate.is_some() || within.is_some() {
+            if where_predicate.is_some() || within.is_some() || anchor.is_some() {
                 return Err(USAGE.to_owned());
             }
             let Some(moment) = moment else {

@@ -413,7 +413,10 @@ percent-encoded path segment, and the `where` route names its needle or
 event relation in the query string. `--within N` bounds every relation
 to a window of N boundaries between the anchor and the match, turning
 the whole-run relation into a local one (1 = the immediately adjacent
-boundary) on every surface. `theseus query --moment
+boundary) on every surface. `--anchor N` addresses one occurrence (the
+Nth anchor per run drives the relation), and `--surrounded-by` answers
+the both-sides relation - the moments an anchor brackets - so "the
+moment both markers had printed" is one query. `theseus query --moment
 <address> --collect` turns one moment into a self-contained,
 digest-auditable artifact bundle — the boundary's full record, its
 neighbors, the decision-trace slice that produced it, and verified
