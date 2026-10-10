@@ -1318,6 +1318,80 @@ fn query_matches_structured_events_with_temporal_relations() {
 }
 
 #[test]
+fn query_windows_bound_the_temporal_relations() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("campaign-result.json"),
+        r#"{"runs":[{"index":0,"timeline":[
+            {"id":"op-000-write","operation":"write","service":"api","moment":"7000@input-hash","serial_delta":{"api":{"bytes":16,"sha256":"h0","excerpt":"write\n","omitted_bytes":0}}},
+            {"id":"op-001-read","operation":"read","service":"counter","moment":"9000@read-hash","serial_delta":{"counter":{"bytes":11,"sha256":"h1","excerpt":"THES:M:stale\n","omitted_bytes":0}}},
+            {"id":"op-002-verify","operation":"verify","service":"api","moment":"12000@verify-hash","serial_delta":{"api":{"bytes":8,"sha256":"h2","excerpt":"done\n","omitted_bytes":0}}},
+            {"id":"op-003-final","operation":"final","service":"api","moment":"15000@final-hash","serial_delta":{"api":{"bytes":8,"sha256":"h3","excerpt":"end\n","omitted_bytes":0}}}
+        ]}]}"#,
+    )
+    .unwrap();
+
+    // Unbounded, the stale marker precedes both later boundaries; within
+    // 1, only the verify boundary (immediately after) relates.
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--preceded-by",
+            "stale",
+            "--within",
+            "1",
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let answer: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(answer["within"], 1);
+    assert_eq!(answer["matches"][0]["boundary"], "op-002-verify");
+    assert_eq!(answer["matches"].as_array().unwrap().len(), 1);
+
+    // The window composes with where predicates.
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--where",
+            r#"{"fields":{"/event":"request"}}"#,
+            "--followed-by",
+            "stale",
+            "--within",
+            "2",
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let answer: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(answer["within"], 2);
+
+    // Window 0 and non-numeric windows are named errors; --within is
+    // refused beside the non-relation forms.
+    for args in [
+        vec!["query", ".", "--preceded-by", "stale", "--within", "0"],
+        vec!["query", ".", "--preceded-by", "stale", "--within", "soon"],
+        vec!["query", ".", "--preceded-by", "stale", "--within", "4097"],
+        vec!["query", ".", "--list", "--within", "1"],
+    ] {
+        let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args(&args)
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(!bad.success(), "{args:?}");
+    }
+}
+
+#[test]
 fn query_composes_where_predicates_with_needle_relations() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(

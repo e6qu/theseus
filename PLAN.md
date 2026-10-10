@@ -233,6 +233,12 @@ Theseus currently has:
   comparisons, exists), `arrays` quantifiers, nested `all`/`any`/`none` -
   evaluated in the property layer's order; capture keys and unknown keys
   are refused by name.
+- Windowed temporal relations: `--within N` bounds the needle
+  relations, the event relations, and the composed where forms to N
+  boundaries between the anchor and the match (1 = the immediately
+  adjacent boundary); the answers record the window, the serve routes
+  take `?within=N`, and windows of 0 or past 4096 are named errors -
+  on both surfaces.
 - Two-predicate event queries: `theseus query --where FIELDS
   --preceded-by-event|--followed-by-event FIELDS` locates anchor events
   with the relation predicate and keeps moments whose own boundary
@@ -474,17 +480,16 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ### 1. Rich value predicates across moments
 
-The grammar is now one shape everywhere: the CLI, the serve routes, and
-the property layer evaluate the same fields/where/arrays/all/any/none
-predicates. The remaining work in this direction is the parity row's
-temporal-operator gap - richer relations over complete transcripts
-(same-boundary windows, Nth-occurrence addressing, transitive
-between-moments relations) beyond the strict strictly-before/strictly-
-after pairs:
+The grammar is one shape everywhere and the relations are windowable:
+`--within N` bounds every relation to N boundaries between the anchor
+and the match, on the CLI, the where forms, and the serve routes. The
+remaining temporal-operator work in the parity row is occurrence
+addressing and transitive between-moments relations - "the second time
+the marker printed", "the moment both markers had printed":
 
-- Design the window and occurrence operators against the retained
-  timelines' shapes, keeping the strictness contract the property
-  guards use.
+- Extend the needle and event relations with an occurrence ordinal
+  (the Nth anchor) and a both-sides relation (anchors on both sides of
+  the match), keeping the strictness contract.
 - Land them on `theseus query` and the serve grammar routes together,
   with fixtures on both surfaces.
 

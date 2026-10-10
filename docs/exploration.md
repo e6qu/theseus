@@ -410,7 +410,10 @@ the same order as the property layer, so one grammar answers everywhere;
 capture keys stay property-side, refused by name on queries. The serve
 surface answers the same shapes over HTTP - the predicate rides as one
 percent-encoded path segment, and the `where` route names its needle or
-event relation in the query string. `theseus query --moment
+event relation in the query string. `--within N` bounds every relation
+to a window of N boundaries between the anchor and the match, turning
+the whole-run relation into a local one (1 = the immediately adjacent
+boundary) on every surface. `theseus query --moment
 <address> --collect` turns one moment into a self-contained,
 digest-auditable artifact bundle — the boundary's full record, its
 neighbors, the decision-trace slice that produced it, and verified

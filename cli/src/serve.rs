@@ -941,11 +941,22 @@ fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec
             .map(|needle| (crate::query::TemporalRelation::FollowedBy, needle))
     };
     if let Some((relation, needle)) = relation {
+        let within = match parse_within(query) {
+            Ok(within) => within,
+            Err(message) => {
+                return (
+                    400,
+                    "text/plain; charset=utf-8",
+                    message.as_bytes().to_vec(),
+                )
+            }
+        };
         return answer(crate::query::temporal_query(
             &result,
             relation,
             &percent_decode(needle),
             service.as_deref(),
+            within,
         ));
     }
     // The grammar routes carry one percent-encoded JSON predicate; the
@@ -973,15 +984,38 @@ fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec
                     b"event predicate is not JSON".to_vec(),
                 );
             };
+            let within = match parse_within(query) {
+                Ok(within) => within,
+                Err(message) => {
+                    return (
+                        400,
+                        "text/plain; charset=utf-8",
+                        message.as_bytes().to_vec(),
+                    )
+                }
+            };
             return answer(crate::query::event_temporal_query(
                 &result,
                 relation,
                 &predicate,
                 service.as_deref(),
+                within,
             ));
         }
     }
     not_found()
+}
+
+/// Parse the optional `?within=N` window bound; a malformed bound is an
+/// error rather than being ignored.
+fn parse_within(query: &str) -> Result<Option<usize>, &'static str> {
+    match query_parameter(query, "within") {
+        None => Ok(None),
+        Some(value) => value
+            .parse()
+            .map(Some)
+            .map_err(|_| "within must be a boundary count of at least 1"),
+    }
 }
 
 /// Answer one composed `where` query: the path carries the where
@@ -1001,6 +1035,16 @@ fn route_where(
             b"where predicate is not JSON".to_vec(),
         );
     };
+    let within = match parse_within(query) {
+        Ok(within) => within,
+        Err(message) => {
+            return (
+                400,
+                "text/plain; charset=utf-8",
+                message.as_bytes().to_vec(),
+            )
+        }
+    };
     if let Some(needle) = query_parameter(query, "preceded-by") {
         return answer(crate::query::predicate_query(
             result,
@@ -1008,6 +1052,7 @@ fn route_where(
             needle,
             &where_predicate,
             service,
+            within,
         ));
     }
     if let Some(needle) = query_parameter(query, "followed-by") {
@@ -1017,6 +1062,7 @@ fn route_where(
             needle,
             &where_predicate,
             service,
+            within,
         ));
     }
     for (key, relation) in [
@@ -1045,6 +1091,7 @@ fn route_where(
                 &relation_predicate,
                 &where_predicate,
                 service,
+                within,
             ));
         }
     }
@@ -1687,6 +1734,21 @@ mod tests {
                 }
             }
         });
+
+        // The needle route narrows through ?within: the ready needle
+        // prints on op-000, and within 1 the verify boundary is out of
+        // reach while op-001 stays in it.
+        let (status, _, body) = exchange(
+            &address,
+            "GET /campaign/query/preceded-by/ready?within=1 HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("\"within\": 1"), "{body}");
+        let (status, _, body) = exchange(
+            &address,
+            "GET /campaign/query/preceded-by/ready?within=abc HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 400, "{body}");
 
         let predicate = percent_encode(r#"{"fields":{"/event":"request"}}"#);
         // The request event prints on op-000; preceded-by-event lists the

@@ -382,6 +382,9 @@ pub struct NeedleOccurrence {
 /// excerpts the campaign report's moment log shows.
 #[derive(Debug, Serialize)]
 pub struct TemporalQuery {
+    /// The optional window bound the relation was evaluated with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub within: Option<usize>,
     pub format: &'static str,
     pub relation: &'static str,
     /// The needle as matched: ASCII-escaped exactly like the retained
@@ -396,6 +399,46 @@ pub struct TemporalQuery {
     pub matches: Vec<MomentSummary>,
 }
 
+/// The largest window a temporal query accepts; windows count boundaries
+/// between the anchor and the match.
+const QUERY_WINDOW_LIMIT: usize = 4096;
+
+/// Validate the optional window bound: it counts boundaries between the
+/// anchor and the match, so it must be at least 1.
+fn validate_within(within: Option<usize>) -> Result<(), MomentError> {
+    match within {
+        None => Ok(()),
+        Some(0) => Err(MomentError::NotFound(
+            "temporal query windows count boundaries and must be at least 1".to_owned(),
+        )),
+        Some(window) if window > QUERY_WINDOW_LIMIT => Err(MomentError::NotFound(format!(
+            "temporal query windows are bounded at {QUERY_WINDOW_LIMIT} boundaries"
+        ))),
+        Some(_) => Ok(()),
+    }
+}
+
+/// True when some occurrence relates to the boundary under the relation,
+/// inside the optional window: `within` of 1 means the immediately
+/// adjacent boundary, and no window means the whole run.
+fn related_within(
+    relation: TemporalRelation,
+    occurrence_indices: &[usize],
+    boundary_index: usize,
+    within: Option<usize>,
+) -> bool {
+    occurrence_indices.iter().any(|occurrence| match relation {
+        TemporalRelation::PrecededBy => {
+            *occurrence < boundary_index
+                && within.is_none_or(|window| boundary_index - *occurrence <= window)
+        }
+        TemporalRelation::FollowedBy => {
+            *occurrence > boundary_index
+                && within.is_none_or(|window| *occurrence - boundary_index <= window)
+        }
+    })
+}
+
 /// Evaluate a `preceded-by`/`followed-by` relation between one needle and
 /// every retained moment. The needle matches a boundary when it occurs in
 /// that boundary's retained serial delta (for the scoped service, or any
@@ -407,7 +450,10 @@ pub fn temporal_query(
     relation: TemporalRelation,
     needle: &str,
     service: Option<&str>,
+    within: Option<usize>,
 ) -> Result<TemporalQuery, MomentError> {
+    validate_within(within)?;
+
     if needle.is_empty() {
         return Err(MomentError::NotFound(
             "temporal query requires a non-empty needle".to_owned(),
@@ -461,14 +507,7 @@ pub fn temporal_query(
             }
         }
         for (boundary_index, boundary) in timeline.iter().enumerate() {
-            let related = match relation {
-                TemporalRelation::PrecededBy => occurrence_indices
-                    .iter()
-                    .any(|occurrence| *occurrence < boundary_index),
-                TemporalRelation::FollowedBy => occurrence_indices
-                    .iter()
-                    .any(|occurrence| *occurrence > boundary_index),
-            };
+            let related = related_within(relation, &occurrence_indices, boundary_index, within);
             if !related {
                 continue;
             }
@@ -492,6 +531,7 @@ pub fn temporal_query(
     }
     Ok(TemporalQuery {
         format: "theseus-query-temporal-v1",
+        within,
         relation: relation.as_str(),
         needle: escaped_needle,
         service: service.map(str::to_owned),
@@ -507,6 +547,9 @@ pub fn temporal_query(
 /// accept - and every pointer must resolve equal.
 #[derive(Debug, Serialize)]
 pub struct EventTemporalQuery {
+    /// The optional window bound the relation was evaluated with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub within: Option<usize>,
     pub format: &'static str,
     pub relation: &'static str,
     /// The predicate as parsed from the command line.
@@ -831,7 +874,10 @@ pub fn event_temporal_query(
     relation: TemporalRelation,
     predicate: &serde_json::Value,
     service: Option<&str>,
+    within: Option<usize>,
 ) -> Result<EventTemporalQuery, MomentError> {
+    validate_within(within)?;
+
     // The predicate uses the property layer's `fields` shape: RFC 6901
     // pointers to expected values, all of which must match.
     validate_query_predicate(predicate)?;
@@ -888,14 +934,7 @@ pub fn event_temporal_query(
             }
         }
         for (boundary_index, boundary) in timeline.iter().enumerate() {
-            let related = match relation {
-                TemporalRelation::PrecededBy => occurrence_indices
-                    .iter()
-                    .any(|occurrence| *occurrence < boundary_index),
-                TemporalRelation::FollowedBy => occurrence_indices
-                    .iter()
-                    .any(|occurrence| *occurrence > boundary_index),
-            };
+            let related = related_within(relation, &occurrence_indices, boundary_index, within);
             if !related {
                 continue;
             }
@@ -919,6 +958,7 @@ pub fn event_temporal_query(
     }
     Ok(EventTemporalQuery {
         format: "theseus-query-event-temporal-v1",
+        within,
         relation: relation.as_str(),
         predicate: predicate.clone(),
         service: service.map(str::to_owned),
@@ -935,6 +975,9 @@ pub fn event_temporal_query(
 /// expected values.
 #[derive(Debug, Serialize)]
 pub struct PredicateQuery {
+    /// The optional window bound the relation was evaluated with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub within: Option<usize>,
     pub format: &'static str,
     pub relation: &'static str,
     pub needle: String,
@@ -988,7 +1031,10 @@ pub fn predicate_query(
     needle: &str,
     predicate: &serde_json::Value,
     service: Option<&str>,
+    within: Option<usize>,
 ) -> Result<PredicateQuery, MomentError> {
+    validate_within(within)?;
+
     if needle.is_empty() {
         return Err(MomentError::NotFound(
             "temporal query requires a non-empty needle".to_owned(),
@@ -1042,14 +1088,7 @@ pub fn predicate_query(
             }
         }
         for (boundary_index, boundary) in timeline.iter().enumerate() {
-            let related = match relation {
-                TemporalRelation::PrecededBy => occurrence_indices
-                    .iter()
-                    .any(|occurrence| *occurrence < boundary_index),
-                TemporalRelation::FollowedBy => occurrence_indices
-                    .iter()
-                    .any(|occurrence| *occurrence > boundary_index),
-            };
+            let related = related_within(relation, &occurrence_indices, boundary_index, within);
             if !related {
                 continue;
             }
@@ -1076,6 +1115,7 @@ pub fn predicate_query(
     }
     Ok(PredicateQuery {
         format: "theseus-query-predicate-v1",
+        within,
         relation: relation.as_str(),
         needle: escaped_needle,
         predicate: predicate.clone(),
@@ -1093,6 +1133,9 @@ pub fn predicate_query(
 /// printed" is one query.
 #[derive(Debug, Serialize)]
 pub struct EventPredicateQuery {
+    /// The optional window bound the relation was evaluated with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub within: Option<usize>,
     pub format: &'static str,
     pub relation: &'static str,
     /// The relation predicate locating the anchor events.
@@ -1118,7 +1161,10 @@ pub fn event_predicate_query(
     relation_predicate: &serde_json::Value,
     where_predicate: &serde_json::Value,
     service: Option<&str>,
+    within: Option<usize>,
 ) -> Result<EventPredicateQuery, MomentError> {
+    validate_within(within)?;
+
     validate_query_predicate(relation_predicate)?;
     validate_query_predicate(where_predicate)?;
     let runs = result["runs"]
@@ -1173,14 +1219,7 @@ pub fn event_predicate_query(
             }
         }
         for (boundary_index, boundary) in timeline.iter().enumerate() {
-            let related = match relation {
-                TemporalRelation::PrecededBy => occurrence_indices
-                    .iter()
-                    .any(|occurrence| *occurrence < boundary_index),
-                TemporalRelation::FollowedBy => occurrence_indices
-                    .iter()
-                    .any(|occurrence| *occurrence > boundary_index),
-            };
+            let related = related_within(relation, &occurrence_indices, boundary_index, within);
             if !related {
                 continue;
             }
@@ -1207,6 +1246,7 @@ pub fn event_predicate_query(
     }
     Ok(EventPredicateQuery {
         format: "theseus-query-event-predicate-v1",
+        within,
         relation: relation.as_str(),
         relation_predicate: relation_predicate.clone(),
         where_predicate: where_predicate.clone(),
@@ -1222,10 +1262,11 @@ pub fn query_temporal(
     relation: TemporalRelation,
     needle: &str,
     service: Option<&str>,
+    within: Option<usize>,
 ) -> Result<TemporalQuery, MomentError> {
     let path = bundle.as_ref().join("campaign-result.json");
     let result: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
-    temporal_query(&result, relation, needle, service)
+    temporal_query(&result, relation, needle, service, within)
 }
 
 /// One in-memory collected file awaiting digest and manifest: the path
@@ -1716,7 +1757,7 @@ mod tests {
     fn temporal_relations_split_moments_around_their_occurrence() {
         let result = temporal_fixture();
         let preceded =
-            temporal_query(&result, TemporalRelation::PrecededBy, "stale", None).unwrap();
+            temporal_query(&result, TemporalRelation::PrecededBy, "stale", None, None).unwrap();
         assert_eq!(preceded.relation, "preceded_by");
         assert_eq!(preceded.occurrences.len(), 1);
         assert_eq!(preceded.occurrences[0].service, "counter");
@@ -1729,7 +1770,7 @@ mod tests {
         assert_eq!(preceded.matches[0].moment, "12000@verify-hash");
 
         let followed =
-            temporal_query(&result, TemporalRelation::FollowedBy, "stale", None).unwrap();
+            temporal_query(&result, TemporalRelation::FollowedBy, "stale", None, None).unwrap();
         assert_eq!(followed.matches.len(), 1);
         assert_eq!(followed.matches[0].boundary, "op-000-write");
         assert_eq!(followed.matches[0].moment, "7000@input-hash");
@@ -1750,6 +1791,7 @@ mod tests {
             &result,
             TemporalRelation::PrecededBy,
             "write\ncomplete",
+            None,
             None,
         )
         .unwrap();
@@ -1772,6 +1814,7 @@ mod tests {
             TemporalRelation::PrecededBy,
             "write\ncomplete",
             Some("api"),
+            None,
         )
         .unwrap();
         assert_eq!(query.service.as_deref(), Some("api"));
@@ -1787,6 +1830,7 @@ mod tests {
             TemporalRelation::PrecededBy,
             "write\ncomplete",
             Some("counter"),
+            None,
         )
         .unwrap();
         assert!(query.occurrences.is_empty());
@@ -1817,6 +1861,7 @@ mod tests {
             TemporalRelation::FollowedBy,
             &serde_json::json!({"fields": {"/event": "request", "/worker": "a"}}),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(followed.format, "theseus-query-event-temporal-v1");
@@ -1831,6 +1876,7 @@ mod tests {
             &result,
             TemporalRelation::PrecededBy,
             &serde_json::json!({"fields": {"/event": "request", "/worker": "a"}}),
+            None,
             None,
         )
         .unwrap();
@@ -1858,6 +1904,7 @@ mod tests {
             TemporalRelation::PrecededBy,
             &serde_json::json!({"fields": {"/output/value": 1}}),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(query.occurrences.len(), 1);
@@ -1870,6 +1917,7 @@ mod tests {
             TemporalRelation::PrecededBy,
             &serde_json::json!({"fields": {"/output/value": 1}}),
             Some("counter"),
+            None,
         )
         .unwrap();
         assert!(scoped.occurrences.is_empty());
@@ -1886,9 +1934,14 @@ mod tests {
             serde_json::json!({"fields": {}}),
             serde_json::json!({"event": "request"}),
         ] {
-            let error =
-                event_temporal_query(&result, TemporalRelation::PrecededBy, &predicate, None)
-                    .unwrap_err();
+            let error = event_temporal_query(
+                &result,
+                TemporalRelation::PrecededBy,
+                &predicate,
+                None,
+                None,
+            )
+            .unwrap_err();
             assert!(
                 error.to_string().contains("event predicate")
                     || error.to_string().contains("non-empty needle"),
@@ -1898,9 +1951,96 @@ mod tests {
     }
 
     #[test]
+    fn window_bounds_narrow_temporal_relations() {
+        // A three-boundary timeline: ready on op-000, stale on op-001,
+        // done on op-002.
+        let result = temporal_fixture();
+
+        // Without a window, every later boundary relates to the stale
+        // occurrence; with within 1, only the immediately adjacent one.
+        let unbounded =
+            temporal_query(&result, TemporalRelation::PrecededBy, "stale", None, None).unwrap();
+        assert_eq!(unbounded.matches.len(), 1);
+        assert_eq!(unbounded.matches[0].boundary, "op-002-verify");
+
+        let windowed = temporal_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            "stale",
+            None,
+            Some(1),
+        )
+        .unwrap();
+        assert_eq!(windowed.within, Some(1));
+        assert_eq!(windowed.matches.len(), 1);
+        assert_eq!(windowed.matches[0].boundary, "op-002-verify");
+
+        // Followed-by within 1 reaches only the write boundary.
+        let followed = temporal_query(
+            &result,
+            TemporalRelation::FollowedBy,
+            "stale",
+            None,
+            Some(1),
+        )
+        .unwrap();
+        assert_eq!(followed.matches.len(), 1);
+        assert_eq!(followed.matches[0].boundary, "op-000-write");
+
+        // A window that excludes every occurrence empties the answer.
+        let far = temporal_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            "ready",
+            None,
+            Some(1),
+        )
+        .unwrap();
+        // ready prints on op-000; the verify boundary is two boundaries
+        // later, so within 1 excludes it.
+        assert!(far.matches.is_empty(), "{far:?}");
+
+        // Window bounds apply to the composed forms too.
+        let composed = predicate_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            "stale",
+            &serde_json::json!({"fields": {"/event": "request"}}),
+            None,
+            Some(1),
+        )
+        .unwrap();
+        assert_eq!(composed.within, Some(1));
+        let event_composed = event_predicate_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            &serde_json::json!({"fields": {"/event": "read"}}),
+            &serde_json::json!({"fields": {"/event": "write"}}),
+            None,
+            Some(1),
+        )
+        .unwrap();
+        assert_eq!(event_composed.within, Some(1));
+
+        // Window 0 and oversized windows are named errors.
+        for within in [Some(0), Some(4097)] {
+            let error =
+                temporal_query(&result, TemporalRelation::PrecededBy, "stale", None, within)
+                    .unwrap_err();
+            assert!(error.to_string().contains("window"), "{error}");
+        }
+    }
+
+    #[test]
     fn temporal_queries_reject_empty_needles() {
-        let error = temporal_query(&temporal_fixture(), TemporalRelation::PrecededBy, "", None)
-            .unwrap_err();
+        let error = temporal_query(
+            &temporal_fixture(),
+            TemporalRelation::PrecededBy,
+            "",
+            None,
+            None,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("non-empty needle"), "{error}");
     }
 
@@ -1940,6 +2080,7 @@ mod tests {
             "stale",
             &serde_json::json!({"fields": {"/event": "request", "/worker": "a"}}),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(query.format, "theseus-query-predicate-v1");
@@ -1962,6 +2103,7 @@ mod tests {
             "stale",
             &serde_json::json!({"fields": {"/event": "request", "/worker": "a"}}),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(followed.matches.len(), 1);
@@ -1974,6 +2116,7 @@ mod tests {
             TemporalRelation::PrecededBy,
             "stale",
             &serde_json::json!({"fields": {"/event": "absent"}}),
+            None,
             None,
         )
         .unwrap();
@@ -1993,6 +2136,7 @@ mod tests {
             "stale",
             &serde_json::json!({"fields": {"/event": "request"}}),
             Some("counter"),
+            None,
         )
         .unwrap();
         assert_eq!(scoped.occurrences.len(), 1);
@@ -2007,6 +2151,7 @@ mod tests {
             "stale",
             &serde_json::json!({"fields": {"/event": "request"}}),
             Some("api"),
+            None,
         )
         .unwrap();
         assert!(api_needle.occurrences.is_empty());
@@ -2042,7 +2187,7 @@ mod tests {
                         "none": {"fields": {"/kind": "stop"}}}]
         });
         let query =
-            event_temporal_query(&result, TemporalRelation::PrecededBy, &rich, None).unwrap();
+            event_temporal_query(&result, TemporalRelation::PrecededBy, &rich, None, None).unwrap();
         assert_eq!(query.occurrences.len(), 1);
         assert_eq!(query.matches.len(), 1);
         assert_eq!(query.matches[0].boundary, "op-001-read");
@@ -2053,7 +2198,7 @@ mod tests {
             "fields": {"/event": "write"}
         });
         let pathed =
-            event_temporal_query(&result, TemporalRelation::PrecededBy, &path, None).unwrap();
+            event_temporal_query(&result, TemporalRelation::PrecededBy, &path, None, None).unwrap();
         assert_eq!(pathed.occurrences.len(), 1);
 
         // Nested any/none lists compose.
@@ -2063,7 +2208,8 @@ mod tests {
             "none": [{"fields": {"/tag": "final"}}]
         });
         let nested_query =
-            event_temporal_query(&result, TemporalRelation::PrecededBy, &nested, None).unwrap();
+            event_temporal_query(&result, TemporalRelation::PrecededBy, &nested, None, None)
+                .unwrap();
         assert_eq!(nested_query.occurrences.len(), 1);
     }
 
@@ -2082,9 +2228,14 @@ mod tests {
             serde_json::json!({"query": 3}),
         ];
         for predicate in cases {
-            let error =
-                event_temporal_query(&result, TemporalRelation::PrecededBy, &predicate, None)
-                    .unwrap_err();
+            let error = event_temporal_query(
+                &result,
+                TemporalRelation::PrecededBy,
+                &predicate,
+                None,
+                None,
+            )
+            .unwrap_err();
             assert!(error.to_string().contains("event predicate"), "{error}");
         }
     }
@@ -2116,6 +2267,7 @@ mod tests {
             &serde_json::json!({"fields": {"/event": "stale"}}),
             &serde_json::json!({"fields": {"/event": "request", "/retry": true}}),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(query.format, "theseus-query-event-predicate-v1");
@@ -2136,6 +2288,7 @@ mod tests {
             &serde_json::json!({"fields": {"/event": "stale"}}),
             &serde_json::json!({"fields": {"/event": "stale"}}),
             None,
+            None,
         )
         .unwrap();
         assert!(same.matches.is_empty());
@@ -2145,6 +2298,7 @@ mod tests {
             TemporalRelation::FollowedBy,
             &serde_json::json!({"fields": {"/event": "stale"}}),
             &serde_json::json!({"fields": {"/event": "request"}}),
+            None,
             None,
         )
         .unwrap();
@@ -2157,6 +2311,7 @@ mod tests {
             TemporalRelation::PrecededBy,
             &serde_json::json!({"fields": {"/event": "stale"}}),
             &serde_json::json!({"fields": {"/event": "absent"}}),
+            None,
             None,
         )
         .unwrap();
@@ -2191,6 +2346,7 @@ mod tests {
                 &relation_predicate,
                 &where_predicate,
                 None,
+                None,
             )
             .unwrap_err();
             assert!(error.to_string().contains("event predicate"), "{error}");
@@ -2205,6 +2361,7 @@ mod tests {
             TemporalRelation::PrecededBy,
             "",
             &serde_json::json!({"fields": {"/a": 1}}),
+            None,
             None
         )
         .unwrap_err()
@@ -2221,6 +2378,7 @@ mod tests {
                 TemporalRelation::PrecededBy,
                 "stale",
                 &predicate,
+                None,
                 None,
             )
             .unwrap_err();
