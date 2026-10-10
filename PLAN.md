@@ -961,16 +961,22 @@ reproducible investigation.
   continuation job — `--seed-choices campaign` explores fresh territory
   each run, with the summary published to the step summary.
 
+- The parity cycle update: the "what changed" list, the priority-gap
+  entries, and the capability matrix refreshed against everything landed
+  this cycle; the remaining named gaps are the multi-workload weighting
+  evidence, the campaign API's write-side evolution, and the
+  demand-driven coverage breadth.
+
 ## Immediate next work
 
-### 1. The parity row's seeded-ordering citation
+### 1. The second workload in tutorial 36
 
-The seeded continuation is documented in ci-gating; the parity row's
-seeded-ordering cell should cite it. The next work ties the surfaces:
+The CI experiment now runs two workloads; tutorial 36 explores only the
+first. The next work documents both:
 
-- The parity row's seeded-ordering cell references the ci-gating gate
-  workflow and tutorial 36's continuation step, so the documented
-  surfaces are discoverable from the matrix.
+- Tutorial 36's exploration step names the second workload file
+  (`second.yaml`) as an alternative input, so readers can reproduce the
+  cross-workload comparison the harness records.
 
 Sub-1x clock-rate windows
 feedback, the report surface, the serve surface, moment navigation, the
