@@ -221,6 +221,12 @@ Theseus currently has:
   0.1-0.9 slowdowns in milli-unit vclock arithmetic, and `compose
   explore --shard INDEX/TOTAL` locks one worker's deterministic,
   disjoint partition of the candidate corpus into the replay plan.
+- The shared predicate grammar on the serve routes: the event-relation
+  routes (`query/preceded-by-event/<predicate>`) and the where route
+  (`query/where/<predicate>?preceded-by|followed-by=<needle>` or
+  `?preceded-by-event|followed-by-event=<predicate>`) answer the full
+  grammar through the same functions, listed in the route manifest and
+  asserted by the serve smoke script.
 - The shared predicate grammar on queries: `--preceded-by-event` and
   `--where` accept the property layer's full predicate shape - RFC 9535
   JSONPath `query`, `where` conditions (equals, regex matches,
@@ -468,17 +474,19 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ### 1. Rich value predicates across moments
 
-The query predicates now accept the property layer's full grammar -
-JSONPath selection, where conditions, array quantifiers, nested
-all/any/none - so the remaining value-predicate work is parity in the
-other direction: the serve surface's event-field query routes evaluate
-the same grammar through the same functions:
+The grammar is now one shape everywhere: the CLI, the serve routes, and
+the property layer evaluate the same fields/where/arrays/all/any/none
+predicates. The remaining work in this direction is the parity row's
+temporal-operator gap - richer relations over complete transcripts
+(same-boundary windows, Nth-occurrence addressing, transitive
+between-moments relations) beyond the strict strictly-before/strictly-
+after pairs:
 
-- `GET /<name>/query/preceded-by-event` (and followed-by, and the
-  composed where forms) accept the full predicate and answer through
-  `predicate_matches` / `event_predicate_query`.
-- The serve smoke script asserts a grammar-rich predicate over the
-  fixtures, and the route manifest's descriptions name the grammar.
+- Design the window and occurrence operators against the retained
+  timelines' shapes, keeping the strictness contract the property
+  guards use.
+- Land them on `theseus query` and the serve grammar routes together,
+  with fixtures on both surfaces.
 
 ## Priority 6: product surface and workload compatibility
 

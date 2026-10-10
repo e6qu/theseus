@@ -407,7 +407,10 @@ own boundaries. Every query predicate accepts the property layer's full
 grammar - JSONPath selection, where conditions with comparisons, regex,
 and existence, array quantifiers, and nested all/any/none - evaluated in
 the same order as the property layer, so one grammar answers everywhere;
-capture keys stay property-side, refused by name on queries. `theseus query --moment
+capture keys stay property-side, refused by name on queries. The serve
+surface answers the same shapes over HTTP - the predicate rides as one
+percent-encoded path segment, and the `where` route names its needle or
+event relation in the query string. `theseus query --moment
 <address> --collect` turns one moment into a self-contained,
 digest-auditable artifact bundle — the boundary's full record, its
 neighbors, the decision-trace slice that produced it, and verified
