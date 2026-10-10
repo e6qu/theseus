@@ -951,20 +951,30 @@ fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec
                 )
             }
         };
-        return answer(crate::query::temporal_query(
+        let query_result = crate::query::temporal_query(
             &result,
             relation,
             &percent_decode(needle),
             service.as_deref(),
             anchor,
             within,
-        ));
+        );
+        if query_flag(query, "export") {
+            return export_answer(&bytes, query_result);
+        }
+        return answer(query_result);
     }
     // The grammar routes carry one percent-encoded JSON predicate; the
     // where route composes it with a needle or an event relation named in
     // the query string.
     if let Some(path) = route.strip_prefix("where/") {
-        return route_where(&result, &percent_decode(path), query, service.as_deref());
+        return route_where(
+            &result,
+            &bytes,
+            &percent_decode(path),
+            query,
+            service.as_deref(),
+        );
     }
     for (prefix, relation) in [
         (
@@ -995,14 +1005,18 @@ fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec
                     )
                 }
             };
-            return answer(crate::query::event_temporal_query(
+            let query_result = crate::query::event_temporal_query(
                 &result,
                 relation,
                 &predicate,
                 service.as_deref(),
                 anchor,
                 within,
-            ));
+            );
+            if query_flag(query, "export") {
+                return export_answer(&bytes, query_result);
+            }
+            return answer(query_result);
         }
     }
     // The both-sides relation: anchors on both boundaries of the match.
@@ -1093,6 +1107,7 @@ fn parse_anchor(query: &str) -> Result<Option<usize>, &'static str> {
 /// (`preceded-by-event`/`followed-by-event`).
 fn route_where(
     result: &serde_json::Value,
+    source_result: &[u8],
     encoded: &str,
     query: &str,
     service: Option<&str>,
@@ -1115,7 +1130,7 @@ fn route_where(
         }
     };
     if let Some(needle) = query_parameter(query, "preceded-by") {
-        return answer(crate::query::predicate_query(
+        let query_result = crate::query::predicate_query(
             result,
             crate::query::TemporalRelation::PrecededBy,
             needle,
@@ -1123,10 +1138,14 @@ fn route_where(
             service,
             anchor,
             within,
-        ));
+        );
+        if query_flag(query, "export") {
+            return export_answer(source_result, query_result);
+        }
+        return answer(query_result);
     }
     if let Some(needle) = query_parameter(query, "followed-by") {
-        return answer(crate::query::predicate_query(
+        let query_result = crate::query::predicate_query(
             result,
             crate::query::TemporalRelation::FollowedBy,
             needle,
@@ -1134,7 +1153,11 @@ fn route_where(
             service,
             anchor,
             within,
-        ));
+        );
+        if query_flag(query, "export") {
+            return export_answer(source_result, query_result);
+        }
+        return answer(query_result);
     }
     for (key, relation) in [
         (
@@ -1156,7 +1179,7 @@ fn route_where(
                     b"relation predicate is not JSON".to_vec(),
                 );
             };
-            return answer(crate::query::event_predicate_query(
+            let query_result = crate::query::event_predicate_query(
                 result,
                 relation,
                 &relation_predicate,
@@ -1164,7 +1187,11 @@ fn route_where(
                 service,
                 anchor,
                 within,
-            ));
+            );
+            if query_flag(query, "export") {
+                return export_answer(source_result, query_result);
+            }
+            return answer(query_result);
         }
     }
     (
@@ -1173,6 +1200,38 @@ fn route_where(
         b"where needs one of preceded-by, followed-by, preceded-by-event, followed-by-event"
             .to_vec(),
     )
+}
+
+/// Answer one query as its export bundle: the answer document beside the
+/// digest manifest, packed as one tar archive.
+fn export_answer<T: serde::Serialize, E: Into<QueryFailure>>(
+    source_result: &[u8],
+    value: Result<T, E>,
+) -> (u16, &'static str, Vec<u8>) {
+    let answer = match value {
+        Ok(answer) => match serde_json::to_value(&answer) {
+            Ok(answer) => answer,
+            Err(_) => {
+                return (
+                    500,
+                    "text/plain; charset=utf-8",
+                    b"serialization failed".to_vec(),
+                )
+            }
+        },
+        Err(error) => {
+            return match error.into() {
+                QueryFailure::NotFound => not_found(),
+                QueryFailure::Failed => {
+                    (500, "text/plain; charset=utf-8", b"query failed".to_vec())
+                }
+            }
+        }
+    };
+    match crate::query::export_query_files(source_result, &answer) {
+        Ok(files) => (200, "application/x-tar", tar_archive(&files)),
+        Err(_) => (500, "text/plain; charset=utf-8", b"query failed".to_vec()),
+    }
 }
 
 /// Not-found-shaped errors from the query and history layers. History has
@@ -1390,6 +1449,12 @@ const ROUTES: &[RouteManifestEntry] = &[
         path: "/<name>/query/surrounded-by-event/<predicate>",
         content_type: "application/json",
         description: "moments the matching events bracket on both sides",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/<relation>?export",
+        content_type: "application/x-tar",
+        description: "the query answer as an export bundle with its digest manifest",
     },
     RouteManifestEntry {
         method: "GET",
@@ -1854,6 +1919,18 @@ mod tests {
             "GET /campaign/query/preceded-by/ready?anchor=0 HTTP/1.1\r\nHost: x\r\n\r\n",
         );
         assert_eq!(status, 400);
+
+        // The export flag answers the tar bundle: the answer document
+        // beside its digest manifest.
+        let (status, content_type, body) = exchange(
+            &address,
+            "GET /campaign/query/preceded-by/ready?export HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(content_type, "application/x-tar");
+        assert!(body.contains("query-answer.json"), "{body}");
+        assert!(body.contains("manifest.json"), "{body}");
+        assert!(body.contains("theseus-query-export-v1"), "{body}");
 
         let predicate = percent_encode(r#"{"fields":{"/event":"request"}}"#);
         // The request event prints on op-000; preceded-by-event lists the
