@@ -29,6 +29,23 @@ This month closed or narrowed several named gaps:
   artifact from retained campaigns, retained on native KVM for the public
   lost-update workload in every CI run. Cross-mode campaigns land as
   committed evaluation artifacts with the next release evidence set.
+- **Investigation and delivery surface** grew an end-to-end reading loop:
+  a read-only HTTP serve surface (registry, per-bundle evidence routes,
+  rendered reports, live journals, moment and event queries, comparison
+  and weighting summaries, Range-based tailing) with a stable campaign
+  API record, a CI gate workflow, and a CI smoke script locking every
+  documented route.
+- **Weighted guidance** became evidence-driven: the guest journals (live
+  progress, run records, checkpoint economics), the exploration journal,
+  the budget sweep, and the partial-coverage reordering recording
+  isolated the novelty mechanism, and the scheduler now consumes
+  `--seed-choices` at the first decision — with four recorded
+  observations and the multi-workload harness as the standing
+  experiment.
+- **Workload breadth** gained manifest directories (rendered Helm charts
+  as campaign inputs), multi-container pods (per-container services with
+  per-container manifests), tmpfs sizing enforced by the guest init, and
+  a second bounded-choice workload feeding the weighting comparison.
 
 ## Capability matrix
 
@@ -50,22 +67,19 @@ This month closed or narrowed several named gaps:
 ## Priority gaps and the fix for each
 
 1. **Moment-addressed event log** (`(vtime, input_hash)`). Campaign
-   boundaries now carry the moment address `<vtime_ns>@<input_sha256>`,
-   giving reports and queries one stable point per operation. The open
-   work is retrieval on that address: cross-run diffing landed (`theseus
-   compare` reports both sides' moments at the diverging boundary), campaign
-   reports carry a moment log indexing every address to its bounded excerpt,
-   and `theseus query` resolves an address with previous/next navigation,
-   adjacent-moment walking, full enumeration (`--list`), and point-scoped
-   cross-run boundary diffing (`compare --at-moment`). The open work is
-   rich value predicates across moments on top of this retrieval.
+   boundaries carry the moment address `<vtime_ns>@<input_sha256>`;
+   retrieval is complete — cross-run diffing (`compare --at-moment`),
+   moment-log rendering with guest events, previous/next navigation,
+   full enumeration, and collect-able point bundles — and the reading
+   paths are documented across CLI, HTTP, and offline artifacts. The
+   open work is rich value predicates across moments on top of this
+   retrieval.
 2. **Temporal queries** (`preceded by` / `followed by` over retained
-   events). Landed at the moment-address tier: `theseus query --preceded-by
-   NEEDLE` / `--followed-by NEEDLE` list every moment whose preceding or
-   following serial evidence in the same timeline contains the needle, with
-   the guard semantics of the property layer and answers that record where
-   the needle printed. The open work is richer temporal operators and the
-   full nested property predicates evaluated over complete transcripts.
+   events). Landed at the moment-address tier, including event-field
+   relations (`--preceded-by-event`/`--followed-by-event` over RFC 9535
+   pointers with `where` comparators and nested groups). The open work is
+   richer temporal operators and the full nested property predicates
+   evaluated over complete transcripts.
 3. **Counterfactual re-execution** — fork a retained checkpoint, change one
    recorded choice or fault, re-execute, and diff the futures. Landed for
    fault decisions: `compose explore --fork-run N --replace-fault OLD=NEW`
@@ -76,39 +90,34 @@ This month closed or narrowed several named gaps:
    (operation inputs, schedules, structured choices) remains open.
 4. **Default properties** — automatic crash, completion, and OOM verdicts
    per run (`theseus:crash`, `theseus:completed`, `theseus:oom`) are
-   recorded beside declared properties without user declaration; the OOM
-   verdict classifies the kernel's own out-of-memory serial evidence, so it
-   replays like every other retained proof. Cross-run property history and
-   the assertion catalog landed (`theseus history`, `theseus history
-   --assertions`), keyed by declaration digest and assertion identity. The
-   open work is Antithesis-style assertion catalog management on top.
-5. **Custom fault interface** — a user-declared fault action (command +
-   condition + duration) inside the generated profile model. Landed:
-   `kind: custom` campaign faults run a user argv inside an image-backed
-   service at an operation barrier through the pivot shell protocol, record
-   exit status and bounded output, and never participate in terminal
-   recovery, and the standard profile now proposes custom candidates that
-   re-run each image service's own declared commands at eligible barriers.
-6. **CI surface** — a versioned campaign API over the existing evidence
-   formats, webhook-style completion notifications, and a GitHub Actions
-   trigger recipe. Landed at the CLI level: `compose explore --notify
-   COMMAND` runs a completion hook after retention with the campaign
-   directory, status, and failed properties in its environment, the gating
-   recipe is documented, and `theseus status --format json` is the one
-   versioned entry point over retained results. A hosted campaign service
-   remains Product-operation scope.
+   recorded beside declared properties; the OOM verdict classifies the
+   kernel's own out-of-memory serial evidence, and the campaign API
+   record carries the run-level summary a gate reads. Cross-run property
+   history and the assertion/choice catalogs landed (`theseus history`,
+   `--assertions`, `--choices`). The open work is Antithesis-style
+   assertion catalog management on top.
+5. **Custom fault interface** — landed: `kind: custom` campaign faults run
+   a user argv inside an image-backed service at an operation barrier
+   through the pivot shell protocol, and the standard profile proposes
+   custom candidates re-running each image service's own commands at
+   eligible barriers.
+6. **CI surface** — landed beyond the CLI: a versioned campaign API record
+   (`GET /api/campaign/<name>`, `theseus-campaign-api-v1`) over the
+   evidence formats, a route manifest pinning every serve route, a CI
+   smoke script locking them, completion notifications, and a documented
+   gate workflow asserting the record in a plain runner. A hosted
+   campaign service remains Product-operation scope.
 7. **Coverage breadth** — Java, JavaScript, .NET, Go external modules/CGO,
    Rust dynamic graphs, chosen by real workload demand. The representative
    Java path landed: `theseus coverage java` builds a generic class-load
    agent for one selected JAR, locks a class-to-offset symbol map, and the
    runner validates and symbolizes it like every other catalog. Method-level
    Java probes remain open.
-8. **Kubernetes input and parallel workers** — after the execution-side
-   priorities; packaging breadth does not compensate for a missing
-   execution capability. Parallel workers landed at the CLI level:
-   `compose explore --shard INDEX/TOTAL` partitions the candidate corpus
-   deterministically across workers with the shard retained in every
-   result. Kubernetes input and a hosted campaign service remain open.
+8. **Kubernetes input and parallel workers** — packaging breadth does not
+   compensate for a missing execution capability. Parallel workers landed
+   at the CLI level (`--shard INDEX/TOTAL`), Kubernetes input landed for
+   single-container Pods through Jobs from files or rendered-chart
+   directories, and a hosted campaign service remains open.
 
 ## Non-goals kept
 
