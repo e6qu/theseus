@@ -547,27 +547,7 @@ pub fn event_temporal_query(
 ) -> Result<EventTemporalQuery, MomentError> {
     // The predicate uses the property layer's `fields` shape: RFC 6901
     // pointers to expected values, all of which must match.
-    let Some(fields) = predicate
-        .get("fields")
-        .and_then(serde_json::Value::as_object)
-    else {
-        return Err(MomentError::NotFound(
-            "event predicate must be a JSON object with a fields map of pointer-to-value entries"
-                .to_owned(),
-        ));
-    };
-    if fields.is_empty() {
-        return Err(MomentError::NotFound(
-            "event predicate needs at least one pointer field".to_owned(),
-        ));
-    }
-    for pointer in fields.keys() {
-        if !pointer.starts_with('/') {
-            return Err(MomentError::NotFound(format!(
-                "event predicate fields must use RFC 6901 pointers starting with '/': {pointer:?}"
-            )));
-        }
-    }
+    let fields = validate_event_predicate(predicate)?;
     let runs = result["runs"]
         .as_array()
         .ok_or_else(|| MomentError::NotFound("result has no runs".to_owned()))?;
@@ -727,27 +707,7 @@ pub fn predicate_query(
             "temporal query requires a non-empty needle".to_owned(),
         ));
     }
-    let Some(fields) = predicate
-        .get("fields")
-        .and_then(serde_json::Value::as_object)
-    else {
-        return Err(MomentError::NotFound(
-            "event predicate must be a JSON object with a fields map of pointer-to-value entries"
-                .to_owned(),
-        ));
-    };
-    if fields.is_empty() {
-        return Err(MomentError::NotFound(
-            "event predicate needs at least one pointer field".to_owned(),
-        ));
-    }
-    for pointer in fields.keys() {
-        if !pointer.starts_with('/') {
-            return Err(MomentError::NotFound(format!(
-                "event predicate fields must use RFC 6901 pointers starting with '/': {pointer:?}"
-            )));
-        }
-    }
+    let fields = validate_event_predicate(predicate)?;
     let escaped_needle = String::from_utf8(
         needle
             .bytes()
@@ -832,6 +792,166 @@ pub fn predicate_query(
         relation: relation.as_str(),
         needle: escaped_needle,
         predicate: predicate.clone(),
+        service: service.map(str::to_owned),
+        occurrences,
+        matches,
+    })
+}
+
+/// The answer to one two-predicate query: every moment whose own boundary
+/// carried a guest event matching the where-predicate, related to a
+/// relation-predicate event strictly before (or after) it in the same run.
+/// This composes the event-field relations with a second predicate, so
+/// "moments that emitted the retry request after the stale marker
+/// printed" is one query.
+#[derive(Debug, Serialize)]
+pub struct EventPredicateQuery {
+    pub format: &'static str,
+    pub relation: &'static str,
+    /// The relation predicate locating the anchor events.
+    pub relation_predicate: serde_json::Value,
+    /// The where-predicate the matches' boundaries must satisfy.
+    pub where_predicate: serde_json::Value,
+    /// The service scope filter, echoed back when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    /// Every matching anchor event, verbatim.
+    pub occurrences: Vec<EventRecord>,
+    /// Every moment satisfying both predicates.
+    pub matches: Vec<MomentSummary>,
+}
+
+/// Validate one event predicate's `fields` shape, returning the pointer
+/// map or a named error.
+fn validate_event_predicate(
+    predicate: &serde_json::Value,
+) -> Result<&serde_json::Map<String, serde_json::Value>, MomentError> {
+    let Some(fields) = predicate
+        .get("fields")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Err(MomentError::NotFound(
+            "event predicate must be a JSON object with a fields map of pointer-to-value entries"
+                .to_owned(),
+        ));
+    };
+    if fields.is_empty() {
+        return Err(MomentError::NotFound(
+            "event predicate needs at least one pointer field".to_owned(),
+        ));
+    }
+    for pointer in fields.keys() {
+        if !pointer.starts_with('/') {
+            return Err(MomentError::NotFound(format!(
+                "event predicate fields must use RFC 6901 pointers starting with '/': {pointer:?}"
+            )));
+        }
+    }
+    Ok(fields)
+}
+
+/// Evaluate one two-predicate query: the relation predicate locates anchor
+/// events exactly like `event_temporal_query`; a match additionally
+/// requires its own boundary to carry a guest event matching the
+/// where-predicate.
+pub fn event_predicate_query(
+    result: &serde_json::Value,
+    relation: TemporalRelation,
+    relation_predicate: &serde_json::Value,
+    where_predicate: &serde_json::Value,
+    service: Option<&str>,
+) -> Result<EventPredicateQuery, MomentError> {
+    let relation_fields = validate_event_predicate(relation_predicate)?;
+    let where_fields = validate_event_predicate(where_predicate)?;
+    let runs = result["runs"]
+        .as_array()
+        .ok_or_else(|| MomentError::NotFound("result has no runs".to_owned()))?;
+    let mut occurrences = Vec::new();
+    let mut matches = Vec::new();
+    for (run_index, run) in runs.iter().enumerate() {
+        let timeline = run["timeline"]
+            .as_array()
+            .ok_or_else(|| MomentError::NotFound(format!("run {run_index} has no timeline")))?;
+        let mut occurrence_indices = Vec::new();
+        for (boundary_index, boundary) in timeline.iter().enumerate() {
+            let mut boundary_matches = false;
+            if let Some(events) = boundary["events"].as_object() {
+                for (event_service, lines) in events {
+                    if let Some(filter) = service {
+                        if event_service != filter {
+                            continue;
+                        }
+                    }
+                    for line in lines
+                        .as_array()
+                        .map(|lines| lines.as_slice())
+                        .unwrap_or(&[])
+                    {
+                        let Some(line) = line.as_str() else {
+                            continue;
+                        };
+                        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+                            continue;
+                        };
+                        if event_matches_predicate(&event, relation_fields) {
+                            boundary_matches = true;
+                            occurrences.push(EventRecord {
+                                run: run_index,
+                                boundary: boundary["id"].as_str().unwrap_or_default().to_owned(),
+                                operation: boundary["operation"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                                service: event_service.clone(),
+                                moment: boundary["moment"].as_str().unwrap_or_default().to_owned(),
+                                line: line.to_owned(),
+                            });
+                        }
+                    }
+                }
+            }
+            if boundary_matches {
+                occurrence_indices.push(boundary_index);
+            }
+        }
+        for (boundary_index, boundary) in timeline.iter().enumerate() {
+            let related = match relation {
+                TemporalRelation::PrecededBy => occurrence_indices
+                    .iter()
+                    .any(|occurrence| *occurrence < boundary_index),
+                TemporalRelation::FollowedBy => occurrence_indices
+                    .iter()
+                    .any(|occurrence| *occurrence > boundary_index),
+            };
+            if !related {
+                continue;
+            }
+            let boundary_service = boundary["service"].as_str().unwrap_or_default().to_owned();
+            if let Some(filter) = service {
+                if boundary_service != filter {
+                    continue;
+                }
+            }
+            if !boundary_carries_matching_event(boundary, where_fields, service) {
+                continue;
+            }
+            matches.push(MomentSummary {
+                run: run_index,
+                boundary: boundary["id"].as_str().unwrap_or_default().to_owned(),
+                service: boundary_service,
+                operation: boundary["operation"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                moment: boundary["moment"].as_str().unwrap_or_default().to_owned(),
+            });
+        }
+    }
+    Ok(EventPredicateQuery {
+        format: "theseus-query-event-predicate-v1",
+        relation: relation.as_str(),
+        relation_predicate: relation_predicate.clone(),
+        where_predicate: where_predicate.clone(),
         service: service.map(str::to_owned),
         occurrences,
         matches,
@@ -1633,6 +1753,114 @@ mod tests {
         .unwrap();
         assert!(api_needle.occurrences.is_empty());
         assert!(api_needle.matches.is_empty());
+    }
+
+    #[test]
+    fn event_predicate_queries_bind_two_predicates_on_distinct_boundaries() {
+        // The stale marker event prints on the counter boundary; the
+        // retry request prints on the final api boundary after it.
+        let result = serde_json::json!({
+            "runs": [{"index": 0, "timeline": [
+                {"id": "op-000-write", "operation": "write", "service": "api",
+                 "moment": "7000@input-hash",
+                 "events": {"api": ["{\"event\":\"request\",\"seq\":1}"]}},
+                {"id": "op-001-read", "operation": "read", "service": "counter",
+                 "moment": "9000@read-hash",
+                 "events": {"counter": ["{\"event\":\"stale\",\"seq\":2}"]}},
+                {"id": "op-002-verify", "operation": "verify", "service": "api",
+                 "moment": "12000@verify-hash",
+                 "events": {"api": ["{\"event\":\"verify\",\"seq\":3}"]}},
+                {"id": "op-003-final", "operation": "final", "service": "api",
+                 "moment": "15000@final-hash",
+                 "events": {"api": ["{\"event\":\"request\",\"retry\":true}"]}}
+            ]}]
+        });
+
+        let query = event_predicate_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            &serde_json::json!({"fields": {"/event": "stale"}}),
+            &serde_json::json!({"fields": {"/event": "request", "/retry": true}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(query.format, "theseus-query-event-predicate-v1");
+        assert_eq!(query.relation, "preceded_by");
+        assert_eq!(query.occurrences.len(), 1);
+        assert_eq!(query.occurrences[0].service, "counter");
+        assert_eq!(query.occurrences[0].boundary, "op-001-read");
+        // The write boundary carries a request without retry, the verify
+        // boundary a verify event: only the final boundary satisfies the
+        // where-predicate.
+        assert_eq!(query.matches.len(), 1);
+        assert_eq!(query.matches[0].boundary, "op-003-final");
+
+        // The same boundary may satisfy both predicates.
+        let same = event_predicate_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            &serde_json::json!({"fields": {"/event": "stale"}}),
+            &serde_json::json!({"fields": {"/event": "stale"}}),
+            None,
+        )
+        .unwrap();
+        assert!(same.matches.is_empty());
+
+        let followed = event_predicate_query(
+            &result,
+            TemporalRelation::FollowedBy,
+            &serde_json::json!({"fields": {"/event": "stale"}}),
+            &serde_json::json!({"fields": {"/event": "request"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(followed.matches.len(), 1);
+        assert_eq!(followed.matches[0].boundary, "op-000-write");
+
+        // A where-predicate nothing satisfies keeps the occurrences.
+        let empty = event_predicate_query(
+            &result,
+            TemporalRelation::PrecededBy,
+            &serde_json::json!({"fields": {"/event": "stale"}}),
+            &serde_json::json!({"fields": {"/event": "absent"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(empty.occurrences.len(), 1);
+        assert!(empty.matches.is_empty());
+    }
+
+    #[test]
+    fn event_predicate_queries_reject_malformed_predicates() {
+        let result = temporal_fixture();
+        for (relation_predicate, where_predicate) in [
+            (
+                serde_json::json!({}),
+                serde_json::json!({"fields": {"/a": 1}}),
+            ),
+            (
+                serde_json::json!({"fields": {}}),
+                serde_json::json!({"fields": {"/a": 1}}),
+            ),
+            (
+                serde_json::json!({"fields": {"/a": 1}}),
+                serde_json::json!({"fields": {"a": 1}}),
+            ),
+            (
+                serde_json::json!({"fields": {"/a": 1}}),
+                serde_json::json!("stale"),
+            ),
+        ] {
+            let error = event_predicate_query(
+                &result,
+                TemporalRelation::PrecededBy,
+                &relation_predicate,
+                &where_predicate,
+                None,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("event predicate"), "{error}");
+        }
     }
 
     #[test]

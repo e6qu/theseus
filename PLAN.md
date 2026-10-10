@@ -221,6 +221,11 @@ Theseus currently has:
   0.1-0.9 slowdowns in milli-unit vclock arithmetic, and `compose
   explore --shard INDEX/TOTAL` locks one worker's deterministic,
   disjoint partition of the candidate corpus into the replay plan.
+- Two-predicate event queries: `theseus query --where FIELDS
+  --preceded-by-event|--followed-by-event FIELDS` locates anchor events
+  with the relation predicate and keeps moments whose own boundary
+  carries a where-matching event, binding both predicates on distinct
+  boundaries (`theseus-query-event-predicate-v1`).
 - Composed value predicates across moments: `theseus query --where
   FIELDS --preceded-by|--followed-by NEEDLE` keeps the needle
   occurrences and lists only moments whose own boundary carried a guest
@@ -457,18 +462,19 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ### 1. Rich value predicates across moments
 
-The composed query landed: `theseus query --where FIELDS` filters the
-needle relations through per-boundary event-field predicates. The next
-value-predicate work composes the fields shape with the event-field
-relations themselves - `--where` beside `--preceded-by-event` - so a
-match must carry one event satisfying the relation and another (or the
-same) satisfying the where-predicate:
+The composed queries landed: `--where FIELDS` filters both the needle
+relations and the event-field relations through per-boundary predicates,
+so two-predicate questions bind on distinct boundaries. The next
+value-predicate work widens the predicate itself beyond all-equal field
+matching - comparisons (`>=` on numbers), nested conditionals (any/all
+over a pointer's array), or regex matches - shared with the property
+layer's JSON predicates:
 
-- `theseus query --where FIELDS --preceded-by-event RELATION-FIELDS`
-  answers two-predicate questions ("moments that emitted the retry
-  request after the stale marker printed").
-- Tests: composed fixtures asserting both predicates bind on distinct
-  boundaries.
+- Extend the fields shape with operator entries the property layer
+  already evaluates, on both the query surfaces and the property
+  predicates, so one grammar answers everywhere.
+- Tests: fixtures asserting each operator's acceptance and rejection on
+  the shared fixtures.
 
 ## Priority 6: product surface and workload compatibility
 

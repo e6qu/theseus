@@ -8,10 +8,10 @@ use std::process::ExitCode;
 use theseus_cli::{
     assertion_catalog, boundary_at_moment, campaign_status, capture_evaluation, cargo_coverage,
     cargo_coverage_rustc_wrapper, choice_catalog, collect_moment, compare_campaigns,
-    compare_forked_campaigns, evaluate, evaluate_compare, event_history, event_temporal_query,
-    explore, explore_compose_expect_counterexample_with, explore_compose_forked,
-    explore_compose_with, find_moment, go_coverage, java_coverage, list_events, list_moments,
-    load_compose_plan, load_plan, minimize_compose_campaign,
+    compare_forked_campaigns, evaluate, evaluate_compare, event_history, event_predicate_query,
+    event_temporal_query, explore, explore_compose_expect_counterexample_with,
+    explore_compose_forked, explore_compose_with, find_moment, go_coverage, java_coverage,
+    list_events, list_moments, load_compose_plan, load_plan, minimize_compose_campaign,
     minimize_compose_campaign_expect_counterexample, minimize_exploration_path, next_moment_in,
     predicate_query, previous_moment_in, property_history, query_campaigns, replay, replay_compose,
     replay_exploration, replay_exploration_path, replay_to, report, report_file, report_text,
@@ -50,6 +50,8 @@ const USAGE: &str = "Usage:
   theseus query campaign-dir --followed-by NEEDLE [--service NAME] [--format json]
   theseus query campaign-dir --where FIELDS --preceded-by NEEDLE [--service NAME] [--format json]
   theseus query campaign-dir --where FIELDS --followed-by NEEDLE [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --preceded-by-event FIELDS [--service NAME] [--format json]
+  theseus query campaign-dir --where FIELDS --followed-by-event FIELDS [--service NAME] [--format json]
   theseus query campaign-dir --preceded-by-event FIELDS [--service NAME] [--format json]
   theseus query campaign-dir --followed-by-event FIELDS [--service NAME] [--format json]
   theseus serve [campaign-dir... | --index registry.json] [--address ADDR]
@@ -434,14 +436,45 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 }
             }
             if let Some((relation, predicate)) = event_predicate {
-                if list
-                    || collect
-                    || moment.is_some()
-                    || navigation.is_some()
-                    || needle.is_some()
-                    || where_predicate.is_some()
-                {
+                if list || collect || moment.is_some() || navigation.is_some() || needle.is_some() {
                     return Err(USAGE.to_owned());
+                }
+                if let Some(where_fields) = where_predicate.as_ref() {
+                    let query = event_predicate_query(
+                        &result,
+                        relation,
+                        &predicate,
+                        where_fields,
+                        service_filter.as_deref(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                    if format == "json" {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&query)
+                                .map_err(|error| error.to_string())?
+                        );
+                        return Ok(());
+                    }
+                    println!("relation: {}", query.relation);
+                    println!("relation_predicate: {}", query.relation_predicate);
+                    println!("where_predicate: {}", query.where_predicate);
+                    for occurrence in &query.occurrences {
+                        println!(
+                            "occurrence	{}	{}	{}	{}",
+                            occurrence.moment,
+                            occurrence.run,
+                            occurrence.boundary,
+                            occurrence.service
+                        );
+                    }
+                    for summary in &query.matches {
+                        println!(
+                            "match	{}	{}	{}	{}",
+                            summary.moment, summary.run, summary.boundary, summary.service
+                        );
+                    }
+                    return Ok(());
                 }
                 let query =
                     event_temporal_query(&result, relation, &predicate, service_filter.as_deref())
