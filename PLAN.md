@@ -33,7 +33,7 @@ Use these labels consistently:
 | Product capability | Theseus | Gap to close |
 | --- | --- | --- |
 | Hermetic Linux execution | Partial | Execution is controlled at selected KVM, device, operation, and instrumented application boundaries, not at whole-machine instruction and interrupt granularity. |
-| Ordinary container workloads | Partial | Image-backed services and a Compose subset work; Kubernetes and broad Compose compatibility do not. |
+| Ordinary container workloads | Partial | Image-backed services, a Compose subset, and a Kubernetes subset (Pods, Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs, multi-container pods, ConfigMap/Secret volumes, manifest directories, rendered Helm charts) work; Compose breadth beyond the audited subset does not. |
 | Deterministic replay | Partial | Seeds, locked inputs, schedules, faults, checkpoints, and bundles are retained, but uncontrolled kernel and application behavior can still escape the model. |
 | Feedback-guided exploration | Partial | One bounded decision-prefix policy combines coverage, properties, topology states, structured choices, runnable sets, faults, and prior outcomes; it is not yet validated at production scale. |
 | Fault injection | Partial | Explicit and topology-derived profiles cover service lifecycle, asymmetric network degradation and partitions, storage, packet, clock operations including backward jumps and rate windows, CPU throttling, directed link clogs, and user-declared custom commands inside image-backed services, including generated candidates: the standard profile also proposes custom candidates that re-run a service's own declared commands at eligible barriers. |
@@ -42,7 +42,7 @@ Use these labels consistently:
 | Schedule exploration | Partial | A bounded instrumented GCC C pthread path controls selected synchronization; general thread, process, futex, syscall, timer, and interrupt scheduling do not. |
 | Test composition | Partial | Explicit operations and discovered Antithesis-compatible image templates use all seven lifecycle roles. Each timeline selects one template, the explorer varies bounded command concurrency, eventual checks kill live commands, and final checks join them. Production-scale adaptive command scheduling remains open. |
 | Failure investigation | Early | Replay, minimization, checkpoints, reports, history comparison, one-decision counterfactual forks with retained diffable futures, and moment-scoped temporal queries exist; interactive time travel, general interventions, and causal evidence do not. |
-| Product operation | Early | Theseus is primarily a local/self-hosted CLI; it lacks a comparable API, CI workflow, live campaign view, scalable parallel service, notification surface, and web debugger. |
+| Product operation | Early | The CLI, read-only HTTP evidence surface, live journals, campaign API record, and a documented CI gate workflow exist; a hosted campaign service and web debugger do not. |
 
 ## Verified implementation baseline
 
@@ -173,6 +173,63 @@ Theseus currently has:
   every other active fault before one, both through the terminal
   lifecycle's automatic recovery path and replay-checked like every fault.
 
+- Guest SDKs and guest events: Go, Java, C/C++, and Rust SDKs share one
+  byte-identical serial-line protocol - markers, named assertions,
+  checkpoints, bounded structured choices from `THESEUS_CHOICES`, and
+  queued JSON event lines flushed with deterministic `seq` at each
+  checkpoint. Every JSON-object line on a boundary's serial delta is
+  retained verbatim per service in the boundary record; `theseus query
+  --moment`/`--events` retrieve them, `history --events` aggregates them
+  across campaigns, and `--preceded-by-event`/`--followed-by-event`
+  relations take the property layer's RFC 6901 `fields` shape.
+- Cross-run catalogs and correlation: `history --assertions`,
+  `--choices`, and `--properties` aggregate verdicts, per-identity
+  consumed-value counts, and declaration-identity property traces across
+  campaigns; `evaluate compare` rows carry per-identity choice outcomes;
+  unified guidance counts a value's first pairing with each schedule
+  context, and `--seed-choices` seeds a fresh search's novelty set from
+  a prior campaign.
+- The weighting evidence loop: `scripts/compare_weighting_signals.sh`
+  runs seeded/unseeded arms per workload per budget with a yield
+  tabulation and cross-workload summary; CI's native-KVM job records it
+  every run. The recordings: budget 6 saturates the six-choice corpus,
+  budget 3 keeps the breadth-first prefix (novelty acts only through
+  accumulated observations), the partial-coverage seed retains a fresh
+  candidate first on both workloads, and the design note frames the
+  seed-default decision point.
+- The read-only HTTP surface: `theseus serve` answers the registry,
+  route manifest, per-bundle evidence routes (result, plan, report,
+  report.html, serial logs, tree, any retained file, live progress),
+  query routes (moments with `?next`/`?previous` navigation, events,
+  needle and event-field relations, nodes, collect archive,
+  comparison), and cross-campaign history routes - GET-only, with
+  offset and suffix Range following, asserted on every CI run by the
+  serve smoke script and walked by tutorial 43.
+- Live journals: campaign runs append `theseus-run-record-v1` and
+  `theseus-checkpoint-ledger-v1` lines and explorations append
+  `theseus-node-record-v1` and resource-ledger lines to
+  `progress.jsonl` in execution order; `status` counts them by kind,
+  `query --collect` copies the run's prefix, and the progress route
+  follows the search live.
+- Kubernetes breadth: Pods, Deployments, StatefulSets, DaemonSets,
+  ReplicaSets, and Jobs translate through one pod-spec path;
+  multi-container pods become per-container services with manifest
+  annotations; ConfigMap and Secret volumes become locked read-only
+  file mounts; a campaign input directory walks sorted manifests
+  recursively so a rendered Helm chart works as-is.
+- Clock and shard controls: `clock_rate` covers 2-16x speedups and
+  0.1-0.9 slowdowns in milli-unit vclock arithmetic, and `compose
+  explore --shard INDEX/TOTAL` locks one worker's deterministic,
+  disjoint partition of the candidate corpus into the replay plan.
+- The evidence-surface cycle: the reading-path cross-reference, the
+  landed-slice audit, the budget sweep, tutorial 10's journal step,
+  tutorial 36's choice-catalog step, tutorial 28's tmpfs step,
+  tutorial 44's coherent per-container walkthrough, the campaign API
+  record with choice outcomes and the decision-trace digest, the
+  weighting-summary route, ci-gating's gate workflow and seeded
+  continuation arm, and the parity cycle update - all recorded against
+  retained artifacts.
+
 The baseline has important limits:
 
 - Determinism depends on implemented interception points. Theseus does not yet
@@ -200,8 +257,10 @@ The baseline has important limits:
   intervention and must not claim causality.
 - Branch capture copies guest RAM into a memfd before children use private
   copy-on-write mappings; it is not zero-copy.
-- There is no Kubernetes input, hosted campaign service, live debugger,
-  temporal log query system, or broad language SDK.
+- There is no hosted campaign service or live debugger. Kubernetes and
+  Helm inputs, the moment-addressed temporal query system, and SDKs for
+  Go, Java, C, C++, and Rust have landed; JavaScript and .NET SDKs remain
+  demand-driven.
 - The current public release carries indexed amd64 native-KVM certification:
   the runtime certificate, the runtime-validation archive, and the retained
   distributed counterexample verify offline with `theseus evidence verify`.
@@ -261,42 +320,21 @@ Build a single ordered execution-decision stream that can control and replay:
 - Random and other external inputs consumed by the guest.
 - Network, storage, and process faults at exact replayable positions.
 
-Completed slices serialize handled exits and emulated device effects into one
-branch-aware machine stream while retaining each vCPU's local stream, then add
-explicit UART input, control-channel input, and virtual-clock jumps to that
-same protocol. Deterministic runs now also observe in-kernel timer deliveries —
-the x86 LAPIC timer and the aarch64 arch timer fire inside the irqchip without
-a KVM exit — and retain them as observation evidence beside each execution
-capture. An opt-in amd64 hold mode goes further: it clears asserted
-LAPIC-timer deliveries and injects them at recorded vCPU turns that exact
-replay gates, turning host-drift episode movement into a divergence instead of
-a silent pass. Arming still depends on guest counter reads, so held deliveries
-are not yet fully deterministic. Deterministic VMs no longer hand supported userspace device
-interrupts to asynchronous irqfds: they retain level and edge requests across
-checkpoints, wake a running vCPU, and inject each UART, virtio MMIO, virtio
-MSI-X, ACPI notification, or keyboard request through KVM as an exact recorded
-vCPU turn. CTRL+ALT+DEL is also an exact host-input decision. Replay gates the
-next vCPU or host actor and rejects a changed payload, interrupt, checkpoint
-prefix, missing suffix, or extra effect. Writes and read identities are gated
-before device access; read values are necessarily checked afterward. Guest
-reset is a terminal admission turn, not an asynchronous host-timed cutoff.
+Landed so far: handled exits and emulated device effects serialize into one
+branch-aware machine stream with per-vCPU local streams; UART, control-channel,
+and virtual-clock inputs join the same protocol; userspace device interrupts
+and CTRL+ALT+DEL inject as exact recorded vCPU turns; in-kernel timer
+deliveries are observed, and an opt-in amd64 hold mode injects them at
+recorded turns (arming still depends on guest counter reads). Replay gates the
+next actor and payload; guest reset is a terminal admission turn. Fixed-run
+replay enforces the complete stream; portable checkpoint-backed campaigns
+enforce its explicit host-input projection.
 
-Fixed-run replay can enforce that complete exit stream. Portable
-checkpoint-backed campaigns currently enforce its explicit host-input
-projection while retaining all intervening exits and userspace interrupt
-deliveries as evidence. Exported counterexamples preserve their global
-cross-service input order and finish at their last operation checkpoint;
-acceptance uses declared properties and controlled topology effects rather
-than unstable whole-execution fingerprints. They do not claim identical Linux
-execution or interrupt timing between controlled turns; making the full stream
-portable requires the runnable-entity and instruction-boundary control in the
-next slice.
-
-The next slice must control in-kernel timer delivery, then runnable guest
-entities, virtual-clock reads, and guest-side input consumption between KVM
-exits. Controlled injection is not general interrupt determinism: the guest
-can still service an injected interrupt at an uncontrolled instruction
-boundary.
+The next slices, in order: fully deterministic in-kernel timer arming, then
+runnable guest entities, virtual-clock reads, and guest-side input consumption
+between KVM exits. Controlled injection is not general interrupt determinism:
+the guest can still service an injected interrupt at an uncontrolled
+instruction boundary.
 
 Move control into the lowest practical kernel, hypervisor, or paravirtualized
 boundary. Application instrumentation may expose semantics and coverage, but
@@ -322,10 +360,8 @@ search system modeled on the workflow Antithesis exposes.
   virtual-clock inputs already use the machine stream.
 - Reuse checkpoints at common prefixes and explore alternative suffixes.
 - Combine coverage novelty, property progress, rare states, fault outcomes,
-  schedule outcomes, and execution cost in the search policy. The
-  `--max-runs`/`--guidance` exploration overrides now make fixed-budget
-  cross-policy comparisons a one-command affair; retained side-by-side
-  comparisons on the public workloads remain the open evidence.
+  schedule outcomes, and execution cost in the search policy, with retained
+  side-by-side comparisons on the public workloads as the evidence.
 - Add structured choice APIs with immediate-use semantics so the engine can
   learn which generated values matter.
 - Make every discovered execution replayable from an exact decision prefix;
@@ -368,15 +404,12 @@ Antithesis without constructing low-level campaign schedules by hand.
 
 - Let the explorer vary command ordering, parallelism, structured inputs,
   faults, and schedules while keeping lifecycle contracts intact.
-- CPU throttling, directed link clogs, and guest-clock rate windows are
-  explicit campaign faults and `standard`-profile candidates now, and clock
-  jumps move backward as well as forward. User-declared `custom` faults
-  exist as declared barrier faults, and the generated standard profile now
-  proposes custom candidates from a service's own declared commands.
-- Quiet windows and fault windows are campaign inputs now: `until` closes a
-  recoverable fault at a named barrier and `quiet: [{before: operation}]`
-  recovers every other active fault before one, both through the terminal
-  lifecycle's automatic recovery path.
+- Grow the explicit fault set - CPU throttling, directed link clogs,
+  guest-clock rate windows, backward clock jumps, and user-declared
+  `custom` barrier faults - while keeping every fault recoverable,
+  replay-checked, and composable with the others.
+- Extend lifecycle-aware fault windows (`until`, `quiet`) beyond the
+  terminal recovery path as the fault model grows.
 
 Exit when an ordinary distributed system can bring its existing test commands
 and have Theseus autonomously compose hundreds of replayable scenarios across
@@ -387,23 +420,19 @@ parallelism, inputs, faults, and schedules.
 Turn retained evidence into an investigation workflow comparable to
 Antithesis reports and multiverse debugging.
 
-- `always_or_unreachable` exists as a campaign property kind. Make property
-  observations first-class search feedback.
+- Make property observations first-class search feedback.
 - Provide supported assertion, event, and structured-randomness APIs for C,
   C++, Rust, Go, and Java, while retaining a language-neutral JSON event
-  path. The Rust SDK and the Go module cover those two languages today.
+  path.
 - Capture stdout, stderr, structured events, faults, decisions, coverage,
   properties, and user artifacts on one ordered timeline.
-- Add textual, structured, and temporal queries such as preceded-by and
-  followed-by over retained event data. Moment-space `--preceded-by` and
-  `--followed-by` relations landed in `theseus query`; richer temporal
-  operators over complete transcripts remain open.
-- Navigate to any retained checkpoint, change one controlled choice or fault,
-  re-execute, and compare alternative futures. Fault-decision forks exist now
-  (`compose explore --fork-run` with `compare --forked`); navigating to an
-  arbitrary retained checkpoint and changing arbitrary choices remain open.
-- Campaign reports display each future's observed failure frequency from the
-  retained timelines. Causal language still requires a recorded intervention.
+- Add richer temporal operators over complete transcripts beyond the
+  moment-space needle and event-field relations.
+- Navigate to any retained checkpoint, change one controlled choice or
+  input, re-execute, and compare alternative futures beyond the
+  fault-decision forks.
+- Report causal language only with a recorded intervention; render each
+  future's observed failure frequency from the retained timelines.
 - Allow users to collect artifacts immediately before and after a selected
   property violation or event.
 
@@ -411,581 +440,26 @@ Exit when a user can move from a failed property to its relevant logs and
 decisions, fork an earlier state, test an alternative, and share the complete
 reproducible investigation.
 
-- Campaign sharding: `compose explore --shard INDEX/TOTAL` locks one
-  worker's deterministic partition of the candidate corpus into the replay
-  plan - disjoint, byte-stable shards whose union is the whole corpus -
-  with the shard identity retained in every result and surfaced by
-  `theseus status`.
-- A Go guest SDK: `sdk/go` exposes the Rust SDK's vocabulary - markers,
-  named assertions, operation checkpoints, bounded structured choices
-  consumed from `THESEUS_CHOICES`, host events, and the command receiver -
-  over the same byte-identical serial-line protocol, with injectable
-  transports and protocol tests that run in CI.
-- A Java guest SDK: `sdk/java` mirrors the Go module's vocabulary and
-  byte-identical protocol as a single-package dependency, with a
-  self-checking protocol test that runs in CI.
-- Guest-side event export: the Go and Java SDKs batch application events
-  and flush them as ordered JSON lines at each checkpoint - deterministic
-  sequence numbers, sorted keys, no wall clock - so guest events join the
-  serial timeline in the same shape the property layer evaluates.
-- Ordered event indexing: every JSON-object line on a campaign boundary's
-  serial delta is retained verbatim per service (capped at 64 per
-  boundary) in the boundary record, and the query surface retrieves them:
-  `--moment` returns the exact emitted lines, `--events` lists the whole
-  timeline.
-- The retained guidance comparison on native KVM:
-  `scripts/run_native_guidance_comparison.sh` explores the public
-  lost-update workload under every guidance mode at one fixed budget in
-  every CI run, retaining the campaigns and the
-  `theseus evaluate compare` artifact as workflow evidence alongside the
-  runtime certification.
-
-- A guidance comparison harness: `theseus evaluate compare campaign-dir...`
-  emits the committed side-by-side artifact - per-mode status, failed
-  timelines and properties, retained novelty, and checkpoint economics,
-  read from retained results and rejected when the corpora or budgets
-  differ - with a resumable driver script
-  (`scripts/compare_guidance_modes.sh`) that explores every guidance mode
-  at one fixed budget.
-
-- The retained guidance comparison on the public lost-update workload:
-  `scripts/run_native_guidance_comparison.sh` explores tutorial 30 under
-  every guidance mode at one fixed budget inside the published runtime on
-  native KVM in every CI run, and retains the campaigns plus the
-  `theseus evaluate compare` artifact as workflow evidence. The committed
-  evaluation artifact - the comparison digest beside the workload's
-  evaluation lockfile - lands with the next amd64 release evidence set.
-
-- Kubernetes manifest input through a documented supported environment:
-  Pods and Deployments with exactly one container and ClusterIP Services
-  translate into the same locked plan the Compose path produces — argv,
-  literal environment, read-only roots, and selector-driven network
-  membership — with everything outside the subset rejected by name and
-  per-service Theseus manifests defaulted and annotation-overridable.
-- ConfigMaps and Secrets as locked service files: `configMap` and `secret`
-  volumes translate into per-key read-only file mounts at the declared
-  `mountPath` (ConfigMap `data`, Secret `data` base64 and `stringData`),
-  hashed into the plan like every input and flowing through the same
-  config/secret evidence pipeline as Compose services.
-
-- Ordered event timelines as first-class query input: the runner indexes
-  every JSON-object line on a boundary's serial delta as a verbatim
-  guest event (per service, capped), the boundary record carries it, and
-  `theseus query --moment` returns the exact emitted lines while
-  `query --events` lists the whole timeline - moment address, boundary,
-  service, line - with `--service` narrowing.
-
-- Moment-log rendering of guest events: the report's moment log renders
-  each indexed event verbatim with the emitting service attributed, in the
-  same self-contained static page, and the Operation boundaries table
-  gains a Guest events column beside the bounded serial excerpt.
-- Cross-run event history: `theseus history --events` lists every indexed
-  guest event across the named campaigns — moment address, boundary,
-  emitting service, verbatim line — in the same versioned JSON conventions
-  as the assertion catalog.
-- Event-aware temporal relations: `theseus query --preceded-by-event
-  FIELDS` and `--followed-by-event FIELDS` take the property layer's
-  `fields` shape — RFC 6901 pointers to expected values, all matching one
-  retained guest event — with occurrences carrying the verbatim line and
-  the same strictness contract as the needle form.
-- Sub-1x clock-rate windows: `clock_rate` accepts `rate` between 0.1 and
-  0.9 (one decimal) alongside 2-16 speedups. The engine's vclock
-  represents rates in milli-units — whole multipliers stay byte-stable —
-  sub-1x rates floor per quantum as a pure function of the tick count,
-  snapshots gain an optional `rate_milli` field that old bundles restore
-  without, and the backward-jump floor bounds at the slowest supported
-  rate.
-- A C/C++ guest SDK: `theseus.h` mirrors the Go and Java vocabulary -
-  markers, named assertions, checkpoints, bounded structured choices, and
-  queued JSON event lines with a deterministic `seq` - as a
-  dependency-free header usable from any guest program, with the
-  event batch nesting under `event` in the flushed line (C has no JSON
-  parser, so predicates address `/event/...`).
-
-- A cross-run assertion catalog: `theseus history --assertions` aggregates
-  every retained `THES:ASSERT:name:pass|fail` serial line across the named
-  campaigns — pass/fail counts per assertion identity and per campaign,
-  with totals — so a failure-rate regression across campaigns is one
-  machine-readable query away. Serial-less bundles catalog as empty
-  counts.
-
-- Event export in the Rust SDK: `TtyChannel::event` queues one JSON
-  object and `flush_events` writes the ordered lines before each
-  checkpoint, nested under `event` with a deterministic `seq` — the C
-  contract — and the channel now accepts injectable transports so the
-  protocol is testable without a UART.
-
-- Kubernetes controllers: the documented subset covers Pods, Deployments,
-  StatefulSets, DaemonSets, ReplicaSets, and Jobs — all through the same
-  pod-spec path with one-container rejection contracts.
-
-- Context-weighted choice feedback: unified guidance counts a consumed
-  value's first pairing with each schedule context, and every run records
-  the consumed values beside its choice records.
-
-- Consumed-choice coverage: `theseus report` renders each run's choice
-  feedback in a dedicated section, and `evaluate compare` records distinct
-  choice values and summed first-seen contexts per mode.
-
-- A read-only HTTP surface: `theseus serve` answers verbatim evidence
-  routes (result, plan, report, serial logs) and query routes (moments,
-  events, needle relations) for named campaigns, refusing every non-GET
-  request.
-
-- Moment navigation: `GET /<name>/query/moment/<moment>` resolves one
-  address to its boundary evidence, and `?next`/`?previous` walk the
-  timeline's neighboring moments.
-
-- Cross-campaign history routes: `/history/properties`,
-  `/history/assertions`, and `/history/events` aggregate the whole served
-  set through the same functions the CLI uses.
-
-- Grammar-locked choice bounds: an input grammar's plan records the bound
-  each choice variable implies beside the grammar and on every generated
-  case, and a declared bound that disagrees with the cases is rejected at
-  plan time by name.
-
-- Comparison route: `GET /compare?campaigns=a,b` produces the
-  guidance-comparison artifact over named served campaigns under the
-  CLI's corpus and budget rules.
-
-- Serve discovery: a directory argument serves every child bundle (sorted
-  by name), and files, empty directories, and duplicate names are refused.
-
-- Bundle-kind coverage: serve discovery and the `result`/`report` routes
-  accept campaign, exploration, and topology bundles through their
-  versioned results; history and compare scope to campaign bundles, and
-  history answers the empty shapes when none are served.
-
-- Exploration node routes: `GET /<name>/query/nodes` lists the retained
-  search tree with replay and minimize commands, and
-  `GET /<name>/query/node/<seed-path>` resolves one node.
-
-- The campaign registry: `theseus serve --index registry.json` serves a
-  versioned manifest's named bundles with kind-labeled index entries, and
-  duplicates, missing directories, and result-less directories are refused
-  by name.
-
-- The bundle tree route: `GET /<name>/tree` answers the versioned
-  `theseus-bundle-tree-v1` listing - every retained file, relative path
-  and byte size, sorted - so retained artifacts are discoverable.
-
-- The retained-file route: `GET /<name>/file/<path>` serves any file the
-  tree lists with extension-implied content types; traversal segments,
-  symlinks, and unlisted paths are refused.
-
-- The progress journal: every completed timeline's progress line also
-  lands in the bundle as `progress.jsonl`, and `GET /<name>/progress`
-  serves it, so a CI job or the serve surface follows the search live.
-- The Compose `env_file` directive (single and list forms, locked literal
-  values, `environment` precedence, and refusals) had already landed; the
-  queue was stale and the slice now sits in the verified baseline.
-
-- The live retained-run surface: the progress journal appends one bounded
-  `theseus-run-record-v1` per retained run - index, status, operations,
-  faults, and the selection reason - and `GET /<name>/progress` stays the
-  single live surface over the journal.
-
-- The exploration live journal: the explorer appends one bounded
-  `theseus-node-record-v1` per captured timeline in expansion order, and
-  `GET /<name>/progress` follows an exploration live; the deterministic
-  explorer test asserts the journals are byte-identical across runs.
-
-- The explorer live serial tails: each node record carries the captured
-  serial byte count, and the deterministic explorer test asserts the
-  counts match the retained logs exactly.
-
-- The expansion ledger: the explorer journals one bounded resource line
-  per expansion round - rounds, captured timelines, and cumulative dirty
-  pages so far - the follower's cost curve while the search runs.
-
-- The campaign live ledger: the progress journal appends one bounded
-  `theseus-checkpoint-ledger-v1` per run - nodes, reuses, prefix captures
-  and restores, retained memory bytes - and `GET /<name>/progress` serves
-  the reuse curve through the unchanged route.
-
-- The hosted campaign registry tutorial: tutorial 43 explores one
-  workload under two guidance modes, names both campaigns in a versioned
-  registry, and walks the evidence over the local read-only HTTP surface.
-
-- The served-registry smoke script: `scripts/tests/test_serve_smoke.py`
-  starts `theseus serve --index` over recorded fixtures on each CI run and
-  asserts every documented route's documented status, including the
-  broken-registry startup refusal and directory discovery.
-
-- The interactive report over HTTP: `GET /<name>/report.html` serves the
-  full HTML report without writing files, and the index page links it;
-  tutorial 43's recorded example serves it without KVM.
-
-- The serve route manifest: `GET /routes` answers the versioned
-  `theseus-serve-routes-v1` list - method, path shape, content type, and
-  description per route - and the smoke script checks its probes against
-  the manifest.
-
-- The journal polling contract: the tutorial documents offset-based
-  following over the append-only journal, and the smoke script asserts
-  `Content-Length` integrity and the prefix property across two polls.
-
-- Range requests: `GET /<name>/progress` honors `Range: bytes=N-` with a
-  206 suffix response (past-the-end offsets answer 416 with the current
-  length), so a follower fetches only new bytes between polls; tutorial
-  43's follower loop and the smoke script exercise it.
-
-- The report's serial tails: the exploration report reads each node's
-  retained log size and renders the byte count beside the log path in
-  both the HTML tree and the markdown recipes, the same completeness
-  signal the live journal carries.
-
-- The campaign checkpoint-economics section: the compose report renders
-  the retained search evidence - captures, reuses, restores, retained
-  bytes - as a dedicated section in both the HTML and markdown reports.
-
-- The cross-campaign choice catalog: `theseus history --choices` and
-  `GET /history/choices` aggregate every consumed choice value per
-  identity with per-campaign run and failed-run counts - the correlation
-  seed between generated values and outcomes. (The queued
-  economics-on-serve item was already satisfied: comparison rows have
-  recorded checkpoint nodes and reuses since the guidance-comparison
-  harness.)
-
-- Choice outcomes in the comparison: `evaluate compare` rows carry
-  per-identity outcomes - runs and failed runs per consumed value - so a
-  comparison shows which generated values correlated with failures in
-  which mode.
-
-- The choice catalog's text output: each per-campaign count line carries
-  the failure share (percentage) beside the counts, and an integration
-  test pins the text and JSON shapes end-to-end.
-
-- The correlation cross-references: the parity analysis records the
-  catalog and comparison columns as the addressed correlation surfaces,
-  and the exploration guide links both from the structured-choices
-  section.
-
-- The guidance-weighting follow-up: `compose explore --seed-choices
-  prior-campaign` reads the prior bundle's consumed choice identities
-  into unified guidance's novelty set, so a fresh search treats
-  already-consumed values as known and prefers unexplored ones; the
-  seeding rides the locked plan, so replay verifies the same input.
-
-- The seeded-guidance documentation: the parity row narrows to weighting
-  signals beyond first-seen novelty, and the structured-choices guide
-  documents the `--seed-choices` continuation workflow.
-
-- The seeded continuation in tutorial 36: a second exploration seeds its
-  novelty from the first campaign's consumed identities, and the tutorial
-  shows the seed riding the locked plan for replay.
-
-- The journal in collected moments: `theseus query --collect` copies the
-  progress journal's prefix for the collected run - progress line, run
-  record, and checkpoint ledger - so the evidence bundle carries the live
-  account beside the boundary window. (The seeded-replay regression the
-  queue named was already covered: CI's KVM runner tests pin the seeding
-  semantics.)
-
-- The journal in the status surface: `theseus status` counts the
-  journal's lines by kind and records the last checkpoint ledger's node
-  and reuse counts, so the search's shape is readable without JSONL.
-
-- The collect cross-references: the query section's collect paragraph
-  names `progress.jsonl` beside the boundary and serial slices, and the
-  parity delivery row records the live journal's four surfaces (serve
-  route, Range polls, collect prefix, status summary).
-
-- The collect route: `GET /<name>/query/moment/<moment>?collect` answers
-  one ustar archive with the CLI's collected files - boundary record,
-  journal prefix, decision trace, serial slices, digest manifest - built
-  in-memory by the same collection logic.
-
-- The collect route in the smoke script: the CI script untars a
-  `?collect` archive with Python's `tarfile` and asserts the boundary
-  record, journal prefix, and digest manifest against the fixtures; the
-  route manifest lists the collect shape.
-
-- Kubernetes manifest directories: a campaign input directory walks its
-  sorted `.yaml`/`.yml` manifests recursively - a rendered Helm chart
-  (`helm template --output-dir` layout) works as-is; empty directories,
-  non-YAML directories, and non-Kubernetes documents are refused by name.
-
-- The Helm walkthrough: tutorial 44 renders a one-service chart with
-  `helm template --output-dir`, validates the rendered directory as the
-  campaign input, and inspects the locked plan - with the explore
-  conversion pointed at tutorial 15's flow.
-
-- The Compose breadth audit: [docs/audits/2026-10-compose-breadth.md](docs/audits/2026-10-compose-breadth.md) records every unsupported common field with its out-of-scope reason, and the workload-packaging gap links it.
-
-- tmpfs sizing, end to end: the short `tmpfs` form accepts a `size=`
-  suffix locked into the plan, and the guest init mounts with the
-  kernel-enforced byte cap.
-
-- Range on the journal and log routes: `bytes=N-` answers a 206 suffix
-  (416 past the end) on the journal, the serial route, and the file
-  route, so a follower tails a guest's log while the search runs; the
-  smoke script locks both follower patterns.
-
-- The breadth-audit link: the Compose subset section points at the
-  breadth audit's unsupported table, so a reader with an unsupported
-  field finds the reason instead of only the rejection.
+The moment space's retrieval, navigation, and event-field relations,
+the live journals, the serve surface, the history routes, the
+comparison route, and the campaign registry all landed and are
+described in the verified baseline; the parity analysis tracks the
+remaining cross-priority gaps, including the hosted campaign service
+and demand-driven coverage breadth for JavaScript and .NET.
 
 ## Immediate next work
 
-- The seeded-choice walkthrough: the structured-choices guide's seeding
-  paragraph carries the two-command flow and the replay-plan grep.
+### 1. Rich value predicates across moments
 
-- The choice-catalog cross-references: the history section's catalog
-  paragraph names the serve route, and the guide's correlation paragraph
-  references the aggregation by route.
+The moment-addressing and retrieval layer is complete; the open work is
+value predicates evaluated across moments, on top of that retrieval:
 
-- The weighting design note: the exploration guide records the candidate
-  signals (context novelty, choice-outcome correlation, witnesses,
-  checkpoint economics) and the ranking experiment - no policy change
-  ships before it.
-
-- The weighting comparison harness: `scripts/compare_weighting_signals.sh`
-  explores one workload seeded and unseeded at one fixed budget and
-  emits the comparison artifact plus the cross-campaign choice catalog;
-  the parity row and the design note link it as the required experiment.
-
-- The harness's yield tabulation: the script reduces the two campaigns
-  and the choice catalog to `tabulation.md` - per arm, runs, failed runs,
-  witnesses, and witnesses per run, plus the top failed-run shares per
-  consumed identity.
-
-- Multi-container pods: each container of a pod translates into its own
-  service (`<pod>-<container>`) with a per-container manifest annotation,
-  and the rejected-subset list narrows accordingly.
-
-- The breadth audit's multi-container entry: the supported list records
-  that Kubernetes multi-container pods translate into per-container
-  services with the per-container manifest annotation, and the parity
-  row's workload gap narrows to Compose breadth only.
-
-- Tutorial 44's sidecar step: the chart renders a log-forwarder
-  container beside the workload, each with its own manifest annotation,
-  and the walkthrough names the two `<pod>-<container>` services the
-  plan locks.
-
-- The breadth audit's multi-container entry: the supported list records
-  that Kubernetes multi-container pods translate into per-container
-  services with the per-container manifest annotation, and the parity
-  row's workload gap narrows to Compose breadth only.
-- `depends_on` conditions (`service_started`, `service_healthy` with the
-  health-evidence requirement) were already implemented and validated;
-  the speculative queue item is retired.
-
-- The recorded weighting experiment: CI's native-KVM job runs the
-  harness on tutorial 36's workload (seeded and unseeded at budget 6)
-  and retains the campaigns, comparison, choice catalog, and tabulation
-  as the `weighting-experiment` artifact; the harness passes extra
-  explore args through (`--expect-counterexample`).
-
-- The recorded weighting experiment: CI's native-KVM job runs the
-  harness on tutorial 36's workload (seeded and unseeded at budget 6,
-  asserting the `corrupt_result_is_unreachable` counterexample) and
-  retains the campaigns, comparison, choice catalog, and tabulation as
-  the `weighting-experiment` artifact.
-
-- The recorded experiment's citation: the design note and the parity row
-  reference CI's retained `weighting-experiment` artifact, so the
-  ranking reads recorded evidence rather than a runnable promise.
-
-- The recorded weighting experiment: CI's native-KVM job runs the
-  harness on tutorial 36's workload and retains the campaigns,
-  comparison, choice catalog, and tabulation as the
-  `weighting-experiment` artifact; the run also caught and fixed the
-  tutorial's guest sizing, and the conversion path now fails loudly
-  when a rootfs exceeds the declared guest memory.
-
-- The conversion guard in the image guide: the container-images guide's
-  conversion section names the rootfs-memory guard, the error text, and
-  the `mem_size_mib` fix.
-
-- The experiment's first results: the first recording saturated the
-  six-choice corpus (identical coverage, no observable ordering), and
-  the design note records that a discriminating experiment needs a
-  budget below the corpus size.
-
-- The sub-budget experiment: at budget 3 the seeded run retained the
-  same breadth-first prefix as the unseeded run - the novelty seed
-  affects the ranking only after observations accumulate - recorded
-  beside the saturation observation.
-
-- The budget-6 seeded rerun: the third recording retained the identical
-  six-run sequence - the novelty seed acts only through accumulated
-  observations, so a seed alone never reorders a fresh search; the
-  comparison record is retained in the artifact.
-
-- Seed consumption at the first decision: the unified scheduler consults
-  the seed when ordering candidates - a candidate whose choice values are
-  all already consumed ranks below candidates with fresh values - so a
-  seeded fresh search starts where the prior campaign stopped; the
-  ordering test pins both polarities.
-
-- The partial-coverage seed: CI's rerun seeds from the budget-3
-  campaign (mode=0 identities consumed), so the three mode=1 candidates
-  are fresh and the seeded policy must prefer them.
-
-- The partial-seed observation: the recording confirms the prediction -
-  the budget-6 rerun seeded from the partial-coverage campaign retained
-  a fresh candidate (mode=1/retry=0) first, before filling in the seeded
-  combinations.
-
-- The weighting decision point: the design note frames the product call
-  (seed opt-in today vs a partial-coverage default) and names the wider
-  comparison the default flip would need.
-
-- The seeded arm in the guidance comparison:
-  `compare_guidance_modes.sh` adds a `unified-seeded` arm seeded from
-  the unified campaign, so committed comparison tables include seeded
-  ordering beside the modes.
-
-- The reading-surface cross-reference: the exploration guide links the
-  three reading paths (CLI, `serve` HTTP, offline collected bundles) so
-  the retained evidence is discoverable from the document readers
-  already use.
-
-- The documented-surface audit: the breadth-audit file now carries the
-  landed-slice table - reference and guide coverage complete, with four
-  additive tutorial steps named as the honest gaps.
-
-- The guest-journal tutorial step: tutorial 10's inspection step now
-  greps the progress journal's line kinds and the last checkpoint
-  ledger, and reads the status summary's journal block.
-
-- The choice-feedback tutorial step: tutorial 36 now reads
-  `theseus history --choices` over its campaigns and the report's
-  choice-feedback section before minimizing.
-
-- The tmpfs sizing tutorial step: tutorial 28's service mounts
-  `/run/scratch:size=1048576`, the plan grep shows the locked entry, and
-  the README names the refusal contract.
-
-- Tutorial 44's per-container plan grep: the walkthrough confirms both
-  `chooser-chooser` and `chooser-log-forwarder` services in the locked
-  plan, completing the audit's four tutorial gaps.
-
-- The tutorial-gap closure: all four audit gaps are closed (guest
-  journal in tutorial 10, choice feedback in 36, tmpfs sizing in 28,
-  sidecar naming in 44); the audit records complete reference, guide,
-  and tutorial coverage.
-
-- The cycle retrospective: the exploration guide records what the
-  evidence loop produced and names the deliberate next horizon
-  (multi-workload KVM comparison, demand-driven breadth).
-
-- The harness's multi-workload pass: the weighting harness accepts a
-  workload list (seeded/unseeded per workload, nested, tabulated, with a
-  cross-workload summary) and CI's KVM job runs it on every push.
-
-- The weighting summary's citation: cli/README's comparison paragraph
-  names the weighting harness and its cross-workload summary beside the
-  guidance-modes harness.
-
-- The serve protocol note: cli/README's serve paragraph pins the
-  dialect - HTTP/1.1, GET-only, Range on journals and logs,
-  Connection: close - so client authors know it without reading source.
-
-- The cross-workload summary citation: the design note names the
-  `summary.md` the multi-workload harness writes beside the per-workload
-  tabulations.
-
-- The parity weighting-row refresh: the addressed column names the
-  landed work (first-decision ordering, harness, four recordings) and
-  the remaining gap is the multi-workload evidence for a default flip.
-
-- The multi-workload recording: the harness's per-workload loop ran both
-  bounded-choice workloads, and the partial-coverage reordering
-  reproduced on the second workload (depth=2/strategy=0 retained first
-  from a depth=0-only seed).
-
-- The weighting record citation: the design note's experiment record
-  names the retained `summary.md` and `sequence-comparison.json` as the
-  per-workload evidence.
-
-- Tutorial 44's sidecar evidence step: the walkthrough's inspection
-  greps the plan for both per-container services and the report for the
-  sidecar's runtime record, completing the per-container contract end to
-  end.
-
-- Tutorial 44's coherent walkthrough: the chart carries the workload and
-  sidecar containers with per-container manifests, the plan lock
-  confirms both services, and the explore/journal step reads the live
-  account.
-
-- Tutorial 36's second workload: the walkthrough names `second.yaml` +
-  `service/second.c` (depth/strategy choices, its own corrupt condition)
-  as the cross-workload arm the weighting experiment consumes.
-
-- The budget sweep: the weighting harness accepts a comma-separated
-  budget list, running the workload set per budget (nested
-  `budget<N>/` directories) and extending the cross-workload summary
-  with per-budget rows - the saturation boundary is a first-class
-  comparison axis.
-
-- The budget-sweep recording: the sweep's per-budget rows are recorded —
-  budget 3 saturates one axis per workload, budget 6 covers the full
-  corpus, and the seeded arms kept corpus order at both budgets (the
-  partial-coverage seed remains the reordering case).
-
-- The campaign API record: `GET /api/campaign/<name>` serves the
-  versioned `theseus-campaign-api-v1` document - status, policy, run
-  counts, and journal shape - pinned by its format string as the stable
-  surface CI gates on.
-
-- The API record's choice outcomes: the campaign API record carries
-  per-identity outcome counts (runs and failed runs per consumed value)
-  beside the journal shape, and cli/README's CI-gating section cites the
-  record as the gate surface.
-
-- The weighting-summary API route: `GET /api/weighting-summary`
-  aggregates per-workload yields across every served campaign into one
-  versioned record, so a gate reads the experiment summary and the
-  campaign records from one surface.
-
-- The API record's decision-trace digest: the campaign API record
-  carries the SHA-256 digest over the retained runs' canonical decision
-  traces, so a gate verifies the audited record matches the journal
-  without fetching the full run.
-
-- The API record's decision-trace digest: the campaign API record
-  carries the SHA-256 digest over the retained runs' canonical decision
-  traces, so a gate verifies the audited record matches the journal
-  without fetching the full run.
-
-- The gate example workflow: ci-gating documents the API-record gate -
-  serve the registry, fetch `/api/campaign/<name>`, assert the format
-  string and status - completing Priority 6's CI-integration item
-  without KVM or Docker on the gating runner.
-
-- The gate's seeded continuation arm: ci-gating documents the scheduled
-  continuation job — `--seed-choices campaign` explores fresh territory
-  each run, with the summary published to the step summary.
-
-- The parity cycle update: the "what changed" list, the priority-gap
-  entries, and the capability matrix refreshed against everything landed
-  this cycle; the remaining named gaps are the multi-workload weighting
-  evidence, the campaign API's write-side evolution, and the
-  demand-driven coverage breadth.
-
-## Immediate next work
-
-### 1. The second workload in tutorial 36
-
-The CI experiment now runs two workloads; tutorial 36 explores only the
-first. The next work documents both:
-
-- Tutorial 36's exploration step names the second workload file
-  (`second.yaml`) as an alternative input, so readers can reproduce the
-  cross-workload comparison the harness records.
-
-Sub-1x clock-rate windows
-feedback, the report surface, the serve surface, moment navigation, the
-history routes, the comparison route, the grammar-locked bounds, serve
-discovery, bundle-kind coverage, the exploration node routes, and the
-campaign registry landed and are described in the
-verified baseline; the parity analysis tracks the remaining cross-priority
-gaps, including the hosted campaign service and demand-driven coverage
-breadth for JavaScript and .NET.
+- `theseus query --where FIELDS --preceded-by NEEDLE` composes the
+  property layer's RFC 6901 `fields` shape with the existing needle
+  relations, so a moment qualifies only when its neighboring events
+  carry the expected values.
+- Tests: query fixtures over retained campaigns asserting the composed
+  predicate answers against the documented fixtures.
 
 ## Priority 6: product surface and workload compatibility
 
@@ -993,7 +467,8 @@ Once the execution, exploration, and investigation loops work end to end,
 make them available as a complete product rather than a collection of CLI
 commands.
 
-- Add a stable campaign API and CI integration alongside the CLI.
+- Grow the stable campaign API record and its CI integration into a
+  hosted campaign service alongside the CLI.
 - Campaign exploration streams one structured progress line per completed
   timeline on stderr, and `--notify COMMAND` runs a completion hook after
   retention. Remaining live surface: logs, coverage, resource use, and
