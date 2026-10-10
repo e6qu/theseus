@@ -221,6 +221,20 @@ def main() -> None:
         expect(port, "/unified/query/moments", 200, "7000@input-hash")
         expect(port, "/unified/query/events", 200, '\\"event\\":\\"request\\"')
         expect(port, "/unified/query/preceded-by/write", 200)
+
+        # The grammar routes answer the shared predicate shapes: a
+        # fields predicate on the event relation, and a where predicate
+        # composed with a needle.
+        from urllib.parse import quote
+
+        predicate = quote('{"fields":{"/event":"request"}}')
+        expect(port, f"/unified/query/preceded-by-event/{predicate}", 200,
+               "theseus-query-event-temporal-v1")
+        where = quote('{"where":[{"pointer":"/event","exists":true}]}')
+        expect(port, f"/unified/query/where/{where}?followed-by=done", 200,
+               "theseus-query-predicate-v1")
+        expect(port, "/unified/query/preceded-by-event/not-json", 400)
+        expect(port, f"/unified/query/where/{predicate}", 400)
         expect(port, "/unified/query/moment/7000@input-hash", 200, "op-000-write")
         expect(port, "/unified/query/moment/7000@input-hash?next", 404)
 

@@ -1070,6 +1070,15 @@ theseus query campaign --preceded-by-event \
   '{"fields":{"/event":"request","/worker":"a"}}' --format json
 ```
 
+The serve surface answers the same queries over HTTP - the predicate is
+one percent-encoded JSON path segment, and the where route names its
+relation in the query string:
+
+```sh
+curl "localhost:8098/campaign/query/preceded-by-event/%7B%22fields%22%3A%7B%22%2Fevent%22%3A%22request%22%7D%7D"
+curl "localhost:8098/campaign/query/where/%7B%22where%22%3A%5B%7B%22pointer%22%3A%22%2Fevent%22%2C%22exists%22%3Atrue%7D%5D%7D?followed-by=done"
+```
+
 An indexed event matches when every pointer resolves on its JSON object;
 occurrences carry the verbatim line, and the matches list the moments the
 event precedes or follows inside the same timeline. The predicate accepts

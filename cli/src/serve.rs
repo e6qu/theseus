@@ -948,7 +948,112 @@ fn route_query(campaign: &ServedCampaign, rest: &str) -> (u16, &'static str, Vec
             service.as_deref(),
         ));
     }
+    // The grammar routes carry one percent-encoded JSON predicate; the
+    // where route composes it with a needle or an event relation named in
+    // the query string.
+    if let Some(path) = route.strip_prefix("where/") {
+        return route_where(&result, &percent_decode(path), query, service.as_deref());
+    }
+    for (prefix, relation) in [
+        (
+            "preceded-by-event/",
+            crate::query::TemporalRelation::PrecededBy,
+        ),
+        (
+            "followed-by-event/",
+            crate::query::TemporalRelation::FollowedBy,
+        ),
+    ] {
+        if let Some(encoded) = route.strip_prefix(prefix) {
+            let Ok(predicate) = serde_json::from_str::<serde_json::Value>(&percent_decode(encoded))
+            else {
+                return (
+                    400,
+                    "text/plain; charset=utf-8",
+                    b"event predicate is not JSON".to_vec(),
+                );
+            };
+            return answer(crate::query::event_temporal_query(
+                &result,
+                relation,
+                &predicate,
+                service.as_deref(),
+            ));
+        }
+    }
     not_found()
+}
+
+/// Answer one composed `where` query: the path carries the where
+/// predicate, the query string names the relation anchor - a needle
+/// (`preceded-by`/`followed-by`) or an event predicate
+/// (`preceded-by-event`/`followed-by-event`).
+fn route_where(
+    result: &serde_json::Value,
+    encoded: &str,
+    query: &str,
+    service: Option<&str>,
+) -> (u16, &'static str, Vec<u8>) {
+    let Ok(where_predicate) = serde_json::from_str::<serde_json::Value>(encoded) else {
+        return (
+            400,
+            "text/plain; charset=utf-8",
+            b"where predicate is not JSON".to_vec(),
+        );
+    };
+    if let Some(needle) = query_parameter(query, "preceded-by") {
+        return answer(crate::query::predicate_query(
+            result,
+            crate::query::TemporalRelation::PrecededBy,
+            needle,
+            &where_predicate,
+            service,
+        ));
+    }
+    if let Some(needle) = query_parameter(query, "followed-by") {
+        return answer(crate::query::predicate_query(
+            result,
+            crate::query::TemporalRelation::FollowedBy,
+            needle,
+            &where_predicate,
+            service,
+        ));
+    }
+    for (key, relation) in [
+        (
+            "preceded-by-event",
+            crate::query::TemporalRelation::PrecededBy,
+        ),
+        (
+            "followed-by-event",
+            crate::query::TemporalRelation::FollowedBy,
+        ),
+    ] {
+        if let Some(encoded) = query_parameter(query, key) {
+            let Ok(relation_predicate) =
+                serde_json::from_str::<serde_json::Value>(&percent_decode(encoded))
+            else {
+                return (
+                    400,
+                    "text/plain; charset=utf-8",
+                    b"relation predicate is not JSON".to_vec(),
+                );
+            };
+            return answer(crate::query::event_predicate_query(
+                result,
+                relation,
+                &relation_predicate,
+                &where_predicate,
+                service,
+            ));
+        }
+    }
+    (
+        400,
+        "text/plain; charset=utf-8",
+        b"where needs one of preceded-by, followed-by, preceded-by-event, followed-by-event"
+            .to_vec(),
+    )
 }
 
 /// Not-found-shaped errors from the query and history layers. History has
@@ -1130,6 +1235,30 @@ const ROUTES: &[RouteManifestEntry] = &[
         path: "/<name>/query/followed-by/<needle>",
         content_type: "application/json",
         description: "moments whose evidence follows the needle",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/preceded-by-event/<predicate>",
+        content_type: "application/json",
+        description: "moments whose boundary events match the predicate grammar",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/followed-by-event/<predicate>",
+        content_type: "application/json",
+        description: "moments whose boundary events match the predicate grammar",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/where/<predicate>?preceded-by|followed-by=<needle>",
+        content_type: "application/json",
+        description: "moments matching the where predicate and the needle relation",
+    },
+    RouteManifestEntry {
+        method: "GET",
+        path: "/<name>/query/where/<predicate>?preceded-by-event|followed-by-event=<predicate>",
+        content_type: "application/json",
+        description: "moments binding the where predicate and the event relation",
     },
     RouteManifestEntry {
         method: "GET",
@@ -1521,6 +1650,96 @@ mod tests {
             .unwrap_or_default()
             .to_owned();
         (status, content_type, body)
+    }
+
+    fn percent_encode(value: &str) -> String {
+        let mut encoded = String::new();
+        for byte in value.bytes() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                encoded.push(byte as char);
+            } else {
+                encoded.push_str(&format!("%{byte:02X}"));
+            }
+        }
+        encoded
+    }
+
+    #[test]
+    fn grammar_routes_answer_the_shared_predicates() {
+        let directory = tempfile::tempdir().unwrap();
+        write_bundle(directory.path());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let campaigns = collect_campaigns(&[directory.path().join("campaign")]).unwrap();
+        let running = std::sync::Arc::new(AtomicBool::new(true));
+        let flag = running.clone();
+        let server = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            while flag.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok(mut stream) => {
+                        let _ = handle_connection(&mut stream.0, &campaigns);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let predicate = percent_encode(r#"{"fields":{"/event":"request"}}"#);
+        // The request event prints on op-000; preceded-by-event lists the
+        // moment it influences (op-001), followed-by-event lists none.
+        let (status, content_type, body) = exchange(
+            &address,
+            &format!(
+                "GET /campaign/query/preceded-by-event/{predicate} HTTP/1.1\r\nHost: x\r\n\r\n"
+            ),
+        );
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(content_type, "application/json");
+        assert!(body.contains("theseus-query-event-temporal-v1"), "{body}");
+        assert!(body.contains("op-001-calculate"), "{body}");
+
+        let (status, _, body) = exchange(
+            &address,
+            &format!(
+                "GET /campaign/query/followed-by-event/{predicate} HTTP/1.1\r\nHost: x\r\n\r\n"
+            ),
+        );
+        assert_eq!(status, 200);
+        assert!(!body.contains("\"matches\": [\n    {"), "{body}");
+
+        // The where route composes with a needle: op-000 follows the
+        // "done" needle printed on op-001 and carries the request event,
+        // so the where (an exists condition) matches op-000.
+        let where_predicate = percent_encode(r#"{"where":[{"pointer":"/event","exists":true}]}"#);
+        let (status, _, body) = exchange(
+            &address,
+            &format!(
+                "GET /campaign/query/where/{where_predicate}?followed-by=done HTTP/1.1\r\nHost: x\r\n\r\n"
+            ),
+        );
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("theseus-query-predicate-v1"), "{body}");
+        assert!(body.contains("op-000-calculate"), "{body}");
+
+        // A non-JSON predicate is a 400, and where without a relation is
+        // a named 400.
+        let (status, _, body) = exchange(
+            &address,
+            "GET /campaign/query/preceded-by-event/not-json HTTP/1.1\r\nHost: x\r\n\r\n",
+        );
+        assert_eq!(status, 400, "{body}");
+        let (status, _, body) = exchange(
+            &address,
+            &format!("GET /campaign/query/where/{predicate} HTTP/1.1\r\nHost: x\r\n\r\n"),
+        );
+        assert_eq!(status, 400, "{body}");
+
+        running.store(false, Ordering::SeqCst);
+        let _ = server.join();
     }
 
     #[test]
