@@ -1072,7 +1072,22 @@ theseus query campaign --preceded-by-event \
 
 An indexed event matches when every pointer resolves on its JSON object;
 occurrences carry the verbatim line, and the matches list the moments the
-event precedes or follows inside the same timeline.
+event precedes or follows inside the same timeline. The predicate accepts
+the property layer's full grammar, so one grammar answers everywhere:
+`query` (an RFC 9535 JSONPath selecting inside the event), `fields`,
+`where` conditions (`equals`, `matches` regex, `greater_than`,
+`greater_than_or_equal`, `less_than`, `less_than_or_equal`, `exists`),
+`arrays` entries with `any`/`all`/`none` quantifiers over an array
+pointer, and nested `all`/`any`/`none` lists - evaluated in the same
+order as the property layer. `capture` and `equals_capture` bind values
+across ordered serial items, so a one-event query refuses them by name,
+and unknown keys are refused rather than ignored:
+
+```sh
+theseus query campaign --preceded-by-event \
+  '{"fields":{"/event":"write"},"where":[{"pointer":"/attempts","greater_than":2}]}' \
+  --format json
+```
 
 `--where FIELDS` composes that fields shape with the needle relations: a
 match must both relate to a needle occurrence in its run and carry a guest

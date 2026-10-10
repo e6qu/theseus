@@ -520,9 +520,9 @@ pub struct EventTemporalQuery {
     pub matches: Vec<MomentSummary>,
 }
 
-/// True when every pointer in the predicate resolves on the event to an
+/// True when every pointer in the fields map resolves on the event to an
 /// equal value.
-fn event_matches_predicate(
+fn event_matches_fields(
     event: &serde_json::Value,
     fields: &serde_json::Map<String, serde_json::Value>,
 ) -> bool {
@@ -531,6 +531,293 @@ fn event_matches_predicate(
             .pointer(pointer)
             .is_some_and(|actual| actual == expected)
     })
+}
+
+/// The nesting cap shared by validation and evaluation; deeper predicates
+/// are refused rather than recursed.
+const PREDICATE_DEPTH_LIMIT: usize = 8;
+
+/// Validate one query predicate against the shared grammar: the same
+/// fields/where/arrays/all/any/none shape the property layer evaluates on
+/// the guest side, so one grammar answers everywhere. Capture keys bind
+/// across ordered serial items, which a one-event query cannot mean, so
+/// they are refused by name.
+fn validate_query_predicate(predicate: &serde_json::Value) -> Result<(), MomentError> {
+    validate_query_predicate_at_depth(predicate, 0)
+}
+
+fn validate_query_predicate_at_depth(
+    predicate: &serde_json::Value,
+    depth: usize,
+) -> Result<(), MomentError> {
+    if depth > PREDICATE_DEPTH_LIMIT {
+        return Err(MomentError::NotFound(format!(
+            "event predicate nests deeper than {PREDICATE_DEPTH_LIMIT} levels"
+        )));
+    }
+    let Some(object) = predicate.as_object() else {
+        return Err(MomentError::NotFound(
+            "event predicate must be a JSON object with a fields map of pointer-to-value entries"
+                .to_owned(),
+        ));
+    };
+    let recognized = ["query", "fields", "where", "arrays", "all", "any", "none"];
+    if !object.keys().any(|key| recognized.contains(&key.as_str())) {
+        return Err(MomentError::NotFound(
+            "event predicate must set at least one of query, fields, where, arrays, all, any, none"
+                .to_owned(),
+        ));
+    }
+    for key in object.keys() {
+        if key == "capture" || key == "equals_capture" {
+            return Err(MomentError::NotFound(
+                "event predicate cannot use capture or equals_capture: they bind values across ordered serial items, which a one-event query cannot mean".to_owned(),
+            ));
+        }
+        if !recognized.contains(&key.as_str()) {
+            return Err(MomentError::NotFound(format!(
+                "event predicate has an unknown key: {key:?}"
+            )));
+        }
+    }
+    if let Some(query) = object.get("query") {
+        let Some(query) = query.as_str() else {
+            return Err(MomentError::NotFound(
+                "event predicate query must be an RFC 9535 JSONPath string".to_owned(),
+            ));
+        };
+        if serde_json_path::JsonPath::parse(query).is_err() {
+            return Err(MomentError::NotFound(
+                "event predicate query is not a valid RFC 9535 JSONPath".to_owned(),
+            ));
+        }
+    }
+    if object.contains_key("fields") && !object["fields"].is_object() {
+        return Err(MomentError::NotFound(
+            "event predicate fields must be an object of pointer-to-value entries".to_owned(),
+        ));
+    }
+    for key in ["where", "arrays", "all", "any", "none"] {
+        if object.contains_key(key) && !object[key].is_array() {
+            return Err(MomentError::NotFound(format!(
+                "event predicate {key} must be an array"
+            )));
+        }
+    }
+    if let Some(fields) = object.get("fields").and_then(serde_json::Value::as_object) {
+        if fields.is_empty() {
+            return Err(MomentError::NotFound(
+                "event predicate needs at least one pointer field".to_owned(),
+            ));
+        }
+        for pointer in fields.keys() {
+            if !pointer.starts_with('/') {
+                return Err(MomentError::NotFound(format!(
+                    "event predicate fields must use RFC 6901 pointers starting with '/': {pointer:?}"
+                )));
+            }
+        }
+    }
+    if let Some(conditions) = object.get("where").and_then(serde_json::Value::as_array) {
+        for condition in conditions {
+            let Some(condition) = condition.as_object() else {
+                return Err(MomentError::NotFound(
+                    "event predicate where entries must be JSON objects".to_owned(),
+                ));
+            };
+            let Some(pointer) = condition.get("pointer").and_then(serde_json::Value::as_str) else {
+                return Err(MomentError::NotFound(
+                    "event predicate where entries need a pointer".to_owned(),
+                ));
+            };
+            if !pointer.starts_with('/') {
+                return Err(MomentError::NotFound(format!(
+                    "event predicate where pointers must use RFC 6901 pointers starting with '/': {pointer:?}"
+                )));
+            }
+            let operators = [
+                "equals",
+                "matches",
+                "greater_than",
+                "greater_than_or_equal",
+                "less_than",
+                "less_than_or_equal",
+                "exists",
+            ];
+            if !condition
+                .keys()
+                .any(|key| key == "pointer" || operators.contains(&key.as_str()))
+            {
+                return Err(MomentError::NotFound(
+                    "event predicate where entries need one of equals, matches, greater_than, greater_than_or_equal, less_than, less_than_or_equal, exists".to_owned(),
+                ));
+            }
+            for key in condition.keys() {
+                if key != "pointer" && !operators.contains(&key.as_str()) {
+                    return Err(MomentError::NotFound(format!(
+                        "event predicate where entry has an unknown key: {key:?}"
+                    )));
+                }
+            }
+        }
+    }
+    if let Some(arrays) = object.get("arrays").and_then(serde_json::Value::as_array) {
+        for array in arrays {
+            let Some(array) = array.as_object() else {
+                return Err(MomentError::NotFound(
+                    "event predicate arrays entries must be JSON objects".to_owned(),
+                ));
+            };
+            let Some(pointer) = array.get("pointer").and_then(serde_json::Value::as_str) else {
+                return Err(MomentError::NotFound(
+                    "event predicate arrays entries need a pointer".to_owned(),
+                ));
+            };
+            if !pointer.starts_with('/') {
+                return Err(MomentError::NotFound(format!(
+                    "event predicate arrays pointers must use RFC 6901 pointers starting with '/': {pointer:?}"
+                )));
+            }
+            for key in ["any", "all", "none"] {
+                if let Some(nested) = array.get(key) {
+                    validate_query_predicate_at_depth(nested, depth + 1)?;
+                }
+            }
+        }
+    }
+    for key in ["all", "any", "none"] {
+        if let Some(nested) = object.get(key).and_then(serde_json::Value::as_array) {
+            for predicate in nested {
+                validate_query_predicate_at_depth(predicate, depth + 1)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// True when one where-condition holds on the event.
+fn json_condition_matches(event: &serde_json::Value, condition: &serde_json::Value) -> bool {
+    let Some(pointer) = condition.get("pointer").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let actual = event.pointer(pointer);
+    if let Some(expected) = condition.get("exists").and_then(serde_json::Value::as_bool) {
+        return actual.is_some() == expected;
+    }
+    if let Some(expected) = condition.get("equals") {
+        return actual == Some(expected);
+    }
+    if let Some(expression) = condition.get("matches").and_then(serde_json::Value::as_str) {
+        return actual
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| {
+                regex::Regex::new(expression)
+                    .map(|expression| expression.is_match(value))
+                    .unwrap_or(false)
+            });
+    }
+    let Some(actual) = actual.and_then(serde_json::Value::as_f64) else {
+        return false;
+    };
+    for (key, compare) in [
+        ("greater_than", std::cmp::Ordering::Greater),
+        ("greater_than_or_equal", std::cmp::Ordering::Greater),
+        ("less_than", std::cmp::Ordering::Less),
+        ("less_than_or_equal", std::cmp::Ordering::Less),
+    ] {
+        if let Some(expected) = condition.get(key).and_then(serde_json::Value::as_f64) {
+            let ordering = actual
+                .partial_cmp(&expected)
+                .unwrap_or(std::cmp::Ordering::Equal);
+            let satisfied = match key {
+                "greater_than" | "less_than" => ordering == compare,
+                _ => ordering == compare || ordering == std::cmp::Ordering::Equal,
+            };
+            return satisfied;
+        }
+    }
+    false
+}
+
+/// True when one nested quantifier (any, all, or none) holds over the
+/// array's elements for the nested predicate.
+fn array_quantifier_matches(
+    values: &[serde_json::Value],
+    nested: &serde_json::Value,
+    key: &str,
+) -> bool {
+    match key {
+        "any" => values.iter().any(|value| predicate_matches(value, nested)),
+        "all" => values.iter().all(|value| predicate_matches(value, nested)),
+        _ => values.iter().all(|value| !predicate_matches(value, nested)),
+    }
+}
+
+/// True when the event satisfies the shared predicate grammar - the same
+/// fields/where/arrays/all/any/none shape the property layer evaluates on
+/// the guest side, in the same order.
+fn predicate_matches(event: &serde_json::Value, predicate: &serde_json::Value) -> bool {
+    if let Some(query) = predicate.get("query").and_then(serde_json::Value::as_str) {
+        let selected = serde_json_path::JsonPath::parse(query)
+            .map(|query| !query.query(event).all().is_empty())
+            .unwrap_or(false);
+        if !selected {
+            return false;
+        }
+    }
+    if let Some(fields) = predicate
+        .get("fields")
+        .and_then(serde_json::Value::as_object)
+    {
+        if !event_matches_fields(event, fields) {
+            return false;
+        }
+    }
+    if let Some(conditions) = predicate.get("where").and_then(serde_json::Value::as_array) {
+        if !conditions
+            .iter()
+            .all(|condition| json_condition_matches(event, condition))
+        {
+            return false;
+        }
+    }
+    if let Some(arrays) = predicate
+        .get("arrays")
+        .and_then(serde_json::Value::as_array)
+    {
+        for array in arrays {
+            let Some(pointer) = array.get("pointer").and_then(serde_json::Value::as_str) else {
+                return false;
+            };
+            let Some(values) = event.pointer(pointer).and_then(serde_json::Value::as_array) else {
+                return false;
+            };
+            for key in ["any", "all", "none"] {
+                if let Some(nested) = array.get(key) {
+                    if !array_quantifier_matches(values, nested, key) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    for key in ["all", "any", "none"] {
+        if let Some(nested) = predicate.get(key).and_then(serde_json::Value::as_array) {
+            let hits = nested
+                .iter()
+                .filter(|inner| predicate_matches(event, inner))
+                .count();
+            let satisfied = match key {
+                "all" => hits == nested.len(),
+                "any" => hits > 0,
+                _ => hits == 0,
+            };
+            if !satisfied {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Evaluate a `preceded-by`/`followed-by` relation between one structured
@@ -547,7 +834,7 @@ pub fn event_temporal_query(
 ) -> Result<EventTemporalQuery, MomentError> {
     // The predicate uses the property layer's `fields` shape: RFC 6901
     // pointers to expected values, all of which must match.
-    let fields = validate_event_predicate(predicate)?;
+    validate_query_predicate(predicate)?;
     let runs = result["runs"]
         .as_array()
         .ok_or_else(|| MomentError::NotFound("result has no runs".to_owned()))?;
@@ -579,7 +866,7 @@ pub fn event_temporal_query(
                             continue;
                         };
 
-                        if event_matches_predicate(&event, fields) {
+                        if predicate_matches(&event, predicate) {
                             boundary_matches = true;
                             occurrences.push(EventRecord {
                                 run: run_index,
@@ -663,10 +950,10 @@ pub struct PredicateQuery {
 }
 
 /// True when the boundary's indexed guest events contain at least one line
-/// matching every pointer in the predicate.
+/// matching the predicate.
 fn boundary_carries_matching_event(
     boundary: &serde_json::Value,
-    fields: &serde_json::Map<String, serde_json::Value>,
+    predicate: &serde_json::Value,
     service: Option<&str>,
 ) -> bool {
     let Some(events) = boundary["events"].as_object() else {
@@ -686,7 +973,7 @@ fn boundary_carries_matching_event(
             .any(|line| {
                 line.as_str()
                     .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                    .is_some_and(|event| event_matches_predicate(&event, fields))
+                    .is_some_and(|event| predicate_matches(&event, predicate))
             })
     })
 }
@@ -707,7 +994,7 @@ pub fn predicate_query(
             "temporal query requires a non-empty needle".to_owned(),
         ));
     }
-    let fields = validate_event_predicate(predicate)?;
+    validate_query_predicate(predicate)?;
     let escaped_needle = String::from_utf8(
         needle
             .bytes()
@@ -772,7 +1059,7 @@ pub fn predicate_query(
                     continue;
                 }
             }
-            if !boundary_carries_matching_event(boundary, fields, service) {
+            if !boundary_carries_matching_event(boundary, predicate, service) {
                 continue;
             }
             matches.push(MomentSummary {
@@ -821,35 +1108,6 @@ pub struct EventPredicateQuery {
     pub matches: Vec<MomentSummary>,
 }
 
-/// Validate one event predicate's `fields` shape, returning the pointer
-/// map or a named error.
-fn validate_event_predicate(
-    predicate: &serde_json::Value,
-) -> Result<&serde_json::Map<String, serde_json::Value>, MomentError> {
-    let Some(fields) = predicate
-        .get("fields")
-        .and_then(serde_json::Value::as_object)
-    else {
-        return Err(MomentError::NotFound(
-            "event predicate must be a JSON object with a fields map of pointer-to-value entries"
-                .to_owned(),
-        ));
-    };
-    if fields.is_empty() {
-        return Err(MomentError::NotFound(
-            "event predicate needs at least one pointer field".to_owned(),
-        ));
-    }
-    for pointer in fields.keys() {
-        if !pointer.starts_with('/') {
-            return Err(MomentError::NotFound(format!(
-                "event predicate fields must use RFC 6901 pointers starting with '/': {pointer:?}"
-            )));
-        }
-    }
-    Ok(fields)
-}
-
 /// Evaluate one two-predicate query: the relation predicate locates anchor
 /// events exactly like `event_temporal_query`; a match additionally
 /// requires its own boundary to carry a guest event matching the
@@ -861,8 +1119,8 @@ pub fn event_predicate_query(
     where_predicate: &serde_json::Value,
     service: Option<&str>,
 ) -> Result<EventPredicateQuery, MomentError> {
-    let relation_fields = validate_event_predicate(relation_predicate)?;
-    let where_fields = validate_event_predicate(where_predicate)?;
+    validate_query_predicate(relation_predicate)?;
+    validate_query_predicate(where_predicate)?;
     let runs = result["runs"]
         .as_array()
         .ok_or_else(|| MomentError::NotFound("result has no runs".to_owned()))?;
@@ -893,7 +1151,7 @@ pub fn event_predicate_query(
                         let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
                             continue;
                         };
-                        if event_matches_predicate(&event, relation_fields) {
+                        if predicate_matches(&event, relation_predicate) {
                             boundary_matches = true;
                             occurrences.push(EventRecord {
                                 run: run_index,
@@ -932,7 +1190,7 @@ pub fn event_predicate_query(
                     continue;
                 }
             }
-            if !boundary_carries_matching_event(boundary, where_fields, service) {
+            if !boundary_carries_matching_event(boundary, where_predicate, service) {
                 continue;
             }
             matches.push(MomentSummary {
@@ -1753,6 +2011,82 @@ mod tests {
         .unwrap();
         assert!(api_needle.occurrences.is_empty());
         assert!(api_needle.matches.is_empty());
+    }
+
+    #[test]
+    fn event_predicates_accept_the_shared_grammar() {
+        let result = serde_json::json!({
+            "runs": [{"index": 0, "timeline": [
+                {"id": "op-000-write", "operation": "write", "service": "api",
+                 "moment": "7000@input-hash",
+                 "events": {"api": [
+                     "{\"event\":\"write\",\"seq\":1,\"tag\":\"retry-7\",\"steps\":[{\"kind\":\"go\"},{\"kind\":\"go\"}]}"
+                 ]}},
+                {"id": "op-001-read", "operation": "read", "service": "counter",
+                 "moment": "9000@read-hash",
+                 "events": {"counter": ["{\"event\":\"read\",\"seq\":2}"]}}
+            ]}]
+        });
+
+        // A where condition with comparisons, a regex, and existence,
+        // beside fields and array quantifiers.
+        let rich = serde_json::json!({
+            "fields": {"/event": "write"},
+            "where": [
+                {"pointer": "/seq", "greater_than_or_equal": 1, "less_than": 2},
+                {"pointer": "/tag", "matches": "^retry-\\d+$"},
+                {"pointer": "/ack", "exists": false}
+            ],
+            "arrays": [{"pointer": "/steps",
+                        "all": {"fields": {"/kind": "go"}},
+                        "none": {"fields": {"/kind": "stop"}}}]
+        });
+        let query =
+            event_temporal_query(&result, TemporalRelation::PrecededBy, &rich, None).unwrap();
+        assert_eq!(query.occurrences.len(), 1);
+        assert_eq!(query.matches.len(), 1);
+        assert_eq!(query.matches[0].boundary, "op-001-read");
+
+        // A JSONPath query selects inside the event.
+        let path = serde_json::json!({
+            "query": "$.steps[?@.kind == \"go\"]",
+            "fields": {"/event": "write"}
+        });
+        let pathed =
+            event_temporal_query(&result, TemporalRelation::PrecededBy, &path, None).unwrap();
+        assert_eq!(pathed.occurrences.len(), 1);
+
+        // Nested any/none lists compose.
+        let nested = serde_json::json!({
+            "all": [{"fields": {"/event": "write"}}],
+            "any": [{"fields": {"/seq": 9}}, {"fields": {"/seq": 1}}],
+            "none": [{"fields": {"/tag": "final"}}]
+        });
+        let nested_query =
+            event_temporal_query(&result, TemporalRelation::PrecededBy, &nested, None).unwrap();
+        assert_eq!(nested_query.occurrences.len(), 1);
+    }
+
+    #[test]
+    fn event_predicates_reject_grammar_violations_by_name() {
+        let result = temporal_fixture();
+        let cases = [
+            // Capture keys cannot mean anything on a one-event query.
+            serde_json::json!({"fields": {"/a": 1}, "capture": {"x": "/a"}}),
+            serde_json::json!({"fields": {"/a": 1}, "equals_capture": {"/a": "x"}}),
+            serde_json::json!({"unknown": 1}),
+            serde_json::json!({"where": [{"pointer": "no-slash", "equals": 1}]}),
+            serde_json::json!({"where": [{"pointer": "/a", "between": 1}]}),
+            serde_json::json!({"arrays": [{"any": {"fields": {"/x": 1}}}]}),
+            serde_json::json!({"all": [{"fields": {}}]}),
+            serde_json::json!({"query": 3}),
+        ];
+        for predicate in cases {
+            let error =
+                event_temporal_query(&result, TemporalRelation::PrecededBy, &predicate, None)
+                    .unwrap_err();
+            assert!(error.to_string().contains("event predicate"), "{error}");
+        }
     }
 
     #[test]

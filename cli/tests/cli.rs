@@ -1499,6 +1499,56 @@ fn query_composes_where_predicates_with_event_relations() {
 }
 
 #[test]
+fn query_event_predicates_accept_the_shared_grammar() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("campaign-result.json"),
+        r#"{"runs":[{"index":0,"timeline":[
+            {"id":"op-000-write","operation":"write","service":"api","moment":"7000@input-hash",
+             "events":{"api":["{\"event\":\"write\",\"seq\":1,\"tag\":\"retry-7\"}"]}},
+            {"id":"op-001-read","operation":"read","service":"counter","moment":"9000@read-hash"}
+        ]}]}"#,
+    )
+    .unwrap();
+
+    // Comparisons, a regex, and existence beside fields.
+    let rich = r#"{"fields":{"/event":"write"},"where":[
+        {"pointer":"/seq","greater_than_or_equal":1,"less_than":2},
+        {"pointer":"/tag","matches":"^retry-\\d+$"},
+        {"pointer":"/ack","exists":false}]}"#;
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--preceded-by-event",
+            rich,
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let answer: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(answer["occurrences"][0]["boundary"], "op-000-write");
+
+    // Grammar violations are named errors.
+    for predicate in [
+        r#"{"fields":{"/a":1},"capture":{"x":"/a"}}"#,
+        r#"{"unknown":1}"#,
+        r#"{"where":[{"pointer":"no-slash","equals":1}]}"#,
+        r#"{"query":"not a path["}"#,
+    ] {
+        let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args(["query", ".", "--preceded-by-event", predicate])
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(!bad.success(), "{predicate}");
+    }
+}
+
+#[test]
 fn history_catalogs_choice_values_with_failure_shares() {
     let directory = tempfile::tempdir().unwrap();
     for (name, statuses) in [
