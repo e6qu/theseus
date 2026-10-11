@@ -19185,6 +19185,7 @@ mod tests {
             replace: Some(replace.to_owned()),
             operation: None,
             input: None,
+            at_moment: None,
         }
     }
 
@@ -19294,6 +19295,7 @@ mod tests {
                 replace: Some("backplane:api->worker:link_partition@write".to_owned()),
                 operation: None,
                 input: None,
+                at_moment: None,
             },
         )
         .unwrap();
@@ -19310,6 +19312,7 @@ mod tests {
                 replace: Some("backplane:api->worker:link_partition@write".to_owned()),
                 operation: None,
                 input: None,
+                at_moment: None,
             },
         )
         .unwrap_err();
