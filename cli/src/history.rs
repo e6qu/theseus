@@ -562,6 +562,113 @@ pub fn assertion_catalog(sources: &[std::path::PathBuf]) -> Result<AssertionCata
     })
 }
 
+/// One assertion identity's diff entry: its totals on one side.
+#[derive(Debug, Serialize)]
+pub struct AssertionDiffEntry {
+    pub assertion: String,
+    pub passes: u64,
+    pub fails: u64,
+}
+
+/// One assertion identity present on both sides whose outcome share
+/// regressed: it passed everywhere in the base set and fails somewhere in
+/// the new set.
+#[derive(Debug, Serialize)]
+pub struct AssertionDiffFlip {
+    pub assertion: String,
+    pub base_passes: u64,
+    pub base_fails: u64,
+    pub new_passes: u64,
+    pub new_fails: u64,
+}
+
+/// The assertion-identity diff between two campaign sets: what the new set
+/// added, what it retired, and what flipped from always-passing to
+/// sometimes-failing - so a regression in the assertion suite itself is
+/// one query.
+#[derive(Debug, Serialize)]
+pub struct AssertionDiff {
+    pub format: &'static str,
+    pub base_sources: Vec<String>,
+    pub new_sources: Vec<String>,
+    pub new_assertions: Vec<AssertionDiffEntry>,
+    pub retired_assertions: Vec<AssertionDiffEntry>,
+    pub flipped_assertions: Vec<AssertionDiffFlip>,
+}
+
+/// Aggregate one catalog into identity -> total (passes, fails).
+fn assertion_totals(catalog: &AssertionCatalog) -> BTreeMap<String, (u64, u64)> {
+    catalog
+        .assertions
+        .iter()
+        .map(|entry| {
+            (
+                entry.assertion.clone(),
+                (entry.total_passes, entry.total_fails),
+            )
+        })
+        .collect()
+}
+
+/// Diff the new campaign set's assertion identities against the base
+/// set's, by name: added identities, retired identities, and identities
+/// that passed everywhere in the base set but fail somewhere in the new
+/// set.
+pub fn assertion_diff(
+    base: &[std::path::PathBuf],
+    new: &[std::path::PathBuf],
+) -> Result<AssertionDiff, HistoryError> {
+    if base.is_empty() || new.is_empty() {
+        return Err(HistoryError::NoSources);
+    }
+    let base_catalog = assertion_catalog(base)?;
+    let new_catalog = assertion_catalog(new)?;
+    let base_totals = assertion_totals(&base_catalog);
+    let new_totals = assertion_totals(&new_catalog);
+
+    let mut new_assertions = Vec::new();
+    let mut retired_assertions = Vec::new();
+    let mut flipped_assertions = Vec::new();
+
+    for (name, (passes, fails)) in &new_totals {
+        match base_totals.get(name) {
+            None => new_assertions.push(AssertionDiffEntry {
+                assertion: name.clone(),
+                passes: *passes,
+                fails: *fails,
+            }),
+            Some((base_passes, base_fails)) => {
+                if *base_fails == 0 && *fails > 0 {
+                    flipped_assertions.push(AssertionDiffFlip {
+                        assertion: name.clone(),
+                        base_passes: *base_passes,
+                        base_fails: *base_fails,
+                        new_passes: *passes,
+                        new_fails: *fails,
+                    });
+                }
+            }
+        }
+    }
+    for (name, (passes, fails)) in &base_totals {
+        if !new_totals.contains_key(name) {
+            retired_assertions.push(AssertionDiffEntry {
+                assertion: name.clone(),
+                passes: *passes,
+                fails: *fails,
+            });
+        }
+    }
+    Ok(AssertionDiff {
+        format: "theseus-assertion-diff-v1",
+        base_sources: base_catalog.sources,
+        new_sources: new_catalog.sources,
+        new_assertions,
+        retired_assertions,
+        flipped_assertions,
+    })
+}
+
 #[cfg(test)]
 mod assertion_catalog_tests {
     use super::*;
@@ -580,6 +687,74 @@ mod assertion_catalog_tests {
         .unwrap();
         fs::write(run.join("serial.log"), serial_lines.join("\n") + "\n").unwrap();
         directory.to_path_buf()
+    }
+
+    #[test]
+    fn assertion_diff_reports_new_retired_and_flipped_identities() {
+        let directory = tempfile::tempdir().unwrap();
+        // The base set: two passing identities and one that never appears
+        // again.
+        write_bundle_with_assertions(
+            &directory.path().join("base-a"),
+            &["THES:ASSERT:write:pass", "THES:ASSERT:read:pass"],
+        );
+        write_bundle_with_assertions(
+            &directory.path().join("base-b"),
+            &["THES:ASSERT:retired:pass"],
+        );
+        // The new set: one identity is new, the retired one is gone, and
+        // the write assertion now fails somewhere.
+        write_bundle_with_assertions(
+            &directory.path().join("new-a"),
+            &["THES:ASSERT:write:pass", "THES:ASSERT:write:fail"],
+        );
+        write_bundle_with_assertions(
+            &directory.path().join("new-b"),
+            &[
+                "THES:ASSERT:read:pass",
+                "THES:ASSERT:fresh:pass",
+                "THES:ASSERT:already_failing:fail",
+            ],
+        );
+        // An identity failing on BOTH sides is not a flip: it never passed
+        // everywhere in the base set.
+        write_bundle_with_assertions(
+            &directory.path().join("base-c"),
+            &["THES:ASSERT:already_failing:fail"],
+        );
+
+        let base = vec![
+            directory.path().join("base-a"),
+            directory.path().join("base-b"),
+            directory.path().join("base-c"),
+        ];
+        let new = vec![
+            directory.path().join("new-a"),
+            directory.path().join("new-b"),
+        ];
+        let diff = assertion_diff(&base, &new).unwrap();
+        assert_eq!(diff.format, "theseus-assertion-diff-v1");
+        fn names(entries: &[AssertionDiffEntry]) -> Vec<&str> {
+            let mut names: Vec<&str> = entries
+                .iter()
+                .map(|entry| entry.assertion.as_str())
+                .collect();
+            names.sort();
+            names
+        }
+        assert_eq!(names(&diff.new_assertions), ["fresh"]);
+        assert_eq!(names(&diff.retired_assertions), ["retired"]);
+        assert_eq!(diff.flipped_assertions.len(), 1);
+        let flip = &diff.flipped_assertions[0];
+        assert_eq!(flip.assertion, "write");
+        assert_eq!(flip.base_passes, 1);
+        assert_eq!(flip.base_fails, 0);
+        assert_eq!(flip.new_passes, 1);
+        assert_eq!(flip.new_fails, 1);
+
+        // Empty sides are named errors.
+        assert!(assertion_diff(&[], &new).is_err());
+        assert!(assertion_diff(&base, &[]).is_err());
     }
 
     #[test]

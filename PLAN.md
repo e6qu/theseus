@@ -233,6 +233,10 @@ Theseus currently has:
   comparisons, exists), `arrays` quantifiers, nested `all`/`any`/`none` -
   evaluated in the property layer's order; capture keys and unknown keys
   are refused by name.
+- The assertion diff: `history --assertions --diff DIR[,DIR...]`
+  reports new, retired, and flipped assertion identities between two
+  campaign sets (`theseus-assertion-diff-v1`), refused beside the other
+  history forms and named on empty sides.
 - Query-export property promotion: exports carry `property.json`
   (`theseus-query-export-property-v1`) - the answer's needle promoted
   to a `contains` guard or its event/where predicate promoted to the
@@ -517,21 +521,17 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ### 1. Rich value predicates across moments
 
-The promotion path landed: query exports carry `property.json`, the
-answer's predicate promoted into a campaign-property declaration, so an
-investigation finding becomes a standing guard by pasting it into the
-next campaign's `properties` list. The moment space, the property
-layer, and the promotion path now share one predicate grammar and one
-temporal vocabulary. The remaining Priority 5 work is the assertion
-catalog's management surface on top of the landed catalogs - naming,
-retiring, and diffing assertion identities across campaigns:
-
-- `theseus history --assertions` lists identities and counts; extend it
-  with `--diff BASE` reporting new, retired, and flipped assertions
-  between two campaign sets, so a regression in the assertion suite
-  itself is one query.
-- Tests: catalog fixtures asserting the diff's three sections beside
-  the existing counts.
+The assertion diff landed: `history --assertions --diff NEW[,NEW...]`
+reports the identities the new set added, retired, and flipped from
+always-passing to sometimes-failing, so a regression in the assertion
+suite itself is one query. Priority 5's investigation loop is now closed
+end to end - query, export, promote, guard, and audit the guards
+themselves. The remaining work in this priority is breadth: richer
+temporal operators beyond the bounded needle relations (transitive
+between-moments relations, Nth-occurrence addressing inside the
+property guards), and the demand-gated SDK and coverage items the parity
+analysis tracks. Both are gated on real workload demand; the queue
+stands empty of unblocked local slices.
 
 ## Priority 6: product surface and workload compatibility
 

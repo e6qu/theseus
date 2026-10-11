@@ -6,16 +6,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use theseus_cli::{
-    assertion_catalog, boundary_at_moment, campaign_status, capture_evaluation, cargo_coverage,
-    cargo_coverage_rustc_wrapper, choice_catalog, collect_moment, compare_campaigns,
-    compare_forked_campaigns, evaluate, evaluate_compare, event_history, event_predicate_query,
-    event_temporal_query, explore, explore_compose_expect_counterexample_with,
-    explore_compose_forked, explore_compose_with, find_moment, go_coverage, java_coverage,
-    list_events, list_moments, load_compose_plan, load_plan, minimize_compose_campaign,
-    minimize_compose_campaign_expect_counterexample, minimize_exploration_path, next_moment_in,
-    predicate_query, previous_moment_in, property_history, query_campaigns, replay, replay_compose,
-    replay_exploration, replay_exploration_path, replay_to, report, report_file, report_text,
-    serve_campaigns, serve_registry, snapshot_exploration_path, temporal_query, test, test_compose,
+    assertion_catalog, assertion_diff, boundary_at_moment, campaign_status, capture_evaluation,
+    cargo_coverage, cargo_coverage_rustc_wrapper, choice_catalog, collect_moment,
+    compare_campaigns, compare_forked_campaigns, evaluate, evaluate_compare, event_history,
+    event_predicate_query, event_temporal_query, explore,
+    explore_compose_expect_counterexample_with, explore_compose_forked, explore_compose_with,
+    find_moment, go_coverage, java_coverage, list_events, list_moments, load_compose_plan,
+    load_plan, minimize_compose_campaign, minimize_compose_campaign_expect_counterexample,
+    minimize_exploration_path, next_moment_in, predicate_query, previous_moment_in,
+    property_history, query_campaigns, replay, replay_compose, replay_exploration,
+    replay_exploration_path, replay_to, report, report_file, report_text, serve_campaigns,
+    serve_registry, snapshot_exploration_path, temporal_query, test, test_compose,
     verify_native_evidence, verify_topology_bundle, write_evaluation_lock, CampaignGuidance,
     CounterfactualSubstitution, ReportFormat, TemporalRelation, CARGO_COVERAGE_USAGE,
     GO_COVERAGE_USAGE, JAVA_COVERAGE_USAGE,
@@ -813,6 +814,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         [command, rest @ ..] if command == "history" => {
             let mut format = "text";
             let mut assertions = false;
+            let mut diff: Option<String> = None;
             let mut choices = false;
             let mut events = false;
             let mut service_filter: Option<String> = None;
@@ -824,6 +826,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     "--assertions" => {
                         assertions = true;
                         index += 1;
+                    }
+                    "--diff" => {
+                        diff = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
+                        index += 2;
                     }
                     "--choices" => {
                         choices = true;
@@ -860,7 +866,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 return Err(USAGE.to_owned());
             }
             if events {
-                if assertions || choices || property_filter.is_some() {
+                if assertions || choices || property_filter.is_some() || diff.is_some() {
                     return Err(USAGE.to_owned());
                 }
                 let history = event_history(
@@ -890,6 +896,52 @@ fn run(args: Vec<String>) -> Result<(), String> {
             if assertions {
                 if choices || property_filter.is_some() {
                     return Err(USAGE.to_owned());
+                }
+                if let Some(diff) = diff.as_deref() {
+                    let new_sources: Vec<std::path::PathBuf> =
+                        diff.split(',').map(std::path::PathBuf::from).collect();
+                    let diff = assertion_diff(
+                        &bundles
+                            .iter()
+                            .map(std::path::PathBuf::from)
+                            .collect::<Vec<_>>(),
+                        &new_sources,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    if format == "json" {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&diff)
+                                .map_err(|error| error.to_string())?
+                        );
+                        return Ok(());
+                    }
+                    println!("new: {}", diff.new_assertions.len());
+                    for entry in &diff.new_assertions {
+                        println!(
+                            "new\t{}\t{} pass\t{} fail",
+                            entry.assertion, entry.passes, entry.fails
+                        );
+                    }
+                    println!("retired: {}", diff.retired_assertions.len());
+                    for entry in &diff.retired_assertions {
+                        println!(
+                            "retired\t{}\t{} pass\t{} fail",
+                            entry.assertion, entry.passes, entry.fails
+                        );
+                    }
+                    println!("flipped: {}", diff.flipped_assertions.len());
+                    for flip in &diff.flipped_assertions {
+                        println!(
+                            "flipped\t{}\t{} pass/{} fail -> {} pass/{} fail",
+                            flip.assertion,
+                            flip.base_passes,
+                            flip.base_fails,
+                            flip.new_passes,
+                            flip.new_fails
+                        );
+                    }
+                    return Ok(());
                 }
                 let catalog = assertion_catalog(
                     &bundles
@@ -924,6 +976,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 return Ok(());
             }
             if choices {
+                if assertions || diff.is_some() {
+                    return Err(USAGE.to_owned());
+                }
                 let catalog = choice_catalog(
                     &bundles
                         .iter()
@@ -963,6 +1018,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 return Ok(());
             }
             if choices {
+                if assertions || diff.is_some() {
+                    return Err(USAGE.to_owned());
+                }
                 let catalog = choice_catalog(
                     &bundles
                         .iter()
@@ -994,6 +1052,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     }
                 }
                 return Ok(());
+            }
+            if diff.is_some() {
+                return Err(USAGE.to_owned());
             }
             let history = property_history(
                 &bundles

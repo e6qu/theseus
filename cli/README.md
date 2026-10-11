@@ -1177,7 +1177,15 @@ The versioned JSON (`theseus-assertion-catalog-v1`) reports, per assertion
 identity and per campaign, the pass and fail counts, plus totals - so a
 regression in an assertion's failure rate across campaigns is one query
 away. Bundles without serial logs catalog as empty counts rather than
-failing.
+failing. `--diff DIR[,DIR...]` diffs the positional base set against a
+new set (`theseus-assertion-diff-v1`): identities the new set added,
+identities it retired, and identities that passed everywhere in the base
+set but fail somewhere in the new set - so a regression in the assertion
+suite itself is one query:
+
+```sh
+theseus history captures/before --assertions --diff captures/after --format json
+```
 
 `--collect` turns one moment into a self-contained, digest-auditable
 artifact bundle without exporting the whole run:

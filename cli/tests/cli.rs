@@ -1318,6 +1318,80 @@ fn query_matches_structured_events_with_temporal_relations() {
 }
 
 #[test]
+fn history_diffs_assertion_identities_between_sets() {
+    let directory = tempfile::tempdir().unwrap();
+    let write = |name: &str, lines: &[&str]| {
+        let run = directory
+            .path()
+            .join(name)
+            .join("runs")
+            .join("000")
+            .join("services")
+            .join("api");
+        fs::create_dir_all(&run).unwrap();
+        fs::write(
+            directory
+                .path()
+                .join(name)
+                .join("campaign-result.json"),
+            r#"{"format":"theseus-compose-campaign-result-v1","status":"passed","runs":[{"index":0,"status":"passed"}]}"#,
+        )
+        .unwrap();
+        fs::write(run.join("serial.log"), lines.join("\n") + "\n").unwrap();
+    };
+    write("base", &["THES:ASSERT:write:pass", "THES:ASSERT:gone:pass"]);
+    write("new", &["THES:ASSERT:write:fail", "THES:ASSERT:fresh:pass"]);
+
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "history",
+            "base",
+            "--assertions",
+            "--diff",
+            "new",
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let diff: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(diff["format"], "theseus-assertion-diff-v1");
+    assert_eq!(diff["new_assertions"][0]["assertion"], "fresh");
+    assert_eq!(diff["retired_assertions"][0]["assertion"], "gone");
+    assert_eq!(diff["flipped_assertions"][0]["assertion"], "write");
+    assert_eq!(diff["flipped_assertions"][0]["new_fails"], 1);
+
+    let text = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args(["history", "base", "--assertions", "--diff", "new"])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(text.status.success(), "{text:?}");
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.contains("flipped\twrite\t1 pass/0 fail -> 0 pass/1 fail"),
+        "{text}"
+    );
+    assert!(text.contains("retired\tgone"), "{text}");
+
+    // The diff flag is refused beside the other history forms.
+    for args in [
+        vec!["history", "base", "--diff", "new"],
+        vec!["history", "base", "--choices", "--diff", "new"],
+        vec!["history", "base", "--events", "--diff", "new"],
+    ] {
+        let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
+            .args(&args)
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(!bad.success(), "{args:?}");
+    }
+}
+
+#[test]
 fn fork_cli_rejects_choice_forms_that_cannot_mean_anything() {
     let directory = tempfile::tempdir().unwrap();
     // No bundle needed: parse-level refusals fire first.
