@@ -78,7 +78,7 @@ const USAGE: &str = "Usage:
   theseus compose explore --minimize campaign-dir [--output minimized-dir]
   theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
   theseus compose explore --fork-run N --replace-fault OLD=NEW campaign-dir [--output forked-dir] [--notify COMMAND]
-  theseus compose explore --fork-run N --set-choice OPERATION=INPUT campaign-dir [--output forked-dir] [--notify COMMAND]
+  theseus compose explore --fork-run N --set-choice OPERATION=INPUT [--at-moment MOMENT] campaign-dir [--output forked-dir] [--notify COMMAND]
   theseus compose replay replay-dir [--output replay-dir]
   theseus compose verify checkpoint-bundle-dir
 
@@ -1398,6 +1398,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let mut run: Option<usize> = None;
             let mut replacement: Option<String> = None;
             let mut set_choice: Option<String> = None;
+            let mut at_moment: Option<String> = None;
             let mut output: Option<String> = None;
             let mut notify: Option<String> = None;
             let mut bundles: Vec<String> = Vec::new();
@@ -1415,6 +1416,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     }
                     "--set-choice" => {
                         set_choice = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
+                        index += 2;
+                    }
+                    "--at-moment" => {
+                        at_moment = Some(rest.get(index + 1).ok_or(USAGE.to_owned())?.clone());
                         index += 2;
                     }
                     "--output" => {
@@ -1450,10 +1455,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 }
                 (None, Some(set_choice)) => {
                     let (operation, input) = parse_set_choice(set_choice)?;
-                    CounterfactualSubstitution::Choice { operation, input }
+                    CounterfactualSubstitution::Choice {
+                        operation,
+                        input,
+                        at_moment: at_moment.as_deref(),
+                    }
                 }
                 (Some(_), Some(_)) => {
                     return Err("choose either --replace-fault or --set-choice, not both".to_owned())
+                }
+                (None, None) if at_moment.is_some() => {
+                    return Err("--at-moment requires --set-choice".to_owned())
                 }
                 (None, None) => return Err(USAGE.to_owned()),
             };

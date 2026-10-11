@@ -8259,8 +8259,18 @@ pub fn explore_compose_forked(
 /// re-run one operation with a different declared input case.
 #[derive(Debug, Clone, Copy)]
 pub enum CounterfactualSubstitution<'a> {
-    Fault { fault: &'a str, replace: &'a str },
-    Choice { operation: &'a str, input: &'a str },
+    Fault {
+        fault: &'a str,
+        replace: &'a str,
+    },
+    /// Re-run one operation under another declared input case, optionally
+    /// stopping the forked future at a named moment address so the fork
+    /// starts where the question lives.
+    Choice {
+        operation: &'a str,
+        input: &'a str,
+        at_moment: Option<&'a str>,
+    },
 }
 
 impl CounterfactualSubstitution<'_> {
@@ -8270,8 +8280,20 @@ impl CounterfactualSubstitution<'_> {
             CounterfactualSubstitution::Fault { fault, replace } => {
                 serde_json::json!({"run": run, "fault": fault, "replace": replace})
             }
-            CounterfactualSubstitution::Choice { operation, input } => {
-                serde_json::json!({"run": run, "operation": operation, "input": input})
+            CounterfactualSubstitution::Choice {
+                operation,
+                input,
+                at_moment,
+            } => {
+                let mut value = serde_json::json!({
+                    "run": run,
+                    "operation": operation,
+                    "input": input,
+                });
+                if let Some(address) = at_moment {
+                    value["at_moment"] = serde_json::Value::String(address.to_owned());
+                }
+                value
             }
         }
     }
@@ -8305,14 +8327,22 @@ fn forked_counterfactual_plan(
                 )));
             }
         }
-        CounterfactualSubstitution::Choice { operation, input } => {
-            let recorded_operations = recorded_run_operations(&result, run)?;
+        CounterfactualSubstitution::Choice {
+            operation,
+            input,
+            at_moment,
+        } => {
+            let mut recorded_operations = recorded_run_operations(&result, run)?;
+            if let Some(address) = at_moment {
+                let kept = recorded_run_moment_prefix(&result, run, address)?;
+                recorded_operations.truncate(kept);
+            }
             if !recorded_operations
                 .iter()
                 .any(|name| name.split('[').next() == Some(operation))
             {
                 return Err(ComposeError::Invalid(format!(
-                    "recorded run {run} does not select operation {operation:?}"
+                    "recorded run {run} does not select operation {operation:?} before the forked moment"
                 )));
             }
             if !plan_declares_input_case(&plan, operation, input) {
@@ -8362,6 +8392,41 @@ fn recorded_run_operations(
                 .collect()
         })
         .unwrap_or_default())
+}
+
+/// The number of timeline boundaries a moment-addressed fork keeps: the
+/// position of the named moment plus one. A moment outside the recorded
+/// run's timeline is a named error.
+fn recorded_run_moment_prefix(
+    result: &serde_json::Value,
+    run: usize,
+    address: &str,
+) -> Result<usize, ComposeError> {
+    let runs = result
+        .get("runs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| ComposeError::Invalid("campaign result has no runs".to_owned()))?;
+    let run = runs.get(run).ok_or_else(|| {
+        ComposeError::Invalid(format!(
+            "run index {run} is outside the recorded campaign ({} runs)",
+            runs.len()
+        ))
+    })?;
+    let timeline = run
+        .get("timeline")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| ComposeError::Invalid("recorded run has no timeline".to_owned()))?;
+    let index = timeline
+        .iter()
+        .position(|boundary| {
+            boundary.get("moment").and_then(serde_json::Value::as_str) == Some(address)
+        })
+        .ok_or_else(|| {
+            ComposeError::Invalid(format!(
+                "moment {address:?} is not in the recorded run's timeline"
+            ))
+        })?;
+    Ok(index + 1)
 }
 
 /// True when the plan's campaign declares one named input case on the named
@@ -12854,6 +12919,7 @@ x-theseus:
             CounterfactualSubstitution::Choice {
                 operation: "calculate",
                 input: "mode-0",
+                at_moment: None,
             },
         )
         .unwrap();
@@ -12869,6 +12935,7 @@ x-theseus:
             CounterfactualSubstitution::Choice {
                 operation: "absent",
                 input: "mode-0",
+                at_moment: None,
             },
         )
         .unwrap_err();
@@ -12886,6 +12953,7 @@ x-theseus:
             CounterfactualSubstitution::Choice {
                 operation: "calculate",
                 input: "mode-9",
+                at_moment: None,
             },
         )
         .unwrap_err();
@@ -12893,6 +12961,88 @@ x-theseus:
             error
                 .to_string()
                 .contains("declares no input case \"mode-9\""),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validates_the_moment_addressed_choice_fork_against_the_run() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("campaign-result.json"),
+            r#"{"format":"theseus-compose-campaign-result-v1","runs":[
+                {"index":0,"operations":["calculate[mode-1]","verify[default]"],"timeline":[
+                    {"id":"op-000-calculate","operation":"calculate","moment":"7000@hash"},
+                    {"id":"op-001-verify","operation":"verify","moment":"9000@hash"}
+                ]}
+            ]}"#,
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("replay-plan.json"),
+            r#"{"format":"theseus-compose-plan-v1","campaign":{
+                "driver":"api","max_runs":2,"max_operations_per_run":2,
+                "operations":[{"name":"calculate","inputs":[{"name":"mode-0"},{"name":"mode-1"}]},
+                              {"name":"verify","inputs":[{"name":"default"}]}],
+                "faults":[],"properties":[]
+            }}"#,
+        )
+        .unwrap();
+
+        // A moment inside the run slices the validated prefix: the choice
+        // must be selected at or before the named boundary.
+        let plan = forked_counterfactual_plan(
+            directory.path(),
+            0,
+            CounterfactualSubstitution::Choice {
+                operation: "calculate",
+                input: "mode-0",
+                at_moment: Some("7000@hash"),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            plan["campaign"]["counterfactual"],
+            serde_json::json!({
+                "run": 0, "operation": "calculate", "input": "mode-0",
+                "at_moment": "7000@hash"
+            })
+        );
+
+        // The moment must exist in the recorded run's timeline.
+        let error = forked_counterfactual_plan(
+            directory.path(),
+            0,
+            CounterfactualSubstitution::Choice {
+                operation: "calculate",
+                input: "mode-0",
+                at_moment: Some("12000@absent"),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("moment \"12000@absent\" is not in the recorded run's timeline"),
+            "{error}"
+        );
+
+        // The choice must be selected before the forked moment: verify
+        // happens after the first boundary.
+        let error = forked_counterfactual_plan(
+            directory.path(),
+            0,
+            CounterfactualSubstitution::Choice {
+                operation: "verify",
+                input: "default",
+                at_moment: Some("7000@hash"),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not select operation \"verify\" before the forked moment"),
             "{error}"
         );
     }

@@ -61,6 +61,8 @@ struct CounterfactualProvenance {
     operation: Option<String>,
     #[serde(default)]
     input: Option<String>,
+    #[serde(default)]
+    at_moment: Option<String>,
 }
 #[derive(Deserialize, PartialEq, Serialize)]
 struct Property {
@@ -655,6 +657,8 @@ pub struct ForkedComparison {
     pub set_operation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub set_input: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_moment: Option<String>,
     pub left_runs: usize,
     pub right_runs: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -939,6 +943,7 @@ pub fn compare_forked_campaigns(
         replacement_fault: provenance.replace,
         set_operation: provenance.operation,
         set_input: provenance.input,
+        at_moment: provenance.at_moment,
         left_runs: left.runs.len(),
         right_runs: right.runs.len(),
         divergence,

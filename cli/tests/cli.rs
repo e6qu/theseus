@@ -1361,6 +1361,15 @@ fn fork_cli_rejects_choice_forms_that_cannot_mean_anything() {
             "bundle",
         ],
         vec!["compose", "explore", "--fork-run", "0", "bundle"],
+        vec![
+            "compose",
+            "explore",
+            "--fork-run",
+            "0",
+            "--at-moment",
+            "7000@hash",
+            "bundle",
+        ],
     ] {
         let bad = Command::new(env!("CARGO_BIN_EXE_theseus"))
             .args(&args)

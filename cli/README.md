@@ -63,7 +63,7 @@ theseus compose explore --expect-counterexample property [--max-runs N] [--guida
 theseus compose explore --minimize campaign-dir [--output minimized-dir]
 theseus compose explore --minimize campaign-dir --expect-counterexample property [--output minimized-dir]
 theseus compose explore --fork-run N --replace-fault OLD=NEW campaign-dir [--output forked-dir] [--notify COMMAND]
-theseus compose explore --fork-run N --set-choice OPERATION=INPUT campaign-dir [--output forked-dir] [--notify COMMAND]
+theseus compose explore --fork-run N --set-choice OPERATION=INPUT [--at-moment MOMENT] campaign-dir [--output forked-dir] [--notify COMMAND]
 theseus compose replay replay-dir [--output replay-dir]
 theseus compose verify checkpoint-bundle-dir
 ```
@@ -198,7 +198,11 @@ schedule of run N re-executes with one operation re-run under another
 declared input case (`--set-choice calculate=mode-0`), so "what if this
 operation had generated its other value?" is one command; the forked
 comparison reports the re-run boundary's diverging identity with both
-sides' moment addresses.
+sides' moment addresses. `--at-moment MOMENT` slices the forked future
+to the recorded run's operations up to and including the named moment's
+boundary, so the fork starts where the question lives - the choice must
+be selected before that moment, and a moment outside the run's timeline
+is a named error.
 Identical boundary evidence reports `"same"`: the substitution changed
 nothing the campaign retained. A failing forked future is retained evidence,
 not a command failure. The fork still shares the model's limits, so a

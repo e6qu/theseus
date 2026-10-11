@@ -455,8 +455,11 @@ addresses `theseus query` resolves. Identical boundary evidence reports
 Forks also address choices, not only faults: `--set-choice
 OPERATION=INPUT` re-runs one recorded operation under another declared
 input case, so "what if this operation had generated its other value?"
-is one command. The forked comparison reports the re-run boundary's
-diverging identity with both sides' moment addresses.
+is one command. `--at-moment MOMENT` slices the forked future to the
+recorded operations up to the named boundary, so the fork starts where
+the question lives instead of re-running the whole schedule. The forked
+comparison reports the re-run boundary's diverging identity with both
+sides' moment addresses.
 
 Forked futures replay like any campaign bundle, and the fork differs from
 its recording in exactly that one locked decision. The fork still shares
