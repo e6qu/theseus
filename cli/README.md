@@ -1109,7 +1109,14 @@ retains the answer beside its digest manifest as a versioned bundle
 (`theseus-query-export-v1`: the answer document, the source result's
 SHA-256, and the answer's SHA-256), and any relation route answers the
 same bundle as one tar archive with `?export` - so an investigation
-step's answer is verifiable without the original campaign.
+step's answer is verifiable without the original campaign. The bundle
+also carries `property.json`, the answer's predicate promoted into a
+campaign-property declaration (`theseus-query-export-property-v1`:
+`kind: unreachable` over the needle as `contains`, or the full grammar
+predicate as `json`, with the service echoed) - so a finding becomes a
+standing guard by pasting the declaration into the campaign's
+`properties` list; the temporal relation itself stays in the manifest,
+since property predicates evaluate one transcript.
 
 An indexed event matches when every pointer resolves on its JSON object;
 occurrences carry the verbatim line, and the matches list the moments the

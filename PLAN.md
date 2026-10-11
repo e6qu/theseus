@@ -233,6 +233,13 @@ Theseus currently has:
   comparisons, exists), `arrays` quantifiers, nested `all`/`any`/`none` -
   evaluated in the property layer's order; capture keys and unknown keys
   are refused by name.
+- Query-export property promotion: exports carry `property.json`
+  (`theseus-query-export-property-v1`) - the answer's needle promoted
+  to a `contains` guard or its event/where predicate promoted to the
+  full-grammar `json` guard, `kind: unreachable`, with the service
+  echoed and the temporal relation kept in the manifest - so a finding
+  becomes a standing guard by pasting it into the campaign's
+  `properties` list.
 - Sequence windows in the property guards: `sequence_windows` evaluate
   ordered find-style steps over complete transcripts, each within
   `within_bytes` of the previous step's match end at its earliest
@@ -510,23 +517,21 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ### 1. Rich value predicates across moments
 
-Sequence windows landed in the property guards: `sequence_windows`
-evaluate over complete transcripts with ordered, byte-bounded steps,
-mirror the query surfaces' windowed relations, and normalize with named
-refusals (single-step windows, zero gaps, non-find-style steps). The
-moment space and the property layer now share one temporal vocabulary.
-The remaining Priority 5 work is the assertion catalog's management
-surface - promoting a query answer's predicate into a retained campaign
-property declaration, so an investigation finding becomes a standing
-guard:
+The promotion path landed: query exports carry `property.json`, the
+answer's predicate promoted into a campaign-property declaration, so an
+investigation finding becomes a standing guard by pasting it into the
+next campaign's `properties` list. The moment space, the property
+layer, and the promotion path now share one predicate grammar and one
+temporal vocabulary. The remaining Priority 5 work is the assertion
+catalog's management surface on top of the landed catalogs - naming,
+retiring, and diffing assertion identities across campaigns:
 
-- `theseus query --export` already writes the answer; extend it with the
-  plan-shaped property declaration beside the manifest, and document the
-  promotion path from an exported answer to a campaign's `properties`
-  list.
-- Tests: the exported declaration re-parses as a campaign property, and
-  the promoted guard answers the original question over the retained
-  transcript.
+- `theseus history --assertions` lists identities and counts; extend it
+  with `--diff BASE` reporting new, retired, and flipped assertions
+  between two campaign sets, so a regression in the assertion suite
+  itself is one query.
+- Tests: catalog fixtures asserting the diff's three sections beside
+  the existing counts.
 
 ## Priority 6: product surface and workload compatibility
 

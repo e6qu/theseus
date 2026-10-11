@@ -1446,6 +1446,37 @@ fn query_exports_answers_beside_their_digest_manifest() {
         .status()
         .unwrap();
     assert!(!again.success());
+
+    // An event-relation export promotes the full grammar predicate into
+    // the property declaration, and the declaration composes into a
+    // campaign plan's properties list.
+    let predicate_output = directory.path().join("promoted");
+    let json = Command::new(env!("CARGO_BIN_EXE_theseus"))
+        .args([
+            "query",
+            ".",
+            "--preceded-by-event",
+            r#"{"fields":{"/event":"stale"}}"#,
+            "--export",
+            predicate_output.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(json.status.success(), "{json:?}");
+    let property: serde_json::Value =
+        serde_json::from_slice(&fs::read(predicate_output.join("property.json")).unwrap()).unwrap();
+    assert_eq!(property["kind"], "unreachable");
+    assert_eq!(property["predicate"]["json"]["fields"]["/event"], "stale");
+    let campaign = serde_json::json!({
+        "driver": "api",
+        "max_runs": 2,
+        "operations": [{"name": "read", "input": "read\n"}],
+        "properties": [property],
+    });
+    serde_json::to_vec_pretty(&campaign).unwrap();
 }
 
 #[test]

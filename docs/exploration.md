@@ -424,7 +424,10 @@ the both-sides relation - the moments an anchor brackets - so "the
 moment both markers had printed" is one query. `--export DIR` retains
 the answer beside its digest manifest (and `?export` answers the same
 bundle as a tar archive over HTTP), so a good answer becomes a
-verifiable artifact instead of terminal output. `theseus query --moment
+verifiable artifact instead of terminal output. The bundle also carries
+the predicate promoted into a campaign-property declaration, so the
+finding becomes a standing guard in the next campaign's `properties`
+list. `theseus query --moment
 <address> --collect` turns one moment into a self-contained,
 digest-auditable artifact bundle — the boundary's full record, its
 neighbors, the decision-trace slice that produced it, and verified

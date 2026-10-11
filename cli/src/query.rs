@@ -1670,10 +1670,58 @@ pub struct QueryExport {
     pub answer_sha256: String,
     /// The answer's own versioned format string.
     pub answer_format: String,
+    /// The promoted property declaration's file name in the bundle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub property: Option<String>,
 }
 
-/// Build one query export's file set in memory: the answer document and
-/// the digest manifest tying it to the source result.
+/// The campaign-property declaration one exported answer promotes into:
+/// the question's predicate as a standing guard. The query's temporal
+/// relation is not part of the promoted guard - property predicates
+/// evaluate one transcript - so the manifest keeps the relation and the
+/// declaration keeps the values.
+#[derive(Debug, Serialize)]
+pub struct ExportedProperty {
+    pub format: &'static str,
+    pub name: String,
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    pub predicate: serde_json::Value,
+}
+
+/// Build the property declaration from one query answer: needle answers
+/// promote to `contains`, event and where predicates promote to `json`
+/// with the full grammar. Answers without a promotable predicate (none
+/// today) return None.
+pub fn exported_property(answer: &serde_json::Value) -> Option<ExportedProperty> {
+    let format = answer["format"].as_str()?;
+    let service = answer["service"].as_str().map(str::to_owned);
+    let predicate = match format {
+        "theseus-query-temporal-v1" | "theseus-query-predicate-v1" => {
+            let needle = answer["needle"].as_str()?;
+            serde_json::json!({ "contains": needle })
+        }
+        "theseus-query-event-temporal-v1" => {
+            serde_json::json!({ "json": answer["predicate"].clone() })
+        }
+        "theseus-query-event-predicate-v1" => {
+            serde_json::json!({ "json": answer["where_predicate"].clone() })
+        }
+        _ => return None,
+    };
+    Some(ExportedProperty {
+        format: "theseus-query-export-property-v1",
+        name: "promoted_query".to_owned(),
+        kind: "unreachable",
+        service,
+        predicate,
+    })
+}
+
+/// Build one query export's file set in memory: the answer document, the
+/// property declaration the answer promotes into, and the digest manifest
+/// tying both to the source result.
 pub fn export_query_files(
     source_result: &[u8],
     answer: &serde_json::Value,
@@ -1683,20 +1731,29 @@ pub fn export_query_files(
         |value: &serde_json::Value| serde_json::to_vec_pretty(value).map_err(MomentError::Parse);
     let answer_bytes = encode(answer)?;
     let answer_sha256 = format!("{:x}", Sha256::digest(&answer_bytes));
+    let property = exported_property(answer);
     let export = QueryExport {
         format: "theseus-query-export-v1".to_owned(),
         source_sha256: format!("{:x}", Sha256::digest(source_result)),
         answer: "query-answer.json".to_owned(),
         answer_sha256,
         answer_format: answer["format"].as_str().unwrap_or_default().to_owned(),
+        property: property.as_ref().map(|_| "property.json".to_owned()),
     };
-    Ok(vec![
+    let mut files = vec![
         ("query-answer.json".to_owned(), answer_bytes),
         (
             "manifest.json".to_owned(),
             encode(&serde_json::to_value(&export).map_err(MomentError::Parse)?)?,
         ),
-    ])
+    ];
+    if let Some(property) = &property {
+        files.push((
+            "property.json".to_owned(),
+            encode(&serde_json::to_value(property).map_err(MomentError::Parse)?)?,
+        ));
+    }
+    Ok(files)
 }
 
 /// Write one query export bundle to disk: the answer document beside the
@@ -2235,13 +2292,21 @@ mod tests {
 
         let encoded = serde_json::to_vec_pretty(&result).unwrap();
         let files = export_query_files(&encoded, &answer).unwrap();
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 3);
         assert_eq!(files[0].0, "query-answer.json");
         assert_eq!(files[1].0, "manifest.json");
+        assert_eq!(files[2].0, "property.json");
         let manifest: QueryExport = serde_json::from_slice(&files[1].1).unwrap();
         assert_eq!(manifest.format, "theseus-query-export-v1");
         assert_eq!(manifest.answer, "query-answer.json");
         assert_eq!(manifest.answer_format, "theseus-query-temporal-v1");
+        assert_eq!(manifest.property.as_deref(), Some("property.json"));
+        // The promoted declaration carries the needle as a contains guard
+        // on the unreachable quantifier.
+        let property: serde_json::Value = serde_json::from_slice(&files[2].1).unwrap();
+        assert_eq!(property["format"], "theseus-query-export-property-v1");
+        assert_eq!(property["kind"], "unreachable");
+        assert_eq!(property["predicate"]["contains"], "stale");
 
         // The manifest digest verifies the answer bytes.
         use sha2::{Digest, Sha256};
