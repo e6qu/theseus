@@ -90,7 +90,12 @@ bounds, service, operation boundary, and observation order. A second
 workload - `second.yaml` with `service/second.c` - exercises the same
 protocol with `depth: 3` and `strategy: 2` choices and its own corrupt
 condition at depth=2 & strategy=1, giving the weighting experiment a
-cross-workload comparison arm.
+cross-workload comparison arm. A third - `third.yaml` with
+`service/third.c` - widens the corpus to three bounded choices
+(`lane: 2`, `phase: 2`, `level: 2`, eight combinations) with the corrupt
+condition at lane=1 & phase=1 & level=0, so the experiment's budgets
+(3 and 6) both sit below the corpus size and every run is sub-budget:
+the partial-coverage reordering is observable on every arm.
 
 Seed a continuation from that campaign: the consumed choice identities
 ride the locked plan, unified guidance counts them as already seen, and
