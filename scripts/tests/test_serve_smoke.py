@@ -238,7 +238,7 @@ def main() -> None:
         assert content_type == "application/x-tar", content_type
         with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
             names = set(bundle.getnames())
-        assert names == {"query-answer.json", "manifest.json"}, names
+        assert names == {"query-answer.json", "manifest.json", "property.json"}, names
         manifest = json.loads(
             tarfile.open(fileobj=io.BytesIO(archive))
             .extractfile("manifest.json")
