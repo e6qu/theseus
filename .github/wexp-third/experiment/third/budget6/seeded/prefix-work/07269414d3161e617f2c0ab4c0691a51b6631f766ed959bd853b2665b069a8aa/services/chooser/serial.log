@@ -1,0 +1,9 @@
+THES:HTTP:ready:PASS
+THES:M:42
+THES:SHELL:operation:{"command":["/usr/local/bin/third"],"environment":{"THESEUS_CHOICES":"lane=1,level=0,phase=1"},"expect_exit":0,"name":"calculate","output_contains":null,"output_json":true,"phase":"run","process":null}
+THES:CHOICE:lane:2:1
+THES:CHOICE:phase:2:1
+THES:CHOICE:level:2:0
+{"completion":null,"event":"shell_operation","name":"calculate","output":{"lane":1,"level":0,"phase":1,"status":"corrupt"},"output_text":null,"phase":"run","process":null}
+THES:SHELL:operation:calculate:PASS
+THES:CHECKPOINT:calculate

@@ -576,17 +576,14 @@ Recordings so far (per-run choice sequences in the artifact's
   first decision exactly when the prior campaign left values unexplored.
 - **Budget sweep (3, 6 across both workloads)** - the budget-3 cells
   saturate one axis per workload (mode=0 x retry 0/1/2; depth 0/0, 0/1,
-  1/0), budget 6 covers the full corpus, and the seeded arms retained
-  corpus-order sequences at both budgets in this recording; the
-  fresh-first reordering remains the partial-coverage recording
-  (#382's artifact), whose seed left a fresh identity unexplored.
-
-**Decision point.** The seed remains opt-in through `--seed-choices`.
-Making partial-coverage seeding the default for unified guidance is a
-product call that needs wider evidence: the one-workload, one-budget
-comparison shows ordering, not that ordering finds failures or
-witnesses sooner across workloads. The recorded artifacts are the
-baseline a broader comparison would extend.
+  1/0), budget 6 covers the full corpus, and the harness's "seeded"
+  arms retained corpus-order sequences at both budgets. A later reading
+  found why: `--seed-choices` was silently dropped beside
+  `--expect-counterexample`, so those arms recorded unseeded-vs-unseeded
+  runs (the fix threads the seed through the counterexample path and
+  unit-tests the shared override application). The fresh-first
+  reordering evidence remains the sub-budget pair (#382's artifact),
+  which explored through the plain path and seeded for real.
 
 **Decision point.** The seed remains opt-in through `--seed-choices`.
 Making partial-coverage seeding the default for unified guidance is a

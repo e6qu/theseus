@@ -519,19 +519,22 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ## Immediate next work
 
-### 1. Multi-workload weighting evidence
+### 1. The seeded arms' silent-drop fix, then real seeded recordings
 
-The weighting experiment's third workload widens the corpus to three
-bounded choices (eight combinations), so both recorded budgets sit below
-the corpus size and every arm is sub-budget - the partial-coverage
-reordering is observable on every arm, on every CI run. The remaining
-evidence work for the seed-default decision is reading the third
-workload's recording and reconciling the design note:
+The third workload's recording exposed a real bug: `--seed-choices` was
+silently dropped beside `--expect-counterexample`, so every harness
+seeded arm since the budget sweep recorded unseeded-vs-unseeded runs -
+only the sub-budget pair (plain explore) ever seeded. The fix threads
+the seed through the counterexample explore path and extracts the
+shared override application (`apply_campaign_overrides`) so no path can
+drop an override silently, unit-tested on all four overrides.
 
-- Record the third workload's ordering beside the other two and update
-  the design note's decision point with the widened evidence.
-- Tests: the harness tabulates all three workloads per budget; the
-  tabulation assertion covers the third workload's budget-6 corpus.
+The next work records real seeded arms:
+
+- CI's next run records the harness with seeds actually applied; the
+  design note's sweep bullet already records the correction.
+- Tests: the override helper's unit test pins the seed beside budget,
+  guidance, and shard; the harness and CI assertions are unchanged.
 
 ## Priority 6: product surface and workload compatibility
 
