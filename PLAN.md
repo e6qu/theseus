@@ -519,19 +519,19 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ## Immediate next work
 
-### 1. Rich value predicates across moments
+### 1. Multi-workload weighting evidence
 
-The assertion diff landed: `history --assertions --diff NEW[,NEW...]`
-reports the identities the new set added, retired, and flipped from
-always-passing to sometimes-failing, so a regression in the assertion
-suite itself is one query. Priority 5's investigation loop is now closed
-end to end - query, export, promote, guard, and audit the guards
-themselves. The remaining work in this priority is breadth: richer
-temporal operators beyond the bounded needle relations (transitive
-between-moments relations, Nth-occurrence addressing inside the
-property guards), and the demand-gated SDK and coverage items the parity
-analysis tracks. Both are gated on real workload demand; the queue
-stands empty of unblocked local slices.
+The weighting experiment's third workload widens the corpus to three
+bounded choices (eight combinations), so both recorded budgets sit below
+the corpus size and every arm is sub-budget - the partial-coverage
+reordering is observable on every arm, on every CI run. The remaining
+evidence work for the seed-default decision is reading the third
+workload's recording and reconciling the design note:
+
+- Record the third workload's ordering beside the other two and update
+  the design note's decision point with the widened evidence.
+- Tests: the harness tabulates all three workloads per budget; the
+  tabulation assertion covers the third workload's budget-6 corpus.
 
 ## Priority 6: product surface and workload compatibility
 
