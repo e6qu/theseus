@@ -833,7 +833,20 @@ struct SerialPredicate {
     #[serde(default)]
     sequence: Vec<SerialPredicate>,
     #[serde(default)]
+    sequence_windows: Vec<SerialSequenceWindow>,
+    #[serde(default)]
     occurs: Option<SerialOccurrence>,
+}
+
+/// An ordered sequence whose steps must also be close: each step after the
+/// first must match within `within_bytes` of the previous step's match end,
+/// each at its earliest position after that end, over the complete
+/// cumulative transcript. The single-step window degenerates to the plain
+/// needle semantics.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct SerialSequenceWindow {
+    steps: Vec<SerialPredicate>,
+    within_bytes: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -10601,6 +10614,10 @@ fn serial_matches_nested_predicate(serial: &[u8], predicate: &SerialPredicate) -
             .all(|child| !serial_matches_nested_predicate(serial, child))
         && (predicate.sequence.is_empty() || serial_matches_sequence(serial, &predicate.sequence))
         && predicate
+            .sequence_windows
+            .iter()
+            .all(|window| serial_window_matches(serial, window))
+        && predicate
             .occurs
             .as_ref()
             .map(|occurs| serial_occurrence_matches(serial, occurs))
@@ -10651,6 +10668,44 @@ fn serial_non_overlapping_count(serial: &[u8], needle: &[u8]) -> u64 {
         offset += start + needle.len();
     }
     count
+}
+
+/// True when the window's steps match in order, each within the gap bound
+/// of the previous step's match end, each at its earliest position.
+fn serial_window_matches(serial: &[u8], window: &SerialSequenceWindow) -> bool {
+    let mut cursor = 0usize;
+    for (step_index, step) in window.steps.iter().enumerate() {
+        let Some((start, end)) = serial_step_find(serial, cursor, step) else {
+            return false;
+        };
+        if step_index > 0 && start > cursor + window.within_bytes as usize {
+            return false;
+        }
+        cursor = end;
+    }
+    !window.steps.is_empty()
+}
+
+/// The earliest match of one find-style step at or after `from`; window
+/// steps are needle or regex predicates, the transcript-level forms whose
+/// match positions the gap bound can mean.
+fn serial_step_find(serial: &[u8], from: usize, step: &SerialPredicate) -> Option<(usize, usize)> {
+    if let Some(needle) = &step.contains {
+        if needle.is_empty() || from >= serial.len() {
+            return None;
+        }
+        let start = serial[from..]
+            .windows(needle.len())
+            .position(|window| window == needle.as_bytes())?
+            + from;
+        return Some((start, start + needle.len()));
+    }
+    if let Some(expression) = &step.matches {
+        let expression = Regex::new(expression).ok()?;
+        let matched = expression.find_at(serial, from)?;
+        return Some((matched.start(), matched.end()));
+    }
+    None
 }
 
 fn serial_matches_sequence(serial: &[u8], sequence: &[SerialPredicate]) -> bool {
@@ -11316,6 +11371,18 @@ fn nested_predicate_description(predicate: &SerialPredicate) -> String {
                 .map(nested_predicate_description)
                 .collect::<Vec<_>>()
                 .join(", ")
+        ));
+    }
+    for window in &predicate.sequence_windows {
+        clauses.push(format!(
+            "within {} bytes [{}]",
+            window.within_bytes,
+            window
+                .steps
+                .iter()
+                .map(nested_predicate_description)
+                .collect::<Vec<_>>()
+                .join(" then ")
         ));
     }
     if let Some(occurs) = &predicate.occurs {
@@ -15593,6 +15660,7 @@ mod tests {
                         any: Vec::new(),
                         none: Vec::new(),
                         sequence: Vec::new(),
+                        sequence_windows: Vec::new(),
                         occurs: None,
                     },
                     SerialPredicate {
@@ -15603,6 +15671,7 @@ mod tests {
                         any: Vec::new(),
                         none: Vec::new(),
                         sequence: Vec::new(),
+                        sequence_windows: Vec::new(),
                         occurs: None,
                     },
                 ],
@@ -15615,6 +15684,7 @@ mod tests {
                         any: Vec::new(),
                         none: Vec::new(),
                         sequence: Vec::new(),
+                        sequence_windows: Vec::new(),
                         occurs: None,
                     },
                     SerialPredicate {
@@ -15625,6 +15695,7 @@ mod tests {
                         any: Vec::new(),
                         none: Vec::new(),
                         sequence: Vec::new(),
+                        sequence_windows: Vec::new(),
                         occurs: None,
                     },
                 ],
@@ -15636,9 +15707,11 @@ mod tests {
                     any: Vec::new(),
                     none: Vec::new(),
                     sequence: Vec::new(),
+                    sequence_windows: Vec::new(),
                     occurs: None,
                 }],
                 sequence: Vec::new(),
+                sequence_windows: Vec::new(),
                 occurs: None,
             }),
             requires_serial_all: Vec::new(),
@@ -15819,6 +15892,111 @@ mod tests {
         );
         assert!(!property_matches_in_run(&joined, &run));
         fs::remove_dir_all(run).unwrap();
+    }
+
+    #[test]
+    fn sequence_windows_bound_the_distance_between_steps() {
+        fn needle(value: &str) -> SerialPredicate {
+            SerialPredicate {
+                contains: Some(value.to_owned()),
+                matches: None,
+                json: None,
+                all: Vec::new(),
+                any: Vec::new(),
+                none: Vec::new(),
+                sequence: Vec::new(),
+                sequence_windows: Vec::new(),
+                occurs: None,
+            }
+        }
+
+        let window = |steps: Vec<SerialPredicate>, within_bytes: u64| SerialSequenceWindow {
+            steps,
+            within_bytes,
+        };
+
+        // The request precedes the audit within the gap: the window
+        // matches.
+        let transcript = b"request r-17 sent\naudit r-17 recorded\n";
+        assert!(serial_window_matches(
+            transcript,
+            &window(vec![needle("request"), needle("audit")], 64),
+        ));
+
+        // The gap bound excludes a match that lands beyond the window.
+        assert!(!serial_window_matches(
+            transcript,
+            &window(vec![needle("request"), needle("recorded")], 8),
+        ));
+
+        // Each step matches at its earliest position after the previous
+        // step's end, so repeated needles chain forward.
+        assert!(serial_window_matches(
+            b"tick tick tick\n",
+            &window(vec![needle("tick"), needle("tick")], 8),
+        ));
+
+        // A missing later step fails the window.
+        assert!(!serial_window_matches(
+            transcript,
+            &window(vec![needle("request"), needle("absent")], 64),
+        ));
+
+        // The predicate form composes: a matching window satisfies the
+        // guard, a too-far one does not, and the description names the
+        // window.
+        let property = CampaignProperty {
+            name: "audited_request".to_owned(),
+            kind: PropertyKind::Always,
+            contains: None,
+            contains_all: Vec::new(),
+            contains_any: Vec::new(),
+            contains_none: Vec::new(),
+            predicate: Some(SerialPredicate {
+                contains: None,
+                matches: None,
+                json: None,
+                all: Vec::new(),
+                any: Vec::new(),
+                none: Vec::new(),
+                sequence: Vec::new(),
+                sequence_windows: vec![window(
+                    vec![needle("request"), needle("audit")],
+                    64
+                )],
+                occurs: None,
+            }),
+            requires_serial_all: Vec::new(),
+            requires_serial_any: Vec::new(),
+            excludes_serial_any: Vec::new(),
+            requires_serial_correlations: Vec::new(),
+            requires_serial_joins: Vec::new(),
+            requires_serial_evidence: None,
+            excludes_serial_evidence: None,
+            service: None,
+        };
+        assert!(property_matches_in_run(&property, &run_dir_with(
+            "request r-17 sent\naudit r-17 recorded\n"
+        )));
+        // The earliest audit lands beyond the 16-byte gap after the
+        // request's match end, so the bounded window refuses the run.
+        assert!(!property_matches_in_run(&property, &run_dir_with(
+            "request r-17 sent\npadding pushes the audit far away\n"
+        )));
+        assert!(nested_predicate_description(property.predicate.as_ref().unwrap())
+            .contains("within 64 bytes"));
+    }
+
+    fn run_dir_with(transcript: &str) -> std::path::PathBuf {
+        let run = std::env::temp_dir().join(format!(
+            "theseus-sequence-window-{}-{}",
+            std::process::id(),
+            transcript.len()
+        ));
+        let api = run.join("services/api");
+        fs::create_dir_all(&api).unwrap();
+        fs::write(api.join("serial.log"), transcript).unwrap();
+        run
     }
 
     #[test]
@@ -16672,6 +16850,7 @@ mod tests {
                     any: Vec::new(),
                     none: Vec::new(),
                     sequence: Vec::new(),
+                    sequence_windows: Vec::new(),
                     occurs: None,
                 },
             },
@@ -16687,6 +16866,7 @@ mod tests {
                 any: Vec::new(),
                 none: Vec::new(),
                 sequence: Vec::new(),
+                sequence_windows: Vec::new(),
                 occurs: None,
             },
         }];
