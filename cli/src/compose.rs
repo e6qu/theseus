@@ -447,6 +447,8 @@ struct ComposeOperationSerialGuard {
     #[serde(default)]
     sequence: Vec<ComposeSerialPredicate>,
     #[serde(default)]
+    sequence_windows: Vec<ComposeSerialSequenceWindow>,
+    #[serde(default)]
     occurs: Option<ComposeSerialOccurrence>,
 }
 
@@ -460,6 +462,14 @@ impl ComposeOperationSerialGuard {
             any: self.any,
             none: self.none,
             sequence: self.sequence,
+            sequence_windows: self
+                .sequence_windows
+                .into_iter()
+                .map(|window| ComposeSerialSequenceWindow {
+                    steps: window.steps,
+                    within_bytes: window.within_bytes,
+                })
+                .collect(),
             occurs: self.occurs,
         }
     }
@@ -822,7 +832,19 @@ struct ComposeSerialPredicate {
     #[serde(default)]
     sequence: Vec<ComposeSerialPredicate>,
     #[serde(default)]
+    sequence_windows: Vec<ComposeSerialSequenceWindow>,
+    #[serde(default)]
     occurs: Option<ComposeSerialOccurrence>,
+}
+
+/// An ordered sequence whose steps must also be close: each step after the
+/// first must match within `within_bytes` of the previous step's match end,
+/// each at its earliest position, over the complete cumulative transcript.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComposeSerialSequenceWindow {
+    steps: Vec<ComposeSerialPredicate>,
+    within_bytes: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1754,8 +1776,19 @@ pub struct SerialPredicatePlan {
     pub none: Vec<SerialPredicatePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sequence: Vec<SerialPredicatePlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sequence_windows: Vec<SerialSequenceWindowPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub occurs: Option<SerialOccurrencePlan>,
+}
+
+/// An ordered sequence whose steps must also be close: each step after the
+/// first must match within `within_bytes` of the previous step's match end,
+/// each at its earliest position, over the complete cumulative transcript.
+#[derive(Debug, Clone, Serialize)]
+pub struct SerialSequenceWindowPlan {
+    pub steps: Vec<SerialPredicatePlan>,
+    pub within_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -6451,13 +6484,14 @@ fn normalize_serial_predicate_with_captures(
     allow_captures: bool,
 ) -> Result<SerialPredicatePlan, ComposeError> {
     let has_sequence = !predicate.sequence.is_empty();
+    let has_windows = !predicate.sequence_windows.is_empty();
     let has_occurs = predicate.occurs.is_some();
     if has_sequence && has_occurs {
         return Err(ComposeError::Invalid(format!(
             "campaign {context} cannot combine sequence with occurs"
         )));
     }
-    if (has_sequence || has_occurs)
+    if (has_sequence || has_windows || has_occurs)
         && (predicate.contains.is_some()
             || predicate.matches.is_some()
             || predicate.json.is_some()
@@ -6467,6 +6501,11 @@ fn normalize_serial_predicate_with_captures(
     {
         return Err(ComposeError::Invalid(format!(
             "campaign {context} cannot combine sequence with another nested predicate"
+        )));
+    }
+    if has_windows && (has_sequence || has_occurs) {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} cannot combine sequence windows with sequence or occurs"
         )));
     }
     if predicate.contains.as_ref().is_some_and(String::is_empty) {
@@ -6493,6 +6532,7 @@ fn normalize_serial_predicate_with_captures(
         && predicate.any.is_empty()
         && predicate.none.is_empty()
         && predicate.sequence.is_empty()
+        && predicate.sequence_windows.is_empty()
         && predicate.occurs.is_none()
     {
         return Err(ComposeError::Invalid(format!(
@@ -6505,6 +6545,11 @@ fn normalize_serial_predicate_with_captures(
         .map(|child| normalize_sequence_item(child, context))
         .collect::<Result<Vec<_>, _>>()?;
     validate_sequence_captures(&sequence, context)?;
+    let sequence_windows = predicate
+        .sequence_windows
+        .into_iter()
+        .map(|window| normalize_sequence_window(window, context))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(SerialPredicatePlan {
         contains: predicate.contains,
         matches: predicate.matches,
@@ -6528,6 +6573,7 @@ fn normalize_serial_predicate_with_captures(
             .map(|child| normalize_serial_predicate(child, context))
             .collect::<Result<_, _>>()?,
         sequence,
+        sequence_windows,
         occurs: predicate
             .occurs
             .map(|occurs| normalize_serial_occurrence(occurs, context))
@@ -6725,6 +6771,50 @@ fn normalize_serial_occurrence(
         exactly: occurs.exactly,
         at_least: occurs.at_least,
         at_most: occurs.at_most,
+    })
+}
+
+/// Normalize one sequence window: at least two find-style steps (a
+/// one-step window degenerates to the plain needle semantics), each
+/// matching at its earliest position, with a positive gap bound.
+fn normalize_sequence_window(
+    window: ComposeSerialSequenceWindow,
+    context: &str,
+) -> Result<SerialSequenceWindowPlan, ComposeError> {
+    if window.steps.len() < 2 {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} sequence windows need at least two steps"
+        )));
+    }
+    if window.within_bytes == 0 {
+        return Err(ComposeError::Invalid(format!(
+            "campaign {context} sequence windows need a positive within_bytes"
+        )));
+    }
+    let steps = window
+        .steps
+        .into_iter()
+        .map(|step| {
+            let find_style =
+                usize::from(step.contains.is_some()) + usize::from(step.matches.is_some());
+            if find_style != 1
+                || step.json.is_some()
+                || !step.all.is_empty()
+                || !step.any.is_empty()
+                || !step.none.is_empty()
+                || !step.sequence.is_empty()
+                || !step.sequence_windows.is_empty()
+            {
+                return Err(ComposeError::Invalid(format!(
+                    "campaign {context} sequence window steps must contain exactly one of contains or matches"
+                )));
+            }
+            normalize_serial_predicate_with_captures(step, context, false)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(SerialSequenceWindowPlan {
+        steps,
+        within_bytes: window.within_bytes,
     })
 }
 
@@ -11130,6 +11220,168 @@ networks:
     }
 
     #[test]
+    fn normalizes_and_validates_sequence_windows() {
+        let window = ComposeSerialSequenceWindow {
+            steps: vec![
+                ComposeSerialPredicate {
+                    contains: Some("request".to_owned()),
+                    matches: None,
+                    json: None,
+                    all: Vec::new(),
+                    any: Vec::new(),
+                    none: Vec::new(),
+                    sequence: Vec::new(),
+                    sequence_windows: Vec::new(),
+                    occurs: None,
+                },
+                ComposeSerialPredicate {
+                    contains: None,
+                    matches: Some("audit".to_owned()),
+                    json: None,
+                    all: Vec::new(),
+                    any: Vec::new(),
+                    none: Vec::new(),
+                    sequence: Vec::new(),
+                    sequence_windows: Vec::new(),
+                    occurs: None,
+                },
+            ],
+            within_bytes: 64,
+        };
+        let plan = normalize_serial_predicate(
+            ComposeSerialPredicate {
+                contains: None,
+                matches: None,
+                json: None,
+                all: Vec::new(),
+                any: Vec::new(),
+                none: Vec::new(),
+                sequence: Vec::new(),
+                sequence_windows: vec![window],
+                occurs: None,
+            },
+            "audited_request",
+        )
+        .unwrap();
+        let windows = &plan.sequence_windows;
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].within_bytes, 64);
+        assert_eq!(windows[0].steps.len(), 2);
+        assert_eq!(windows[0].steps[0].contains.as_deref(), Some("request"));
+
+        // A one-step window, a zero gap, and a json step are named errors.
+        for (window, message) in [
+            (
+                ComposeSerialSequenceWindow {
+                    steps: vec![ComposeSerialPredicate {
+                        contains: Some("request".to_owned()),
+                        matches: None,
+                        json: None,
+                        all: Vec::new(),
+                        any: Vec::new(),
+                        none: Vec::new(),
+                        sequence: Vec::new(),
+                        sequence_windows: Vec::new(),
+                        occurs: None,
+                    }],
+                    within_bytes: 64,
+                },
+                "need at least two steps",
+            ),
+            (
+                ComposeSerialSequenceWindow {
+                    steps: vec![
+                        ComposeSerialPredicate {
+                            contains: Some("request".to_owned()),
+                            matches: None,
+                            json: None,
+                            all: Vec::new(),
+                            any: Vec::new(),
+                            none: Vec::new(),
+                            sequence: Vec::new(),
+                            sequence_windows: Vec::new(),
+                            occurs: None,
+                        },
+                        ComposeSerialPredicate {
+                            contains: Some("audit".to_owned()),
+                            matches: None,
+                            json: None,
+                            all: Vec::new(),
+                            any: Vec::new(),
+                            none: Vec::new(),
+                            sequence: Vec::new(),
+                            sequence_windows: Vec::new(),
+                            occurs: None,
+                        },
+                    ],
+                    within_bytes: 0,
+                },
+                "need a positive within_bytes",
+            ),
+            (
+                ComposeSerialSequenceWindow {
+                    steps: vec![
+                        ComposeSerialPredicate {
+                            contains: Some("request".to_owned()),
+                            matches: None,
+                            json: None,
+                            all: Vec::new(),
+                            any: Vec::new(),
+                            none: Vec::new(),
+                            sequence: Vec::new(),
+                            sequence_windows: Vec::new(),
+                            occurs: None,
+                        },
+                        ComposeSerialPredicate {
+                            contains: None,
+                            matches: None,
+                            json: Some(ComposeJsonPredicate {
+                                query: None,
+                                fields: BTreeMap::from([(
+                                    "/event".to_owned(),
+                                    serde_json::Value::String("audit".to_owned()),
+                                )]),
+                                where_: Vec::new(),
+                                arrays: Vec::new(),
+                                all: Vec::new(),
+                                any: Vec::new(),
+                                none: Vec::new(),
+                                capture: BTreeMap::new(),
+                                equals_capture: BTreeMap::new(),
+                            }),
+                            all: Vec::new(),
+                            any: Vec::new(),
+                            none: Vec::new(),
+                            sequence: Vec::new(),
+                            sequence_windows: Vec::new(),
+                            occurs: None,
+                        },
+                    ],
+                    within_bytes: 64,
+                },
+                "sequence window steps must contain exactly one of contains or matches",
+            ),
+        ] {
+            let error = normalize_serial_predicate(
+                ComposeSerialPredicate {
+                    contains: None,
+                    matches: None,
+                    json: None,
+                    all: Vec::new(),
+                    any: Vec::new(),
+                    none: Vec::new(),
+                    sequence: Vec::new(),
+                    sequence_windows: vec![window],
+                    occurs: None,
+                },
+                "audited_request",
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
+    }
+
+    #[test]
     fn rejects_invalid_nested_campaign_regexes() {
         let error = normalize_serial_predicate(
             ComposeSerialPredicate {
@@ -11140,6 +11392,7 @@ networks:
                 any: Vec::new(),
                 none: Vec::new(),
                 sequence: Vec::new(),
+                sequence_windows: Vec::new(),
                 occurs: None,
             },
             "durable_write",
@@ -11173,6 +11426,7 @@ networks:
                 any: Vec::new(),
                 none: Vec::new(),
                 sequence: Vec::new(),
+                sequence_windows: Vec::new(),
                 occurs: None,
             },
             "durable_write",
@@ -11212,6 +11466,7 @@ networks:
                 any: Vec::new(),
                 none: Vec::new(),
                 sequence: Vec::new(),
+                sequence_windows: Vec::new(),
                 occurs: None,
             },
             "durable_write",

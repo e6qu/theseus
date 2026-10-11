@@ -233,6 +233,12 @@ Theseus currently has:
   comparisons, exists), `arrays` quantifiers, nested `all`/`any`/`none` -
   evaluated in the property layer's order; capture keys and unknown keys
   are refused by name.
+- Sequence windows in the property guards: `sequence_windows` evaluate
+  ordered find-style steps over complete transcripts, each within
+  `within_bytes` of the previous step's match end at its earliest
+  position; the CLI normalizes them beside every other predicate shape,
+  the runner matches them beside sequences and occurrence counts, and
+  the description names the window.
 - Moment-addressed forks: `--at-moment MOMENT` slices the forked
   future to the recorded operations up to and including the named
   boundary (the decision trace keeps the sliced boundaries' entries),
@@ -504,23 +510,23 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ### 1. Rich value predicates across moments
 
-Moment-addressed choice forks landed: `--fork-run N --set-choice
-OPERATION=INPUT --at-moment MOMENT` slices the forked future to the
-recorded operations up to the named boundary and re-executes from the
-shared deterministic prefix, completing Priority 5's fork-and-compare
-loop for faults, choices, and the checkpoints between them. The
-remaining Priority 5 work is the richer temporal-operator layer over
-complete transcripts beyond the moment space - Nth-occurrence and
-transitive relations inside the property guards themselves, evaluated by
-the runner over complete transcripts rather than the query surfaces'
-bounded excerpts:
+Sequence windows landed in the property guards: `sequence_windows`
+evaluate over complete transcripts with ordered, byte-bounded steps,
+mirror the query surfaces' windowed relations, and normalize with named
+refusals (single-step windows, zero gaps, non-find-style steps). The
+moment space and the property layer now share one temporal vocabulary.
+The remaining Priority 5 work is the assertion catalog's management
+surface - promoting a query answer's predicate into a retained campaign
+property declaration, so an investigation finding becomes a standing
+guard:
 
-- Extend the property layer's serial guards with occurrence and window
-  clauses the runner evaluates over complete transcripts, keeping the
-  strictness contract and the existing needle semantics as the window-1
-  case.
-- Tests: property fixtures over complete transcripts asserting each
-  clause's acceptance and rejection beside the query surfaces' answers.
+- `theseus query --export` already writes the answer; extend it with the
+  plan-shaped property declaration beside the manifest, and document the
+  promotion path from an exported answer to a campaign's `properties`
+  list.
+- Tests: the exported declaration re-parses as a campaign property, and
+  the promoted guard answers the original question over the retained
+  transcript.
 
 ## Priority 6: product surface and workload compatibility
 

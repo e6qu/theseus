@@ -349,6 +349,11 @@ whole topology) with:
 - `requires_serial_evidence` / `excludes_serial_evidence` — composable
   `all`/`any`/`none` groups over the guards, correlations, joins, and
   relations above.
+- `sequence_windows` inside a predicate — ordered steps that must also be
+  close: each step after the first must match within `within_bytes` of the
+  previous step's match end, each at its earliest position, over the
+  complete transcript. Steps are `contains` or `matches` predicates, so
+  "the request is followed by the audit" is bounded rather than global.
 
 ```yaml
 properties:

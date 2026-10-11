@@ -1064,7 +1064,10 @@ timeline over the same bounded serial excerpts the moment log shows, with
 the needle ASCII-escaped exactly like the retained bytes; a needle that
 only exists beyond an excerpt's 512-byte cut does not match, and the full
 nested property predicates still evaluate inside the runner over complete
-transcripts. `--service NAME` scopes both where the needle is searched and
+transcripts - including `sequence_windows`, ordered steps whose matches
+must land within a byte gap of the previous step, so property guards can
+bound the distance between markers the way the query relations bound it
+by boundaries. `--service NAME` scopes both where the needle is searched and
 which moments are listed. Guest-emitted JSON events are first-class:
 `--events` lists every retained application event - moment address,
 boundary, emitting service, and the verbatim line - a resolved moment
