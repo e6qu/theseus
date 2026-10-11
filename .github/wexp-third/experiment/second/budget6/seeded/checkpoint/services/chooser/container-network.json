@@ -1,0 +1,12 @@
+{
+  "interfaces": [
+    {
+      "name": "eth0",
+      "address": "10.1.0.10",
+      "prefix_len": 24
+    }
+  ],
+  "hosts": {
+    "chooser": "10.1.0.10"
+  }
+}

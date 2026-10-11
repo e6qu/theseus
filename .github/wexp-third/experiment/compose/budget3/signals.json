@@ -1,0 +1,84 @@
+{
+  "format": "theseus-guidance-comparison-v1",
+  "budget": 3,
+  "corpus": 6,
+  "modes": [
+    "unified"
+  ],
+  "rows": [
+    {
+      "source": "/home/runner/work/theseus/theseus/docs/tutorials/36-structured-choices/experiment/compose/budget3/unseeded",
+      "guidance": "unified",
+      "status": "passed",
+      "corpus": 6,
+      "runs": 3,
+      "unique_topology_states": 2,
+      "unique_instruction_locations": 6,
+      "unique_application_blocks": 0,
+      "unique_application_edges": 0,
+      "checkpoint_nodes": 1,
+      "checkpoint_reuses": 0,
+      "structured_choice_values": 4,
+      "choice_context_pairs": 6,
+      "choice_outcomes": [
+        {
+          "choice": "chooser:mode:2:0",
+          "runs": 3,
+          "failed_runs": 0
+        },
+        {
+          "choice": "chooser:retry:3:0",
+          "runs": 1,
+          "failed_runs": 0
+        },
+        {
+          "choice": "chooser:retry:3:1",
+          "runs": 1,
+          "failed_runs": 0
+        },
+        {
+          "choice": "chooser:retry:3:2",
+          "runs": 1,
+          "failed_runs": 0
+        }
+      ]
+    },
+    {
+      "source": "/home/runner/work/theseus/theseus/docs/tutorials/36-structured-choices/experiment/compose/budget3/seeded",
+      "guidance": "unified",
+      "status": "passed",
+      "corpus": 6,
+      "runs": 3,
+      "unique_topology_states": 2,
+      "unique_instruction_locations": 6,
+      "unique_application_blocks": 0,
+      "unique_application_edges": 0,
+      "checkpoint_nodes": 1,
+      "checkpoint_reuses": 0,
+      "structured_choice_values": 4,
+      "choice_context_pairs": 6,
+      "choice_outcomes": [
+        {
+          "choice": "chooser:mode:2:0",
+          "runs": 3,
+          "failed_runs": 0
+        },
+        {
+          "choice": "chooser:retry:3:0",
+          "runs": 1,
+          "failed_runs": 0
+        },
+        {
+          "choice": "chooser:retry:3:1",
+          "runs": 1,
+          "failed_runs": 0
+        },
+        {
+          "choice": "chooser:retry:3:2",
+          "runs": 1,
+          "failed_runs": 0
+        }
+      ]
+    }
+  ]
+}

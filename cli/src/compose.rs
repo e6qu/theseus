@@ -7983,18 +7983,13 @@ pub fn explore_compose_with(
         ));
     }
     let shard = shard.map(validate_campaign_shard).transpose()?;
-    if let Some(campaign) = plan.campaign.as_mut() {
-        if let Some(max_runs) = max_runs {
-            campaign.max_runs = max_runs;
-        }
-        if let Some(guidance) = guidance {
-            campaign.guidance = guidance;
-        }
-        campaign.shard = shard;
-        if let Some(prior) = seed_choices {
-            campaign.seed_choice_values = seeded_choice_values(prior)?;
-        }
-    }
+    apply_campaign_overrides(
+        plan.campaign.as_mut(),
+        max_runs,
+        guidance,
+        shard,
+        seed_choices,
+    )?;
     plan.topology_runner = Some(installed_runner_artifact()?);
     let output = output.as_ref().to_path_buf();
     let plan_file = write_temporary_topology_plan(&plan, &output)?;
@@ -8085,6 +8080,7 @@ pub fn explore_compose_expect_counterexample(
 
 /// Execute a campaign expected to falsify one named property, with the same
 /// fixed-budget and guidance overrides as [`explore_compose_with`].
+#[allow(clippy::too_many_arguments)]
 pub fn explore_compose_expect_counterexample_with(
     path: impl AsRef<Path>,
     output: impl AsRef<Path>,
@@ -8093,6 +8089,7 @@ pub fn explore_compose_expect_counterexample_with(
     guidance: Option<CampaignGuidance>,
     notify: Option<&str>,
     shard: Option<(u16, u16)>,
+    seed_choices: Option<&Path>,
 ) -> Result<PathBuf, ComposeError> {
     let mut plan = load_compose_plan(&path)?;
     let campaign = plan.campaign.as_ref().ok_or_else(|| {
@@ -8108,15 +8105,13 @@ pub fn explore_compose_expect_counterexample_with(
         )));
     }
     let shard = shard.map(validate_campaign_shard).transpose()?;
-    if let Some(campaign) = plan.campaign.as_mut() {
-        if let Some(max_runs) = max_runs {
-            campaign.max_runs = max_runs;
-        }
-        if let Some(guidance) = guidance {
-            campaign.guidance = guidance;
-        }
-        campaign.shard = shard;
-    }
+    apply_campaign_overrides(
+        plan.campaign.as_mut(),
+        max_runs,
+        guidance,
+        shard,
+        seed_choices,
+    )?;
     plan.topology_runner = Some(installed_runner_artifact()?);
     let output = output.as_ref().to_path_buf();
     let plan_file = write_temporary_topology_plan(&plan, &output)?;
@@ -8124,6 +8119,32 @@ pub fn explore_compose_expect_counterexample_with(
     let _ = fs::remove_file(&plan_file);
     notify_campaign_completion(notify, &output);
     result.map(|()| output)
+}
+
+/// Apply one explore invocation's campaign overrides - budget, guidance,
+/// shard, and the novelty seed - so every explore path applies them
+/// identically and none drops one silently.
+fn apply_campaign_overrides(
+    campaign: Option<&mut CampaignPlan>,
+    max_runs: Option<u16>,
+    guidance: Option<CampaignGuidance>,
+    shard: Option<ShardPlan>,
+    seed_choices: Option<&Path>,
+) -> Result<(), ComposeError> {
+    let Some(campaign) = campaign else {
+        return Ok(());
+    };
+    if let Some(max_runs) = max_runs {
+        campaign.max_runs = max_runs;
+    }
+    if let Some(guidance) = guidance {
+        campaign.guidance = guidance;
+    }
+    campaign.shard = shard;
+    if let Some(prior) = seed_choices {
+        campaign.seed_choice_values = seeded_choice_values(prior)?;
+    }
+    Ok(())
 }
 
 /// Read a prior campaign's consumed choice identities for novelty seeding.
@@ -13146,6 +13167,100 @@ x-theseus:
                 "replace": "backplane:partition@write",
             })
         );
+    }
+
+    #[test]
+    fn campaign_overrides_apply_the_seed_on_every_explore_path() {
+        let prior = tempfile::tempdir().unwrap();
+        fs::write(
+            prior.path().join("campaign-result.json"),
+            r#"{"format":"theseus-compose-campaign-result-v1","runs":[
+                {"index":0,"status":"passed","choice_feedback":{"values":["chooser:mode:2:1"]}}
+            ]}"#,
+        )
+        .unwrap();
+
+        let workdir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(workdir.path().join("chooser/runtime")).unwrap();
+        fs::write(
+            workdir.path().join("chooser/runtime/firecracker"),
+            b"firecracker",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            workdir.path().join("chooser/runtime/firecracker"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::create_dir_all(workdir.path().join("chooser/guest")).unwrap();
+        fs::write(
+            workdir.path().join("chooser/theseus.toml"),
+            "version = 1\n[runtime]\nfirecracker = 'runtime/firecracker'\nimage_adapter = 'runtime/theseus-image'\n[guest]\nkernel = 'guest/vmlinux'\nimage = 'service.tar'\n[run]\nseed = 1\nvcpu_count = 1\nmem_size_mib = 128\n[run.virtual_time]\ntick_ns = 1000000\nexits_per_tick = 10\n",
+        )
+        .unwrap();
+        fs::write(
+            workdir.path().join("chooser/runtime/theseus-image"),
+            b"adapter",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(
+            workdir.path().join("chooser/runtime/theseus-image"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(workdir.path().join("chooser/guest/vmlinux"), b"kernel").unwrap();
+        write_docker_image(&workdir.path().join("chooser/service.tar"), &[]);
+        fs::write(
+            workdir.path().join("compose.yaml"),
+            "services:
+  chooser:
+    x-theseus:
+      manifest: chooser/theseus.toml
+    networks: [test]
+networks:
+  test: {}
+x-theseus:
+  campaign:
+    driver: chooser
+    max_runs: 6
+    operations:
+      - name: calculate
+        input: 'calculate\n'
+    properties: []
+",
+        )
+        .unwrap();
+        let mut plan = load_compose_plan(workdir.path().join("compose.yaml")).unwrap();
+
+        apply_campaign_overrides(
+            plan.campaign.as_mut(),
+            Some(3),
+            None,
+            None,
+            Some(prior.path()),
+        )
+        .unwrap();
+        let campaign = plan.campaign.as_ref().unwrap();
+        assert_eq!(campaign.max_runs, 3);
+        assert_eq!(
+            campaign.seed_choice_values,
+            vec!["chooser:mode:2:1".to_owned()]
+        );
+
+        // No seed argument leaves the values untouched.
+        let mut untouched = load_compose_plan(workdir.path().join("compose.yaml")).unwrap();
+        untouched.campaign.as_mut().unwrap().seed_choice_values = vec!["keeper".to_owned()];
+        apply_campaign_overrides(untouched.campaign.as_mut(), None, None, None, None).unwrap();
+        assert_eq!(
+            untouched.campaign.as_ref().unwrap().seed_choice_values,
+            vec!["keeper".to_owned()]
+        );
+
+        // A missing campaign section is not an error - the plain explore
+        // without a campaign section is rejected earlier.
+        apply_campaign_overrides(None, None, None, None, Some(prior.path())).unwrap();
     }
 
     #[test]

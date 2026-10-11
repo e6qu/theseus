@@ -1552,6 +1552,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 overrides.guidance,
                 overrides.notify.as_deref(),
                 overrides.shard,
+                overrides.seed_choices.as_deref(),
             )
             .map_err(|error| error.to_string())?;
             println!("counterexample retained: {}", result.display());
@@ -1575,6 +1576,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 overrides.guidance,
                 overrides.notify.as_deref(),
                 overrides.shard,
+                overrides.seed_choices.as_deref(),
             )
             .map_err(|error| error.to_string())?;
             println!("counterexample retained: {}", result.display());
