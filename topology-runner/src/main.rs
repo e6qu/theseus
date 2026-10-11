@@ -15978,11 +15978,14 @@ mod tests {
         assert!(property_matches_in_run(&property, &run_dir_with(
             "request r-17 sent\naudit r-17 recorded\n"
         )));
-        // The earliest audit lands beyond the 16-byte gap after the
+        // The earliest audit lands beyond the 64-byte gap after the
         // request's match end, so the bounded window refuses the run.
-        assert!(!property_matches_in_run(&property, &run_dir_with(
-            "request r-17 sent\npadding pushes the audit far away\n"
-        )));
+        assert!(!property_matches_in_run(
+            &property,
+            &run_dir_with(
+                "request r-17 sent\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx audit far away\n"
+            )
+        ));
         assert!(nested_predicate_description(property.predicate.as_ref().unwrap())
             .contains("within 64 bytes"));
     }
