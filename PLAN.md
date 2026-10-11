@@ -233,6 +233,12 @@ Theseus currently has:
   comparisons, exists), `arrays` quantifiers, nested `all`/`any`/`none` -
   evaluated in the property layer's order; capture keys and unknown keys
   are refused by name.
+- Moment-addressed forks: `--at-moment MOMENT` slices the forked
+  future to the recorded operations up to and including the named
+  boundary (the decision trace keeps the sliced boundaries' entries),
+  the choice must be selected before the forked moment, a moment
+  outside the run's timeline is a named error on both surfaces, and
+  `compare --forked` echoes the moment beside the choice provenance.
 - Choice forks: `theseus compose explore --fork-run N --set-choice
   OPERATION=INPUT` locks one operation's input-case substitution into
   the forked replay plan, the runner swaps the schedule's input at the
@@ -498,19 +504,23 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ### 1. Rich value predicates across moments
 
-Choice forks landed: `--fork-run N --set-choice OPERATION=INPUT` re-runs
-one recorded operation under another declared input case from the shared
-deterministic prefix, and `compare --forked` diffs the re-run future
-like every fork. The remaining Priority 5 gap is moment-addressed
-forking - naming the checkpoint instead of the run:
+Moment-addressed choice forks landed: `--fork-run N --set-choice
+OPERATION=INPUT --at-moment MOMENT` slices the forked future to the
+recorded operations up to the named boundary and re-executes from the
+shared deterministic prefix, completing Priority 5's fork-and-compare
+loop for faults, choices, and the checkpoints between them. The
+remaining Priority 5 work is the richer temporal-operator layer over
+complete transcripts beyond the moment space - Nth-occurrence and
+transitive relations inside the property guards themselves, evaluated by
+the runner over complete transcripts rather than the query surfaces'
+bounded excerpts:
 
-- `compose explore --fork-run N --at-moment <address> --set-choice
-  OPERATION=INPUT` slices the recorded run to the operations up to the
-  named moment's boundary and re-executes from the checkpoint nearest
-  it, so a fork starts where the question lives rather than at the
-  run's start.
-- Tests: fork fixtures asserting the sliced schedule, the divergence
-  report, and the refusal when the moment is outside the forked run.
+- Extend the property layer's serial guards with occurrence and window
+  clauses the runner evaluates over complete transcripts, keeping the
+  strictness contract and the existing needle semantics as the window-1
+  case.
+- Tests: property fixtures over complete transcripts asserting each
+  clause's acceptance and rejection beside the query surfaces' answers.
 
 ## Priority 6: product surface and workload compatibility
 

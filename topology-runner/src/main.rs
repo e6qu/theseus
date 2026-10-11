@@ -248,6 +248,12 @@ struct CounterfactualPlan {
     operation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     input: Option<String>,
+    /// The moment address where the forked future stops: the recorded run
+    /// slices to the operations up to and including the named boundary, so
+    /// the fork starts where the question lives rather than at the run's
+    /// end. Requires the choice form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    at_moment: Option<String>,
 }
 
 impl CounterfactualPlan {
@@ -267,12 +273,14 @@ impl CounterfactualPlan {
         }
     }
 
-    /// The substitution must name exactly one form, complete on both sides.
+    /// The substitution must name exactly one form, complete on both
+    /// sides; the moment slice requires the choice form.
     fn validate(&self) -> Result<(), String> {
         match (&self.fault, &self.replace, &self.operation, &self.input) {
-            (Some(_), Some(_), None, None) | (None, None, Some(_), Some(_)) => Ok(()),
+            (Some(_), Some(_), None, None) if self.at_moment.is_none() => Ok(()),
+            (None, None, Some(_), Some(_)) => Ok(()),
             _ => Err(
-                "counterfactual fork must set either fault and replace, or operation and input"
+                "counterfactual fork must set either fault and replace, or operation and input; --at-moment requires the choice form"
                     .to_owned(),
             ),
         }
@@ -6873,13 +6881,40 @@ fn counterfactual_recorded_view(
             recorded.runs.len()
         )
     })?;
+    let mut run = run.clone();
+    if let Some(address) = &fork.at_moment {
+        let index = run
+            .timeline
+            .iter()
+            .position(|boundary| &boundary.moment == address)
+            .ok_or_else(|| {
+                format!(
+                    "counterfactual moment {address} is not in the recorded run's timeline"
+                )
+            })?;
+        let kept = index + 1;
+        run.operations.truncate(kept);
+        run.timeline.truncate(kept);
+        // The trace prefixes every boundary's entries with
+        // `boundary:<index>:`; keep the sliced boundaries' entries.
+        run.decision_trace.retain(|entry| {
+            entry
+                .strip_prefix("boundary:")
+                .and_then(|rest| rest.split(':').next())
+                .and_then(|index| index.parse::<usize>().ok())
+                .is_none_or(|boundary_index| boundary_index < kept)
+        });
+        if run.thread_schedule_prefixes.len() > kept {
+            run.thread_schedule_prefixes.truncate(kept);
+        }
+    }
     Ok(RecordedCampaignResult {
         starting_checkpoint_sha256: recorded.starting_checkpoint_sha256.clone(),
         guidance: recorded.guidance,
         coverage: recorded.coverage,
         generated_candidates: 0,
         search: None,
-        runs: vec![run.clone()],
+        runs: vec![run],
     })
 }
 
@@ -19150,6 +19185,7 @@ mod tests {
             replace: Some(replace.to_owned()),
             operation: None,
             input: None,
+            at_moment: None,
         }
     }
 
@@ -19259,6 +19295,7 @@ mod tests {
                 replace: Some("backplane:api->worker:link_partition@write".to_owned()),
                 operation: None,
                 input: None,
+                at_moment: None,
             },
         )
         .unwrap();
@@ -19275,6 +19312,7 @@ mod tests {
                 replace: Some("backplane:api->worker:link_partition@write".to_owned()),
                 operation: None,
                 input: None,
+                at_moment: None,
             },
         )
         .unwrap_err();
