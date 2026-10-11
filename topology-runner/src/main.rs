@@ -16836,6 +16836,7 @@ mod tests {
                 any: Vec::new(),
                 none: Vec::new(),
                 sequence: Vec::new(),
+                sequence_windows: Vec::new(),
                 occurs: None,
             },
         });
