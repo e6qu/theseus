@@ -1,8 +1,0 @@
-THES:HTTP:ready:PASS
-THES:M:42THES:SHELL:operation:{"command":["/usr/local/bin/second"],"environment":{"THESEUS_CHOICES":"depth=0,strategy=0"},"expect_exit":0,"name":"calculate","output_contains":null,"output_json":true,"phase":"run","process":null}
-
-THES:CHOICE:depth:3:0
-THES:CHOICE:strategy:2:0
-{"completion":null,"event":"shell_operation","name":"calculate","output":{"depth":0,"status":"ok","strategy":0},"output_text":null,"phase":"run","process":null}
-THES:SHELL:operation:calculate:PASS
-THES:CHECKPOINT:calculate

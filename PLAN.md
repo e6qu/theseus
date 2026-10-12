@@ -524,13 +524,13 @@ and demand-driven coverage breadth for JavaScript and .NET.
 Real seeded arms are recorded: after the silent-drop fix, all three
 workloads reproduce the fresh-first reordering on the first seeded run
 (mode=1/retry=0, depth=2/strategy=0, lane=1/phase=0/level=0 - each the
-earliest corpus candidate carrying an unconsumed value). The design
-note records the widened evidence. The seed-default decision's remaining
-question is yield, not ordering: whether fresh-first finds failures or
-witnesses sooner than corpus order across workloads - measured by the
-witnesses-per-run column the harness already tabulates, over more
-recordings. The recorded artifacts are the baseline; the decision stays
-open until the yield comparison favors the seed.
+earliest corpus candidate carrying an unconsumed value). The harness's
+cross-workload summary now carries the yield comparison the
+seed-default decision reads - per workload per budget, the
+witnesses-per-run delta (seeded minus unseeded) and each arm's first
+witness position - asserted on every CI run beside the tabulations.
+Every CI run is now one yield data point; the decision stays open until
+the delta favors the seed or the arms provably tie at every budget.
 
 ## Priority 6: product surface and workload compatibility
 

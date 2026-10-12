@@ -216,7 +216,8 @@ jobs:
             3,6 experiment corrupt_result_is_unreachable \
             compose.yaml second.yaml third.yaml
           python3 ../../../scripts/assert_tabulation.py \
-            experiment/compose/budget6/tabulation.md 6
+            experiment/compose/budget6/tabulation.md 6 \
+            experiment/summary.md
           test -f experiment/compose/budget3/unseeded/campaign-result.json
           test -f experiment/compose/budget6/choices.json
           test -f experiment/compose/budget6/signals.md
