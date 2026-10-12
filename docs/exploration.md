@@ -369,6 +369,15 @@ properties:
     predicate:
       json:
         fields: {/event: shell_operation, /name: inspect, /output/value: 1}
+  - name: audited_request
+    kind: always
+    service: writer-a
+    predicate:
+      sequence_windows:
+        - within_bytes: 64
+          steps:
+            - contains: 'request r-'
+            - matches: 'audit r-[0-9]+ recorded'
 ```
 
 Every operation boundary in a retained campaign carries a moment address —
