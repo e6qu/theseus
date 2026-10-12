@@ -396,10 +396,11 @@ measurement, a KVM host, or a product decision - not on design.
 
 1. **Decide the seeding default from yield.** The instrumentation is
    done: every CI run records three seeded/unseeded workload pairs and
-   asserts a yield table (witnesses per run, first witness position).
-   Today the arms tie. The decision resolves itself when accumulated
-   runs show a yield delta favoring the seed - or provable ties at
-   every budget, which retires the question.
+   asserts a yield table (witnesses per run, first witness position);
+   `scripts/weighting_history.py` tabulates the accumulation in one
+   command. Today the arms tie. The decision resolves itself when
+   accumulated runs show a yield delta favoring the seed - or provable
+   ties at every budget, which retires the question.
 2. **The execution plane (Priority 1).** Fully deterministic in-kernel
    timer arming, then runnable guest entities, virtual-clock reads, and
    guest-side input consumption between KVM exits. Each slice needs
