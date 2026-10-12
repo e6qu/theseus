@@ -657,6 +657,7 @@ fn resources_from_plan(plan: &RunPlan, serial_log: Option<PathBuf>) -> Result<Vm
                     tick_ns: time.tick_ns,
                     exits_per_tick: time.exits_per_tick as u64,
                     hold_kernel_timers: time.hold_kernel_timers,
+                    filter_timer_msrs: time.filter_timer_msrs,
                 }),
             ..Default::default()
         })
