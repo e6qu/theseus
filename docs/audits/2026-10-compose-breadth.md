@@ -59,8 +59,22 @@ everything else is covered.
 | tmpfs sizing (compose + guest enforcement) | breadth audit supported list | container-images guide guard note | none - candidates: 28 |
 | Sub-1x clock rates | cli/README clock paragraph | exploration.md clock section | 06 covers it |
 | Rootfs memory guard | container-images guide conversion section | - | 14 covers it |
+| Value predicates (`--where`, shared grammar, serve grammar routes) | cli/README query section | exploration.md temporal-queries paragraphs | 36 step 5 |
+| Windowed, occurrence-addressed, and bracketing relations (`--within`, `--anchor`, `--surrounded-by`) | cli/README query section | exploration.md reading-paths paragraph | - (query-surface breadth; the relations are documented where they answer) |
+| Query export + property promotion | cli/README query section | exploration.md reading-paths paragraph | - (investigation workflow; the export bundle documents itself) |
+| Choice forks (`--set-choice`) | cli/README forked-comparison paragraphs | exploration.md fork section | - (candidates: branching guide) |
+| Moment-addressed forks (`--at-moment`) | cli/README forked-comparison paragraphs | exploration.md fork section | - (same candidate) |
+| Sequence windows in the property guards | exploration.md property vocabulary | cli/README query paragraph | - (property-authoring surface) |
+| Assertion diff (`history --assertions --diff`) | cli/README history section | exploration.md reading-paths paragraph | - (suite-audit surface) |
+| Third weighting workload + the yield table | exploration.md recordings + harness paragraph | PLAN.md weighting section | 36 names the workload |
 
 The audit's verdict, after the follow-up steps landed: reference, guide,
 and tutorial coverage is complete for every landed slice. The four
 tutorial gaps named above were closed in tutorials 10 (guest journal),
-36 (choice feedback), 44 (sidecar naming), and 28 (tmpfs sizing).
+36 (choice feedback), 44 (sidecar naming), and 28 (tmpfs sizing); the
+value-predicate step in tutorial 36 keeps the query surface walked in
+the same tutorial as the events it queries. The remaining "-" rows name
+their natural hosts: the query relations and export surface live in the
+reference and guide because they are investigation vocabulary over
+retained evidence, and the fork forms' guide host is the
+branching guide's next pass.

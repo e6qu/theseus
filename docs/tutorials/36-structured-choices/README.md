@@ -135,6 +135,19 @@ grep -R 'THES:CHOICE:mode:2:1\|THES:CHOICE:retry:3:2\|"status":"corrupt"' \
 
 Replay rejects a changed assignment, bound, or emitted choice record.
 
+The chooser's JSON lines are guest events, so value questions compose
+with the temporal relations: `--where` keeps only the moments whose own
+boundary carried an event matching the fields - "which completions
+followed the ready marker and printed the corrupt status" is one query.
+
+```sh
+theseus query seeded --where '{"fields":{"/status":"corrupt"}}' \
+  --preceded-by CHOICE --format json | grep -A3 '"matches"'
+```
+
+The answer (`theseus-query-predicate-v1`) lists the needle occurrences
+beside only the moments passing both filters.
+
 ## 6. Clean up (optional)
 
 ```sh

@@ -637,8 +637,11 @@ collect), and `theseus history` (properties, assertions, choices); over
 HTTP with `theseus serve` (read-only index, verbatim results and logs,
 rendered reports, live progress journals, moment and choice queries,
 comparisons); and offline through collected moment bundles and the
-retained artifacts CI uploads. The weighting experiment's design note
-above records what those artifacts have shown so far.
+retained artifacts CI uploads. `history --assertions --diff NEW` audits
+the guards themselves - the identities one campaign set added, retired,
+and flipped from always-passing to sometimes-failing beside another set.
+The weighting experiment's design note above records what those
+artifacts have shown so far.
 
 ## Reproduce one timeline
 
