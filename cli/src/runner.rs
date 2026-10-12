@@ -676,6 +676,8 @@ fn launch_runtime(
     let child = Command::new(&runtime)
         .arg("--api-sock")
         .arg(path_text(&socket)?)
+        .arg("--level")
+        .arg("Info")
         .arg("--no-seccomp")
         .stdin(Stdio::piped())
         .stdout(Stdio::from(log.try_clone().map_err(|source| {
