@@ -409,9 +409,11 @@ measurement, a KVM host, or a product decision - not on design.
    force x2APIC, filter the timer MSRs, record arming as a machine-stream
    decision, and answer current-count reads from the virtual countdown -
    stage 1 is a one-session interception spike. The forks' remaining
-   sliver (executing from the nearest checkpoint instead of re-running
-   the shared prefix) composes the existing capture-and-resume machinery
-   once that lands.
+   sliver is analyzed too
+   ([checkpoint-addressed-forks.md](docs/design/checkpoint-addressed-forks.md)):
+   re-executing the shared prefix is deterministic and stays the default;
+   restore-based forks wait for the hosted multi-question workflow, where
+   fork-question latency is the measured pain.
 3. **Product operations (Priority 6).** A hosted campaign service on
    the stable API record, catalog management UX, and a web
    investigation interface over the same portable evidence - each a
