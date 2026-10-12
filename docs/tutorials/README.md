@@ -4,14 +4,14 @@ Each directory is complete: make it your working directory and use the
 published Theseus artifact named in its README. No tutorial needs a Theseus
 source checkout.
 
-Tutorials 1–8, 10–11, and 14–44 need Linux with KVM and Docker.
-Tutorial 44 validates a rendered Helm chart with only the published
-binary and Docker. Tutorials 9,
-12, and 13 read recorded bundles with only the published binary, and
-tutorial 43 serves its recorded example the same way after exploring with
-KVM. Tutorials 1
-and 2 currently use the arm64 runtime, because that is where the matching
-deterministic-CRNG kernel module is shipped.
+Most tutorials explore or replay real microVMs and need Linux with KVM
+and Docker: 1–8, 10, 11, and 14–42. A few do not:
+
+- **Published binary only** — 9, 12, and 13 read recorded bundles; 44
+  validates a rendered Helm chart (adds the Helm CLI); 43's inspection
+  steps run anywhere, though its first step explores with KVM.
+- **Arm64 note** — tutorials 1 and 2 use the arm64 runtime, where the
+  matching deterministic-CRNG kernel module ships.
 
 1. [Replay `/dev/urandom`](01-replay-by-seed/) — replay ordinary Linux random
    devices with a seed.
