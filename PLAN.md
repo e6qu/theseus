@@ -535,7 +535,12 @@ documentation audit is refreshed for the cycle's slices: value
 predicates walked in tutorial 36, the assertion diff named in the
 reading paths, and the remaining "-" rows name their natural hosts
 (query vocabulary in reference+guide; fork forms' next branching-guide
-pass).
+pass). The parity analysis is refreshed for the cycle: Priority gaps
+1-3 closed (value predicates, temporal operators, choice and
+moment-addressed forks), gap 4 narrowed (suite diff, promotion), and
+the remaining fronts are the yield-accumulation decision, Priority 1's
+execution-plane slices (KVM-host iteration), and the demand-gated
+breadth items.
 
 ## Priority 6: product surface and workload compatibility
 
