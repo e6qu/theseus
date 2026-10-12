@@ -62,8 +62,8 @@ everything else is covered.
 | Value predicates (`--where`, shared grammar, serve grammar routes) | cli/README query section | exploration.md temporal-queries paragraphs | 36 step 5 |
 | Windowed, occurrence-addressed, and bracketing relations (`--within`, `--anchor`, `--surrounded-by`) | cli/README query section | exploration.md reading-paths paragraph | - (query-surface breadth; the relations are documented where they answer) |
 | Query export + property promotion | cli/README query section | exploration.md reading-paths paragraph | - (investigation workflow; the export bundle documents itself) |
-| Choice forks (`--set-choice`) | cli/README forked-comparison paragraphs | exploration.md fork section | - (candidates: branching guide) |
-| Moment-addressed forks (`--at-moment`) | cli/README forked-comparison paragraphs | exploration.md fork section | - (same candidate) |
+| Choice forks (`--set-choice`) | cli/README forked-comparison paragraphs | exploration.md fork section; branching guide fork walkthrough | - |
+| Moment-addressed forks (`--at-moment`) | cli/README forked-comparison paragraphs | exploration.md fork section; branching guide fork walkthrough | - |
 | Sequence windows in the property guards | exploration.md property vocabulary | cli/README query paragraph | - (property-authoring surface) |
 | Assertion diff (`history --assertions --diff`) | cli/README history section | exploration.md reading-paths paragraph | - (suite-audit surface) |
 | Third weighting workload + the yield table | exploration.md recordings + harness paragraph | PLAN.md weighting section | 36 names the workload |
@@ -76,5 +76,5 @@ value-predicate step in tutorial 36 keeps the query surface walked in
 the same tutorial as the events it queries. The remaining "-" rows name
 their natural hosts: the query relations and export surface live in the
 reference and guide because they are investigation vocabulary over
-retained evidence, and the fork forms' guide host is the
-branching guide's next pass.
+retained evidence, and the fork forms' guide walkthrough is landed in
+the branching guide.
