@@ -519,22 +519,18 @@ and demand-driven coverage breadth for JavaScript and .NET.
 
 ## Immediate next work
 
-### 1. The seeded arms' silent-drop fix, then real seeded recordings
+### 1. Multi-workload weighting evidence
 
-The third workload's recording exposed a real bug: `--seed-choices` was
-silently dropped beside `--expect-counterexample`, so every harness
-seeded arm since the budget sweep recorded unseeded-vs-unseeded runs -
-only the sub-budget pair (plain explore) ever seeded. The fix threads
-the seed through the counterexample explore path and extracts the
-shared override application (`apply_campaign_overrides`) so no path can
-drop an override silently, unit-tested on all four overrides.
-
-The next work records real seeded arms:
-
-- CI's next run records the harness with seeds actually applied; the
-  design note's sweep bullet already records the correction.
-- Tests: the override helper's unit test pins the seed beside budget,
-  guidance, and shard; the harness and CI assertions are unchanged.
+Real seeded arms are recorded: after the silent-drop fix, all three
+workloads reproduce the fresh-first reordering on the first seeded run
+(mode=1/retry=0, depth=2/strategy=0, lane=1/phase=0/level=0 - each the
+earliest corpus candidate carrying an unconsumed value). The design
+note records the widened evidence. The seed-default decision's remaining
+question is yield, not ordering: whether fresh-first finds failures or
+witnesses sooner than corpus order across workloads - measured by the
+witnesses-per-run column the harness already tabulates, over more
+recordings. The recorded artifacts are the baseline; the decision stays
+open until the yield comparison favors the seed.
 
 ## Priority 6: product surface and workload compatibility
 

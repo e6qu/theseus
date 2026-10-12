@@ -1,0 +1,13 @@
+{
+  "campaign": true,
+  "ready": {
+    "url": "http://127.0.0.1:8080/health",
+    "attempts": 20,
+    "interval_millis": 10
+  },
+  "assertions": [],
+  "operations": [],
+  "grpc_assertions": [],
+  "grpc_operations": [],
+  "shell_operations": []
+}

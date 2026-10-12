@@ -584,6 +584,14 @@ Recordings so far (per-run choice sequences in the artifact's
   unit-tests the shared override application). The fresh-first
   reordering evidence remains the sub-budget pair (#382's artifact),
   which explored through the plain path and seeded for real.
+- **Real seeded arms (three workloads, budget 3, after the fix)** -
+  with the seed actually applied, all three workloads reproduce the
+  fresh-first reordering on the first run: mode=1/retry=0 (compose),
+  depth=2/strategy=0 (second), lane=1/phase=0/level=0 (third) - each
+  the earliest corpus candidate carrying a value the prior campaign
+  never consumed. The fresh-first behavior now has three-workload
+  evidence; what remains unmeasured is whether it finds failures or
+  witnesses sooner, not just differently.
 
 **Decision point.** The seed remains opt-in through `--seed-choices`.
 Making partial-coverage seeding the default for unified guidance is a
