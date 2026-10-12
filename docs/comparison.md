@@ -14,13 +14,13 @@ has no independent head-to-head evaluation with Antithesis.
 | Determinism | Custom deterministic hypervisor | KVM plus seeded devices, simulated I/O, and exit-counted virtual time |
 | Replay | Instruction-level deterministic reproduction | Locked-input replay through recorded guest exit. Fixed runs default to the complete KVM/device stream and may select explicit-host-input replay; checkpoint-backed campaigns use the host-input contract while retaining intervening exits and interrupt deliveries as evidence. Instruction execution, interrupt timing and servicing, and in-kernel timers remain uncontrolled; host-timed cutoffs are not replayable exits. |
 | Search guidance | Coverage-guided autonomous exploration | One bounded decision-prefix policy combines structured choices, C/Go application blocks, LLVM edges, runnable selections, faults, properties, topology states, and sampled guest PCs |
-| Coverage | Application basic-block instrumentation across documented language toolchains, symbol ingestion, and report validation | GCC C and Go blocks plus LLVM C/C++/Rust edges, locked symbol catalogs, and automatic source joins; Go is limited to imported main-module packages with CGO disabled, and Java is absent |
+| Coverage | Application basic-block instrumentation across documented language toolchains, symbol ingestion, and report validation | GCC C and Go blocks plus LLVM C/C++/Rust edges and a Java class-load agent, locked symbol catalogs, and automatic source joins; Go is limited to imported main-module packages with CGO disabled |
 | Faults | Network partitions, degradation, clogs, and restoration; node stop, kill, pause, and CPU throttling; clock and custom user-defined faults | Simulated network/storage plus Compose lifecycle, clock jumps and rate windows, packet actions, CPU throttling, and directed link clogs |
 | Concurrency | Controlled thread/process scheduling | Operation overlap plus bounded GCC C pthread basic-block scheduling, runnable-set feedback, default mutexes, and untimed condition variables; no general Linux scheduler control |
-| Structured choices | SDK choices consumed at the point of use | Language-neutral bounded shell-operation choices and a Rust SDK helper, retained and replay-checked at the operation boundary |
-| Debugging | Time-travel and causality analysis | Static reports, replay, minimization, bundle comparison, snapshot export, violation context, alternative-futures frequencies |
-| Event logs | JSONL moments addressed by `(vtime, input_hash)`, temporal operators, event sets | Ordered decision traces, serial deltas, violation excerpts | Moment addressing and preceded-by/followed-by queries |
-| Causality | Counterfactual re-exploration from checkpoints | Not implemented; comparison only finds recorded differences |
+| Structured choices | SDK choices consumed at the point of use | Language-neutral bounded shell-operation choices with Go, Java, C/C++, and Rust SDKs sharing one protocol, retained and replay-checked at the operation boundary |
+| Debugging | Time-travel and causality analysis | Static reports, replay, minimization, bundle comparison, snapshot export, violation context, alternative-futures frequencies, counterfactual forks over faults, choices, and moment slices, and moment queries through one shared predicate grammar |
+| Event logs | JSONL moments addressed by `(vtime, input_hash)`, temporal operators, event sets | Moment addressing with needle and event-field relations, the shared full predicate grammar, windowed/occurrence-addressed/bracketing relations, and sequence windows over complete transcripts | Event sets; transitive between-moments relations |
+| Causality | Counterfactual re-exploration from checkpoints | Counterfactual forks re-execute one recorded run from the shared deterministic prefix with a fault or choice substituted, optionally sliced at a named moment; `compare --forked` diffs the futures | Execution starting at the checkpoint itself; interactive time travel |
 | Delivery | Hosted commercial product with a versioned REST API, webhooks, CLI, and CI triggers | Open source, self-operated Linux/KVM runtime |
 
 ## What Antithesis demonstrates that Theseus does not yet
@@ -40,9 +40,12 @@ replay bundles, revalidate them before boot, and attach functions and source
 lines to campaign reports. Campaign guidance, replay, comparison, evaluation,
 and reports retain the coverage records. The Go path uses an isolated source
 copy, instruments packages from the selected command's main module, disables
-CGO, and preserves a fixed-address Linux ELF for source joins. Theseus does not
-yet support Rust dynamic dependency graphs, Go external modules or CGO, Java,
-JavaScript, or .NET. A controlled public search comparison remains pending.
+CGO, and preserves a fixed-address Linux ELF for source joins. A Java class-load
+agent covers one selected JAR: the JDK's own tools build the agent, and
+first-hit class-load coverage joins dotted class names into reports. Theseus
+does not yet support Rust dynamic dependency graphs, Go external modules or
+CGO, Java method-level probes, JavaScript, or .NET. A controlled public search
+comparison remains pending.
 
 Reference: [Antithesis coverage instrumentation](https://antithesis.com/docs/product/writing_tests/instrumentation/coverage_instrumentation/).
 
@@ -96,9 +99,10 @@ Reference: [Antithesis test templates](https://antithesis.com/docs/product/writi
 Antithesis describes re-executing from checkpoints while changing one event to
 test whether it caused a later behavior. Theseus runs that experiment for one
 recorded decision: `theseus compose explore --fork-run N --replace-fault
-OLD=NEW campaign-dir` locks the substitution into a forked replay plan,
-re-executes the recorded schedule of run N from the shared deterministic
-prefix, and retains both futures. `theseus compare --forked` then reports the
+OLD=NEW campaign-dir` (or `--set-choice OPERATION=INPUT`, optionally with
+`--at-moment MOMENT` to slice the future at a named boundary) locks the
+substitution into a forked replay plan, re-executes the recorded schedule of
+run N from the shared deterministic prefix, and retains both futures. `theseus compare --forked` then reports the
 first diverging operation boundary with both sides' moment addresses, so the
 same address retrieves either future's evidence. The fork names exactly the
 decision it changed; arbitrary interventions and interactive time travel do

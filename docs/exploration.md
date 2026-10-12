@@ -533,101 +533,69 @@ used, and the seed rides the locked plan for replay.
 
 ### Weighting signals: a design note
 
-Unified guidance ranks candidates by first-seen novelty; the retained
-evidence already carries stronger signals waiting for an experiment:
+Unified guidance ranks candidates by first-seen novelty. The retained
+evidence carries stronger signals waiting for an experiment:
 
 - **Context novelty** (shipped): a value's first pairing with each
   schedule context counts, so neighborhoods matter.
 - **Choice-outcome correlation** (readable, unweighted): the choice
   catalog's per-identity failed-run shares say which values correlated
-  with failures - candidates that reach failing values may deserve
-  weight.
+  with failures.
 - **Property witnesses** (weighted): witness-bearing candidates already
   rank above novelty alone.
 - **Checkpoint economics** (recorded, unweighted): the reuse curve says
-  what a candidate cost; cheap-but-novel prefixes could rank higher.
+  what a candidate cost.
 
-The experiment before any policy change: explore one corpus seeded and
-unseeded at one fixed budget, then rank the signals by which best
-predicts the retained distributions' property yield per run - using the
-same `evaluate compare` and `history --choices` surfaces documented
-above. A signal ships into the policy only when that comparison shows it
-finds failures or witnesses sooner than first-seen novelty alone.
+No signal ships into the policy until a comparison shows it finds
+failures or witnesses sooner than first-seen novelty alone.
 [scripts/compare_weighting_signals.sh](../scripts/compare_weighting_signals.sh)
-runs it for a list of workloads - seeded and unseeded per workload,
-tabulated per workload, with a cross-workload `summary.md` - and CI's
-native-KVM job runs that harness on every push, retaining the campaigns,
-comparisons, choice catalogs, tabulations, and summary as the recorded
-`weighting-experiment` artifact.
+runs that comparison - seeded and unseeded arms per workload per budget,
+tabulated, with a cross-workload `summary.md` - and CI's native-KVM job
+records it on every push as the `weighting-experiment` artifact.
 
-Recordings so far (per-run choice sequences in the artifact's
-`sequence-comparison.json`, yields in `summary.md`):
+What the recordings established, in order:
 
-- **Budget 6, unseeded seed** - saturates the six-combination corpus;
-  seeded and unseeded retain identical coverage.
-- **Budget 3, unseeded seed** - the seeded run keeps the same
-  breadth-first prefix (mode=0, retry 0/1/2): the seed counts against
-  the ranking only after observations accumulate.
-- **Budget 6 rerun, seeded from the budget-6 campaign** - identical
-  sequence again: a full-coverage seed leaves nothing fresh to prefer.
-- **Budget 6 rerun, partial-coverage seed (budget-3 campaign)** - the
-  first run is a fresh candidate (mode=1/retry=0), reproducing on the
-  second workload (depth=2/strategy=0 first): the seed reorders the
-  first decision exactly when the prior campaign left values unexplored.
-- **Budget sweep (3, 6 across both workloads)** - the budget-3 cells
-  saturate one axis per workload (mode=0 x retry 0/1/2; depth 0/0, 0/1,
-  1/0), budget 6 covers the full corpus, and the harness's "seeded"
-  arms retained corpus-order sequences at both budgets. A later reading
-  found why: `--seed-choices` was silently dropped beside
-  `--expect-counterexample`, so those arms recorded unseeded-vs-unseeded
-  runs (the fix threads the seed through the counterexample path and
-  unit-tests the shared override application). The fresh-first
-  reordering evidence remains the sub-budget pair (#382's artifact),
-  which explored through the plain path and seeded for real.
-- **Real seeded arms (three workloads, budget 3, after the fix)** -
-  with the seed actually applied, all three workloads reproduce the
-  fresh-first reordering on the first run: mode=1/retry=0 (compose),
-  depth=2/strategy=0 (second), lane=1/phase=0/level=0 (third) - each
-  the earliest corpus candidate carrying a value the prior campaign
-  never consumed. The fresh-first behavior now has three-workload
-  evidence; what remains unmeasured is whether it finds failures or
-  witnesses sooner, not just differently.
+1. **Saturation.** At budget 6 the six-combination corpus is covered;
+   seeded and unseeded retain identical coverage. A discriminating
+   experiment needs a budget below the corpus size.
+2. **Mechanism.** At budget 3 the seeded run keeps the same
+   breadth-first prefix: novelty acts only through accumulated
+   observations, so a seed alone never reorders a fresh search.
+3. **Fresh-first reordering.** Seeded from a partial-coverage campaign,
+   the first run is the earliest corpus candidate carrying an unconsumed
+   value - reproduced on all three workloads (mode=1/retry=0,
+   depth=2/strategy=0, lane=1/phase=0/level=0).
+4. **Yield is still open.** The summary's asserted yield table
+   (witnesses per run, first witness position) compares the arms on
+   every CI run. Today they tie; the seed-default decision waits for
+   the delta to favor the seed or the arms to provably tie at every
+   budget.
+
+One recording bug is worth remembering: `--seed-choices` was once
+silently dropped beside `--expect-counterexample`, so a whole sweep of
+"seeded" arms recorded unseeded-vs-unseeded runs. The fix threads the
+seed through both explore paths through one shared override helper,
+unit-tested, so no path can drop an override silently.
 
 **Decision point.** The seed remains opt-in through `--seed-choices`.
 Making partial-coverage seeding the default for unified guidance is a
-product call that needs wider evidence: the one-workload, one-budget
-comparison shows ordering, not that ordering finds failures or
-witnesses sooner across workloads. The recorded artifacts are the
-baseline a broader comparison would extend.
-
-### Cycle retrospective
-
-This cycle's evidence loop produced, in order: the guest journal (live
-progress, run records, checkpoint economics), the exploration journal
-and serial tails, the recorded weighting experiment, and the seeded
-ordering. The mechanism emerged from the recordings - novelty acts only
-through accumulated observations - and the policy response consumes the
-seed at the first decision. The partial-coverage recording confirmed
-the reordering. What remains deliberate: the multi-workload comparison
-on a KVM host, and demand-driven breadth for further SDK languages. The
-harness writes the cross-workload table to `summary.md` beside the
-per-workload tabulations, so a KVM-host session produces the wider
-evidence in one pass.
+product call that waits on the yield table, not on more ordering
+evidence.
 
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without
 editing the Compose file. Comparing one file across guidance modes at one
-fixed budget — retaining every campaign — is the reproducible search
+fixed budget - retaining every campaign - is the reproducible search
 comparison the roadmap requires.
 
-The `unified` policy is the default for newly planned Compose campaigns. It
-ranks a common decision-prefix tree using application and VM coverage,
+The `unified` policy is the default for newly planned Compose campaigns.
+It ranks a common decision-prefix tree using application and VM coverage,
 property witnesses, topology novelty, structured-choice novelty, runnable-set
 decisions, failures, and an exploration bonus. Each run retains a canonical
 decision trace covering operation input, observed choices, thread selections,
-and applied actions. Replay checks that trace and the typed evidence. This is a
-bounded campaign decision plane; it does not yet control arbitrary Linux
-process, futex, syscall, timer, or interrupt scheduling.
+and applied actions; replay checks that trace and the typed evidence. This is
+a bounded campaign decision plane, not arbitrary Linux process, futex,
+syscall, timer, or interrupt scheduling.
 
 ## Reading retained campaigns over HTTP and offline
 
