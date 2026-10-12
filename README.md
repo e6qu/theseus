@@ -148,6 +148,11 @@ numbers; each links to a complete tutorial directory:
 7. Reproduce the lost update across three unmodified image services while
    exercising a required network partition, recovery, and the combined Compose
    runtime contract.
+8. Give a plain command bounded structured choices, seed a continuation from
+   a prior campaign, and query the retained events with value predicates.
+9. Serve recorded campaigns over the read-only HTTP surface and gate CI on
+   the campaign API record.
+10. Render a Helm chart into a campaign and inspect the per-container plan.
 8. Instrument an ordinary C command and guide a campaign with stable
    application basic-block identities.
 9. Reproduce a pthread lost update from explicit, replay-checked scheduling
