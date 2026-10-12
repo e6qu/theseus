@@ -676,6 +676,8 @@ fn launch_runtime(
     let child = Command::new(&runtime)
         .arg("--api-sock")
         .arg(path_text(&socket)?)
+        .arg("--level")
+        .arg("Info")
         .arg("--no-seccomp")
         .stdin(Stdio::piped())
         .stdout(Stdio::from(log.try_clone().map_err(|source| {
@@ -830,6 +832,7 @@ fn configure_boot(
             "tick_ns": virtual_time.tick_ns,
             "exits_per_tick": virtual_time.exits_per_tick,
             "hold_kernel_timers": virtual_time.hold_kernel_timers,
+            "filter_timer_msrs": virtual_time.filter_timer_msrs,
         });
     }
     api_put(socket, "/machine-config", machine)?;
@@ -1521,11 +1524,14 @@ fn checkpoint_metadata(base: &Path, plan: &RunPlan) -> Result<Value, RunError> {
     // that actually holds timers still requires matching metadata.
     let strip_default_hold = |value: &serde_json::Value| {
         let mut virtual_time = value.clone();
-        if virtual_time.get("hold_kernel_timers") == Some(&serde_json::Value::Bool(false)) {
-            virtual_time
-                .as_object_mut()
-                .expect("virtual time serializes to an object")
-                .remove("hold_kernel_timers");
+        let defaults = [("hold_kernel_timers", false), ("filter_timer_msrs", false)];
+        for (key, default) in defaults {
+            if virtual_time.get(key) == Some(&serde_json::Value::Bool(default)) {
+                virtual_time
+                    .as_object_mut()
+                    .expect("virtual time serializes to an object")
+                    .remove(key);
+            }
         }
         virtual_time
     };

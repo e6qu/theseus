@@ -18,6 +18,8 @@ use kvm_bindings::{
     KVM_IRQ_ROUTING_IRQCHIP, KVM_IRQ_ROUTING_MSI, KVM_MSI_VALID_DEVID, KvmIrqRouting,
     kvm_irq_routing_entry, kvm_userspace_memory_region,
 };
+#[cfg(target_arch = "x86_64")]
+use kvm_ioctls::MsrFilterRange;
 use kvm_ioctls::VmFd;
 use serde::{Deserialize, Serialize};
 use userfaultfd::Uffd;
@@ -245,6 +247,57 @@ impl KvmVm {
         self.common
             .machine_execution
             .enable_deterministic_interrupts();
+    }
+
+    /// Stage 1 of deterministic timer arming: route the x2APIC timer MSRs
+    /// (TMICT 0x838, TMCCT 0x839, TDCR 0x83E) to userspace so every arming
+    /// write exits and is observed with its virtual timestamp. The default
+    /// action stays ALLOW, so every other MSR keeps its in-kernel handling.
+    /// The exits are answered write-through against the in-kernel LAPIC
+    /// page, so guest-visible behavior is unchanged.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn install_timer_msr_filter(&self) -> Result<(), errno::Error> {
+        use kvm_ioctls::{Cap, MsrFilterDefaultAction, MsrFilterRangeFlags};
+
+        // The capability routes filtered MSR accesses to userspace exits.
+        let mut cap: kvm_bindings::kvm_enable_cap = Default::default();
+        cap.cap = kvm_bindings::KVM_CAP_X86_USER_SPACE_MSR;
+        // Only filtered accesses exit; unknown/invalid MSRs keep KVM's
+        // default #GP behavior.
+        cap.args[0] = u64::from(kvm_bindings::KVM_MSR_EXIT_REASON_FILTER);
+        self.fd().enable_cap(&cap)?;
+
+        if self.fd().check_extension_int(Cap::X86MsrFilter) == 0 {
+            return Err(errno::Error::new(libc::ENOTSUP));
+        }
+
+        // Two ranges, reads and writes, every bitmap bit 0 - so each
+        // access exits to userspace:
+        // - the x2APIC timer MSRs 0x838..=0x83E (TMICT/TMCCT/TDCR; 0x838
+        //   maps to APIC-page offset 0x380, the seven registers span
+        //   0x380..=0x3E0 in 0x10 steps), and
+        // - the TSC-deadline MSR 0x6E0, which Linux prefers for the
+        //   LAPIC timer whenever the TSC-deadline CPUID bit is set -
+        //   without it the arming write never touches TMICT.
+        let bitmap = [0u8, 0u8];
+        let deadline_bitmap = [0u8];
+        self.fd().set_msr_filter(
+            MsrFilterDefaultAction::ALLOW,
+            &[
+                MsrFilterRange {
+                    flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
+                    base: 0x838,
+                    msr_count: 7,
+                    bitmap: &bitmap,
+                },
+                MsrFilterRange {
+                    flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
+                    base: 0x6E0,
+                    msr_count: 1,
+                    bitmap: &deadline_bitmap,
+                },
+            ],
+        )
     }
 
     /// Return the deterministic interrupt controller when this VM uses it.

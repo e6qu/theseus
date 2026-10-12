@@ -1667,6 +1667,10 @@ struct VirtualTime {
     exits_per_tick: u32,
     #[serde(default)]
     hold_kernel_timers: bool,
+    /// Stage 1 of deterministic timer arming: observe every x2APIC
+    /// timer-MSR access with its virtual timestamp (write-through).
+    #[serde(default)]
+    filter_timer_msrs: bool,
 }
 
 fn default_max_rounds() -> u64 {
@@ -14115,6 +14119,7 @@ fn service_resources(
                     tick_ns: time.tick_ns,
                     exits_per_tick: time.exits_per_tick as u64,
                     hold_kernel_timers: time.hold_kernel_timers,
+                    filter_timer_msrs: time.filter_timer_msrs,
                 }),
             ..Default::default()
         })

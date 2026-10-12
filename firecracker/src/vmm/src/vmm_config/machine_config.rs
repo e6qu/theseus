@@ -43,6 +43,13 @@ pub struct VirtualTimeConfig {
     /// move across boundaries diverges instead of silently passing.
     #[serde(default = "default_hold_kernel_timers")]
     pub hold_kernel_timers: bool,
+    /// Stage 1 of deterministic timer arming: filter the x2APIC timer MSRs
+    /// (TMICT/TMCCT/TDCR) to userspace so every arming write is observed
+    /// with its virtual timestamp. Write-through: the in-kernel LAPIC still
+    /// arms the host hrtimer; nothing behavioral changes yet. Implies the
+    /// guest runs in x2APIC mode (the CPUID bit is steered on).
+    #[serde(default)]
+    pub filter_timer_msrs: bool,
 }
 
 /// The default memory size of the VM, in MiB.

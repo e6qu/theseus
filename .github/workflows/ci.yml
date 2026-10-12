@@ -91,6 +91,9 @@ jobs:
           ../../../cli/target/debug/theseus test --output work/hold-replay hold.toml
           grep -a '^sensor reading: 21.5C$' work/hold-replay/serial.log
           test -f work/hold-replay/timer-observations.json
+          # Stage 1 of deterministic arming: the arming writes are in the
+          # Firecracker log with their virtual timestamps.
+          grep -ac 'timer-msr:wr' work/hold-replay/firecracker.log
           if ../../../cli/target/debug/theseus replay --output work/hold-rerun work/hold-replay; then
             cmp work/hold-replay/execution.json work/hold-rerun/execution.json
           else

@@ -88,6 +88,8 @@ pub enum StartMicrovmError {
     /// Holding in-kernel timers requires the amd64 LAPIC-hold path and is not
     /// implemented for this architecture (Theseus).
     HoldKernelTimersNotSupportedOnArch,
+    /// Installing the timer-MSR filter failed (Theseus): {0}
+    TimerMsrFilter(String),
     /// Failed to apply virtual time: {0}
     ApplyVirtualTime(String),
     /// Error creating legacy device: {0}
@@ -203,7 +205,10 @@ fn validate_deterministic_config(
     if vm_resources
         .machine_config
         .virtual_time
-        .is_some_and(|virtual_time| virtual_time.hold_kernel_timers)
+        .as_ref()
+        .is_some_and(|virtual_time| {
+            virtual_time.hold_kernel_timers || virtual_time.filter_timer_msrs
+        })
     {
         return Err(StartMicrovmError::HoldKernelTimersNotSupportedOnArch);
     }
@@ -261,11 +266,23 @@ pub fn build_microvm_for_boot(
         vm.enable_deterministic_interrupts();
         #[cfg(target_arch = "x86_64")]
         vm.set_virtual_clock_ns(0).map_err(VmError::Arch)?;
+        #[cfg(target_arch = "x86_64")]
+        if virtual_time.filter_timer_msrs {
+            vm.install_timer_msr_filter()
+                .map_err(|error| {
+                    StartMicrovmError::TimerMsrFilter(error.to_string())
+                })?;
+            crate::logger::info!(
+                "timer-msr filter installed: x2APIC TMICT/TMCCT/TDCR access is \
+                 observed with its virtual timestamp (stage 1, write-through)"
+            );
+        }
         for vcpu in &mut vcpus {
             vcpu.enable_virtual_time(
                 virtual_time.tick_ns,
                 virtual_time.exits_per_tick,
                 virtual_time.hold_kernel_timers,
+                virtual_time.filter_timer_msrs,
             );
             // aarch64: the counter offset can only be written after the
             // KVM_ARM_VCPU_INIT ioctl, which happens at vCPU configure time —
@@ -539,8 +556,11 @@ pub enum BuildMicrovmFromSnapshotError {
     /// Failed to restore devices: {0}
     RestoreDevices(#[from] DeviceManagerPersistError),
     /// Could not attach the Theseus control device: {0}
-    AttachTheseusDevice(String),    /// clock_realtime is not supported on aarch64.
+    AttachTheseusDevice(String),
+    /// clock_realtime is not supported on aarch64.
     UnsupportedClockRealtime,
+    /// Installing the timer-MSR filter failed (Theseus): {0}
+    TimerMsrFilter(String),
 }
 
 /// Builds and starts a microVM based on the provided MicrovmState.
@@ -588,8 +608,18 @@ pub fn build_microvm_from_snapshot(
         }
     }
 
-    if vm_resources.machine_config.virtual_time.is_some() {
+    if let Some(virtual_time) = &vm_resources.machine_config.virtual_time {
         vm.enable_deterministic_interrupts();
+        #[cfg(target_arch = "x86_64")]
+        if virtual_time.filter_timer_msrs {
+            vm.install_timer_msr_filter()
+                .map_err(|error| {
+                    BuildMicrovmFromSnapshotError::TimerMsrFilter(error.to_string())
+                })?;
+            crate::logger::info!(
+                "timer-msr filter installed on restored VM (stage 1, write-through)"
+            );
+        }
     }
 
     // Restore vcpus kvm state.
@@ -610,12 +640,14 @@ pub fn build_microvm_from_snapshot(
                     vc_state,
                     state.vclock_exits,
                     virtual_time.exits_per_tick,
+                    virtual_time.filter_timer_msrs,
                 ),
                 None => {
                     vcpu.enable_virtual_time(
                         virtual_time.tick_ns,
                         virtual_time.exits_per_tick,
                         virtual_time.hold_kernel_timers,
+                        virtual_time.filter_timer_msrs,
                     )
                 }
             }
@@ -1005,6 +1037,7 @@ pub(crate) mod tests {
             tick_ns: 1_000_000,
             exits_per_tick: 64,
             hold_kernel_timers: false,
+            filter_timer_msrs: false,
         });
         resources
     }
