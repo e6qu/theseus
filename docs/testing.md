@@ -37,33 +37,39 @@ Build first: `cargo build -p firecracker` in `firecracker/`, then
 
 ## CI
 
-`.github/workflows/ci.yml` triggers on `pull_request` only (never on raw
-pushes, never on `main`). One job on pinned Ubuntu 24.04:
+`.github/workflows/ci.yml` runs on pull requests only - never on raw
+pushes or on `main` - as one job on pinned Ubuntu 24.04:
 
-1. `cargo check --workspace` (the fork)
-2. `cargo check` for `sdk/`, `engine/`, `orchestrator/`
-3. `cargo test` for `engine/` and the KVM-free filters of
-   `orchestrator/` (`branch::tests`, `orchestrator::tree`)
-4. The deterministic `vmm` unit suites selected by exact module paths so the
-   suite stays independent of `/dev/kvm` and `/dev/net/tun`.
-5. The GCC C coverage and scheduling frontends, LLVM C/C++/Rust edge coverage,
-   and Go main-module block coverage, including Cargo and Go dependency graphs,
-   stable rebuild and DSO identities, locked catalog and pre-boot symbol
-   validation, automatic source joins, deterministic pthread interleavings,
-   controlled mutex and condition-variable blocking, a lost-update witness,
-   and versioned records, without starting a VM.
-6. Bounded thread-schedule expansion, locked schedule cases, invalid-search
-   rejection, campaign selection, reporting, and tutorial structure.
+1. Workspace checks: `cargo check --workspace` (the fork) plus `sdk/`,
+   `engine/`, and `orchestrator/`.
+2. Deterministic unit suites: the `vmm` tests selected by exact module
+   paths (independent of `/dev/kvm` and `/dev/net/tun`), `engine/`, and
+   the KVM-free filters of `orchestrator/`.
+3. The offline toolchain proofs without starting a VM: GCC C coverage and
+   scheduling frontends, LLVM C/C++/Rust edge coverage, Go main-module
+   coverage including Cargo and Go dependency graphs, locked catalogs with
+   pre-boot symbol validation, automatic source joins, deterministic pthread
+   interleavings, controlled mutex and condition-variable blocking, a
+   lost-update witness, thread-schedule expansion, campaign selection,
+   reporting, and tutorial structure.
+4. The documentation checks: CLI reference, documentation claims, links,
+   and tutorial structure.
+5. The serve smoke script over recorded fixtures.
 
-The Rust unit suites above stay KVM-free by exact module filters. PR CI then
-runs four separate native-KVM steps with the source runtime on GitHub's amd64
-runner: Tutorial 4's UART/reset replay, Tutorial 42's ready-checkpoint replay,
-Tutorial 11's whole-topology certification, and the ordinary checkpoint-backed
-product qualification that builds release-mode binaries and executes the
-native validation and counterexample scripts. The explorer branch-boot search
-and the full released-runtime portfolio are not part of PR CI: they run
+Five native-KVM steps then run the source runtime on GitHub's amd64
+runner: Tutorial 4's UART/reset replay, Tutorial 42's ready-checkpoint
+replay, Tutorial 11's whole-topology certification, the checkpoint-backed
+product qualification (release-mode binaries, native validation and
+counterexample scripts), and the weighting experiment - three workloads,
+budgets 3 and 6, seeded and unseeded, with the tabulation and yield-table
+assertions and the artifact retained. The explorer branch-boot search and
+the full released-runtime portfolio are not part of PR CI: they run
 through the release certification workflow, or locally in the privileged
 container.
+
+Pushes to `main` start two workflows: `release.yml` (release
+attestations) and, on a successful release, the
+`certify deterministic runtime` workflow against the published artifacts.
 
 ## Runtime certification
 
