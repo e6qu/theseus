@@ -837,7 +837,8 @@ impl KvmVcpu {
             index: MSR_IA32_TSC_DEADLINE,
             ..Default::default()
         }])
-        .map_err(KvmVcpuError::VcpuGetMsrs)?;
+        .map_err(crate::arch::x86_64::msr::MsrError::Fam)
+        .map_err(KvmVcpuError::GetMsrsToDump)?;
         self.fd
             .get_msrs(&mut msrs)
             .map_err(KvmVcpuError::VcpuGetMsrs)?;
@@ -853,7 +854,8 @@ impl KvmVcpu {
             data: value,
             ..Default::default()
         }])
-        .map_err(KvmVcpuError::VcpuGetMsrs)?;
+        .map_err(crate::arch::x86_64::msr::MsrError::Fam)
+        .map_err(KvmVcpuError::GetMsrsToDump)?;
         self.fd
             .set_msrs(&msrs)
             .map_err(KvmVcpuError::VcpuSetMsrs)?;
