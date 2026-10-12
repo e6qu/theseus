@@ -35,6 +35,18 @@ passing unit suite alone is not treated as runtime proof.
   with replayed launches and completion-observation order.
 - Expected-counterexample commands that fail closed unless the named campaign
   property is retained as failed.
+- A moment-addressed investigation surface over retained campaigns:
+  temporal queries (`--preceded-by`/`--followed-by` needles and
+  event-field predicates composed through one grammar shared with the
+  property layer, `--within` windows, `--anchor` occurrence addressing,
+  `--surrounded-by` brackets) answered on the CLI and over a read-only
+  HTTP evidence surface, exported as digest-verifiable bundles whose
+  predicates promote into standing property declarations, and
+  counterfactual forks of recorded runs - fault substitutions, choice
+  substitutions, and moment-addressed slices - that `compare --forked`
+  diffs at the first diverging boundary. A recorded seeded/unseeded
+  weighting experiment tabulates ordering and yield across bounded-choice
+  workloads on every CI run.
 - In-memory branch capture and private copy-on-write child mappings.
 - Container-image conversion for ordinary Linux service images.
 - GCC C and Go basic-block coverage plus LLVM C/C++/Rust edge coverage with
@@ -104,9 +116,10 @@ passing unit suite alone is not treated as runtime proof.
   diagnostic pause boundaries, not deterministic guest exits.
 - `compare` finds the first difference in two recorded histories, and
   `compare --forked` diffs a counterfactual future (one recorded fault
-  decision replaced, re-executed from the shared prefix) against the run it
-  forked. Neither proves causality: uncontrolled kernel and guest behavior
-  can still escape the model.
+  decision replaced, or one operation re-run under another declared input
+  case - optionally sliced at a named moment - re-executed from the shared
+  prefix) against the run it forked. Neither proves causality: uncontrolled
+  kernel and guest behavior can still escape the model.
 - Capturing a branch copies guest RAM into a memfd. Restored children then use
   private copy-on-write mappings; the complete capture/restore path is not
   zero-copy.
