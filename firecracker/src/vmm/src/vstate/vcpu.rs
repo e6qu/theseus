@@ -23,6 +23,8 @@ use vmm_sys_util::eventfd::EventFd;
 
 use crate::FcExitCode;
 pub use crate::arch::{KvmVcpu, KvmVcpuConfigureError, KvmVcpuError, Peripherals, VcpuState};
+#[cfg(target_arch = "x86_64")]
+use crate::arch::x86_64::generated::msr_index::MSR_IA32_TSC_DEADLINE;
 use crate::cpu_config::templates::{CpuConfiguration, GuestConfigError};
 #[cfg(feature = "gdb")]
 use crate::gdb::target::{GdbTargetError, get_raw_tid};
@@ -1860,19 +1862,28 @@ impl Vcpu {
                 // written through a raw pointer after the borrow ends.
                 let out: *mut u64 = exit.data;
                 let index = exit.index;
-                let word = self
-                    .kvm_vcpu
-                    .lapic_timer_word(index)
-                    .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
+                let value = if index == MSR_IA32_TSC_DEADLINE {
+                    self.kvm_vcpu
+                        .tsc_deadline_read()
+                        .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?
+                } else {
+                    u64::from(
+                        self.kvm_vcpu
+                            .lapic_timer_word(index)
+                            .map_err(|error| {
+                                VcpuError::UnhandledKvmExit(error.to_string())
+                            })?,
+                    )
+                };
                 // SAFETY: `out` points into this vCPU's KVM run buffer,
                 // which outlives the exit borrow and is consumed by the
                 // next KVM_RUN on this thread.
-                unsafe { *out = u64::from(word) };
+                unsafe { *out = value };
                 info!(
                     "vcpu:{}:timer-msr:rd:{:#x}={:#x} vtime:{:?}",
                     self.kvm_vcpu.index,
                     index,
-                    word,
+                    value,
                     self.virtual_time_ns()
                 );
                 Ok(VcpuEmulation::Handled)
@@ -1886,15 +1897,25 @@ impl Vcpu {
                     ));
                 }
                 let index = exit.index;
-                let word = (exit.data & 0xffff_ffff) as u32;
-                self.kvm_vcpu
-                    .set_lapic_timer_word(index, word)
-                    .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
+                if index == MSR_IA32_TSC_DEADLINE {
+                    self.kvm_vcpu
+                        .tsc_deadline_write(exit.data)
+                        .map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })?;
+                } else {
+                    let word = (exit.data & 0xffff_ffff) as u32;
+                    self.kvm_vcpu
+                        .set_lapic_timer_word(index, word)
+                        .map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })?;
+                }
                 info!(
                     "vcpu:{}:timer-msr:wr:{:#x}={:#x} vtime:{:?}",
                     self.kvm_vcpu.index,
                     index,
-                    word,
+                    exit.data,
                     self.virtual_time_ns()
                 );
                 Ok(VcpuEmulation::Handled)

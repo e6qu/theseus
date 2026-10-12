@@ -829,6 +829,37 @@ impl KvmVcpu {
         Ok(())
     }
 
+    /// Read the TSC-deadline MSR through KVM_GET_MSRS: the in-kernel
+    /// LAPIC answers with the armed deadline in guest TSC ticks (0 when
+    /// disarmed).
+    pub fn tsc_deadline_read(&self) -> Result<u64, KvmVcpuError> {
+        let mut msrs = Msrs::from_entries(&[kvm_bindings::kvm_msr_entry {
+            index: MSR_IA32_TSC_DEADLINE,
+            ..Default::default()
+        }])
+        .map_err(KvmVcpuError::MsrError)?;
+        self.fd
+            .get_msrs(&mut msrs)
+            .map_err(KvmVcpuError::VcpuGetMsrs)?;
+        Ok(msrs.as_slice()[0].data)
+    }
+
+    /// Write the TSC-deadline MSR through KVM_SET_MSRS: write-through, so
+    /// KVM's in-kernel LAPIC arms its hrtimer exactly as if the guest had
+    /// written it in-kernel.
+    pub fn tsc_deadline_write(&self, value: u64) -> Result<(), KvmVcpuError> {
+        let mut msrs = Msrs::from_entries(&[kvm_bindings::kvm_msr_entry {
+            index: MSR_IA32_TSC_DEADLINE,
+            data: value,
+            ..Default::default()
+        }])
+        .map_err(KvmVcpuError::MsrError)?;
+        self.fd
+            .set_msrs(&msrs)
+            .map_err(KvmVcpuError::VcpuSetMsrs)?;
+        Ok(())
+    }
+
     /// Hold an asserted LAPIC-timer delivery: clear the timer vector's IRR
     /// bit so KVM does not deliver it asynchronously, and report the held
     /// vector. Returns `None` when no delivery is asserted. Valid between

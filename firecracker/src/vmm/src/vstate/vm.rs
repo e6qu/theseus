@@ -271,19 +271,32 @@ impl KvmVm {
             return Err(errno::Error::new(libc::ENOTSUP));
         }
 
-        // One range: the x2APIC timer MSRs 0x838..=0x83E, reads and
-        // writes, every bitmap bit 0 - so each access exits to userspace.
-        // 0x838 maps to APIC-page offset 0x380; the seven registers span
-        // 0x380..=0x3E0 in 0x10 steps.
+        // Two ranges, reads and writes, every bitmap bit 0 - so each
+        // access exits to userspace:
+        // - the x2APIC timer MSRs 0x838..=0x83E (TMICT/TMCCT/TDCR; 0x838
+        //   maps to APIC-page offset 0x380, the seven registers span
+        //   0x380..=0x3E0 in 0x10 steps), and
+        // - the TSC-deadline MSR 0x6E0, which Linux prefers for the
+        //   LAPIC timer whenever the TSC-deadline CPUID bit is set -
+        //   without it the arming write never touches TMICT.
         let bitmap = [0u8, 0u8];
+        let deadline_bitmap = [0u8];
         self.fd().set_msr_filter(
             MsrFilterDefaultAction::ALLOW,
-            &[MsrFilterRange {
-                flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
-                base: 0x838,
-                msr_count: 7,
-                bitmap: &bitmap,
-            }],
+            &[
+                MsrFilterRange {
+                    flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
+                    base: 0x838,
+                    msr_count: 7,
+                    bitmap: &bitmap,
+                },
+                MsrFilterRange {
+                    flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
+                    base: 0x6E0,
+                    msr_count: 1,
+                    bitmap: &deadline_bitmap,
+                },
+            ],
         )
     }
 
