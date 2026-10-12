@@ -530,7 +530,12 @@ seed-default decision reads - per workload per budget, the
 witnesses-per-run delta (seeded minus unseeded) and each arm's first
 witness position - asserted on every CI run beside the tabulations.
 Every CI run is now one yield data point; the decision stays open until
-the delta favors the seed or the arms provably tie at every budget.
+the delta favors the seed or the arms provably tie at every budget. The
+documentation audit is refreshed for the cycle's slices: value
+predicates walked in tutorial 36, the assertion diff named in the
+reading paths, and the remaining "-" rows name their natural hosts
+(query vocabulary in reference+guide; fork forms' next branching-guide
+pass).
 
 ## Priority 6: product surface and workload compatibility
 
