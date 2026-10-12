@@ -38,7 +38,9 @@ use super::EntryPoint;
 use crate::acpi::create_acpi_tables;
 use crate::arch::{BootProtocol, SYSTEM_MEM_SIZE, SYSTEM_MEM_START, arch_memory_regions_with_gap};
 use crate::cpu_config::templates::{CustomCpuTemplate, GuestConfigError};
-use crate::cpu_config::x86_64::{apply_template_to_cpuid, apply_template_to_msrs, cpuid::Cpuid};
+use crate::cpu_config::x86_64::{
+    apply_template_to_cpuid, apply_template_to_msrs, cpuid::Cpuid, cpuid::CpuidTrait,
+};
 use crate::device_manager::DeviceManager;
 use crate::initrd::InitrdConfig;
 use crate::logger::debug;

@@ -269,7 +269,9 @@ pub fn build_microvm_for_boot(
         #[cfg(target_arch = "x86_64")]
         if virtual_time.filter_timer_msrs {
             vm.install_timer_msr_filter()
-                .map_err(StartMicrovmError::TimerMsrFilter)?;
+                .map_err(|error| {
+                    StartMicrovmError::TimerMsrFilter(error.to_string())
+                })?;
             crate::logger::info!(
                 "timer-msr filter installed: x2APIC TMICT/TMCCT/TDCR access is \
                  observed with its virtual timestamp (stage 1, write-through)"
@@ -611,7 +613,9 @@ pub fn build_microvm_from_snapshot(
         #[cfg(target_arch = "x86_64")]
         if virtual_time.filter_timer_msrs {
             vm.install_timer_msr_filter()
-                .map_err(BuildMicrovmFromSnapshotError::TimerMsrFilter)?;
+                .map_err(|error| {
+                    BuildMicrovmFromSnapshotError::TimerMsrFilter(error.to_string())
+                })?;
             crate::logger::info!(
                 "timer-msr filter installed on restored VM (stage 1, write-through)"
             );
