@@ -6,7 +6,11 @@ both arms are present, each retained exactly the declared budget of runs,
 and at least one arm recorded witnesses or failures - a fully saturated
 zero-witness corpus cannot discriminate weighting signals. Usage:
 
-    assert_tabulation.py tabulation.md budget
+    assert_tabulation.py tabulation.md budget [summary.md]
+
+With a summary.md argument, the cross-workload summary is also checked:
+every recorded workload/budget pair carries the yield-comparison row the
+seed-default decision reads.
 """
 
 import re
@@ -32,6 +36,27 @@ def main() -> None:
     assert any(witnesses > 0 for _, _, witnesses in rows), (
         "saturated corpus: no witnesses in either arm"
     )
+
+    if len(sys.argv) > 3:
+        summary = Path(sys.argv[3]).read_text()
+        # The yield table exists and carries one row per recorded
+        # workload/budget pair; the harness writes the section header
+        # above it.
+        assert "## Yield comparison" in summary, "summary lacks the yield table"
+        section = summary.split("## Yield comparison", 1)[1]
+        yield_rows = [
+            line
+            for line in section.splitlines()
+            if line.startswith("| ") and not line.startswith("| ---")
+            and "workload" not in line
+        ]
+        assert len(yield_rows) >= 1, "summary yield table has no rows"
+        for row in yield_rows:
+            cells = [cell.strip() for cell in row.split("|")]
+            # columns: "", workload, budget, unseeded/run, seeded/run,
+            # delta, first-witness positions, ""
+            assert len(cells) >= 7, f"yield row malformed: {row!r}"
+            assert cells[5].startswith(("+", "-")), f"yield delta malformed: {row!r}"
 
 
 if __name__ == "__main__":

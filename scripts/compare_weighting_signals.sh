@@ -129,7 +129,11 @@ done
 done
 
 # Summary across workloads and budgets: one row per workload per arm per
-# budget, with the budget column making the saturation boundary visible.
+# budget, with the budget column making the saturation boundary visible,
+# then the yield comparison the seed-default decision reads: per
+# workload per budget, the witnesses-per-run delta (seeded - unseeded)
+# and each arm's first witness position, so "sooner, not just
+# differently" is one table.
 python3 - "$outdir" <<'SUMMARIZE'
 import json
 import sys
@@ -140,11 +144,36 @@ lines = [
     "| workload | budget | arm | runs | failed runs | property witnesses | witnesses per run |",
     "| --- | --- | --- | --- | --- | --- | --- |",
 ]
+yield_lines = [
+    "| workload | budget | unseeded witnesses/run | seeded witnesses/run | yield delta | first witness (unseeded/seeded) |",
+    "| --- | --- | --- | --- | --- | --- |",
+]
+
+
+def arm_yield(result_path):
+    result = json.loads(result_path.read_text())
+    runs = result.get("runs", [])
+    total = len(runs)
+    witnesses = sum(len(run.get("property_witnesses", [])) for run in runs)
+    per_run = witnesses / total if total else 0.0
+    first = next(
+        (
+            index
+            for index, run in enumerate(runs)
+            if run.get("property_witnesses")
+        ),
+        None,
+    )
+    return per_run, first
+
+
 for work in sorted(p for p in outdir.iterdir() if p.is_dir()):
     for budget_dir in sorted(p for p in work.iterdir() if p.is_dir()):
         if not budget_dir.name.startswith("budget"):
             continue
         budget = budget_dir.name[len("budget"):]
+        per_run = {}
+        first = {}
         for arm in ["unseeded", "seeded"]:
             result_path = budget_dir / arm / "campaign-result.json"
             if not result_path.is_file():
@@ -154,15 +183,29 @@ for work in sorted(p for p in outdir.iterdir() if p.is_dir()):
             total = len(runs)
             failed = sum(1 for run in runs if run.get("status") == "failed")
             witnesses = sum(len(run.get("property_witnesses", [])) for run in runs)
-            per_run = witnesses / total if total else 0.0
+            arm_per_run, arm_first = arm_yield(result_path)
+            per_run[arm] = arm_per_run
+            first[arm] = arm_first
             lines.append(
                 f"| {work.name} | {budget} | {arm} | {total} | {failed} "
-                f"| {witnesses} | {per_run:.2f} |"
+                f"| {witnesses} | {arm_per_run:.2f} |"
+            )
+        if {"unseeded", "seeded"} <= per_run.keys():
+            delta = per_run["seeded"] - per_run["unseeded"]
+            positions = "/".join(
+                str(first[arm]) if first[arm] is not None else "-"
+                for arm in ["unseeded", "seeded"]
+            )
+            yield_lines.append(
+                f"| {work.name} | {budget} | {per_run['unseeded']:.2f} "
+                f"| {per_run['seeded']:.2f} | {delta:+.2f} | {positions} |"
             )
 summary = outdir / "summary.md"
 summary.write_text(
     "# Weighting-signal summary across workloads and budgets\n\n"
     + "\n".join(lines)
+    + "\n\n## Yield comparison (seeded minus unseeded)\n\n"
+    + "\n".join(yield_lines)
     + "\n"
 )
 print(f"summary: {summary}")

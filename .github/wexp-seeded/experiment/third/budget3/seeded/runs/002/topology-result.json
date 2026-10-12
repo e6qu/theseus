@@ -1,7 +1,0 @@
-{
-  "network_sha256": "1b23a295ad9a3a2e8bdacc747243bab41b2cef9deb81ffc86eab33c566623fae",
-  "rounds": 40227,
-  "max_rounds": 10000000,
-  "lifecycle_barrier_rounds": 0,
-  "actions": []
-}

@@ -1,9 +1,0 @@
-{"format":"theseus-progress-v1","completed":0,"index":0,"status":"passed","operations":["calculate[depth-2+strategy-0]"],"faults":[],"checkpoint_reuses":0,"guidance":"unified","max_runs":3}
-{"format":"theseus-run-record-v1","index":0,"status":"passed","operations":["calculate[depth-2+strategy-0]"],"faults":[],"selection":"canonical breadth-first operation seed"}
-{"format":"theseus-checkpoint-ledger-v1","nodes":1,"reuses":0,"prefix_captures":1,"prefix_restores":1,"retained_memory_bytes":1073741824}
-{"format":"theseus-progress-v1","completed":1,"index":1,"status":"passed","operations":["calculate[depth-0+strategy-0]"],"faults":[],"checkpoint_reuses":0,"guidance":"unified","max_runs":3}
-{"format":"theseus-run-record-v1","index":1,"status":"passed","operations":["calculate[depth-0+strategy-0]"],"faults":[],"selection":"canonical breadth-first seed"}
-{"format":"theseus-checkpoint-ledger-v1","nodes":1,"reuses":0,"prefix_captures":2,"prefix_restores":2,"retained_memory_bytes":1073741824}
-{"format":"theseus-progress-v1","completed":2,"index":2,"status":"passed","operations":["calculate[depth-0+strategy-1]"],"faults":[],"checkpoint_reuses":0,"guidance":"unified","max_runs":3}
-{"format":"theseus-run-record-v1","index":2,"status":"passed","operations":["calculate[depth-0+strategy-1]"],"faults":[],"selection":"canonical breadth-first seed"}
-{"format":"theseus-checkpoint-ledger-v1","nodes":1,"reuses":0,"prefix_captures":3,"prefix_restores":3,"retained_memory_bytes":1073741824}
