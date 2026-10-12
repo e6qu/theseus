@@ -401,15 +401,17 @@ measurement, a KVM host, or a product decision - not on design.
    command. Today the arms tie. The decision resolves itself when
    accumulated runs show a yield delta favoring the seed - or provable
    ties at every budget, which retires the question.
-2. **The execution plane (Priority 1).** Fully deterministic in-kernel
-   timer arming, then runnable guest entities, virtual-clock reads, and
-   guest-side input consumption between KVM exits. The timer-arming
-   design is worked out and staged
-   ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)):
-   force x2APIC, filter the timer MSRs, record arming as a machine-stream
-   decision, and answer current-count reads from the virtual countdown -
-   stage 1 is a one-session interception spike. The forks' remaining
-   sliver is analyzed too
+2. **The execution plane (Priority 1).** Stage 1 of deterministic timer
+   arming landed: the timer-MSR filter is live in CI's KVM step, the
+   guest boots in x2APIC mode, and every arming write is observed with
+   its virtual timestamp - including the finding that Linux arms through
+   the TSC-deadline MSR, not TMICT. Stages 2-4
+   ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md))
+   turn the observed writes into recorded machine-stream decisions with a
+   virtual countdown, ending with the episode-movement replay flipping to
+   expected-match; each needs KVM-host iteration. Then runnable guest
+   entities, virtual-clock reads, and guest-side input consumption. The
+   forks' remaining sliver is analyzed too
    ([checkpoint-addressed-forks.md](docs/design/checkpoint-addressed-forks.md)):
    re-executing the shared prefix is deterministic and stays the default;
    restore-based forks wait for the hosted multi-question workflow, where

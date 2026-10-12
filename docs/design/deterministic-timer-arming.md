@@ -92,18 +92,29 @@ today's honest divergence.
 
 ## Recommended plan
 
-1. **Stage 1 - interception spike (one KVM session).** Turn the MSR
-   filter on for a booted Linux guest, force x2APIC, log every filtered
-   timer-MSR access with its virtual timestamp. Deliverable: proof the
-   guest runs with the filter on, and the real access pattern (does the
-   kernel poll TMCCT? does anything else touch the LAPIC page?).
-2. **Stage 2 - the arm decision.** Record `vcpu:N:timer:arm:<count>` in
-   the machine stream at the intercepted write; replay admits it like
-   every recorded turn. Schedule the virtual deadline from the guest's
-   divide configuration and LVT timer mode.
+1. **Stage 1 - interception spike (landed).** The MSR filter is on for
+   the UART/reset KVM step (tutorial 4's `hold.toml`): the guest is
+   steered into x2APIC, and every timer-MSR access exits, logs with its
+   virtual timestamp, and is answered write-through. **Finding:** Linux
+   steers around TMICT entirely - with the TSC-deadline CPUID bit set it
+   arms through MSR `0x6E0` (MSR_IA32_TSC_DEADLINE), so the filter covers
+   that MSR too and the observed arming writes land there. The guest
+   boots, the UART workload passes, and the arming writes appear in the
+   Firecracker log with their virtual timestamps. Read the logged
+   pattern from the retained `firecracker.log` in the CI artifacts.
+2. **Stage 2 - the arm decision.** Record the intercepted arming write
+   in the machine stream - for TSC-deadline mode,
+   `vcpu:N:timer:arm:<deadline_ticks>` converted to virtual nanoseconds
+   through the fixed TSC frequency; for TMICT mode, the count through
+   the divide configuration and LVT timer mode. Replay admits it like
+   every recorded turn. The write-through answers become the virtual
+   countdown instead of KVM's hrtimer.
 3. **Stage 3 - the countdown and TMCCT.** Assert at the boundary at or
-   after the deadline (hold + inject as today); answer TMCCT reads from
-   the virtual countdown so the guest's view matches.
+   after the deadline (hold + inject as today); answer current-deadline
+   and TMCCT reads from the virtual countdown so the guest's view
+   matches. In TSC-deadline mode the guest's counter is the virtual TSC
+   itself, which the clock already virtualizes - the countdown and the
+   guest's reads converge on the same virtual time base.
 4. **Stage 4 - flip the contract.** The episode-movement replay that
    currently expects divergence becomes an expected-match certification
    case; `hold_kernel_timers` stops being opt-in for new plans and the
