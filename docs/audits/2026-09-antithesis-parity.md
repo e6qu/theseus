@@ -46,6 +46,40 @@ This month closed or narrowed several named gaps:
   as campaign inputs), multi-container pods (per-container services with
   per-container manifests), tmpfs sizing enforced by the guest init, and
   a second bounded-choice workload feeding the weighting comparison.
+- **Value predicates across moments** closed Priority gap 1: `query
+  --where` composes the property layer's RFC 6901 fields shape with the
+  needle relations, and every query predicate accepts the property
+  layer's full grammar - RFC 9535 JSONPath selection, `where` conditions
+  (equals, regex, comparisons, exists), array quantifiers, and nested
+  `all`/`any`/`none` - evaluated in the property layer's order, on the
+  CLI and on the serve routes through the same functions, so one grammar
+  answers everywhere. Exports promote an answer's predicate into a
+  standing property declaration beside a digest manifest.
+- **Temporal operators** closed Priority gap 2's ordering work: `--within`
+  bounds every relation to a boundary window (1 = the immediately
+  adjacent boundary), `--anchor N` addresses one specific occurrence,
+  and `--surrounded-by` answers the both-sides relation - and the
+  property guards gained `sequence_windows`, the same ordered,
+  byte-bounded windows evaluated over complete transcripts. The moment
+  space and the property layer share one temporal vocabulary.
+- **Counterfactual forks** closed Priority gap 3's choice and checkpoint
+  work: `--fork-run N --set-choice OPERATION=INPUT` re-runs one recorded
+  operation under another declared input case, and `--at-moment MOMENT`
+  slices the forked future to the named boundary; `compare --forked`
+  carries the provenance and diffs the re-run future like every fork.
+- **Assertion suite auditing** narrowed Priority gap 4: exports carry the
+  promoted property declaration, and `history --assertions --diff NEW`
+  reports the identities a new campaign set added, retired, and flipped
+  from always-passing to sometimes-failing.
+- **The weighting experiment** exposed and fixed a real bug -
+  `--seed-choices` was silently dropped beside `--expect-counterexample`,
+  so the harness's seeded arms had recorded unseeded-vs-unseeded runs -
+  and with real seeds now applied, all three bounded-choice workloads
+  (six, six, and eight combinations) reproduce the fresh-first
+  reordering on the first seeded run. The cross-workload summary carries
+  the asserted yield comparison (witnesses-per-run delta, first witness
+  position) the seed-default decision reads; the decision stays open
+  pending yield divergence.
 
 ## Capability matrix
 
@@ -54,14 +88,14 @@ This month closed or narrowed several named gaps:
 | Deterministic execution | Custom hypervisor; instruction-level determinism for any x86 binary | KVM + exit-counted virtual time; recorded machine stream gates exits, device effects, explicit inputs, held timer turns | Guest instruction ordering, counter reads, and unheld in-kernel timer arming remain uncontrolled |
 | Workload packaging | Docker Compose and Kubernetes (single-node K3s, `kapp` readiness, air-gapped) | Compose subset over images and manifests; documented Kubernetes subset (Pods, Deployments, StatefulSets, DaemonSets, ReplicaSets, and Jobs - multi-container pods translate into per-container services; ClusterIP Services; ConfigMap/Secret volumes) translating into the same locked plan, from single files or rendered-chart directories (`helm template --output-dir` layouts) | Compose breadth beyond the audited subset ([2026-10 compose breadth audit](2026-10-compose-breadth.md)) |
 | Test interface | Test templates (7 command types) + SDK assertions | Same template layout and lifecycle vocabulary; explicit operations; serial/JSON properties | Mature scheduler adaptivity over long hosted runs |
-| Assertions | `always`, `alwaysOrUnreachable`, `sometimes`, `reachable`, `unreachable`; cataloging; default crash/OOM properties | All five quantifiers over serial/JSON evidence; default `theseus:crash`/`theseus:oom`/`theseus:completed` properties evaluated per campaign; cross-run assertion and choice catalogs (`history --assertions`, `history --choices`) | Property cataloging keyed by assertion identity across campaigns |
+| Assertions | `always`, `alwaysOrUnreachable`, `sometimes`, `reachable`, `unreachable`; cataloging; default crash/OOM properties | All five quantifiers over serial/JSON evidence; default `theseus:crash`/`theseus:oom`/`theseus:completed` properties evaluated per campaign; cross-run assertion and choice catalogs (`history --assertions`, `history --choices`) with the set diff (`--diff NEW`: added, retired, flipped identities) | Catalog management workflows (hosted-surface scope; the identity keying and diff landed) |
 
 | Coverage | C/C++, Go, Java, JavaScript, Rust, .NET; `dlopen` DSOs; symbol ingestion required for properties | GCC C blocks, Go main-module blocks, LLVM C/C++/Rust edges, Java class-load coverage via a `-javaagent`; locked catalogs and source joins | Java method-level probes, JavaScript, .NET, Go external modules and CGO, Rust dynamic graphs |
 | Faults | Network partition/slow/jam/clog/restore; node stop/kill/pause/throttle; CPU modulation; clock; custom user-defined faults | Service lifecycle; partitions; degradation; clogs; storage; packet selectors; clock jumps backward/forward; clock-rate windows; CPU throttling; custom user-declared commands in image-backed services, also generated by the standard profile from each service's own commands | Clock-rate reduction below 1x |
 | Concurrency | Deep thread/process scheduling | Bounded instrumented GCC C pthread path | General Linux thread/process scheduling |
-| Structured randomness | SDKs for Go, Java, C, C++, JavaScript, Python, Rust, .NET + JSONL | Bounded shell choices; Rust helper with event export; Go, Java, and C/C++ modules with the same vocabulary including ordered event export; context-weighted guidance feedback from consumed values (per value-and-schedule-context novelty, recorded beside the run's choice records); cross-campaign correlation surfaces (`theseus history --choices` per-identity failure shares, `evaluate compare` per-identity outcome columns); seeded novelty (`compose explore --seed-choices` treats a prior campaign's consumed identities as known); language-neutral protocol | Guidance weighting signals beyond first-seen novelty. Landed: first-decision seed consumption (ordering test pinned), the ranking harness ([compare_weighting_signals.sh](../../scripts/compare_weighting_signals.sh), run in CI's native-KVM job with the `weighting-experiment` artifact retained), and four recorded observations (saturation, prefix identity, mechanism isolation, partial-coverage reordering). Remaining: multi-workload evidence for a default flip. The seeded ordering is operational end to end — documented in the structured-choices guide, exercised by tutorial 36's continuation step and ci-gating's gate workflow ([ci-gating.md](../ci-gating.md)) |
-| Debugging | Time travel, multiverse map, causality analysis, streaming reports | Reports, replay, minimization, checkpoint export, violation context, alternative-futures frequencies, one-decision counterfactual forks with moment-addressed diffs, moment-scoped digest-auditable artifact bundles | Interactive time travel; fork at an arbitrary checkpoint or choice; temporal queries beyond moment addressing |
-| Event logs | JSONL with `(vtime, input_hash)` moments; temporal operators; event sets | Ordered decision traces; serial deltas; violation excerpts; moment addressing with needle relations, `--events` listing, guest-event moment-log rendering, and event-field temporal relations (`--preceded-by-event`/`--followed-by-event` with RFC 9535 pointers, `where` comparators, and nested groups); Go/Java SDKs emitting guest events onto the same timeline | Temporal operators over complete transcripts beyond strict relations; event sets |
+| Structured randomness | SDKs for Go, Java, C, C++, JavaScript, Python, Rust, .NET + JSONL | Bounded shell choices; Rust helper with event export; Go, Java, and C/C++ modules with the same vocabulary including ordered event export; context-weighted guidance feedback from consumed values (per value-and-schedule-context novelty, recorded beside the run's choice records); cross-campaign correlation surfaces (`theseus history --choices` per-identity failure shares, `evaluate compare` per-identity outcome columns); seeded novelty (`compose explore --seed-choices` treats a prior campaign's consumed identities as known); language-neutral protocol | Guidance weighting signals beyond first-seen novelty. Landed: first-decision seed consumption (ordering test pinned), the ranking harness ([compare_weighting_signals.sh](../../scripts/compare_weighting_signals.sh), run in CI's native-KVM job with the `weighting-experiment` artifact retained), five recorded observations (saturation, prefix identity, mechanism isolation, partial-coverage reordering, and the three-workload fresh-first reordering with real seeds after the silent-drop fix), and the asserted yield table. Remaining: yield divergence - the seed reorders, and the decision reads the witnesses-per-run delta every CI run tabulates. The seeded ordering is operational end to end — documented in the structured-choices guide, exercised by tutorial 36's continuation step and ci-gating's gate workflow ([ci-gating.md](../ci-gating.md)) |
+| Debugging | Time travel, multiverse map, causality analysis, streaming reports | Reports, replay, minimization, checkpoint export, violation context, alternative-futures frequencies, counterfactual forks - fault substitutions, choice substitutions, and moment-addressed slices - with moment-addressed diffs, digest-verifiable answer exports that promote into property declarations, moment-scoped artifact bundles | Interactive time travel; forked execution that starts at the checkpoint rather than re-running from the shared prefix |
+| Event logs | JSONL with `(vtime, input_hash)` moments; temporal operators; event sets | Ordered decision traces; serial deltas; violation excerpts; moment addressing with needle relations, `--events` listing, guest-event moment-log rendering, event-field temporal relations, and the shared full predicate grammar (JSONPath, where conditions, array quantifiers, nested groups) with windowed, occurrence-addressed, and bracketing relations on the CLI and serve routes; sequence windows over complete transcripts in the property guards; Go/Java SDKs emitting guest events onto the same timeline | Event sets; transitive between-moments relations (undemanded) |
 | Delivery | Hosted SaaS; REST API v0/v1; webhooks; Snouty CLI; CI triggers; integrations | Self-hosted CLI; markdown/JSON/JUnit reports; structured progress streams with a live journal (serve route, Range polls, `query --collect` prefix, status summary) | Campaign API; live log/coverage view while running |
 
 ## Priority gaps and the fix for each
@@ -72,30 +106,40 @@ This month closed or narrowed several named gaps:
    moment-log rendering with guest events, previous/next navigation,
    full enumeration, and collect-able point bundles — and the reading
    paths are documented across CLI, HTTP, and offline artifacts. The
-   open work is rich value predicates across moments on top of this
-   retrieval.
+   value-predicate work is closed: `query --where` composes the
+   property layer's fields shape with the relations, every query
+   predicate accepts the property layer's full grammar through the same
+   evaluation order on both surfaces, and exports promote an answer's
+   predicate into a standing property declaration.
 2. **Temporal queries** (`preceded by` / `followed by` over retained
    events). Landed at the moment-address tier, including event-field
    relations (`--preceded-by-event`/`--followed-by-event` over RFC 9535
-   pointers with `where` comparators and nested groups). The open work is
-   richer temporal operators and the full nested property predicates
-   evaluated over complete transcripts.
+   pointers with `where` comparators and nested groups), the shared full
+   grammar, and the richer operators: `--within` windows, `--anchor`
+   occurrence addressing, `--surrounded-by` brackets - and
+   `sequence_windows` evaluate the same ordered, bounded steps over
+   complete transcripts in the property guards. The undemanded residue
+   is transitive between-moments relations and event sets.
 3. **Counterfactual re-execution** — fork a retained checkpoint, change one
    recorded choice or fault, re-execute, and diff the futures. Landed for
-   fault decisions: `compose explore --fork-run N --replace-fault OLD=NEW`
-   locks the substitution into the forked replay plan and re-executes the
-   recorded schedule from the shared prefix, and `compare --forked` reports
-   the first diverging boundary with both sides' moments. Forking at an
-   arbitrary retained checkpoint or on an arbitrary recorded choice
-   (operation inputs, schedules, structured choices) remains open.
+   fault decisions (`--fork-run N --replace-fault OLD=NEW`), for choices
+   (`--set-choice OPERATION=INPUT` re-runs one operation under another
+   declared input case), and for checkpoints (`--at-moment MOMENT` slices
+   the forked future to the named boundary); `compare --forked` reports
+   the first diverging boundary with both sides' moments and carries the
+   provenance for all three forms. The remaining sliver is execution
+   starting at the nearest checkpoint rather than re-running the shared
+   prefix - a capture-and-resume composition, not a new fork protocol.
 4. **Default properties** — automatic crash, completion, and OOM verdicts
    per run (`theseus:crash`, `theseus:completed`, `theseus:oom`) are
    recorded beside declared properties; the OOM verdict classifies the
    kernel's own out-of-memory serial evidence, and the campaign API
    record carries the run-level summary a gate reads. Cross-run property
    history and the assertion/choice catalogs landed (`theseus history`,
-   `--assertions`, `--choices`). The open work is Antithesis-style
-   assertion catalog management on top.
+   `--assertions`, `--choices`), the suite diff landed (`--diff NEW`:
+   added, retired, flipped), and exports promote findings into
+   declarations. The remaining work is catalog management UX on a hosted
+   surface - Product-operation scope.
 5. **Custom fault interface** — landed: `kind: custom` campaign faults run
    a user argv inside an image-backed service at an operation barrier
    through the pivot shell protocol, and the standard profile proposes
