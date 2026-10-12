@@ -264,7 +264,7 @@ impl KvmVm {
         cap.cap = kvm_bindings::KVM_CAP_X86_USER_SPACE_MSR;
         // Only filtered accesses exit; unknown/invalid MSRs keep KVM's
         // default #GP behavior.
-        cap.args[0] = kvm_bindings::KVM_MSR_EXIT_REASON_FILTER;
+        cap.args[0] = u64::from(kvm_bindings::KVM_MSR_EXIT_REASON_FILTER);
         self.fd().enable_cap(&cap)?;
 
         if self.fd().check_extension_int(Cap::X86MsrFilter) == 0 {

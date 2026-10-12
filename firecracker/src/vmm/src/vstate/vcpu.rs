@@ -1847,24 +1847,31 @@ impl Vcpu {
                 Ok(VcpuEmulation::Paused)
             }
             #[cfg(target_arch = "x86_64")]
-            Ok(VcpuExit::X86Rdmsr(mut exit)) => {
+            Ok(VcpuExit::X86Rdmsr(exit)) => {
                 if !self.timer_msrs_filtered {
                     return Err(VcpuError::UnhandledKvmExit(
                         "x86 RDMSR exit arrived with the timer-MSR filter not enabled"
                             .to_owned(),
                     ));
                 }
+                // The exit's data pointer targets KVM's run buffer for this
+                // vCPU, which stays valid past the exit borrow; the LAPIC
+                // read needs the same struct immutably, so the answer is
+                // written through a raw pointer after the borrow ends.
+                let out: *mut u64 = exit.data;
+                let index = exit.index;
                 let word = self
                     .kvm_vcpu
-                    .lapic_timer_word(exit.index)
-                    .map_err(|error| {
-                        VcpuError::UnhandledKvmExit(error.to_string())
-                    })?;
-                *exit.data = u64::from(word);
+                    .lapic_timer_word(index)
+                    .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
+                // SAFETY: `out` points into this vCPU's KVM run buffer,
+                // which outlives the exit borrow and is consumed by the
+                // next KVM_RUN on this thread.
+                unsafe { *out = u64::from(word) };
                 info!(
                     "vcpu:{}:timer-msr:rd:{:#x}={:#x} vtime:{:?}",
                     self.kvm_vcpu.index,
-                    exit.index,
+                    index,
                     word,
                     self.virtual_time_ns()
                 );
@@ -1878,16 +1885,15 @@ impl Vcpu {
                             .to_owned(),
                     ));
                 }
+                let index = exit.index;
                 let word = (exit.data & 0xffff_ffff) as u32;
                 self.kvm_vcpu
-                    .set_lapic_timer_word(exit.index, word)
-                    .map_err(|error| {
-                        VcpuError::UnhandledKvmExit(error.to_string())
-                    })?;
+                    .set_lapic_timer_word(index, word)
+                    .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
                 info!(
                     "vcpu:{}:timer-msr:wr:{:#x}={:#x} vtime:{:?}",
                     self.kvm_vcpu.index,
-                    exit.index,
+                    index,
                     word,
                     self.virtual_time_ns()
                 );
