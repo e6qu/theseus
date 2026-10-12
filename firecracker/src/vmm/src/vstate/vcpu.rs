@@ -1897,9 +1897,10 @@ impl Vcpu {
                     ));
                 }
                 let index = exit.index;
+                let data = exit.data;
                 if index == MSR_IA32_TSC_DEADLINE {
                     self.kvm_vcpu
-                        .tsc_deadline_write(exit.data)
+                        .tsc_deadline_write(data)
                         .map_err(|error| {
                             VcpuError::UnhandledKvmExit(error.to_string())
                         })?;
@@ -1913,10 +1914,7 @@ impl Vcpu {
                 }
                 info!(
                     "vcpu:{}:timer-msr:wr:{:#x}={:#x} vtime:{:?}",
-                    self.kvm_vcpu.index,
-                    index,
-                    exit.data,
-                    self.virtual_time_ns()
+                    self.kvm_vcpu.index, index, data, self.virtual_time_ns()
                 );
                 Ok(VcpuEmulation::Handled)
             }
