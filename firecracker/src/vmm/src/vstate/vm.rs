@@ -265,9 +265,9 @@ impl KvmVm {
         // Only filtered accesses exit; unknown/invalid MSRs keep KVM's
         // default #GP behavior.
         cap.args[0] = kvm_bindings::KVM_MSR_EXIT_REASON_FILTER;
-        self.fd.enable_cap(&cap)?;
+        self.fd().enable_cap(&cap)?;
 
-        if self.fd.check_extension_int(Cap::X86MsrFilter) == 0 {
+        if self.fd().check_extension_int(Cap::X86MsrFilter) == 0 {
             return Err(errno::Error::new(libc::ENOTSUP));
         }
 
@@ -276,7 +276,7 @@ impl KvmVm {
         // 0x838 maps to APIC-page offset 0x380; the seven registers span
         // 0x380..=0x3E0 in 0x10 steps.
         let bitmap = [0u8, 0u8];
-        self.fd.set_msr_filter(
+        self.fd().set_msr_filter(
             MsrFilterDefaultAction::ALLOW,
             &[MsrFilterRange {
                 flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,

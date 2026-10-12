@@ -266,11 +266,21 @@ pub fn build_microvm_for_boot(
         vm.enable_deterministic_interrupts();
         #[cfg(target_arch = "x86_64")]
         vm.set_virtual_clock_ns(0).map_err(VmError::Arch)?;
+        #[cfg(target_arch = "x86_64")]
+        if virtual_time.filter_timer_msrs {
+            vm.install_timer_msr_filter()
+                .map_err(StartMicrovmError::TimerMsrFilter)?;
+            crate::logger::info!(
+                "timer-msr filter installed: x2APIC TMICT/TMCCT/TDCR access is \
+                 observed with its virtual timestamp (stage 1, write-through)"
+            );
+        }
         for vcpu in &mut vcpus {
             vcpu.enable_virtual_time(
                 virtual_time.tick_ns,
                 virtual_time.exits_per_tick,
                 virtual_time.hold_kernel_timers,
+                virtual_time.filter_timer_msrs,
             );
             // aarch64: the counter offset can only be written after the
             // KVM_ARM_VCPU_INIT ioctl, which happens at vCPU configure time —

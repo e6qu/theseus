@@ -215,10 +215,10 @@ fn configure_vcpus_for_boot(
         .as_ref()
         .is_some_and(|virtual_time| virtual_time.filter_timer_msrs)
     {
-        if let Some(leaf_1) = cpuid.as_mut_slice().iter_mut().find(|entry| {
-            entry.input_eax == 1 && entry.input_ecx == 0
-        }) {
-            leaf_1.ecx |= 1 << 21;
+        if let Some(leaf_1) =
+            cpuid.get_mut(&crate::cpu_config::x86_64::cpuid::CpuidKey::leaf(1))
+        {
+            leaf_1.result.ecx |= 1 << 21;
         }
     }
 

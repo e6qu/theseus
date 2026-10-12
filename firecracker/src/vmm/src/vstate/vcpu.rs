@@ -1854,10 +1854,15 @@ impl Vcpu {
                             .to_owned(),
                     ));
                 }
-                let word = self.kvm_vcpu.lapic_timer_word(exit.index)?;
+                let word = self
+                    .kvm_vcpu
+                    .lapic_timer_word(exit.index)
+                    .map_err(|error| {
+                        VcpuError::UnhandledKvmExit(error.to_string())
+                    })?;
                 *exit.data = u64::from(word);
                 info!(
-                    "vcpu:{}:timer-msr:rd:{:#x}={:#x} vtime:{}",
+                    "vcpu:{}:timer-msr:rd:{:#x}={:#x} vtime:{:?}",
                     self.kvm_vcpu.index,
                     exit.index,
                     word,
@@ -1874,9 +1879,13 @@ impl Vcpu {
                     ));
                 }
                 let word = (exit.data & 0xffff_ffff) as u32;
-                self.kvm_vcpu.set_lapic_timer_word(exit.index, word)?;
+                self.kvm_vcpu
+                    .set_lapic_timer_word(exit.index, word)
+                    .map_err(|error| {
+                        VcpuError::UnhandledKvmExit(error.to_string())
+                    })?;
                 info!(
-                    "vcpu:{}:timer-msr:wr:{:#x}={:#x} vtime:{}",
+                    "vcpu:{}:timer-msr:wr:{:#x}={:#x} vtime:{:?}",
                     self.kvm_vcpu.index,
                     exit.index,
                     word,
