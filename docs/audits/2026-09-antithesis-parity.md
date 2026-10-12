@@ -127,9 +127,12 @@ This month closed or narrowed several named gaps:
    declared input case), and for checkpoints (`--at-moment MOMENT` slices
    the forked future to the named boundary); `compare --forked` reports
    the first diverging boundary with both sides' moments and carries the
-   provenance for all three forms. The remaining sliver is execution
+   provenance for all three forms. The remaining sliver - execution
    starting at the nearest checkpoint rather than re-running the shared
-   prefix - a capture-and-resume composition, not a new fork protocol.
+   deterministic prefix - is analyzed with its tradeoffs in
+   [checkpoint-addressed-forks.md](../design/checkpoint-addressed-forks.md);
+   re-execution stays the default until fork-question latency is the
+   measured pain.
 4. **Default properties** — automatic crash, completion, and OOM verdicts
    per run (`theseus:crash`, `theseus:completed`, `theseus:oom`) are
    recorded beside declared properties; the OOM verdict classifies the
