@@ -18,6 +18,7 @@ timeout_secs = 10
 tick_ns = 1000000
 exits_per_tick = 10
 hold_kernel_timers = true # amd64 only; rejected before boot elsewhere.
+filter_timer_msrs = true # Stage 1: observe every timer-MSR arming write.
 
 [[events]]
 when = "ready"

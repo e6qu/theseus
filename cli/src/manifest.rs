@@ -162,6 +162,10 @@ pub struct VirtualTime {
     pub exits_per_tick: u32,
     #[serde(default)]
     pub hold_kernel_timers: bool,
+    /// Stage 1 of deterministic timer arming: observe every x2APIC
+    /// timer-MSR access with its virtual timestamp (write-through).
+    #[serde(default)]
+    pub filter_timer_msrs: bool,
 }
 
 #[derive(Debug, Deserialize)]

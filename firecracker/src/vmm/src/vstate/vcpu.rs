@@ -1171,6 +1171,10 @@ pub struct Vcpu {
     /// Hold asserted in-kernel LAPIC-timer deliveries at handled-exit
     /// boundaries and inject them as recorded vCPU turns (amd64 only).
     hold_kernel_timers: bool,
+    /// Stage 1 of deterministic timer arming: the x2APIC timer MSRs are
+    /// filtered to userspace, and this vCPU answers them write-through
+    /// against the in-kernel LAPIC page (x86_64 only).
+    timer_msrs_filtered: bool,
 }
 
 /// States of the vCPU thread's run loop.
@@ -1234,6 +1238,7 @@ impl Vcpu {
             machine_execution,
             kernel_timer_asserted: false,
             hold_kernel_timers: false,
+            timer_msrs_filtered: false,
         })
     }
 
@@ -1251,12 +1256,14 @@ impl Vcpu {
         tick_ns: u64,
         exits_per_tick: u64,
         hold_kernel_timers: bool,
+        timer_msrs_filtered: bool,
     ) {
         self.vclock = Some(crate::vstate::vclock::VirtualClock::new(tick_ns));
         self.exits_per_tick = exits_per_tick.max(1);
         self.exits_since_tick = 0;
         self.vclock_anchored = false;
         self.hold_kernel_timers = hold_kernel_timers;
+        self.timer_msrs_filtered = timer_msrs_filtered;
     }
 
     /// Current virtual-clock state, if enabled.
@@ -1276,10 +1283,12 @@ impl Vcpu {
         vc_state: &crate::vstate::vclock::VirtualClockState,
         exits: u64,
         exits_per_tick: u64,
+        timer_msrs_filtered: bool,
     ) {
         self.vclock = Some(crate::vstate::vclock::VirtualClock::restore(vc_state));
         self.exits_per_tick = exits_per_tick.max(1);
         self.exits_since_tick = exits;
+        self.timer_msrs_filtered = timer_msrs_filtered;
         self.vclock_anchored = false;
     }
 
@@ -1836,6 +1845,44 @@ impl Vcpu {
                 }
 
                 Ok(VcpuEmulation::Paused)
+            }
+            #[cfg(target_arch = "x86_64")]
+            Ok(VcpuExit::X86Rdmsr(mut exit)) => {
+                if !self.timer_msrs_filtered {
+                    return Err(VcpuError::UnhandledKvmExit(
+                        "x86 RDMSR exit arrived with the timer-MSR filter not enabled"
+                            .to_owned(),
+                    ));
+                }
+                let word = self.kvm_vcpu.lapic_timer_word(exit.index)?;
+                *exit.data = u64::from(word);
+                info!(
+                    "vcpu:{}:timer-msr:rd:{:#x}={:#x} vtime:{}",
+                    self.kvm_vcpu.index,
+                    exit.index,
+                    word,
+                    self.virtual_time_ns()
+                );
+                Ok(VcpuEmulation::Handled)
+            }
+            #[cfg(target_arch = "x86_64")]
+            Ok(VcpuExit::X86Wrmsr(exit)) => {
+                if !self.timer_msrs_filtered {
+                    return Err(VcpuError::UnhandledKvmExit(
+                        "x86 WRMSR exit arrived with the timer-MSR filter not enabled"
+                            .to_owned(),
+                    ));
+                }
+                let word = (exit.data & 0xffff_ffff) as u32;
+                self.kvm_vcpu.set_lapic_timer_word(exit.index, word)?;
+                info!(
+                    "vcpu:{}:timer-msr:wr:{:#x}={:#x} vtime:{}",
+                    self.kvm_vcpu.index,
+                    exit.index,
+                    word,
+                    self.virtual_time_ns()
+                );
+                Ok(VcpuEmulation::Handled)
             }
             emulation_result => handle_kvm_exit_recorded(
                 &mut self.kvm_vcpu.peripherals,

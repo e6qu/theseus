@@ -204,7 +204,23 @@ fn configure_vcpus_for_boot(
 ) -> Result<(), ConfigurationError> {
     // Phase 1: construct the shared, templated guest CPUID.
     let cpuid = Cpuid::try_from(kvm.supported_cpuid.clone()).map_err(GuestConfigError::from)?;
-    let cpuid = apply_template_to_cpuid(cpuid, cpu_template)?;
+    let mut cpuid = apply_template_to_cpuid(cpuid, cpu_template)?;
+    // Stage 1 of deterministic timer arming: when the timer-MSR filter is
+    // on, the guest must run in x2APIC mode so its timer registers are the
+    // MSRs the filter intercepts. Expose the x2APIC CPUID feature bit
+    // (CPUID.01H:ECX[21]); the kernel then enables x2APIC through
+    // IA32_APIC_BASE, which KVM's in-kernel APIC handles on its own.
+    if machine_config
+        .virtual_time
+        .as_ref()
+        .is_some_and(|virtual_time| virtual_time.filter_timer_msrs)
+    {
+        if let Some(leaf_1) = cpuid.as_mut_slice().iter_mut().find(|entry| {
+            entry.input_eax == 1 && entry.input_ecx == 0
+        }) {
+            leaf_1.ecx |= 1 << 21;
+        }
+    }
 
     // Phase 2: set each normalized CPUID before reading CPUID-dependent MSRs.
     let configured_cpuids = vcpus

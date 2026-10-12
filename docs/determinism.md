@@ -324,6 +324,13 @@ designed and staged in
   across boundaries between runs: hold mode makes such movement a replay
   divergence instead of a silent pass, and an episode fully contained between
   two exits can still be missed until instruction-boundary control lands.
+- **Timer-MSR observation (stage 1 of deterministic arming).** With
+  `run.virtual_time.filter_timer_msrs = true` on amd64, the guest is
+  steered into x2APIC mode and the timer registers (TMICT, TMCCT, TDCR)
+  exit to userspace: every arming write is logged with its virtual
+  timestamp and answered write-through, so guest-visible behavior is
+  unchanged. The design for making the arming itself deterministic is in
+  [design/deterministic-timer-arming.md](design/deterministic-timer-arming.md).
 
 ## Replay fingerprints
 

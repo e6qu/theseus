@@ -59,6 +59,9 @@ pub enum KvmVcpuError {
     Fam(#[from] vmm_sys_util::fam::Error),
     /// Failed to get dumpable MSR index list: {0}
     GetMsrsToDump(#[from] crate::arch::x86_64::msr::MsrError),
+    /// An x2APIC MSR outside the filtered timer registers was accessed
+    /// (Theseus): {0}
+    UnhandledTimerMsr(u32),
     /// Cannot open the VCPU file descriptor: {0}
     VcpuFd(kvm_ioctls::Error),
     /// Failed to get KVM vcpu debug regs: {0}
@@ -140,6 +143,21 @@ const APIC_OFF_ISR: usize = 0x100;
 const APIC_OFF_IRR: usize = 0x200;
 /// APIC LVT masked bit.
 const APIC_LVT_MASKED: u32 = 1 << 16;
+
+/// The APIC-page offset for one filtered x2APIC timer MSR. Only the
+/// three timer registers are admitted by the MSR filter; anything else is
+/// a named error.
+fn timer_msr_offset(msr_index: u32) -> Result<usize, KvmVcpuError> {
+    let offset = match msr_index {
+        0x838 => 0x380, // TMICT: initial count.
+        0x839 => 0x390, // TMCCT: current count.
+        0x83E => 0x3E0, // TDCR: divide configuration.
+        other => {
+            return Err(KvmVcpuError::UnhandledTimerMsr(other));
+        }
+    };
+    Ok(offset)
+}
 
 fn apic_word(state: &kvm_lapic_state, offset: usize) -> u32 {
     // `regs` is `c_char`; the cast keeps the bit pattern on every target.
@@ -781,6 +799,34 @@ impl KvmVcpu {
     pub fn kernel_timer_asserted(&self) -> Result<bool, KvmVcpuError> {
         let lapic = self.fd.get_lapic().map_err(KvmVcpuError::VcpuGetLapic)?;
         Ok(lapic_timer_asserted(&lapic))
+    }
+
+    /// Read one x2APIC timer register as the 32-bit word at its APIC-page
+    /// offset: MSR 0x800+N maps to offset N * 0x10. The filter admits only
+    /// TMICT (0x838 -> 0x380), TMCCT (0x839 -> 0x390), and TDCR
+    /// (0x83E -> 0x3E0); anything else is refused rather than guessed.
+    pub fn lapic_timer_word(&self, msr_index: u32) -> Result<u32, KvmVcpuError> {
+        let offset = timer_msr_offset(msr_index)?;
+        let lapic = self.fd.get_lapic().map_err(KvmVcpuError::VcpuGetLapic)?;
+        Ok(apic_word(&lapic, offset))
+    }
+
+    /// Write one x2APIC timer register into the in-kernel LAPIC page.
+    /// Write-through: KVM's own arming state machine consumes the new
+    /// value exactly as if the guest had written it in-kernel.
+    pub fn set_lapic_timer_word(
+        &self,
+        msr_index: u32,
+        word: u32,
+    ) -> Result<(), KvmVcpuError> {
+        let offset = timer_msr_offset(msr_index)?;
+        let mut lapic = self.fd.get_lapic().map_err(KvmVcpuError::VcpuGetLapic)?;
+        let bytes = word.to_le_bytes();
+        for (index, byte) in bytes.iter().enumerate() {
+            lapic.regs[offset + index] = *byte as std::os::raw::c_char;
+        }
+        self.fd.set_lapic(&lapic).map_err(KvmVcpuError::VcpuSetLapic)?;
+        Ok(())
     }
 
     /// Hold an asserted LAPIC-timer delivery: clear the timer vector's IRR
