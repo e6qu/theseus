@@ -403,10 +403,15 @@ measurement, a KVM host, or a product decision - not on design.
    ties at every budget, which retires the question.
 2. **The execution plane (Priority 1).** Fully deterministic in-kernel
    timer arming, then runnable guest entities, virtual-clock reads, and
-   guest-side input consumption between KVM exits. Each slice needs
-   KVM-host iteration; the forks' remaining sliver (executing from the
-   nearest checkpoint instead of re-running the shared prefix) composes
-   the existing capture-and-resume machinery once that lands.
+   guest-side input consumption between KVM exits. The timer-arming
+   design is worked out and staged
+   ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)):
+   force x2APIC, filter the timer MSRs, record arming as a machine-stream
+   decision, and answer current-count reads from the virtual countdown -
+   stage 1 is a one-session interception spike. The forks' remaining
+   sliver (executing from the nearest checkpoint instead of re-running
+   the shared prefix) composes the existing capture-and-resume machinery
+   once that lands.
 3. **Product operations (Priority 6).** A hosted campaign service on
    the stable API record, catalog management UX, and a web
    investigation interface over the same portable evidence - each a

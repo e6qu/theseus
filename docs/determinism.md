@@ -269,7 +269,10 @@ This controls concurrent emulated device effects, explicit host inputs, and
 supported userspace device interrupt injection at the KVM boundary. Theseus
 does not yet make guest instructions deterministic, choose Linux thread or
 process execution, control when the guest services an injected interrupt, or
-schedule in-kernel timer interrupts between exits.
+schedule in-kernel timer interrupts between exits. Held timer deliveries are
+injected at recorded turns today; making their *arming* deterministic is
+designed and staged in
+[deterministic-timer-arming.md](design/deterministic-timer-arming.md).
 
 - Rate limiters use host timerfds — **rejected** when virtual time is
   enabled (`validate_deterministic_config`).
