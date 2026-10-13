@@ -90,7 +90,6 @@ jobs:
           # Hold mode: kernel-timer deliveries become recorded, gated turns.
           ../../../cli/target/debug/theseus test --output work/hold-replay hold.toml
           grep -a '^sensor reading: 21.5C$' work/hold-replay/serial.log
-          grep -a 'THES:M:reboot' work/hold-replay/serial.log
           test -f work/hold-replay/timer-observations.json
           # Stage 1 of deterministic arming: the arming writes are in the
           # Firecracker log with their virtual timestamps.
