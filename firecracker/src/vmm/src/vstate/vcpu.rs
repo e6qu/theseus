@@ -1301,6 +1301,9 @@ pub struct Vcpu {
     /// filtered to userspace, and this vCPU answers them write-through
     /// against the in-kernel LAPIC page (x86_64 only).
     timer_msrs_filtered: bool,
+    /// Stage 3 (experimental): deliver the timer interrupt at the arming
+    /// write itself - the halt-time policy.
+    halt_timer_delivery: bool,
     /// Stage 3 of deterministic timer arming: the armed TSC-deadline in
     /// guest TSC ticks. When set, the timer delivery rides the halt: the
     /// virtual clock advances to the deadline at the halt exit and the
@@ -1370,6 +1373,7 @@ impl Vcpu {
             kernel_timer_asserted: false,
             hold_kernel_timers: false,
             timer_msrs_filtered: false,
+            halt_timer_delivery: false,
             timer_deadline_ticks: None,
         })
     }
@@ -1389,6 +1393,7 @@ impl Vcpu {
         exits_per_tick: u64,
         hold_kernel_timers: bool,
         timer_msrs_filtered: bool,
+        halt_timer_delivery: bool,
     ) {
         self.vclock = Some(crate::vstate::vclock::VirtualClock::new(tick_ns));
         self.exits_per_tick = exits_per_tick.max(1);
@@ -1396,6 +1401,7 @@ impl Vcpu {
         self.vclock_anchored = false;
         self.hold_kernel_timers = hold_kernel_timers;
         self.timer_msrs_filtered = timer_msrs_filtered;
+        self.halt_timer_delivery = halt_timer_delivery;
         self.timer_deadline_ticks = None;
     }
 
@@ -1417,11 +1423,13 @@ impl Vcpu {
         exits: u64,
         exits_per_tick: u64,
         timer_msrs_filtered: bool,
+        halt_timer_delivery: bool,
     ) {
         self.vclock = Some(crate::vstate::vclock::VirtualClock::restore(vc_state));
         self.exits_per_tick = exits_per_tick.max(1);
         self.exits_since_tick = exits;
         self.timer_msrs_filtered = timer_msrs_filtered;
+        self.halt_timer_delivery = halt_timer_delivery;
         self.vclock_anchored = false;
     }
 
@@ -2043,7 +2051,9 @@ impl Vcpu {
                 drop(exit);
                 let timer_arm =
                     index == MSR_IA32_TSC_DEADLINE || index == 0x838;
-                if timer_arm && self.hold_kernel_timers {
+                let halt_delivery =
+                    timer_arm && self.hold_kernel_timers && self.halt_timer_delivery;
+                if halt_delivery {
                     // Stage 3: record the arm decision, then arm the wake
                     // timer. The TSC-deadline value is in guest TSC ticks;
                     // the remaining guest time is (deadline - current
@@ -2099,6 +2109,9 @@ impl Vcpu {
                     return Ok(VcpuEmulation::Handled);
                 }
                 if index == MSR_IA32_TSC_DEADLINE {
+                    // Write-through: KVM's host hrtimer remains the wake
+                    // source (stage-2 behavior) unless the halt-time
+                    // delivery policy is explicitly enabled.
                     self.kvm_vcpu
                         .tsc_deadline_write(data)
                         .map_err(|error| {

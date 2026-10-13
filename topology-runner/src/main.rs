@@ -1671,6 +1671,8 @@ struct VirtualTime {
     /// timer-MSR access with its virtual timestamp (write-through).
     #[serde(default)]
     filter_timer_msrs: bool,
+    #[serde(default)]
+    halt_timer_delivery: bool,
 }
 
 fn default_max_rounds() -> u64 {
@@ -14120,6 +14122,7 @@ fn service_resources(
                     exits_per_tick: time.exits_per_tick as u64,
                     hold_kernel_timers: time.hold_kernel_timers,
                     filter_timer_msrs: time.filter_timer_msrs,
+                    halt_timer_delivery: time.halt_timer_delivery,
                 }),
             ..Default::default()
         })
