@@ -405,17 +405,18 @@ measurement, a KVM host, or a product decision - not on design.
    timer arming landed: the timer-MSR filter is live in CI's KVM step
    (the guest boots in x2APIC mode; Linux arms through the TSC-deadline
    MSR, not TMICT), and in hold mode every arming write is a recorded
-   machine-stream decision admitted by replay. Stage 3 - answering the
-   guest's deadline reads from the virtual countdown instead of KVM's
-   host hrtimer - removes the remaining host drift and is the next KVM
-   iteration
-   ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)).
-   Then runnable guest entities, virtual-clock reads, and guest-side
-   input consumption. The forks' remaining sliver is analyzed too
+   machine-stream decision admitted by replay. The stage-3 attempt
+   surfaced the real frontier: an idle guest arms the deadline and
+   halts, and exit-counted virtual time freezes while halted - the timer
+   must fire *during* halt, which requires the halt-time policy (a halt
+   consumes virtual time up to the next armed deadline, detected via
+   KVM mp-state + a wake timerfd). That policy is the guest-side input
+   consumption frontier the roadmap names and is the next KVM iteration
+   ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)
+   records the attempt and the finding). Then runnable guest entities
+   and virtual-clock reads. The forks' remaining sliver is analyzed too
    ([checkpoint-addressed-forks.md](docs/design/checkpoint-addressed-forks.md)):
-   re-executing the shared prefix is deterministic and stays the default;
-   restore-based forks wait for the hosted multi-question workflow, where
-   fork-question latency is the measured pain.
+   re-executing the shared prefix is deterministic and stays the default.
 3. **Product operations (Priority 6).** A hosted campaign service on
    the stable API record, catalog management UX, and a web
    investigation interface over the same portable evidence - each a

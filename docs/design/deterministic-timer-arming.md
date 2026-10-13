@@ -113,12 +113,23 @@ today's honest divergence.
    deterministic, because the guest computes them from its TSC, whose
    reading between exits is not fully virtualized until stage 3. The
    tamper test (a forged timer turn) is still rejected.
-3. **Stage 3 - the countdown and TMCCT.** Assert at the boundary at or
-   after the deadline (hold + inject as today); answer current-deadline
-   and TMCCT reads from the virtual countdown so the guest's view
-   matches. In TSC-deadline mode the guest's counter is the virtual TSC
-   itself, which the clock already virtualizes - the countdown and the
-   guest's reads converge on the same virtual time base.
+3. **Stage 3 - the countdown and TMCCT (attempted; the halt frontier).**
+   The first implementation armed a virtual deadline and asserted at the
+   first handled exit whose virtual TSC reached it. CI showed why that is
+   not enough: an idle guest arms the deadline and **halts** - and
+   exit-counted virtual time advances only on handled exits, so the
+   virtual TSC freezes below the deadline, no boundary ever reaches it,
+   and the guest hangs until the watchdog (the recording run failed its
+   guest_exit/completion checks). The honest finding: the LAPIC timer
+   must fire *while the guest is halted*, which exit-counted virtual
+   time does not model. The stage-3 design is therefore the halt
+   policy: intercept the halted state (KVM mp-state HALTED + a wake
+   timerfd), and let a halt **consume virtual time up to the next armed
+   deadline** - a deterministic policy, since the halt position is
+   deterministic. That is the guest-side input consumption frontier the
+   roadmap names, and it is the prerequisite for stages 3-4. The
+   attempted implementation is reverted; the recording path is restored
+   to stage-2 behavior (host hrtimer arms, hold diverges on movement).
 4. **Stage 4 - flip the contract.** The episode-movement replay that
    currently expects divergence becomes an expected-match certification
    case; `hold_kernel_timers` stops being opt-in for new plans and the
