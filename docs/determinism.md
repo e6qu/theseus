@@ -331,6 +331,10 @@ designed and staged in
   timestamp and answered write-through, so guest-visible behavior is
   unchanged. The design for making the arming itself deterministic is in
   [design/deterministic-timer-arming.md](design/deterministic-timer-arming.md).
+  In hold mode the arming writes are also recorded machine-stream
+  decisions (`vcpu:<id>:timer:arm:<msr>:<value>`), admitted by replay -
+  an episode that moves across a boundary diverges at the arm, not only
+  at the delivery.
 
 ## Replay fingerprints
 
