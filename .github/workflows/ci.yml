@@ -115,7 +115,7 @@ jobs:
       - name: Retain the hold-replay bundle on failure
         if: failure()
         working-directory: docs/tutorials/04-read-serial
-        uses: actions/upload-artifact@ea165f8d65b6e75b540478e92f5e01e8b20038
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: hold-replay-debug
           path: |
