@@ -102,13 +102,17 @@ today's honest divergence.
    boots, the UART workload passes, and the arming writes appear in the
    Firecracker log with their virtual timestamps. Read the logged
    pattern from the retained `firecracker.log` in the CI artifacts.
-2. **Stage 2 - the arm decision.** Record the intercepted arming write
-   in the machine stream - for TSC-deadline mode,
-   `vcpu:N:timer:arm:<deadline_ticks>` converted to virtual nanoseconds
-   through the fixed TSC frequency; for TMICT mode, the count through
-   the divide configuration and LVT timer mode. Replay admits it like
-   every recorded turn. The write-through answers become the virtual
-   countdown instead of KVM's hrtimer.
+2. **Stage 2 - the arm decision (landed).** In hold mode the
+   intercepted arming write is recorded in the machine stream as
+   `vcpu:N:timer:arm:<msr>:<value>` (TSC-deadline or TMICT), admitted by
+   replay through the shared override application. CI's hold step now
+   records ~11 arms per boot and the held-delivery divergence tolerance
+   accepts the arm as the named decision. **Observed:** the replay of a
+   hold recording still fails (the guest exits nonzero) - the arm
+   records are admitted but the *deadline values* are not yet
+   deterministic, because the guest computes them from its TSC, whose
+   reading between exits is not fully virtualized until stage 3. The
+   tamper test (a forged timer turn) is still rejected.
 3. **Stage 3 - the countdown and TMCCT.** Assert at the boundary at or
    after the deadline (hold + inject as today); answer current-deadline
    and TMCCT reads from the virtual countdown so the guest's view
