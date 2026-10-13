@@ -2003,43 +2003,6 @@ impl Vcpu {
                 // which both need `self.kvm_vcpu` immutably.
                 let (index, data) = (exit.index, exit.data);
                 drop(exit);
-                // The halt-time policy (stage 3): an idle guest's arming
-                // write IS the delivery. The host hrtimer is never armed;
-                // the interrupt turn is queued immediately after the arm
-                // record, and KVM holds the injection until the guest
-                // enables interrupts and halts - so the guest sees the
-                // timer fire at its idle point, deterministically, with
-                // both turns recorded in the stream.
-                let timer_arm =
-                    index == MSR_IA32_TSC_DEADLINE || index == 0x838;
-                if timer_arm && self.hold_kernel_timers {
-                    let vector = self
-                        .kvm_vcpu
-                        .lapic_timer_lvt_vector()
-                        .map_err(|error| {
-                            VcpuError::UnhandledKvmExit(error.to_string())
-                        })?;
-                    let decision = format!("timer:arm:{:#x}:{data}", index);
-                    let record =
-                        format!("vcpu:{}:{decision}", self.kvm_vcpu.index);
-                    self.machine_execution
-                        .record_vcpu_decision_with_ledger(
-                            record,
-                            &self.execution_ledger,
-                            decision,
-                        )
-                        .map_err(VcpuError::FaultyKvmExit)?;
-                    self.machine_execution
-                        .request_interrupt("lapic-timer", u32::from(vector), true)
-                        .map_err(|error| {
-                            VcpuError::UnhandledKvmExit(error.to_string())
-                        })?;
-                    info!(
-                        "vcpu:{}:timer-msr:arm+deliver:{:#x}={:#x} vtime:{:?}",
-                        self.kvm_vcpu.index, index, data, self.virtual_time_ns()
-                    );
-                    return Ok(VcpuEmulation::Handled);
-                }
                 if index == MSR_IA32_TSC_DEADLINE {
                     self.kvm_vcpu
                         .tsc_deadline_write(data)
