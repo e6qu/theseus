@@ -1712,6 +1712,20 @@ pub(crate) fn valid_machine_execution_record(record: &str) -> bool {
 }
 
 fn valid_machine_vcpu_effect(effect: &str) -> bool {
+    if let Some(arm) = effect.strip_prefix("timer:arm:") {
+        // timer:arm:<msr:#x>:<value> - the LAPIC-timer arming write's
+        // register and raw value, both round-trip printable.
+        let Some((msr_text, value_text)) = arm.split_once(':') else {
+            return false;
+        };
+        return msr_text.starts_with("0x")
+            && msr_text.len() > 2
+            && msr_text[2..]
+                .bytes()
+                .all(|digit| digit.is_ascii_hexdigit() && !digit.is_ascii_uppercase())
+            && !value_text.is_empty()
+            && value_text == value_text.parse::<u64>().ok().map(|v| v.to_string()).unwrap_or_default();
+    }
     let Some(interrupt) = effect.strip_prefix("interrupt:") else {
         return !effect.is_empty();
     };

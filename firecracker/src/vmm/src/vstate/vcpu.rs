@@ -1100,9 +1100,14 @@ fn valid_machine_vcpu_effect(effect: &str) -> bool {
             return false;
         };
         return msr_text.starts_with("0x")
-            && msr_text[2..].chars().all(|c| c.is_ascii_hexdigit())
+            && msr_text.len() > 2
+            && msr_text[2..]
+                .bytes()
+                .all(|digit| digit.is_ascii_hexdigit() && !digit.is_ascii_uppercase())
             && !value_text.is_empty()
-            && value_text.chars().all(|c| c.is_ascii_digit());
+            && value_text
+                .parse::<u64>()
+                .is_ok_and(|value| value_text == value.to_string());
     }
     let Some(interrupt) = effect.strip_prefix("interrupt:") else {
         return !effect.is_empty();
