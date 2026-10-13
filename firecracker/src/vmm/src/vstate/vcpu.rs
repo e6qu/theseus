@@ -2237,6 +2237,7 @@ mod execution_ledger_tests {
 
     #[test]
     fn timer_arm_records_validate_and_admit() {
+        use super::machine_record_actor;
         // The record shape: register and value round-trip.
         for record in [
             "vcpu:0:timer:arm:0x6e0:12345",
