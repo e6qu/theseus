@@ -2153,19 +2153,25 @@ impl Vcpu {
             return Ok(());
         };
         self.timer_deadline_ticks = None;
-        let Some((now_ns, tsc_khz)) = (
-            self.vclock.as_ref().map(|clock| clock.now_ns()),
-            self.kvm_vcpu.cached_tsc_khz().ok(),
-        ) else {
+        let now_ns = self.vclock.as_ref().map(|clock| clock.now_ns());
+        let tsc_khz = self.kvm_vcpu.cached_tsc_khz().ok();
+        let (now_ns, tsc_khz) = match (now_ns, tsc_khz) {
+            (Some(now_ns), Some(tsc_khz)) => (now_ns, tsc_khz),
             // No virtual clock: fire the delivery without a jump.
-            let vector = self
-                .kvm_vcpu
-                .lapic_timer_lvt_vector()
-                .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
-            self.machine_execution
-                .request_interrupt("lapic-timer", u32::from(vector), true)
-                .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
-            return Ok(());
+            _ => {
+                let vector = self
+                    .kvm_vcpu
+                    .lapic_timer_lvt_vector()
+                    .map_err(|error| {
+                        VcpuError::UnhandledKvmExit(error.to_string())
+                    })?;
+                self.machine_execution
+                    .request_interrupt("lapic-timer", u32::from(vector), true)
+                    .map_err(|error| {
+                        VcpuError::UnhandledKvmExit(error.to_string())
+                    })?;
+                return Ok(());
+            }
         };
         let deadline_ns =
             crate::vstate::vclock::VirtualClock::ns_for_ticks(
