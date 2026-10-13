@@ -2153,34 +2153,43 @@ impl Vcpu {
             return Ok(());
         };
         self.timer_deadline_ticks = None;
-        let (now_ns, tsc_khz) = {
-            let Some(vclock) = self.vclock.as_ref() else {
-                return Ok(());
-            };
-            let tsc_khz = self
+        let Some((now_ns, tsc_khz)) = (
+            self.vclock
+                .as_ref()
+                .map(|clock| clock.now_ns()),
+            self.kvm_vcpu.cached_tsc_khz().ok(),
+        ) else {
+            // No virtual clock: fire the delivery without a jump.
+            let vector = self
                 .kvm_vcpu
-                .cached_tsc_khz()
+                .lapic_timer_lvt_vector()
                 .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
-            (vclock.now_ns(), tsc_khz)
+            self.machine_execution
+                .request_interrupt("lapic-timer", u32::from(vector), true)
+                .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
+            return Ok(());
         };
         let deadline_ns =
             crate::vstate::vclock::VirtualClock::ns_for_ticks(
                 deadline_ticks,
                 u64::from(tsc_khz) * 1_000,
             );
+        // A deadline that already passed (the guest produced exits between
+        // the arm and the wake) fires immediately, like hardware asserts a
+        // passed deadline until handled - the jump is zero and only the
+        // delivery turn is recorded.
         let target = deadline_ns.saturating_sub(now_ns);
-        if target == 0 {
-            return Ok(());
+        if target > 0 {
+            // Record the halt's virtual-time consumption as a jump host turn.
+            let jump = format!("virtual_time_jump:+{target}");
+            if let Err(detail) = self
+                .machine_execution
+                .apply_host_effect::<(), ()>(jump, || Ok(()))
+            {
+                return Err(VcpuError::FaultyKvmExit(detail));
+            }
+            self.jump_virtual_time(target as i64)?;
         }
-        // Record the halt's virtual-time consumption as a jump host turn.
-        let jump = format!("virtual_time_jump:+{target}");
-        if let Err(detail) = self
-            .machine_execution
-            .apply_host_effect::<(), ()>(jump, || Ok(()))
-        {
-            return Err(VcpuError::FaultyKvmExit(detail));
-        }
-        self.jump_virtual_time(target as i64)?;
         // The delivery: queue the LAPIC-timer turn at the resumed point.
         let vector = self
             .kvm_vcpu
