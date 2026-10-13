@@ -1041,6 +1041,7 @@ pub(crate) mod tests {
             exits_per_tick: 64,
             hold_kernel_timers: false,
             filter_timer_msrs: false,
+            halt_timer_delivery: false,
         });
         resources
     }
