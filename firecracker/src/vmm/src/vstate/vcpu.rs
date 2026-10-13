@@ -1959,7 +1959,7 @@ impl Vcpu {
             }
             #[cfg(target_arch = "x86_64")]
             Ok(VcpuExit::Hlt) => {
-                self.handle_hlt_exit()?
+                self.handle_hlt_exit()
             }
             #[cfg(target_arch = "x86_64")]
             Ok(VcpuExit::X86Rdmsr(exit)) => {
@@ -2087,9 +2087,10 @@ impl Vcpu {
         }
         // Advance the virtual clock to the armed deadline, if any. The
         // immutable vclock borrow ends before the jump.
+        let now_ns = self.vclock.as_ref().map(|clock| clock.now_ns());
         let jump_target = match (
             self.timer_deadline_ticks,
-            self.vclock.as_ref().map(crate::vstate::vclock::VirtualClock::now_ns),
+            now_ns,
             self.kvm_vcpu.cached_tsc_khz(),
         ) {
             (Some(deadline_ticks), Some(now_ns), Ok(tsc_khz)) => {
