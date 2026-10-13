@@ -901,8 +901,15 @@ impl MachineExecutionController {
     /// Record one vCPU-actor decision in the machine stream with replay
     /// admission. The caller applies the effect's write-through before
     /// calling; this admits the record against the replay expectation and
-    /// appends it. Returns the admission detail on divergence.
-    pub(crate) fn record_vcpu_decision(&self, record: String) -> Result<(), String> {
+    /// appends it (to the machine stream and to the calling vCPU's local
+    /// ledger, like the interrupt path). Returns the admission detail on
+    /// divergence.
+    pub(crate) fn record_vcpu_decision_with_ledger(
+        &self,
+        record: String,
+        ledger: &Arc<Mutex<ExecutionLedger>>,
+        decision: String,
+    ) -> Result<(), String> {
         let Some(_actor) = machine_record_actor(&record) else {
             return Err("machine execution vCPU decision is malformed".to_owned());
         };
@@ -967,6 +974,10 @@ impl MachineExecutionController {
             }
         }
         state.execution.ledger.record(record.clone());
+        ledger
+            .lock()
+            .expect("execution ledger lock poisoned")
+            .record(decision);
         state.execution.trace.push(record);
         state.position = state.position.saturating_add(1);
         self.turn_changed.notify_all();
@@ -2010,13 +2021,21 @@ impl Vcpu {
                 // machine-stream decision - replay admits it like every
                 // other recorded turn, so an episode that moves across a
                 // boundary between runs diverges at the arm instead of at
-                // the delivery.
+                // the delivery. The decision lands in the machine stream
+                // and in this vCPU's local ledger, like the interrupt path.
                 if self.hold_kernel_timers {
+                    let decision = format!(
+                        "timer:arm:{:#x}:{data}",
+                        index
+                    );
+                    let record =
+                        format!("vcpu:{}:{decision}", self.kvm_vcpu.index);
                     self.machine_execution
-                        .record_vcpu_decision(format!(
-                            "vcpu:{}:timer:arm:{:#x}:{data}",
-                            self.kvm_vcpu.index, index
-                        ))
+                        .record_vcpu_decision_with_ledger(
+                            record,
+                            &self.execution_ledger,
+                            decision,
+                        )
                         .map_err(VcpuError::FaultyKvmExit)?;
                 }
                 info!(
@@ -2268,8 +2287,23 @@ mod execution_ledger_tests {
 
         // Live-mode admission appends and advances the position.
         let controller = MachineExecutionController::default();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
         let record = "vcpu:0:timer:arm:0x6e0:12345".to_owned();
-        controller.record_vcpu_decision(record.clone()).unwrap();
+        controller
+            .record_vcpu_decision_with_ledger(
+                record.clone(),
+                &ledger,
+                "timer:arm:0x6e0:12345".to_owned(),
+            )
+            .unwrap();
+        assert_eq!(
+            ledger
+                .lock()
+                .expect("execution ledger lock poisoned")
+                .evidence()
+                .decisions,
+            1
+        );
         {
             let state = controller
                 .state
@@ -2284,10 +2318,18 @@ mod execution_ledger_tests {
         let controller2 = MachineExecutionController::default();
         controller2.enforce(vec![record.clone()]).unwrap();
         controller2
-            .record_vcpu_decision("vcpu:0:timer:arm:0x6e0:12345".to_owned())
+            .record_vcpu_decision_with_ledger(
+                "vcpu:0:timer:arm:0x6e0:12345".to_owned(),
+                &Arc::new(Mutex::new(ExecutionLedger::default())),
+                "timer:arm:0x6e0:12345".to_owned(),
+            )
             .unwrap();
         let error = controller2
-            .record_vcpu_decision("vcpu:0:timer:arm:0x6e0:12345".to_owned())
+            .record_vcpu_decision_with_ledger(
+                "vcpu:0:timer:arm:0x6e0:12345".to_owned(),
+                &Arc::new(Mutex::new(ExecutionLedger::default())),
+                "timer:arm:0x6e0:12345".to_owned(),
+            )
             .unwrap_err();
         assert!(error.contains("diverged"), "{error}");
 
@@ -2296,7 +2338,11 @@ mod execution_ledger_tests {
         let controller3 = MachineExecutionController::default();
         controller3.enforce(vec![record]).unwrap();
         let error = controller3
-            .record_vcpu_decision("vcpu:0:timer:arm:0x6e0:999".to_owned())
+            .record_vcpu_decision_with_ledger(
+                "vcpu:0:timer:arm:0x6e0:999".to_owned(),
+                &Arc::new(Mutex::new(ExecutionLedger::default())),
+                "timer:arm:0x6e0:999".to_owned(),
+            )
             .unwrap_err();
         assert!(error.contains("diverged"), "{error}");
     }
