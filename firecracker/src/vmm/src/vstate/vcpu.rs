@@ -898,6 +898,92 @@ impl MachineExecutionController {
         Ok(progressed)
     }
 
+    /// Record one vCPU-actor decision in the machine stream with replay
+    /// admission. The caller applies the effect's write-through before
+    /// calling; this admits the record against the replay expectation and
+    /// appends it (to the machine stream and to the calling vCPU's local
+    /// ledger, like the interrupt path). Returns the admission detail on
+    /// divergence.
+    pub(crate) fn record_vcpu_decision_with_ledger(
+        &self,
+        record: String,
+        ledger: &Arc<Mutex<ExecutionLedger>>,
+        decision: String,
+    ) -> Result<(), String> {
+        let Some(_actor) = machine_record_actor(&record) else {
+            return Err("machine execution vCPU decision is malformed".to_owned());
+        };
+        let mut state = self
+            .state
+            .lock()
+            .expect("machine execution controller lock poisoned");
+        loop {
+            if let Some(detail) = state.divergence.clone() {
+                return Err(detail);
+            }
+            if self.shutdown_requested() {
+                return Err("machine execution rejected a decision after guest shutdown".to_owned());
+            }
+            let Some(expected) = state.expected.as_ref() else {
+                break;
+            };
+            let Some(expected_record) = expected.get(state.position) else {
+                break;
+            };
+            if machine_record_actor(expected_record) == Some(MachineExecutionActor::Vcpu(
+                match machine_record_actor(&record) {
+                    Some(MachineExecutionActor::Vcpu(id)) => id,
+                    _ => unreachable!("validated above"),
+                },
+            )) {
+                break;
+            }
+            let (next, timeout) = self
+                .turn_changed
+                .wait_timeout(state, MACHINE_EXECUTION_TURN_TIMEOUT)
+                .expect("machine execution controller lock poisoned while waiting for vCPU turn");
+            state = next;
+            if timeout.timed_out() {
+                let detail = format!(
+                    "machine execution replay expected a different effect at decision {}, but vCPU decision {record:?} arrived",
+                    state.position
+                );
+                state.divergence = Some(detail.clone());
+                self.turn_changed.notify_all();
+                return Err(detail);
+            }
+        }
+        if state.execution.trace.len() == MACHINE_EXECUTION_TRACE_LIMIT {
+            let detail = format!(
+                "machine execution trace exceeded {MACHINE_EXECUTION_TRACE_LIMIT} decisions"
+            );
+            state.divergence = Some(detail.clone());
+            self.turn_changed.notify_all();
+            return Err(detail);
+        }
+        if let Some(expected) = state.expected.as_ref() {
+            if expected.get(state.position) != Some(&record) {
+                let detail = format!(
+                    "machine execution replay diverged at decision {}: expected {:?}, observed {record:?}",
+                    state.position,
+                    expected.get(state.position)
+                );
+                state.divergence = Some(detail.clone());
+                self.turn_changed.notify_all();
+                return Err(detail);
+            }
+        }
+        state.execution.ledger.record(record.clone());
+        ledger
+            .lock()
+            .expect("execution ledger lock poisoned")
+            .record(decision);
+        state.execution.trace.push(record);
+        state.position = state.position.saturating_add(1);
+        self.turn_changed.notify_all();
+        Ok(())
+    }
+
     pub(crate) fn apply_host_effect<T, E>(
         &self,
         effect: String,
@@ -1018,6 +1104,22 @@ fn machine_replay_control_record(record: &str) -> bool {
 }
 
 fn valid_machine_vcpu_effect(effect: &str) -> bool {
+    if let Some(arm) = effect.strip_prefix("timer:arm:") {
+        // timer:arm:<msr:#x>:<value> - the arming write's register and
+        // raw value, both round-trip printable.
+        let Some((msr_text, value_text)) = arm.split_once(':') else {
+            return false;
+        };
+        return msr_text.starts_with("0x")
+            && msr_text.len() > 2
+            && msr_text[2..]
+                .bytes()
+                .all(|digit| digit.is_ascii_hexdigit() && !digit.is_ascii_uppercase())
+            && !value_text.is_empty()
+            && value_text
+                .parse::<u64>()
+                .is_ok_and(|value| value_text == value.to_string());
+    }
     let Some(interrupt) = effect.strip_prefix("interrupt:") else {
         return !effect.is_empty();
     };
@@ -1896,8 +1998,11 @@ impl Vcpu {
                             .to_owned(),
                     ));
                 }
-                let index = exit.index;
-                let data = exit.data;
+                // Copy the exit's payload out and drop the run-buffer
+                // borrow before the LAPIC write and the stream record,
+                // which both need `self.kvm_vcpu` immutably.
+                let (index, data) = (exit.index, exit.data);
+                drop(exit);
                 if index == MSR_IA32_TSC_DEADLINE {
                     self.kvm_vcpu
                         .tsc_deadline_write(data)
@@ -1905,12 +2010,33 @@ impl Vcpu {
                             VcpuError::UnhandledKvmExit(error.to_string())
                         })?;
                 } else {
-                    let word = (exit.data & 0xffff_ffff) as u32;
+                    let word = (data & 0xffff_ffff) as u32;
                     self.kvm_vcpu
                         .set_lapic_timer_word(index, word)
                         .map_err(|error| {
                             VcpuError::UnhandledKvmExit(error.to_string())
                         })?;
+                }
+                // Stage 2: in hold mode the arming write is a recorded
+                // machine-stream decision - replay admits it like every
+                // other recorded turn, so an episode that moves across a
+                // boundary between runs diverges at the arm instead of at
+                // the delivery. The decision lands in the machine stream
+                // and in this vCPU's local ledger, like the interrupt path.
+                if self.hold_kernel_timers {
+                    let decision = format!(
+                        "timer:arm:{:#x}:{data}",
+                        index
+                    );
+                    let record =
+                        format!("vcpu:{}:{decision}", self.kvm_vcpu.index);
+                    self.machine_execution
+                        .record_vcpu_decision_with_ledger(
+                            record,
+                            &self.execution_ledger,
+                            decision,
+                        )
+                        .map_err(VcpuError::FaultyKvmExit)?;
                 }
                 info!(
                     "vcpu:{}:timer-msr:wr:{:#x}={:#x} vtime:{:?}",
@@ -2131,6 +2257,94 @@ mod execution_ledger_tests {
         assert_eq!(observations[1].virtual_time_ns, None);
         // Reads do not drain: every evidence flush keeps the complete list.
         assert_eq!(controller.timer_observations(), observations);
+    }
+
+    #[test]
+    fn timer_arm_records_validate_and_admit() {
+        use super::machine_record_actor;
+        // The record shape: register and value round-trip.
+        for record in [
+            "vcpu:0:timer:arm:0x6e0:12345",
+            "vcpu:1:timer:arm:0x838:0",
+            "vcpu:0:timer:arm:0x83e:11",
+        ] {
+            assert!(
+                machine_record_actor(record).is_some(),
+                "{record} should validate"
+            );
+        }
+        for record in [
+            "vcpu:0:timer:arm:0x6e0",       // missing value
+            "vcpu:0:timer:arm:99:5",        // register not 0x-prefixed
+            "vcpu:0:timer:arm:0x6e0:abc",   // value not decimal
+            "vcpu:0:timer:arm:",            // empty
+        ] {
+            assert!(
+                machine_record_actor(record).is_none(),
+                "{record} should be refused"
+            );
+        }
+
+        // Live-mode admission appends and advances the position.
+        let controller = MachineExecutionController::default();
+        let ledger = Arc::new(Mutex::new(ExecutionLedger::default()));
+        let record = "vcpu:0:timer:arm:0x6e0:12345".to_owned();
+        controller
+            .record_vcpu_decision_with_ledger(
+                record.clone(),
+                &ledger,
+                "timer:arm:0x6e0:12345".to_owned(),
+            )
+            .unwrap();
+        assert_eq!(
+            ledger
+                .lock()
+                .expect("execution ledger lock poisoned")
+                .evidence()
+                .decisions,
+            1
+        );
+        {
+            let state = controller
+                .state
+                .lock()
+                .expect("machine execution controller lock poisoned");
+            assert_eq!(state.execution.trace, vec![record.clone()]);
+            assert_eq!(state.position, 1);
+        }
+
+        // Replay-mode admission matches the expected record at position
+        // 0; a second arm past the trace's end diverges (expected None).
+        let controller2 = MachineExecutionController::default();
+        controller2.enforce(vec![record.clone()]).unwrap();
+        controller2
+            .record_vcpu_decision_with_ledger(
+                "vcpu:0:timer:arm:0x6e0:12345".to_owned(),
+                &Arc::new(Mutex::new(ExecutionLedger::default())),
+                "timer:arm:0x6e0:12345".to_owned(),
+            )
+            .unwrap();
+        let error = controller2
+            .record_vcpu_decision_with_ledger(
+                "vcpu:0:timer:arm:0x6e0:12345".to_owned(),
+                &Arc::new(Mutex::new(ExecutionLedger::default())),
+                "timer:arm:0x6e0:12345".to_owned(),
+            )
+            .unwrap_err();
+        assert!(error.contains("diverged"), "{error}");
+
+        // A diverging value at the expected position is a named replay
+        // error too.
+        let controller3 = MachineExecutionController::default();
+        controller3.enforce(vec![record]).unwrap();
+        let error = controller3
+            .record_vcpu_decision_with_ledger(
+                "vcpu:0:timer:arm:0x6e0:999".to_owned(),
+                &Arc::new(Mutex::new(ExecutionLedger::default())),
+                "timer:arm:0x6e0:999".to_owned(),
+            )
+            .unwrap_err();
+        assert!(error.contains("diverged"), "{error}");
     }
 
     #[test]

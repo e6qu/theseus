@@ -849,7 +849,7 @@ impl KvmVcpu {
     /// KVM's in-kernel LAPIC arms its hrtimer exactly as if the guest had
     /// written it in-kernel.
     pub fn tsc_deadline_write(&self, value: u64) -> Result<(), KvmVcpuError> {
-        let mut msrs = Msrs::from_entries(&[kvm_bindings::kvm_msr_entry {
+        let msrs = Msrs::from_entries(&[kvm_bindings::kvm_msr_entry {
             index: MSR_IA32_TSC_DEADLINE,
             data: value,
             ..Default::default()
