@@ -112,6 +112,18 @@ jobs:
           fi
           python3 -c 'import json; e = json.load(open("work/hold-rejected/execution.json")); assert e["replay_error"], e'
 
+      - name: Retain the hold-replay bundle on failure
+        if: failure()
+        working-directory: docs/tutorials/04-read-serial
+        uses: actions/upload-artifact@ea165f8d65b6e75b540478e92f5e01e8b20038
+        with:
+          name: hold-replay-debug
+          path: |
+            work/hold-replay/firecracker.log
+            work/hold-replay/serial.log
+            work/hold-replay/execution.json
+          if-no-files-found: ignore
+
       - name: Replay RNG and UART from a retained ready checkpoint on native KVM
         working-directory: docs/tutorials/42-replay-from-ready
         run: |
