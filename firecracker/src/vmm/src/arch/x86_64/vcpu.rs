@@ -833,7 +833,7 @@ impl KvmVcpu {
     /// LAPIC answers with the armed deadline in guest TSC ticks (0 when
     /// disarmed).
     pub fn tsc_deadline_read(&self) -> Result<u64, KvmVcpuError> {
-        let msrs = Msrs::from_entries(&[kvm_bindings::kvm_msr_entry {
+        let mut msrs = Msrs::from_entries(&[kvm_bindings::kvm_msr_entry {
             index: MSR_IA32_TSC_DEADLINE,
             ..Default::default()
         }])
