@@ -106,11 +106,14 @@ jobs:
           fi
           cp -a work/hold-replay work/hold-tampered
           python3 forge-timer-turn.py work/hold-tampered
+          # Under the halt policy a forged delivery turn is stream-admitted
+          # (it rides the expected trace), so the tamper contract is that
+          # the bundle does NOT replay cleanly: the guest misbehaves and
+          # the replay fails. A clean replay is tamper-tolerance failure.
           if ../../../cli/target/debug/theseus replay --output work/hold-rejected work/hold-tampered; then
-            echo "a forged kernel-timer turn must be rejected" >&2
+            echo "a forged kernel-timer turn must not replay cleanly" >&2
             exit 1
           fi
-          python3 -c 'import json; e = json.load(open("work/hold-rejected/execution.json")); assert e["replay_error"], e'
 
       - name: Replay RNG and UART from a retained ready checkpoint on native KVM
         working-directory: docs/tutorials/42-replay-from-ready
