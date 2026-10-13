@@ -98,8 +98,11 @@ jobs:
             cmp work/hold-replay/execution.json work/hold-rerun/execution.json
           else
             # An episode moved across a handled-exit boundary between the
-            # runs; hold mode fails closed and names the moved delivery.
-            grep -aq "lapic-timer" work/hold-rerun/execution.json
+            # runs; hold mode fails closed and names the moved delivery -
+            # stage 2 records the arming writes too, so the divergence may
+            # name the arm instead of the delivery.
+            { grep -aq "lapic-timer" work/hold-rerun/execution.json ||
+              grep -aq "timer:arm" work/hold-rerun/execution.json; }
           fi
           cp -a work/hold-replay work/hold-tampered
           python3 forge-timer-turn.py work/hold-tampered
