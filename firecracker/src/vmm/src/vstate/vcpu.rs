@@ -1279,6 +1279,12 @@ pub struct Vcpu {
     /// filtered to userspace, and this vCPU answers them write-through
     /// against the in-kernel LAPIC page (x86_64 only).
     timer_msrs_filtered: bool,
+    /// Stage 3 of deterministic timer arming: the armed TSC-deadline in
+    /// guest TSC ticks. When set, the delivery is asserted at the first
+    /// handled-exit boundary whose virtual TSC reaches it - the host
+    /// hrtimer is never armed, so the assert boundary is deterministic
+    /// (x86_64 only).
+    timer_deadline_ticks: Option<u64>,
 }
 
 /// States of the vCPU thread's run loop.
@@ -1343,6 +1349,7 @@ impl Vcpu {
             kernel_timer_asserted: false,
             hold_kernel_timers: false,
             timer_msrs_filtered: false,
+            timer_deadline_ticks: None,
         })
     }
 
@@ -1368,6 +1375,7 @@ impl Vcpu {
         self.vclock_anchored = false;
         self.hold_kernel_timers = hold_kernel_timers;
         self.timer_msrs_filtered = timer_msrs_filtered;
+        self.timer_deadline_ticks = None;
     }
 
     /// Current virtual-clock state, if enabled.
@@ -1393,6 +1401,9 @@ impl Vcpu {
         self.exits_per_tick = exits_per_tick.max(1);
         self.exits_since_tick = exits;
         self.timer_msrs_filtered = timer_msrs_filtered;
+        // The arm decisions replay as machine-stream turns; the deadline
+        // state rebuilds from the replayed writes.
+        self.timer_deadline_ticks = None;
         self.vclock_anchored = false;
     }
 
@@ -1512,6 +1523,79 @@ impl Vcpu {
                     error!("Failed to hold the LAPIC-timer delivery: {error:?}");
                     METRICS.vcpu.failures.inc();
                 }
+            }
+        }
+    }
+
+    /// Stage 3 of deterministic timer arming: assert the TSC-deadline
+    /// delivery at the first handled-exit boundary whose virtual TSC
+    /// reaches the armed deadline. The host hrtimer was never armed (the
+    /// deadline write was not written through), so the assert boundary is
+    /// a pure function of the virtual clock - same execution, same
+    /// boundary, on any host.
+    #[cfg(target_arch = "x86_64")]
+    fn deliver_virtual_timer(&mut self) {
+        if !self.hold_kernel_timers || !self.timer_msrs_filtered {
+            return;
+        }
+        let Some(deadline_ticks) = self.timer_deadline_ticks else {
+            return;
+        };
+        let Some(vclock) = self.vclock.as_ref() else {
+            return;
+        };
+        let Ok(tsc_khz) = self.kvm_vcpu.cached_tsc_khz() else {
+            METRICS.vcpu.failures.inc();
+            return;
+        };
+        let virtual_tsc = crate::vstate::vclock::VirtualClock::tsc_value(
+            vclock.now_ns(),
+            tsc_khz,
+        );
+        if virtual_tsc < deadline_ticks {
+            return;
+        }
+        // The virtual deadline has passed: the delivery is due. Clear the
+        // IRR bit in case KVM's hrtimer raced ahead (host time), then
+        // queue the delivery as a recorded turn.
+        self.timer_deadline_ticks = None;
+        match self.kvm_vcpu.hold_lapic_timer() {
+            Ok(Some(vector)) => {
+                if let Err(error) = self.machine_execution.request_interrupt(
+                    "lapic-timer",
+                    u32::from(vector),
+                    true,
+                ) {
+                    error!("Failed to queue the held LAPIC-timer delivery: {error}");
+                    METRICS.vcpu.failures.inc();
+                }
+            }
+            Ok(None) => {
+                // KVM's hrtimer had not asserted anything; queue the
+                // delivery from the virtual deadline directly. The LVT
+                // timer vector is read from the LAPIC page.
+                match self.kvm_vcpu.lapic_timer_lvt_vector() {
+                    Ok(vector) => {
+                        if let Err(error) = self.machine_execution.request_interrupt(
+                            "lapic-timer",
+                            u32::from(vector),
+                            true,
+                        ) {
+                            error!(
+                                "Failed to queue the virtual LAPIC-timer delivery: {error}"
+                            );
+                            METRICS.vcpu.failures.inc();
+                        }
+                    }
+                    Err(err) => {
+                        error!("Failed to read the timer LVT vector: {err:?}");
+                        METRICS.vcpu.failures.inc();
+                    }
+                }
+            }
+            Err(error) => {
+                error!("Failed to hold the LAPIC-timer delivery: {error:?}");
+                METRICS.vcpu.failures.inc();
             }
         }
     }
@@ -1657,6 +1741,7 @@ impl Vcpu {
                     // counting them bounds quanta deterministically (Track B′).
                     self.maybe_tick();
                     self.observe_kernel_timer();
+                    self.deliver_virtual_timer();
                 }
                 // Emulation was interrupted, check external events.
                 Ok(VcpuEmulation::Interrupted) => break,
@@ -1965,9 +2050,33 @@ impl Vcpu {
                 let out: *mut u64 = exit.data;
                 let index = exit.index;
                 let value = if index == MSR_IA32_TSC_DEADLINE {
-                    self.kvm_vcpu
-                        .tsc_deadline_read()
-                        .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?
+                    if self.hold_kernel_timers {
+                        // Answer from the virtual state: the armed deadline
+                        // in guest TSC ticks, 0 when disarmed or consumed.
+                        self.timer_deadline_ticks.unwrap_or(0)
+                    } else {
+                        self.kvm_vcpu
+                            .tsc_deadline_read()
+                            .map_err(|error| {
+                                VcpuError::UnhandledKvmExit(error.to_string())
+                            })?
+                    }
+                } else if index == 0x839 && self.hold_kernel_timers {
+                    // TMCCT in TSC-deadline mode: the countdown from the
+                    // current virtual TSC to the armed deadline.
+                    let remaining = match (
+                        self.timer_deadline_ticks,
+                        self.vclock.as_ref(),
+                        self.kvm_vcpu.cached_tsc_khz().ok(),
+                    ) {
+                        (Some(deadline), Some(vclock), Some(tsc_khz)) => deadline
+                            .saturating_sub(crate::vstate::vclock::VirtualClock::tsc_value(
+                                vclock.now_ns(),
+                                tsc_khz,
+                            )),
+                        _ => 0,
+                    };
+                    u64::from(u32::try_from(remaining).unwrap_or(u32::MAX))
                 } else {
                     u64::from(
                         self.kvm_vcpu
@@ -2004,11 +2113,19 @@ impl Vcpu {
                 let (index, data) = (exit.index, exit.data);
                 drop(exit);
                 if index == MSR_IA32_TSC_DEADLINE {
-                    self.kvm_vcpu
-                        .tsc_deadline_write(data)
-                        .map_err(|error| {
-                            VcpuError::UnhandledKvmExit(error.to_string())
-                        })?;
+                    if self.hold_kernel_timers {
+                        // Stage 3: arm the *virtual* deadline - the host
+                        // hrtimer is never armed, so the assert boundary is
+                        // the first handled exit whose virtual TSC reaches
+                        // the deadline. Zero disarms.
+                        self.timer_deadline_ticks = (data != 0).then_some(data);
+                    } else {
+                        self.kvm_vcpu
+                            .tsc_deadline_write(data)
+                            .map_err(|error| {
+                                VcpuError::UnhandledKvmExit(error.to_string())
+                            })?;
+                    }
                 } else {
                     let word = (data & 0xffff_ffff) as u32;
                     self.kvm_vcpu
