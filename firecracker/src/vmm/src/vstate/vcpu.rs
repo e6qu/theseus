@@ -233,6 +233,7 @@ pub struct MachineExecutionController {
     deterministic_interrupts: AtomicBool,
     control_requested: AtomicBool,
     shutdown_requested: AtomicBool,
+    timer_wake_requested: AtomicBool,
     interrupt_kickers: Mutex<Vec<Weak<Mutex<Option<VcpuInterruptKick>>>>>,
     turn_changed: Condvar,
     timer_observations: Mutex<Vec<TimerObservation>>,
@@ -252,6 +253,7 @@ impl Default for MachineExecutionController {
             deterministic_interrupts: AtomicBool::new(false),
             control_requested: AtomicBool::new(false),
             shutdown_requested: AtomicBool::new(false),
+            timer_wake_requested: AtomicBool::new(false),
             interrupt_kickers: Mutex::new(Vec::new()),
             turn_changed: Condvar::new(),
             timer_observations: Mutex::new(Vec::new()),
@@ -352,6 +354,26 @@ impl MachineExecutionController {
     fn request_vcpu_control(&self) {
         self.control_requested.store(true, Ordering::Release);
         self.turn_changed.notify_all();
+    }
+
+    /// Stage 3 of deterministic timer arming: request a timer wake. Sets
+    /// the flag the vCPU run loop checks at its top, notifies, and kicks
+    /// the (possibly halted, KVM_RUN-blocked) vCPUs out so the loop can
+    /// evaluate the virtual deadline.
+    fn request_timer_wake(&self) {
+        self.timer_wake_requested.store(true, Ordering::Release);
+        self.turn_changed.notify_all();
+        if let Err(error) = self.kick_vcpus() {
+            error!("Failed to kick vCPUs for the timer wake: {error}");
+        }
+    }
+
+    pub(crate) fn timer_wake_requested(&self) -> bool {
+        self.timer_wake_requested.load(Ordering::Acquire)
+    }
+
+    fn clear_timer_wake(&self) {
+        self.timer_wake_requested.store(false, Ordering::Release);
     }
 
     fn resume_vcpu_execution(&self) {
@@ -1906,6 +1928,11 @@ impl Vcpu {
         if self.machine_execution.vcpu_control_requested() {
             return Ok(VcpuEmulation::Interrupted);
         }
+        #[cfg(target_arch = "x86_64")]
+        if self.machine_execution.timer_wake_requested() {
+            self.machine_execution.clear_timer_wake();
+            self.handle_timer_wake()?;
+        }
         // Theseus: anchor the guest clock before the first KVM_RUN. On
         // aarch64 the counter offset is only writable after vCPU init (which
         // happens at configure time), so this is the earliest safe point.
@@ -2067,6 +2094,54 @@ impl Vcpu {
                 &self.machine_execution,
             ),
         }
+    }
+
+    /// Stage 3: the timer-wake handler. The wake timer fired after the
+    /// armed interval; advance the virtual clock to the deadline (the
+    /// halt consumed that virtual time - recorded as a jump host turn),
+    /// then queue the LAPIC-timer delivery as the next recorded turn.
+    #[cfg(target_arch = "x86_64")]
+    fn handle_timer_wake(&mut self) -> Result<(), VcpuError> {
+        let Some(deadline_ticks) = self.timer_deadline_ticks else {
+            return Ok(());
+        };
+        self.timer_deadline_ticks = None;
+        let (now_ns, tsc_khz) = {
+            let Some(vclock) = self.vclock.as_ref() else {
+                return Ok(());
+            };
+            let tsc_khz = self
+                .kvm_vcpu
+                .cached_tsc_khz()
+                .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
+            (vclock.now_ns(), tsc_khz)
+        };
+        let deadline_ns =
+            crate::vstate::vclock::VirtualClock::ns_for_ticks(
+                deadline_ticks,
+                u64::from(tsc_khz) * 1_000,
+            );
+        let target = deadline_ns.saturating_sub(now_ns);
+        if target == 0 {
+            return Ok(());
+        }
+        // Record the halt's virtual-time consumption as a jump host turn.
+        let jump = format!("virtual_time_jump:+{target}");
+        if let Err(detail) = self
+            .machine_execution
+            .apply_host_effect::<(), ()>(jump, || Ok(()))
+        {
+            return Err(VcpuError::FaultyKvmExit(detail));
+        }
+        self.jump_virtual_time(target as i64)?;
+        // The delivery: queue the LAPIC-timer turn at the resumed point.
+        let vector = self
+            .kvm_vcpu
+            .lapic_timer_lvt_vector()
+            .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
+        self.machine_execution
+            .request_interrupt("lapic-timer", u32::from(vector), true)
+            .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))
     }
 
     /// The halt boundary, handled instead of erroring. With KVM's
