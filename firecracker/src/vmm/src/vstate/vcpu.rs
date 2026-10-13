@@ -2274,13 +2274,23 @@ mod execution_ledger_tests {
             assert_eq!(state.position, 1);
         }
 
-        // Replay-mode admission matches the expected record.
-        controller.enforce(vec![record]).unwrap();
-        controller
+        // Replay-mode admission matches the expected record at position
+        // 0; a second arm past the trace's end diverges (expected None).
+        let controller2 = MachineExecutionController::default();
+        controller2.enforce(vec![record.clone()]).unwrap();
+        controller2
             .record_vcpu_decision("vcpu:0:timer:arm:0x6e0:12345".to_owned())
             .unwrap();
-        // A diverging value is a named replay error.
-        let error = controller
+        let error = controller2
+            .record_vcpu_decision("vcpu:0:timer:arm:0x6e0:12345".to_owned())
+            .unwrap_err();
+        assert!(error.contains("diverged"), "{error}");
+
+        // A diverging value at the expected position is a named replay
+        // error too.
+        let controller3 = MachineExecutionController::default();
+        controller3.enforce(vec![record]).unwrap();
+        let error = controller3
             .record_vcpu_decision("vcpu:0:timer:arm:0x6e0:999".to_owned())
             .unwrap_err();
         assert!(error.contains("diverged"), "{error}");
