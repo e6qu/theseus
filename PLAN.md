@@ -405,18 +405,15 @@ measurement, a KVM host, or a product decision - not on design.
    timer arming landed: the timer-MSR filter is live in CI's KVM step
    (the guest boots in x2APIC mode; Linux arms through the TSC-deadline
    MSR, not TMICT), and in hold mode every arming write is a recorded
-   machine-stream decision admitted by replay. Stage 3 hit the halt
-   frontier twice, from two directions (virtual-deadline assert: the
-   halted guest freezes virtual time; immediate delivery: an interrupt
-   storm) - one root cause: KVM's in-kernel HLT handling produces no
-   handled exit for a halted guest, so the halt boundary is invisible
-   and the timer cannot fire deterministically during idle. Stage 3
-   requires hypervisor-level halt interception in the Firecracker fork
-   (HLT as a handled, recorded, virtual-time-advancing event) - the
-   guest-side input consumption frontier the roadmap names
+   machine-stream decision admitted by replay. Stage 3's wake-timer
+   machinery is landed behind the experimental `halt_timer_delivery`
+   flag (wake thread + virtual-time jump to the deadline + delivery turn
+   at the halt), with the reboot-path interaction under KVM-host
+   iteration - the halt frontier needs the guest-side input consumption
+   work the roadmap names
    ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)
-   records both attempts and the analysis). Then runnable guest entities
-   and virtual-clock reads. The forks' remaining sliver is analyzed too
+   records both policy attempts, the findings, and the open frontier).
+   Then runnable guest entities and virtual-clock reads. The forks' remaining sliver is analyzed too
    ([checkpoint-addressed-forks.md](docs/design/checkpoint-addressed-forks.md)):
    re-executing the shared prefix is deterministic and stays the default.
 3. **Product operations (Priority 6).** A hosted campaign service on

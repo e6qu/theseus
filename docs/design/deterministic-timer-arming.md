@@ -141,15 +141,26 @@ today's honest divergence.
    stage-2 behavior (host hrtimer arms; hold diverges on movement; the
    tamper contract is "the tampered bundle does not replay cleanly").
 
-   **The refined stage-3 contract** (the wake-timer design): the HLT exit
-   is handled (landed - dormant until HLT surfaces); the arm write stays
-   write-through so KVM's host hrtimer remains the *wake* source; a
-   timer thread wakes the halted vCPU, advances the virtual clock to the
-   armed deadline (the halt consumes that virtual time), queues the
-   delivery turn, and the guest resumes. The wake's host timing does not
-   enter the stream: the delivery lands at the halt position, which is
-   deterministic. Stages 2's arm records plus this wake policy complete
-   the deterministic-arming contract.
+   **The refined stage-3 contract** (the wake-timer design) — implemented
+   behind the experimental `halt_timer_delivery` flag: the HLT exit is
+   handled (dormant until HLT surfaces through KVM's in-kernel halt
+   emulation); the arm write stays write-through so KVM's host hrtimer
+   remains the *wake* source; a wake thread sleeps for the remaining
+   virtual interval, requests a timer wake (kicking the halted vCPU out
+   of KVM_RUN), and the run loop advances the virtual clock to the armed
+   deadline — recorded as a `host:virtual_time_jump:+N` turn (the halt
+   consumed that virtual time) — then queues the delivery turn. A
+   deadline that passed during the wake gap fires immediately without a
+   jump. The wake's host timing does not enter the stream: the jump lands
+   at the deterministic deadline and the delivery turn follows it.
+
+   **Open frontier (KVM-host iteration):** with the halt policy on, the
+   tutorial-4 recording completes the sensor read but hangs at guest
+   exit — the reboot path interacts with the frozen-idle-clock semantics
+   (the guest clock freezes during idle, and the reboot path's timing
+   expectations under KVM's in-kernel halt need the instruction-boundary
+   work). Stage 2 (arm records) stays the shipped, green behavior; the
+   wake path iterates behind the flag.
    The first implementation armed a virtual deadline and asserted at the
    first handled exit whose virtual TSC reached it. CI showed why that is
    not enough: an idle guest arms the deadline and **halts** - and
