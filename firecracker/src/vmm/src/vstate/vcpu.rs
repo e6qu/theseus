@@ -2154,9 +2154,7 @@ impl Vcpu {
         };
         self.timer_deadline_ticks = None;
         let Some((now_ns, tsc_khz)) = (
-            self.vclock
-                .as_ref()
-                .map(|clock| clock.now_ns()),
+            self.vclock.as_ref().map(|clock| clock.now_ns()),
             self.kvm_vcpu.cached_tsc_khz().ok(),
         ) else {
             // No virtual clock: fire the delivery without a jump.
