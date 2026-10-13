@@ -2013,7 +2013,12 @@ impl Vcpu {
                 let timer_arm =
                     index == MSR_IA32_TSC_DEADLINE || index == 0x838;
                 if timer_arm && self.hold_kernel_timers {
-                    let vector = self.kvm_vcpu.lapic_timer_lvt_vector()?;
+                    let vector = self
+                        .kvm_vcpu
+                        .lapic_timer_lvt_vector()
+                        .map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })?;
                     let decision = format!("timer:arm:{:#x}:{data}", index);
                     let record =
                         format!("vcpu:{}:{decision}", self.kvm_vcpu.index);
