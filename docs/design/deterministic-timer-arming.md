@@ -140,6 +140,16 @@ today's honest divergence.
    attempted implementations are reverted; the recording path stands at
    stage-2 behavior (host hrtimer arms; hold diverges on movement; the
    tamper contract is "the tampered bundle does not replay cleanly").
+
+   **The refined stage-3 contract** (the wake-timer design): the HLT exit
+   is handled (landed - dormant until HLT surfaces); the arm write stays
+   write-through so KVM's host hrtimer remains the *wake* source; a
+   timer thread wakes the halted vCPU, advances the virtual clock to the
+   armed deadline (the halt consumes that virtual time), queues the
+   delivery turn, and the guest resumes. The wake's host timing does not
+   enter the stream: the delivery lands at the halt position, which is
+   deterministic. Stages 2's arm records plus this wake policy complete
+   the deterministic-arming contract.
    The first implementation armed a virtual deadline and asserted at the
    first handled exit whose virtual TSC reached it. CI showed why that is
    not enough: an idle guest arms the deadline and **halts** - and
