@@ -862,6 +862,12 @@ impl KvmVcpu {
         Ok(())
     }
 
+    /// Read the LVT timer vector (the vector the LAPIC timer delivers on).
+    pub fn lapic_timer_lvt_vector(&self) -> Result<u8, KvmVcpuError> {
+        let lapic = self.fd.get_lapic().map_err(KvmVcpuError::VcpuGetLapic)?;
+        Ok((apic_word(&lapic, APIC_OFF_LVT_TIMER) & 0xff) as u8)
+    }
+
     /// Hold an asserted LAPIC-timer delivery: clear the timer vector's IRR
     /// bit so KVM does not deliver it asynchronously, and report the held
     /// vector. Returns `None` when no delivery is asserted. Valid between

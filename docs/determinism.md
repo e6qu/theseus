@@ -334,7 +334,11 @@ designed and staged in
   In hold mode the arming writes are also recorded machine-stream
   decisions (`vcpu:<id>:timer:arm:<msr>:<value>`), admitted by replay -
   an episode that moves across a boundary diverges at the arm, not only
-  at the delivery.
+  at the delivery. Making the arming itself deterministic (stage 3) is
+  blocked on the halt frontier: see
+  [design/deterministic-timer-arming.md](design/deterministic-timer-arming.md)
+  for the two attempted policies and the hypervisor-level halt
+  interception they require.
 
 ## Replay fingerprints
 
