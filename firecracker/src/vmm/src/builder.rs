@@ -283,6 +283,7 @@ pub fn build_microvm_for_boot(
                 virtual_time.exits_per_tick,
                 virtual_time.hold_kernel_timers,
                 virtual_time.filter_timer_msrs,
+                virtual_time.halt_timer_delivery,
             );
             // aarch64: the counter offset can only be written after the
             // KVM_ARM_VCPU_INIT ioctl, which happens at vCPU configure time —
@@ -641,6 +642,7 @@ pub fn build_microvm_from_snapshot(
                     state.vclock_exits,
                     virtual_time.exits_per_tick,
                     virtual_time.filter_timer_msrs,
+                    virtual_time.halt_timer_delivery,
                 ),
                 None => {
                     vcpu.enable_virtual_time(
@@ -648,6 +650,7 @@ pub fn build_microvm_from_snapshot(
                         virtual_time.exits_per_tick,
                         virtual_time.hold_kernel_timers,
                         virtual_time.filter_timer_msrs,
+                        virtual_time.halt_timer_delivery,
                     )
                 }
             }
@@ -1038,6 +1041,7 @@ pub(crate) mod tests {
             exits_per_tick: 64,
             hold_kernel_timers: false,
             filter_timer_msrs: false,
+            halt_timer_delivery: false,
         });
         resources
     }

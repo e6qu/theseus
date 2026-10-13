@@ -233,6 +233,7 @@ pub struct MachineExecutionController {
     deterministic_interrupts: AtomicBool,
     control_requested: AtomicBool,
     shutdown_requested: AtomicBool,
+    timer_wake_requested: AtomicBool,
     interrupt_kickers: Mutex<Vec<Weak<Mutex<Option<VcpuInterruptKick>>>>>,
     turn_changed: Condvar,
     timer_observations: Mutex<Vec<TimerObservation>>,
@@ -252,6 +253,7 @@ impl Default for MachineExecutionController {
             deterministic_interrupts: AtomicBool::new(false),
             control_requested: AtomicBool::new(false),
             shutdown_requested: AtomicBool::new(false),
+            timer_wake_requested: AtomicBool::new(false),
             interrupt_kickers: Mutex::new(Vec::new()),
             turn_changed: Condvar::new(),
             timer_observations: Mutex::new(Vec::new()),
@@ -352,6 +354,26 @@ impl MachineExecutionController {
     fn request_vcpu_control(&self) {
         self.control_requested.store(true, Ordering::Release);
         self.turn_changed.notify_all();
+    }
+
+    /// Stage 3 of deterministic timer arming: request a timer wake. Sets
+    /// the flag the vCPU run loop checks at its top, notifies, and kicks
+    /// the (possibly halted, KVM_RUN-blocked) vCPUs out so the loop can
+    /// evaluate the virtual deadline.
+    fn request_timer_wake(&self) {
+        self.timer_wake_requested.store(true, Ordering::Release);
+        self.turn_changed.notify_all();
+        if let Err(error) = self.kick_vcpus() {
+            error!("Failed to kick vCPUs for the timer wake: {error}");
+        }
+    }
+
+    pub(crate) fn timer_wake_requested(&self) -> bool {
+        self.timer_wake_requested.load(Ordering::Acquire)
+    }
+
+    fn clear_timer_wake(&self) {
+        self.timer_wake_requested.store(false, Ordering::Release);
     }
 
     fn resume_vcpu_execution(&self) {
@@ -1279,6 +1301,9 @@ pub struct Vcpu {
     /// filtered to userspace, and this vCPU answers them write-through
     /// against the in-kernel LAPIC page (x86_64 only).
     timer_msrs_filtered: bool,
+    /// Stage 3 (experimental): deliver the timer interrupt at the arming
+    /// write itself - the halt-time policy.
+    halt_timer_delivery: bool,
     /// Stage 3 of deterministic timer arming: the armed TSC-deadline in
     /// guest TSC ticks. When set, the timer delivery rides the halt: the
     /// virtual clock advances to the deadline at the halt exit and the
@@ -1348,6 +1373,7 @@ impl Vcpu {
             kernel_timer_asserted: false,
             hold_kernel_timers: false,
             timer_msrs_filtered: false,
+            halt_timer_delivery: false,
             timer_deadline_ticks: None,
         })
     }
@@ -1367,6 +1393,7 @@ impl Vcpu {
         exits_per_tick: u64,
         hold_kernel_timers: bool,
         timer_msrs_filtered: bool,
+        halt_timer_delivery: bool,
     ) {
         self.vclock = Some(crate::vstate::vclock::VirtualClock::new(tick_ns));
         self.exits_per_tick = exits_per_tick.max(1);
@@ -1374,6 +1401,7 @@ impl Vcpu {
         self.vclock_anchored = false;
         self.hold_kernel_timers = hold_kernel_timers;
         self.timer_msrs_filtered = timer_msrs_filtered;
+        self.halt_timer_delivery = halt_timer_delivery;
         self.timer_deadline_ticks = None;
     }
 
@@ -1395,11 +1423,13 @@ impl Vcpu {
         exits: u64,
         exits_per_tick: u64,
         timer_msrs_filtered: bool,
+        halt_timer_delivery: bool,
     ) {
         self.vclock = Some(crate::vstate::vclock::VirtualClock::restore(vc_state));
         self.exits_per_tick = exits_per_tick.max(1);
         self.exits_since_tick = exits;
         self.timer_msrs_filtered = timer_msrs_filtered;
+        self.halt_timer_delivery = halt_timer_delivery;
         self.vclock_anchored = false;
     }
 
@@ -1906,6 +1936,11 @@ impl Vcpu {
         if self.machine_execution.vcpu_control_requested() {
             return Ok(VcpuEmulation::Interrupted);
         }
+        #[cfg(target_arch = "x86_64")]
+        if self.machine_execution.timer_wake_requested() {
+            self.machine_execution.clear_timer_wake();
+            self.handle_timer_wake()?;
+        }
         // Theseus: anchor the guest clock before the first KVM_RUN. On
         // aarch64 the counter offset is only writable after vCPU init (which
         // happens at configure time), so this is the earliest safe point.
@@ -2014,11 +2049,69 @@ impl Vcpu {
                 // which both need `self.kvm_vcpu` immutably.
                 let (index, data) = (exit.index, exit.data);
                 drop(exit);
+                let timer_arm =
+                    index == MSR_IA32_TSC_DEADLINE || index == 0x838;
+                let halt_delivery =
+                    timer_arm && self.hold_kernel_timers && self.halt_timer_delivery;
+                if halt_delivery {
+                    // Stage 3: record the arm decision, then arm the wake
+                    // timer. The TSC-deadline value is in guest TSC ticks;
+                    // the remaining guest time is (deadline - current
+                    // virtual TSC). The wake thread's host sleep approximates
+                    // that budget - host drift affects only when the
+                    // evaluation runs, not what is recorded: the jump lands
+                    // at the deterministic deadline and the delivery turn
+                    // follows it.
+                    let decision = format!("timer:arm:{:#x}:{data}", index);
+                    let record =
+                        format!("vcpu:{}:{decision}", self.kvm_vcpu.index);
+                    self.machine_execution
+                        .record_vcpu_decision_with_ledger(
+                            record,
+                            &self.execution_ledger,
+                            decision,
+                        )
+                        .map_err(VcpuError::FaultyKvmExit)?;
+                    if index == MSR_IA32_TSC_DEADLINE && data != 0 {
+                        let (now_ns, tsc_khz) = {
+                            let Some(vclock) = self.vclock.as_ref() else {
+                                return Ok(VcpuEmulation::Handled);
+                            };
+                            let khz = self
+                                .kvm_vcpu
+                                .cached_tsc_khz()
+                                .map_err(|error| {
+                                    VcpuError::UnhandledKvmExit(
+                                        error.to_string(),
+                                    )
+                                })?;
+                            (vclock.now_ns(), khz)
+                        };
+                        let deadline_ns = crate::vstate::vclock::VirtualClock::ns_for_ticks(data, u64::from(tsc_khz) * 1_000);
+                        let remaining = deadline_ns.saturating_sub(now_ns);
+                        let controller = self.machine_execution.clone();
+                        std::thread::Builder::new()
+                            .name("theseus-timer-wake".to_owned())
+                            .spawn(move || {
+                                std::thread::sleep(
+                                    std::time::Duration::from_nanos(remaining),
+                                );
+                                controller.request_timer_wake();
+                            })
+                            .map_err(|error| {
+                                VcpuError::UnhandledKvmExit(error.to_string())
+                            })?;
+                    }
+                    info!(
+                        "vcpu:{}:timer-msr:arm:{:#x}={:#x} vtime:{:?}",
+                        self.kvm_vcpu.index, index, data, self.virtual_time_ns()
+                    );
+                    return Ok(VcpuEmulation::Handled);
+                }
                 if index == MSR_IA32_TSC_DEADLINE {
-                    // Write-through: KVM's host hrtimer is the halt wake
-                    // source until the stage-3 timer-thread design (arm
-                    // the virtual deadline, wake the halted vCPU, advance
-                    // virtual time to the deadline at the halt) lands.
+                    // Write-through: KVM's host hrtimer remains the wake
+                    // source (stage-2 behavior) unless the halt-time
+                    // delivery policy is explicitly enabled.
                     self.kvm_vcpu
                         .tsc_deadline_write(data)
                         .map_err(|error| {
@@ -2032,12 +2125,6 @@ impl Vcpu {
                             VcpuError::UnhandledKvmExit(error.to_string())
                         })?;
                 }
-                // Stage 2: in hold mode the arming write is a recorded
-                // machine-stream decision - replay admits it like every
-                // other recorded turn, so an episode that moves across a
-                // boundary between runs diverges at the arm instead of at
-                // the delivery. The decision lands in the machine stream
-                // and in this vCPU's local ledger, like the interrupt path.
                 if self.hold_kernel_timers {
                     let decision = format!(
                         "timer:arm:{:#x}:{data}",
@@ -2067,6 +2154,67 @@ impl Vcpu {
                 &self.machine_execution,
             ),
         }
+    }
+
+    /// Stage 3: the timer-wake handler. The wake timer fired after the
+    /// armed interval; advance the virtual clock to the deadline (the
+    /// halt consumed that virtual time - recorded as a jump host turn),
+    /// then queue the LAPIC-timer delivery as the next recorded turn.
+    #[cfg(target_arch = "x86_64")]
+    fn handle_timer_wake(&mut self) -> Result<(), VcpuError> {
+        let Some(deadline_ticks) = self.timer_deadline_ticks else {
+            return Ok(());
+        };
+        self.timer_deadline_ticks = None;
+        let now_ns = self.vclock.as_ref().map(|clock| clock.now_ns());
+        let tsc_khz = self.kvm_vcpu.cached_tsc_khz().ok();
+        let (now_ns, tsc_khz) = match (now_ns, tsc_khz) {
+            (Some(now_ns), Some(tsc_khz)) => (now_ns, tsc_khz),
+            // No virtual clock: fire the delivery without a jump.
+            _ => {
+                let vector = self
+                    .kvm_vcpu
+                    .lapic_timer_lvt_vector()
+                    .map_err(|error| {
+                        VcpuError::UnhandledKvmExit(error.to_string())
+                    })?;
+                self.machine_execution
+                    .request_interrupt("lapic-timer", u32::from(vector), true)
+                    .map_err(|error| {
+                        VcpuError::UnhandledKvmExit(error.to_string())
+                    })?;
+                return Ok(());
+            }
+        };
+        let deadline_ns =
+            crate::vstate::vclock::VirtualClock::ns_for_ticks(
+                deadline_ticks,
+                u64::from(tsc_khz) * 1_000,
+            );
+        // A deadline that already passed (the guest produced exits between
+        // the arm and the wake) fires immediately, like hardware asserts a
+        // passed deadline until handled - the jump is zero and only the
+        // delivery turn is recorded.
+        let target = deadline_ns.saturating_sub(now_ns);
+        if target > 0 {
+            // Record the halt's virtual-time consumption as a jump host turn.
+            let jump = format!("virtual_time_jump:+{target}");
+            if let Err(detail) = self
+                .machine_execution
+                .apply_host_effect::<(), ()>(jump, || Ok(()))
+            {
+                return Err(VcpuError::FaultyKvmExit(detail));
+            }
+            self.jump_virtual_time(target as i64)?;
+        }
+        // The delivery: queue the LAPIC-timer turn at the resumed point.
+        let vector = self
+            .kvm_vcpu
+            .lapic_timer_lvt_vector()
+            .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
+        self.machine_execution
+            .request_interrupt("lapic-timer", u32::from(vector), true)
+            .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))
     }
 
     /// The halt boundary, handled instead of erroring. With KVM's

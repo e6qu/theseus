@@ -166,6 +166,10 @@ pub struct VirtualTime {
     /// timer-MSR access with its virtual timestamp (write-through).
     #[serde(default)]
     pub filter_timer_msrs: bool,
+    /// Stage 3 (experimental): deliver the timer interrupt at the arming
+    /// write itself - the halt-time policy.
+    #[serde(default)]
+    pub halt_timer_delivery: bool,
 }
 
 #[derive(Debug, Deserialize)]
