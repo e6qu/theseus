@@ -9,4 +9,5 @@ set -eu
 printf 'THES:M:42\n' >/dev/ttyS0
 IFS= read -r measurement </dev/ttyS0
 printf 'sensor reading: %s\n' "$measurement" >/dev/ttyS0
+printf 'THES:M:reboot\n' >/dev/ttyS0
 /bin/busybox reboot -f
