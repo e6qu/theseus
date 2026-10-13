@@ -465,18 +465,6 @@ impl KvmVcpu {
         Ok(res)
     }
 
-    /// The cached TSC frequency, reading it once if needed. The frequency
-    /// is fixed for the VM's lifetime (TSC scaling pins it), so the cache
-    /// never goes stale.
-    pub fn cached_tsc_khz(&mut self) -> Result<u32, GetTscError> {
-        if self.tsc_khz_cache.is_none() {
-            self.tsc_khz_cache = Some(self.get_tsc_khz()?);
-        }
-        Ok(self
-            .tsc_khz_cache
-            .expect("tsc_khz cache populated above"))
-    }
-
     /// Get CPUID for this vCPU.
     ///
     /// Opposed to KVM_GET_SUPPORTED_CPUID, KVM_GET_CPUID2 does not update "nent" with valid number
@@ -872,12 +860,6 @@ impl KvmVcpu {
             .set_msrs(&msrs)
             .map_err(KvmVcpuError::VcpuSetMsrs)?;
         Ok(())
-    }
-
-    /// Read the LVT timer vector (the vector the LAPIC timer delivers on).
-    pub fn lapic_timer_lvt_vector(&self) -> Result<u8, KvmVcpuError> {
-        let lapic = self.fd.get_lapic().map_err(KvmVcpuError::VcpuGetLapic)?;
-        Ok((apic_word(&lapic, APIC_OFF_LVT_TIMER) & 0xff) as u8)
     }
 
     /// Hold an asserted LAPIC-timer delivery: clear the timer vector's IRR
