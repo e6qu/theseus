@@ -2041,11 +2041,64 @@ impl Vcpu {
                 // which both need `self.kvm_vcpu` immutably.
                 let (index, data) = (exit.index, exit.data);
                 drop(exit);
+                let timer_arm =
+                    index == MSR_IA32_TSC_DEADLINE || index == 0x838;
+                if timer_arm && self.hold_kernel_timers {
+                    // Stage 3: record the arm decision, then arm the wake
+                    // timer. The TSC-deadline value is in guest TSC ticks;
+                    // the remaining guest time is (deadline - current
+                    // virtual TSC). The wake thread's host sleep approximates
+                    // that budget - host drift affects only when the
+                    // evaluation runs, not what is recorded: the jump lands
+                    // at the deterministic deadline and the delivery turn
+                    // follows it.
+                    let decision = format!("timer:arm:{:#x}:{data}", index);
+                    let record =
+                        format!("vcpu:{}:{decision}", self.kvm_vcpu.index);
+                    self.machine_execution
+                        .record_vcpu_decision_with_ledger(
+                            record,
+                            &self.execution_ledger,
+                            decision,
+                        )
+                        .map_err(VcpuError::FaultyKvmExit)?;
+                    if index == MSR_IA32_TSC_DEADLINE && data != 0 {
+                        let (now_ns, tsc_khz) = {
+                            let Some(vclock) = self.vclock.as_ref() else {
+                                return Ok(VcpuEmulation::Handled);
+                            };
+                            let khz = self
+                                .kvm_vcpu
+                                .cached_tsc_khz()
+                                .map_err(|error| {
+                                    VcpuError::UnhandledKvmExit(
+                                        error.to_string(),
+                                    )
+                                })?;
+                            (vclock.now_ns(), khz)
+                        };
+                        let deadline_ns = crate::vstate::vclock::VirtualClock::ns_for_ticks(data, u64::from(tsc_khz) * 1_000);
+                        let remaining = deadline_ns.saturating_sub(now_ns);
+                        let controller = self.machine_execution.clone();
+                        std::thread::Builder::new()
+                            .name("theseus-timer-wake".to_owned())
+                            .spawn(move || {
+                                std::thread::sleep(
+                                    std::time::Duration::from_nanos(remaining),
+                                );
+                                controller.request_timer_wake();
+                            })
+                            .map_err(|error| {
+                                VcpuError::UnhandledKvmExit(error.to_string())
+                            })?;
+                    }
+                    info!(
+                        "vcpu:{}:timer-msr:arm:{:#x}={:#x} vtime:{:?}",
+                        self.kvm_vcpu.index, index, data, self.virtual_time_ns()
+                    );
+                    return Ok(VcpuEmulation::Handled);
+                }
                 if index == MSR_IA32_TSC_DEADLINE {
-                    // Write-through: KVM's host hrtimer is the halt wake
-                    // source until the stage-3 timer-thread design (arm
-                    // the virtual deadline, wake the halted vCPU, advance
-                    // virtual time to the deadline at the halt) lands.
                     self.kvm_vcpu
                         .tsc_deadline_write(data)
                         .map_err(|error| {
@@ -2059,12 +2112,6 @@ impl Vcpu {
                             VcpuError::UnhandledKvmExit(error.to_string())
                         })?;
                 }
-                // Stage 2: in hold mode the arming write is a recorded
-                // machine-stream decision - replay admits it like every
-                // other recorded turn, so an episode that moves across a
-                // boundary between runs diverges at the arm instead of at
-                // the delivery. The decision lands in the machine stream
-                // and in this vCPU's local ledger, like the interrupt path.
                 if self.hold_kernel_timers {
                     let decision = format!(
                         "timer:arm:{:#x}:{data}",
