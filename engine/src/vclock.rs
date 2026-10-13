@@ -172,6 +172,13 @@ impl VirtualClock {
             .expect("virtual time overflow in counter conversion")
     }
 
+    /// The nanoseconds consistent with `ticks` at the given frequency
+    /// (the inverse of `tsc_value`), computed in u128 to avoid overflow.
+    pub fn ns_for_ticks(ticks: u64, freq_hz: u64) -> u64 {
+        u64::try_from((u128::from(ticks) * 1_000_000_000) / u128::from(freq_hz))
+            .expect("virtual time overflow in tick conversion")
+    }
+
     /// The TSC value consistent with `now_ns` at the given frequency.
     ///
     /// When applying the virtual clock to a guest, the vCPU's TSC must be set

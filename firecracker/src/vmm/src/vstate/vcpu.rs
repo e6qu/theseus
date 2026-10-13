@@ -1279,6 +1279,11 @@ pub struct Vcpu {
     /// filtered to userspace, and this vCPU answers them write-through
     /// against the in-kernel LAPIC page (x86_64 only).
     timer_msrs_filtered: bool,
+    /// Stage 3 of deterministic timer arming: the armed TSC-deadline in
+    /// guest TSC ticks. When set, the timer delivery rides the halt: the
+    /// virtual clock advances to the deadline at the halt exit and the
+    /// turn is delivered there (x86_64 only).
+    timer_deadline_ticks: Option<u64>,
 }
 
 /// States of the vCPU thread's run loop.
@@ -1343,6 +1348,7 @@ impl Vcpu {
             kernel_timer_asserted: false,
             hold_kernel_timers: false,
             timer_msrs_filtered: false,
+            timer_deadline_ticks: None,
         })
     }
 
@@ -1368,6 +1374,7 @@ impl Vcpu {
         self.vclock_anchored = false;
         self.hold_kernel_timers = hold_kernel_timers;
         self.timer_msrs_filtered = timer_msrs_filtered;
+        self.timer_deadline_ticks = None;
     }
 
     /// Current virtual-clock state, if enabled.
@@ -1951,6 +1958,10 @@ impl Vcpu {
                 Ok(VcpuEmulation::Paused)
             }
             #[cfg(target_arch = "x86_64")]
+            Ok(VcpuExit::Hlt) => {
+                self.handle_hlt_exit()
+            }
+            #[cfg(target_arch = "x86_64")]
             Ok(VcpuExit::X86Rdmsr(exit)) => {
                 if !self.timer_msrs_filtered {
                     return Err(VcpuError::UnhandledKvmExit(
@@ -2004,6 +2015,10 @@ impl Vcpu {
                 let (index, data) = (exit.index, exit.data);
                 drop(exit);
                 if index == MSR_IA32_TSC_DEADLINE {
+                    // Write-through: KVM's host hrtimer is the halt wake
+                    // source until the stage-3 timer-thread design (arm
+                    // the virtual deadline, wake the halted vCPU, advance
+                    // virtual time to the deadline at the halt) lands.
                     self.kvm_vcpu
                         .tsc_deadline_write(data)
                         .map_err(|error| {
@@ -2052,6 +2067,22 @@ impl Vcpu {
                 &self.machine_execution,
             ),
         }
+    }
+
+    /// The halt boundary, handled instead of erroring. With KVM's
+    /// in-kernel halt emulation this exit rarely surfaces (the vCPU blocks
+    /// inside KVM_RUN); when it does, the vCPU re-enters KVM_RUN where the
+    /// halt emulation blocks until a recorded turn wakes it. The stage-3
+    /// timer-thread design (arm a wake timer, advance virtual time to the
+    /// deadline at the wake, deliver) builds on this handler.
+    #[cfg(target_arch = "x86_64")]
+    fn handle_hlt_exit(&mut self) -> Result<VcpuEmulation, VcpuError> {
+        if !self.hold_kernel_timers || !self.timer_msrs_filtered {
+            return Err(VcpuError::UnhandledKvmExit(
+                "HLT exit arrived without the timer-MSR filter enabled".to_owned(),
+            ));
+        }
+        Ok(VcpuEmulation::Handled)
     }
 }
 
