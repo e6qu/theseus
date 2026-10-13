@@ -113,7 +113,33 @@ today's honest divergence.
    deterministic, because the guest computes them from its TSC, whose
    reading between exits is not fully virtualized until stage 3. The
    tamper test (a forged timer turn) is still rejected.
-3. **Stage 3 - the countdown and TMCCT (attempted; the halt frontier).**
+3. **Stage 3 - the countdown and TMCCT (attempted twice; the halt
+   frontier).** Two implementations, two blockers, one root cause:
+
+   - **Virtual-deadline assert**: arm a virtual TSC deadline and assert at
+     the first handled exit whose virtual TSC reaches it. Blocker: an
+     idle guest arms the deadline and **halts** - exit-counted virtual
+     time advances only on handled exits, so the virtual TSC freezes
+     below the deadline, no boundary ever reaches it, and the guest hangs
+     until the watchdog.
+   - **Immediate delivery (halt-time policy: idle consumes no time)**:
+     deliver the interrupt at the arm itself. Blocker: **interrupt
+     storm** - the kernel's timer handler re-arms after each tick, and
+     immediate delivery re-fires instantly, so the guest lives in an
+     interrupt livelock and exits nonzero (soft-lockup territory).
+
+   Root cause for both: with an in-kernel irqchip, KVM handles HLT
+   in-kernel - the halted vCPU blocks inside KVM_RUN, produces **no
+   handled exits**, and userspace never sees the halt boundary. The
+   timer must fire *while the guest is halted*, and neither virtual-time
+   assertion nor immediate delivery can cross that boundary. Stage 3
+   therefore requires hypervisor-level halt interception (making HLT a
+   handled exit in the Firecracker fork) so the halt position becomes a
+   recorded, virtual-time-advancing event. That is the guest-side input
+   consumption frontier the roadmap names, and it gates stages 3-4. The
+   attempted implementations are reverted; the recording path stands at
+   stage-2 behavior (host hrtimer arms; hold diverges on movement; the
+   tamper contract is "the tampered bundle does not replay cleanly").
    The first implementation armed a virtual deadline and asserted at the
    first handled exit whose virtual TSC reached it. CI showed why that is
    not enough: an idle guest arms the deadline and **halts** - and
