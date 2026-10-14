@@ -169,6 +169,11 @@ today's honest divergence.
    the KVM-host session that raises loglevel and reads the reboot path's
    own account. Stage 2 (arm records) stays the shipped, green behavior.
 
+   The debug-console wiring (COM2 device, checkpoint-path serial config,
+   validator admission) and the reboot-point marker are the standing
+   diagnostics: every future probe retains both serial logs and pins the
+   hang position on the ttyS0 timeline.
+
    **Debug finding:** raising the guest's kernel loglevel to diagnose
    the hang breaks the workload itself — the kernel console writes
    interleave with the sensor data on the same UART, so the init's
