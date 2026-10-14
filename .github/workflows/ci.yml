@@ -120,8 +120,11 @@ jobs:
           name: hold-replay-debug
           path: |
             docs/tutorials/04-read-serial/work/hold-replay/firecracker.log
+            docs/tutorials/04-read-serial/work/hold-replay/firecracker-debug.log
             docs/tutorials/04-read-serial/work/hold-replay/serial.log
             docs/tutorials/04-read-serial/work/hold-replay/execution.json
+            docs/tutorials/04-read-serial/work/hold-rerun/firecracker-debug.log
+            docs/tutorials/04-read-serial/work/hold-rerun/serial.log
           if-no-files-found: ignore
 
       - name: Replay RNG and UART from a retained ready checkpoint on native KVM
