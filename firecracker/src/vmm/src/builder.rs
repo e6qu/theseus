@@ -330,6 +330,7 @@ pub fn build_microvm_for_boot(
         kvm_vm.vcpus_exit_evt(),
         &kvm_vm,
         vm_resources.serial_out_path.as_ref(),
+        vm_resources.debug_serial_out_path.as_ref(),
         vm_resources.serial_rate_limiter(),
         vm_resources.pci_enabled,
     )?;

@@ -137,6 +137,8 @@ pub struct VmResources {
     pub pci_enabled: bool,
     /// Where serial console output should be written to
     pub serial_out_path: Option<PathBuf>,
+    /// Optional debug serial console output (COM2, port 0x2f8).
+    pub debug_serial_out_path: Option<PathBuf>,
     /// Optional rate limiter config for serial output.
     pub serial_rate_limiter_cfg: Option<TokenBucketConfig>,
     /// Optional full machine-stream capture and active replay configuration.
@@ -236,6 +238,7 @@ impl VmResources {
 
         if let Some(serial_cfg) = vmm_config.serial_config {
             resources.serial_out_path = serial_cfg.serial_out_path;
+            resources.debug_serial_out_path = serial_cfg.debug_serial_out_path;
             resources.serial_rate_limiter_cfg = serial_cfg.rate_limiter;
         }
 
@@ -670,6 +673,7 @@ mod tests {
             pmem: Default::default(),
             pci_enabled: false,
             serial_out_path: None,
+            debug_serial_out_path: None,
             serial_rate_limiter_cfg: None,
             execution: None,
             memory_hotplug: Default::default(),

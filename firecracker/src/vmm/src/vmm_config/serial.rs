@@ -13,6 +13,9 @@ use super::TokenBucketConfig;
 pub struct SerialConfig {
     /// Named pipe or file used as output for guest serial console.
     pub serial_out_path: Option<PathBuf>,
+    /// Optional debug serial console output (COM2, port 0x2f8): kernel
+    /// diagnostics on a channel separate from the workload's data port.
+    pub debug_serial_out_path: Option<PathBuf>,
     /// Optional rate limiter for serial output bandwidth.
     pub rate_limiter: Option<TokenBucketConfig>,
 }

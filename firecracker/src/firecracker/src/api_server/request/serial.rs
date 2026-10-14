@@ -32,6 +32,7 @@ mod tests {
 
         let expected_config = SerialConfig {
             serial_out_path: Some(PathBuf::from("serial")),
+            debug_serial_out_path: None,
             rate_limiter: None,
         };
         assert_eq!(
@@ -49,6 +50,7 @@ mod tests {
 
         let expected_config = SerialConfig {
             serial_out_path: Some(PathBuf::from("serial")),
+            debug_serial_out_path: None,
             rate_limiter: Some(TokenBucketConfig {
                 size: 1024,
                 one_time_burst: Some(65536),

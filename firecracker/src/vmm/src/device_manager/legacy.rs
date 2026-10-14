@@ -30,6 +30,9 @@ pub enum LegacyDeviceError {
 pub struct PortIODeviceManager {
     // BusDevice::Serial
     pub stdio_serial: Arc<Mutex<SerialDevice>>,
+    /// Optional COM2 debug console (port 0x2f8): kernel diagnostics on a
+    /// channel separate from the workload's data port.
+    pub debug_serial: Option<Arc<Mutex<SerialDevice>>>,
     // BusDevice::I8042Device
     pub i8042: Arc<Mutex<I8042Device>>,
 }
@@ -45,6 +48,10 @@ impl PortIODeviceManager {
     const SERIAL_PORT_ADDRESS: u64 = 0x3f8;
     /// Size of legacy serial ports.
     const SERIAL_PORT_SIZE: u64 = 0x8;
+    /// Legacy debug serial port address (COM2).
+    const DEBUG_SERIAL_PORT_ADDRESS: u64 = 0x2f8;
+    /// Global system interrupt for the debug serial port.
+    const COM2_GSI: u32 = 3;
     /// i8042 keyboard data register address. See
     /// <https://elixir.bootlin.com/linux/latest/source/drivers/input/serio/i8042-io.h#L41>.
     const I8042_KDB_DATA_REGISTER_ADDRESS: u64 = 0x060;
@@ -64,6 +71,25 @@ impl PortIODeviceManager {
             Self::I8042_KDB_DATA_REGISTER_ADDRESS,
             Self::I8042_KDB_DATA_REGISTER_SIZE,
         )?;
+
+        if let Some(debug_serial) = &self.debug_serial {
+            io_bus.insert(
+                debug_serial.clone(),
+                Self::DEBUG_SERIAL_PORT_ADDRESS,
+                Self::SERIAL_PORT_SIZE,
+            )?;
+            let debug_serial = debug_serial.lock().expect("Poisoned lock");
+            let interrupt = debug_serial.serial.interrupt_evt();
+            if let Some(controller) = vm.deterministic_interrupt_controller() {
+                interrupt
+                    .defer_level_interrupt(controller, "debug-serial", Self::COM2_GSI)?;
+                vm.register_irq_route(Self::COM2_GSI);
+            } else {
+                vm.register_irq(interrupt, Self::COM2_GSI).map_err(|e| {
+                    LegacyDeviceError::EventFd(std::io::Error::from_raw_os_error(e.errno()))
+                })?;
+            }
+        }
 
         let serial = self.stdio_serial.lock().expect("Poisoned lock");
         let interrupt = serial.serial.interrupt_evt();
@@ -168,6 +194,7 @@ mod tests {
         let vm = setup_vm_with_memory(0x1000);
         vm.setup_irqchip().unwrap();
         let mut ldm = PortIODeviceManager {
+            debug_serial: None,
             stdio_serial: Arc::new(Mutex::new(SerialDevice {
                 serial: Serial::with_events(
                     EventFdTrigger::new(EventFd::new(EFD_NONBLOCK).unwrap()),
