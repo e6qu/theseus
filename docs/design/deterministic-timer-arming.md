@@ -161,6 +161,16 @@ today's honest divergence.
    expectations under KVM's in-kernel halt need the instruction-boundary
    work). Stage 2 (arm records) stays the shipped, green behavior; the
    wake path iterates behind the flag.
+
+   **Debug finding:** raising the guest's kernel loglevel to diagnose
+   the hang breaks the workload itself — the kernel console writes
+   interleave with the sensor data on the same UART, so the init's
+   `read` consumes kernel text instead (`set -e` exits 1). Halt-frontier
+   debugging therefore needs a second serial port (or the guest's own
+   log mechanism) — one more item for the KVM-host session, alongside
+   the reboot-point marker the hold workload now prints
+   (`THES:M:reboot` on the serial log pins whether the guest reached
+   the reboot syscall).
    The first implementation armed a virtual deadline and asserted at the
    first handled exit whose virtual TSC reached it. CI showed why that is
    not enough: an idle guest arms the deadline and **halts** - and
