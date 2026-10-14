@@ -235,6 +235,10 @@ pub struct MachineExecutionController {
     control_requested: AtomicBool,
     shutdown_requested: AtomicBool,
     timer_wake_requested: AtomicBool,
+    /// The immediately preceding stream decision when it was a timer arm
+    /// (`vcpu:N:timer:arm:<msr>:<value>`), so the matching delivery can be
+    /// admitted against its own arm. Cleared once the delivery lands.
+    last_timer_arm: Mutex<Option<String>>,
     interrupt_kickers: Mutex<Vec<Weak<Mutex<Option<VcpuInterruptKick>>>>>,
     turn_changed: Condvar,
     timer_observations: Mutex<Vec<TimerObservation>>,
@@ -255,6 +259,7 @@ impl Default for MachineExecutionController {
             control_requested: AtomicBool::new(false),
             shutdown_requested: AtomicBool::new(false),
             timer_wake_requested: AtomicBool::new(false),
+            last_timer_arm: Mutex::new(None),
             interrupt_kickers: Mutex::new(Vec::new()),
             turn_changed: Condvar::new(),
             timer_observations: Mutex::new(Vec::new()),
@@ -996,6 +1001,14 @@ impl MachineExecutionController {
                 return Err(detail);
             }
         }
+        // The arm→interrupt pairing: an arm arms the pending delivery;
+        // the delivery is admitted only against its own arm.
+        if decision.starts_with("timer:arm:") {
+            *self
+                .last_timer_arm
+                .lock()
+                .expect("timer arm lock poisoned") = Some(record.clone());
+        }
         state.execution.ledger.record(record.clone());
         ledger
             .lock()
@@ -1005,6 +1018,29 @@ impl MachineExecutionController {
         state.position = state.position.saturating_add(1);
         self.turn_changed.notify_all();
         Ok(())
+    }
+
+    /// Stage 3: admit the lapic-timer delivery only against its own arm —
+    /// the immediately preceding stream decision must be the arm this
+    /// delivery belongs to. Deliveries decoupled from their arms (stale
+    /// wakes, re-ordered interrupts) diverge by name instead of landing
+    /// at arbitrary stream positions.
+    pub(crate) fn admit_arm_delivery(&self, vcpu: u8) -> Result<(), String> {
+        let expected = format!("vcpu:{vcpu}:timer:arm:");
+        let mut last = self
+            .last_timer_arm
+            .lock()
+            .expect("timer arm lock poisoned");
+        match last.as_ref() {
+            Some(arm) if arm.starts_with(&expected) => {
+                *last = None;
+                Ok(())
+            }
+            other => Err(format!(
+                "lapic-timer delivery without its arm: last arm was {:?}",
+                other.as_deref().unwrap_or("none")
+            )),
+        }
     }
 
     pub(crate) fn apply_host_effect<T, E>(
@@ -2059,19 +2095,22 @@ impl Vcpu {
                 let timer_arm =
                     index == MSR_IA32_TSC_DEADLINE || index == 0x838;
                 let halt_delivery =
-                    timer_arm && self.hold_kernel_timers && self.halt_timer_delivery;
-                if halt_delivery {
-                    // Stage 3: record the arm decision, then arm the wake
-                    // timer. The TSC-deadline value is in guest TSC ticks;
-                    // the remaining guest time is (deadline - current
-                    // virtual TSC). The wake thread's host sleep approximates
-                    // that budget - host drift affects only when the
-                    // evaluation runs, not what is recorded: the jump lands
-                    // at the deterministic deadline and the delivery turn
-                    // follows it.
+                    timer_arm && self.hold_kernel_timers;
+                if timer_arm && self.hold_kernel_timers {
+                    // The candidate resolution: write-through arms KVM's
+                    // host hrtimer, whose fire wakes the halted vCPU (no
+                    // storm, no hang); the arm record is the
+                    // replay-admitted decision, and the delivery turn
+                    // (when the assert is observed at a handled exit)
+                    // admits against it via admit_arm_delivery.
                     let decision = format!("timer:arm:{:#x}:{data}", index);
                     let record =
                         format!("vcpu:{}:{decision}", self.kvm_vcpu.index);
+                    self.kvm_vcpu
+                        .tsc_deadline_write(data)
+                        .map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })?;
                     self.machine_execution
                         .record_vcpu_decision_with_ledger(
                             record,
@@ -2079,36 +2118,6 @@ impl Vcpu {
                             decision,
                         )
                         .map_err(VcpuError::FaultyKvmExit)?;
-                    if index == MSR_IA32_TSC_DEADLINE && data != 0 {
-                        let (now_ns, tsc_khz) = {
-                            let Some(vclock) = self.vclock.as_ref() else {
-                                return Ok(VcpuEmulation::Handled);
-                            };
-                            let khz = self
-                                .kvm_vcpu
-                                .cached_tsc_khz()
-                                .map_err(|error| {
-                                    VcpuError::UnhandledKvmExit(
-                                        error.to_string(),
-                                    )
-                                })?;
-                            (vclock.now_ns(), khz)
-                        };
-                        let deadline_ns = crate::vstate::vclock::VirtualClock::ns_for_ticks(data, u64::from(tsc_khz) * 1_000);
-                        let remaining = deadline_ns.saturating_sub(now_ns);
-                        let controller = self.machine_execution.clone();
-                        std::thread::Builder::new()
-                            .name("theseus-timer-wake".to_owned())
-                            .spawn(move || {
-                                std::thread::sleep(
-                                    std::time::Duration::from_nanos(remaining),
-                                );
-                                controller.request_timer_wake();
-                            })
-                            .map_err(|error| {
-                                VcpuError::UnhandledKvmExit(error.to_string())
-                            })?;
-                    }
                     info!(
                         "vcpu:{}:timer-msr:arm:{:#x}={:#x} vtime:{:?}",
                         self.kvm_vcpu.index, index, data, self.virtual_time_ns()
@@ -2116,9 +2125,6 @@ impl Vcpu {
                     return Ok(VcpuEmulation::Handled);
                 }
                 if index == MSR_IA32_TSC_DEADLINE {
-                    // Write-through: KVM's host hrtimer remains the wake
-                    // source (stage-2 behavior) unless the halt-time
-                    // delivery policy is explicitly enabled.
                     self.kvm_vcpu
                         .tsc_deadline_write(data)
                         .map_err(|error| {
