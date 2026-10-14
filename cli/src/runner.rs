@@ -367,7 +367,8 @@ impl Bundle {
             source,
         })?;
         let initramfs = materialize_initramfs(&self.replay_plan, &self.root, &boot)?;
-        let (mut child, socket, serial) = launch_runtime(&self.replay_plan, &self.root, &boot)?;
+        let (mut child, socket, serial, _debug_serial) =
+            launch_runtime(&self.replay_plan, &self.root, &boot)?;
         let directory = self.root.join("checkpoint");
         let capture = (|| {
             configure_boot(
@@ -377,6 +378,7 @@ impl Bundle {
                 &initramfs,
                 &socket,
                 &serial,
+                &self.root.join("firecracker-debug.log"),
                 true,
                 None,
             )?;
@@ -566,7 +568,8 @@ fn execute(
             Ok::<_, RunError>(path)
         })
         .transpose()?;
-    let (mut child, socket, serial_log) = launch_runtime(plan, artifact_base, run_directory)?;
+    let (mut child, socket, serial_log, debug_serial_log) =
+        launch_runtime(plan, artifact_base, run_directory)?;
 
     let result = configure_and_wait(
         &mut child,
@@ -575,6 +578,7 @@ fn execute(
         initramfs.as_deref(),
         &socket,
         &serial_log,
+        &debug_serial_log,
         capture,
         expected_trace.as_deref(),
     );
@@ -660,16 +664,21 @@ fn launch_runtime(
     plan: &RunPlan,
     artifact_base: &Path,
     directory: &Path,
-) -> Result<(Child, PathBuf, PathBuf), RunError> {
+) -> Result<(Child, PathBuf, PathBuf, PathBuf), RunError> {
     let socket = directory.join("firecracker.sock");
     let serial = directory.join("serial.log");
     let log_path = directory.join("firecracker.log");
+    let debug_serial_log = directory.join("firecracker-debug.log");
     File::create(&serial).map_err(|source| RunError::Create {
         path: serial.clone(),
         source,
     })?;
     let log = File::create(&log_path).map_err(|source| RunError::Create {
         path: log_path.clone(),
+        source,
+    })?;
+    File::create(&debug_serial_log).map_err(|source| RunError::Create {
+        path: debug_serial_log.clone(),
         source,
     })?;
     let runtime = resolved_path(artifact_base, &plan.runtime.firecracker.path);
@@ -692,7 +701,7 @@ fn launch_runtime(
             path: runtime,
             source,
         })?;
-    Ok((child, socket, serial))
+    Ok((child, socket, serial, directory.join("firecracker.log")))
 }
 
 fn materialize_initramfs(
@@ -764,6 +773,7 @@ fn configure_and_wait(
     initramfs: Option<&Path>,
     socket: &Path,
     serial_log: &Path,
+    debug_serial_log: &Path,
     capture: bool,
     expected_trace: Option<&Path>,
 ) -> Result<Execution, RunError> {
@@ -792,6 +802,7 @@ fn configure_and_wait(
             initramfs.expect("fresh boot initramfs"),
             socket,
             serial_log,
+            debug_serial_log,
             capture,
             expected_trace,
         )?;
@@ -807,6 +818,7 @@ fn configure_boot(
     initramfs: &Path,
     socket: &Path,
     serial_log: &Path,
+    debug_serial_log: &Path,
     capture: bool,
     expected_trace: Option<&Path>,
 ) -> Result<(), RunError> {
@@ -814,13 +826,22 @@ fn configure_boot(
     let kernel = path_text(&resolved_path(artifact_base, &plan.guest.kernel.path))?;
     let initramfs = path_text(initramfs)?;
     let serial_log_text = path_text(serial_log)?;
+    let debug_serial_log_text = path_text(debug_serial_log)?;
     api_put(
         socket,
         "/boot-source",
         json!({
             "kernel_image_path": kernel,
             "initrd_path": initramfs,
-            "boot_args": if capture { EXECUTION_BOOT_ARGS } else { "console=ttyS0 reboot=k panic=-1" },
+            "boot_args": if capture {
+                // Kernel diagnostics ride the COM2 debug console so they
+                // never interleave with the ttyS0 data channel.
+                EXECUTION_BOOT_ARGS
+                    .replace("quiet loglevel=0", "loglevel=7 console=ttyS1")
+                    + " earlyprintk=serial,keep"
+            } else {
+                "console=ttyS0 reboot=k panic=-1".to_owned()
+            },
         }),
     )?;
     let mut machine = json!({
@@ -840,7 +861,13 @@ fn configure_boot(
     api_put(
         socket,
         "/serial",
-        json!({ "serial_out_path": serial_log_text }),
+        json!({
+            "serial_out_path": serial_log_text,
+            // The COM2 debug console rides the same serial config: kernel
+            // diagnostics land here, the workload's ttyS0 stays the data
+            // channel.
+            "debug_serial_out_path": debug_serial_log_text,
+        }),
     )?;
     if plan.run.entropy_device {
         api_put(socket, "/entropy", json!({ "seed": plan.run.seed }))?;

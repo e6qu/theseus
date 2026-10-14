@@ -82,7 +82,12 @@ while True:
         done = False
         status = "204 No Content"
         if endpoint == "/boot-source":
-            assert body["boot_args"] == "console=ttyS0 reboot=k panic=-1 quiet loglevel=0"
+            assert body["boot_args"] in (
+                "console=ttyS0 reboot=k panic=-1 quiet loglevel=0",
+                # The debug-console capture path: loglevel raised and the
+                # kernel diagnostics steered to ttyS1 (COM2).
+                "console=ttyS0 reboot=k panic=-1 loglevel=7 console=ttyS1 earlyprintk=serial,keep",
+            ), body["boot_args"]
         elif endpoint == "/machine-config":
             machine = body
         elif endpoint == "/serial":
