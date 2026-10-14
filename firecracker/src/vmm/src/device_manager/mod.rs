@@ -972,6 +972,7 @@ pub(crate) mod tests {
             stdio_serial: Arc::new(Mutex::new(
                 SerialDevice::new(None, SerialOut::new(SerialOutInner::Sink, None), None).unwrap(),
             )),
+            debug_serial: None,
             i8042: Arc::new(Mutex::new(
                 I8042Device::new(EventFd::new(libc::EFD_NONBLOCK).unwrap()).unwrap(),
             )),
