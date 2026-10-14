@@ -171,6 +171,19 @@ today's honest divergence.
    the reboot-point marker the hold workload now prints
    (`THES:M:reboot` on the serial log pins whether the guest reached
    the reboot syscall).
+
+   **COM2 console probe (landed device; wiring deferred):** the COM2
+   debug serial device (port 0x2f8, IRQ 3, output-only) is merged
+   behind `debug_serial_out_path`. Steering the boot (`console=ttyS1`,
+   loglevel raised, earlyprintk to COM2) hit two wiring gaps in the CI
+   probe: (1) the checkpoint-restore branch of the test flow PUTs the
+   execution-checkpoint *before* any serial config, so the restored VM
+   has no COM2 device and the kernel's ttyS1 writes hit an unregistered
+   port; (2) the COM2 device's output-complete interrupts enter the
+   machine stream as `vcpu:N:interrupt:debug-serial:3`, which the
+   offline evidence validator refuses (the valid-source list needs the
+   debug-serial source admitted). Both are mechanical fixes for the
+   next iteration; the device itself is merged and inert by default.
    The first implementation armed a virtual deadline and asserted at the
    first handled exit whose virtual TSC reached it. CI showed why that is
    not enough: an idle guest arms the deadline and **halts** - and
