@@ -174,17 +174,21 @@ today's honest divergence.
    diagnostics: every future probe retains both serial logs and pins the
    hang position on the ttyS0 timeline.
 
-   **The candidate resolution** (for the next KVM-host session to test):
-   restore the write-through arming (KVM's hrtimer wakes the halted vCPU
-   — no storm, no hang), keep the arm record as the replay-admitted
-   decision, and admit the *delivery* only when the recorded arm that
-   produced it is the immediately preceding stream decision. Under that
-   contract the stream reads `arm → interrupt` pairs at deterministic
-   positions, a stale or re-ordered delivery diverges at admission, and
-   the reboot path never sees a delivery it did not arm — the probe's
-   storm and hang both arose from deliveries decoupled from their arms.
-   The stream already carries the ordering; the fix is admission-side
-   only.
+   **The candidate resolution — landed:** the write-through arming is
+   restored (KVM's hrtimer wakes the halted vCPU — no storm, no hang),
+   the arm record is the replay-admitted decision, and the delivery
+   admits only against its own arm (`admit_arm_delivery`: the
+   immediately preceding stream decision must be the arm that produced
+   the delivery). The stream reads `arm → interrupt` pairs at
+   deterministic positions; a stale or re-ordered delivery diverges by
+   name; any intervening decision clears the pairing. **CI finding:** a
+   moved episode now diverges at the delivery admission (named), and
+   the hold-replay run completes the workload through the reboot marker
+   — the reboot-path interaction resolves itself once the delivery is
+   coupled to its arm: the guest's `reboot -f` ran and the reset landed
+   under the write-through arming (the replay divergence is the
+   *recorded* stream carrying the delivery at its host-timed position,
+   which is the stage-4 work: make the delivery position virtual).
 
    **Debug finding:** raising the guest's kernel loglevel to diagnose
    the hang breaks the workload itself — the kernel console writes
