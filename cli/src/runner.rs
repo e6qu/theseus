@@ -835,10 +835,12 @@ fn configure_boot(
             "initrd_path": initramfs,
             "boot_args": if capture {
                 // Kernel diagnostics ride the COM2 debug console so they
-                // never interleave with the ttyS0 data channel.
-                EXECUTION_BOOT_ARGS
-                    .replace("quiet loglevel=0", "loglevel=7 console=ttyS1")
-                    + " earlyprintk=serial,keep"
+                // never interleave with the ttyS0 data channel: no
+                // console=ttyS0, and the early console pinned to COM2
+                // (earlyprintk=serial defaults to ttyS0, whose 'keep'
+                // would leave printk writing to the data port).
+                "console=ttyS1 reboot=k panic=-1 loglevel=7 earlyprintk=serial,0x2f8"
+                    .to_owned()
             } else {
                 "console=ttyS0 reboot=k panic=-1".to_owned()
             },

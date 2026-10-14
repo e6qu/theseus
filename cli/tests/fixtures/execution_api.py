@@ -84,9 +84,9 @@ while True:
         if endpoint == "/boot-source":
             assert body["boot_args"] in (
                 "console=ttyS0 reboot=k panic=-1 quiet loglevel=0",
-                # The debug-console capture path: loglevel raised and the
-                # kernel diagnostics steered to ttyS1 (COM2).
-                "console=ttyS0 reboot=k panic=-1 loglevel=7 console=ttyS1 earlyprintk=serial,keep",
+                # The debug-console capture path: kernel diagnostics
+                # steered to COM2 only, loglevel raised.
+                "console=ttyS1 reboot=k panic=-1 loglevel=7 earlyprintk=serial,0x2f8",
             ), body["boot_args"]
         elif endpoint == "/machine-config":
             machine = body
