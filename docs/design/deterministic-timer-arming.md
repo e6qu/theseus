@@ -172,18 +172,18 @@ today's honest divergence.
    (`THES:M:reboot` on the serial log pins whether the guest reached
    the reboot syscall).
 
-   **COM2 console probe (landed device; wiring deferred):** the COM2
-   debug serial device (port 0x2f8, IRQ 3, output-only) is merged
-   behind `debug_serial_out_path`. Steering the boot (`console=ttyS1`,
-   loglevel raised, earlyprintk to COM2) hit two wiring gaps in the CI
-   probe: (1) the checkpoint-restore branch of the test flow PUTs the
-   execution-checkpoint *before* any serial config, so the restored VM
-   has no COM2 device and the kernel's ttyS1 writes hit an unregistered
-   port; (2) the COM2 device's output-complete interrupts enter the
-   machine stream as `vcpu:N:interrupt:debug-serial:3`, which the
-   offline evidence validator refuses (the valid-source list needs the
-   debug-serial source admitted). Both are mechanical fixes for the
-   next iteration; the device itself is merged and inert by default.
+   **COM2 console wiring (landed):** the COM2 debug serial device (port
+   0x2f8, IRQ 3, output-only) is merged behind `debug_serial_out_path`,
+   and the test flow wires it end to end: the checkpoint-restore branch
+   PUTs the serial config *before* the checkpoint load (so the restored
+   VM has the COM2 device), and the COM2 output-complete interrupts are
+   admitted as `vcpu:N:interrupt:debug-serial:3` machine-stream records
+   (the vmm validator, the offline evidence validator, and the
+   checkpoint source mapping all accept the source). The boot-steering
+   probe (`console=ttyS1`, loglevel raised, earlyprintk to COM2) is the
+   next KVM-iteration step; with kernel messages on ttyS1's log and
+   ttyS0 as the clean data channel, the halt-frontier hang names
+   itself.
    The first implementation armed a virtual deadline and asserted at the
    first handled exit whose virtual TSC reached it. CI showed why that is
    not enough: an idle guest arms the deadline and **halts** - and

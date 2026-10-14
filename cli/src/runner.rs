@@ -367,7 +367,8 @@ impl Bundle {
             source,
         })?;
         let initramfs = materialize_initramfs(&self.replay_plan, &self.root, &boot)?;
-        let (mut child, socket, serial) = launch_runtime(&self.replay_plan, &self.root, &boot)?;
+        let (mut child, socket, serial, _debug_serial) =
+            launch_runtime(&self.replay_plan, &self.root, &boot)?;
         let directory = self.root.join("checkpoint");
         let capture = (|| {
             configure_boot(
@@ -566,7 +567,8 @@ fn execute(
             Ok::<_, RunError>(path)
         })
         .transpose()?;
-    let (mut child, socket, serial_log) = launch_runtime(plan, artifact_base, run_directory)?;
+    let (mut child, socket, serial_log, debug_serial_log) =
+        launch_runtime(plan, artifact_base, run_directory)?;
 
     let result = configure_and_wait(
         &mut child,
@@ -575,6 +577,7 @@ fn execute(
         initramfs.as_deref(),
         &socket,
         &serial_log,
+        &debug_serial_log,
         capture,
         expected_trace.as_deref(),
     );
@@ -660,12 +663,17 @@ fn launch_runtime(
     plan: &RunPlan,
     artifact_base: &Path,
     directory: &Path,
-) -> Result<(Child, PathBuf, PathBuf), RunError> {
+) -> Result<(Child, PathBuf, PathBuf, PathBuf), RunError> {
     let socket = directory.join("firecracker.sock");
     let serial = directory.join("serial.log");
     let log_path = directory.join("firecracker.log");
+    let debug_serial_log = directory.join("firecracker-debug.log");
     File::create(&serial).map_err(|source| RunError::Create {
         path: serial.clone(),
+        source,
+    })?;
+    File::create(&debug_serial_log).map_err(|source| RunError::Create {
+        path: debug_serial_log.clone(),
         source,
     })?;
     let log = File::create(&log_path).map_err(|source| RunError::Create {
@@ -692,7 +700,7 @@ fn launch_runtime(
             path: runtime,
             source,
         })?;
-    Ok((child, socket, serial))
+    Ok((child, socket, serial, debug_serial_log))
 }
 
 fn materialize_initramfs(
@@ -764,11 +772,22 @@ fn configure_and_wait(
     initramfs: Option<&Path>,
     socket: &Path,
     serial_log: &Path,
+    debug_serial_log: &Path,
     capture: bool,
     expected_trace: Option<&Path>,
 ) -> Result<Execution, RunError> {
     if let Some(checkpoint) = &plan.checkpoint {
         wait_for_socket(socket, child)?;
+        // The serial config (including the COM2 debug output path) must be
+        // in place before the checkpoint load creates the devices.
+        api_put(
+            socket,
+            "/serial",
+            json!({
+                "serial_out_path": path_text(serial_log)?,
+                "debug_serial_out_path": path_text(debug_serial_log)?,
+            }),
+        )?;
         api_put(
             socket,
             "/execution-checkpoint",
