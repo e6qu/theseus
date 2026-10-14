@@ -200,9 +200,10 @@ impl CheckpointExecutionState {
         machine.trace = self.trace.clone();
         for request in &self.pending_interrupts {
             let source = match request.source.as_str() {
-                "serial" => "serial", "i8042" => "i8042", "virtio-mmio" => "virtio-mmio",
-                "virtio-msix" => "virtio-msix", "vmgenid" => "vmgenid", "vmclock" => "vmclock",
-                "lapic-timer" => "lapic-timer",
+                "serial" => "serial", "debug-serial" => "debug-serial",
+                "i8042" => "i8042", "virtio-mmio" => "virtio-mmio",
+                "virtio-msix" => "virtio-msix", "vmgenid" => "vmgenid",
+                "vmclock" => "vmclock", "lapic-timer" => "lapic-timer",
                 _ => return Err("checkpoint contains an unsupported interrupt source".into()),
             };
             if request.gsi >= 1024 {
@@ -1153,7 +1154,8 @@ fn valid_machine_vcpu_effect(effect: &str) -> bool {
     };
     matches!(
         source,
-        "serial" | "virtio-mmio" | "virtio-msix" | "vmgenid" | "vmclock" | "i8042"
+        "serial" | "debug-serial" | "virtio-mmio" | "virtio-msix" | "vmgenid"
+            | "vmclock" | "i8042"
     ) && gsi_text == gsi.to_string()
         || (source == "lapic-timer"
             && gsi_text == gsi.to_string()
@@ -1960,6 +1962,11 @@ impl Vcpu {
                     "lapic-timer" => self
                         .kvm_vcpu
                         .inject_held_kernel_timer(interrupt.gsi)
+                        .map_err(|error| error.to_string()),
+                    "debug-serial" => self
+                        .vm_fd
+                        .set_irq_line(interrupt.gsi, true)
+                        .and_then(|()| self.vm_fd.set_irq_line(interrupt.gsi, false))
                         .map_err(|error| error.to_string()),
                     _ => self
                         .vm_fd

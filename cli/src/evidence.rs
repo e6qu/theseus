@@ -1724,7 +1724,12 @@ fn valid_machine_vcpu_effect(effect: &str) -> bool {
                 .bytes()
                 .all(|digit| digit.is_ascii_hexdigit() && !digit.is_ascii_uppercase())
             && !value_text.is_empty()
-            && value_text == value_text.parse::<u64>().ok().map(|v| v.to_string()).unwrap_or_default();
+            && value_text
+                == value_text
+                    .parse::<u64>()
+                    .ok()
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
     }
     let Some(interrupt) = effect.strip_prefix("interrupt:") else {
         return !effect.is_empty();
@@ -1737,7 +1742,7 @@ fn valid_machine_vcpu_effect(effect: &str) -> bool {
     };
     matches!(
         source,
-        "serial" | "virtio-mmio" | "virtio-msix" | "vmgenid" | "vmclock" | "i8042"
+        "serial" | "debug-serial" | "virtio-mmio" | "virtio-msix" | "vmgenid" | "vmclock" | "i8042"
     ) && gsi_text == gsi.to_string()
         || (source == "lapic-timer" && gsi_text == gsi.to_string() && gsi < 256)
 }
