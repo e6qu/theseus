@@ -1037,8 +1037,7 @@ impl MachineExecutionController {
                 Ok(())
             }
             other => Err(format!(
-                "lapic-timer delivery without its arm: last arm was {:?}",
-                other.as_deref().unwrap_or("none")
+                "lapic-timer delivery without its arm: last arm was {other:?}"
             )),
         }
     }
