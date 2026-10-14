@@ -820,7 +820,15 @@ fn configure_boot(
         json!({
             "kernel_image_path": kernel,
             "initrd_path": initramfs,
-            "boot_args": if capture { EXECUTION_BOOT_ARGS } else { "console=ttyS0 reboot=k panic=-1" },
+            "boot_args": if capture {
+                // The halt-frontier iteration needs the guest's kernel
+                // messages on the serial log: loglevel raised, earlyprintk
+                // on, and no halt polling so idle halts surface.
+                EXECUTION_BOOT_ARGS
+                    .replace("quiet loglevel=0", "loglevel=7 earlyprintk=serial,keep")
+            } else {
+                "console=ttyS0 reboot=k panic=-1".to_owned()
+            },
         }),
     )?;
     let mut machine = json!({
