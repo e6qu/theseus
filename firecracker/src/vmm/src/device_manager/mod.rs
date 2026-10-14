@@ -213,6 +213,7 @@ impl DeviceManager {
         vcpus_exit_evt: &EventFd,
         vm: &KvmVm,
         serial_output: Option<&PathBuf>,
+        debug_serial_output: Option<&PathBuf>,
         serial_state: Option<&persist::SerialState>,
         serial_rate_limiter: Option<TokenBucket>,
     ) -> Result<PortIODeviceManager, DeviceManagerCreateError> {
@@ -223,6 +224,13 @@ impl DeviceManager {
             serial_state,
             serial_rate_limiter,
         )?;
+        // Create the optional COM2 debug console: output-only, never
+        // persisted (the output path recreates it on restore).
+        let debug_serial = debug_serial_output
+            .map(|output| {
+                Self::setup_serial_device(event_manager, Some(output), None, None)
+            })
+            .transpose()?;
         let reset_evt = vcpus_exit_evt
             .try_clone()
             .map_err(DeviceManagerCreateError::EventFd)?;
@@ -233,6 +241,7 @@ impl DeviceManager {
         // create pio dev manager with legacy devices
         let mut legacy_devices = PortIODeviceManager {
             stdio_serial: serial,
+            debug_serial,
             i8042,
         };
         legacy_devices.register_devices(vm)?;
@@ -245,6 +254,7 @@ impl DeviceManager {
         vcpus_exit_evt: &EventFd,
         vm: &Arc<KvmVm>,
         serial_output: Option<&PathBuf>,
+        debug_serial_output: Option<&PathBuf>,
         serial_rate_limiter: Option<TokenBucket>,
         pci_enabled: bool,
     ) -> Result<Self, DeviceManagerCreateError> {
@@ -254,6 +264,7 @@ impl DeviceManager {
             vcpus_exit_evt,
             vm,
             serial_output,
+            debug_serial_output,
             None,
             serial_rate_limiter,
         )?;
@@ -762,6 +773,7 @@ impl<'a> Persist<'a> for DeviceManager {
             constructor_args.vcpus_exit_evt,
             constructor_args.vm,
             constructor_args.vm_resources.serial_out_path.as_ref(),
+            constructor_args.vm_resources.debug_serial_out_path.as_ref(),
             state.serial_state.as_ref(),
             constructor_args.vm_resources.serial_rate_limiter(),
         )?;
