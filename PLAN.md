@@ -405,15 +405,17 @@ measurement, a KVM host, or a product decision - not on design.
    timer arming landed: the timer-MSR filter is live in CI's KVM step
    (the guest boots in x2APIC mode; Linux arms through the TSC-deadline
    MSR, not TMICT), and in hold mode every arming write is a recorded
-   machine-stream decision admitted by replay. Stage 3's wake-timer
-   machinery is landed behind the experimental `halt_timer_delivery`
-   flag (wake thread + virtual-time jump to the deadline + delivery turn
-   at the halt), with the reboot-path interaction under KVM-host
-   iteration - the halt frontier needs the guest-side input consumption
-   work the roadmap names
+   machine-stream decision admitted by replay, with the delivery
+   admitted against its own arm (the candidate resolution landed: the
+   write-through arming is back as the halt wake, and a moved episode
+   diverges at the delivery admission, named). The remaining work is
+   making the delivery *position* virtual (the halt consumes virtual
+   time up to the deadline at the wake) — the halt frontier needs the
+   guest-side input consumption work the roadmap names
    ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)
-   records both policy attempts, the findings, and the open frontier).
-   Then runnable guest entities and virtual-clock reads. The forks' remaining sliver is analyzed too
+   records the full arc: attempts, findings, the landed pairing, and
+   the open position question). Then runnable guest entities and
+   virtual-clock reads. The forks' remaining sliver is analyzed too
    ([checkpoint-addressed-forks.md](docs/design/checkpoint-addressed-forks.md)):
    re-executing the shared prefix is deterministic and stays the default.
 3. **Product operations (Priority 6).** A hosted campaign service on
