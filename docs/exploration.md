@@ -590,9 +590,12 @@ unit-tested, so no path can drop an override silently.
 Making partial-coverage seeding the default for unified guidance is a
 product call that waits on the yield table, not on more ordering
 evidence. [scripts/weighting_history.py](../scripts/weighting_history.py)
-tabulates the accumulated yield across recent CI runs in one command.
-The corpora are small and the witness sits in one corner, so the arms
-tie so far - the accumulation is what turns that tie into an answer.
+tabulates the accumulated yield across recent CI runs in one command
+(`--json` for machine reads). The accumulated runs so far tie at every
+workload and budget - the corpora are small and the witness sits in one
+corner, so both arms reach it at the same recorded position. The
+accumulation is what turns that tie into an answer: either a delta
+favoring the seed emerges, or the ties hold and the question retires.
 
 `theseus compose explore --max-runs 64 --guidance coverage compose.yaml`
 overrides the declared budget and guidance for one exploration without

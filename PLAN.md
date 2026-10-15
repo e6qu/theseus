@@ -408,9 +408,10 @@ measurement, a KVM host, or a product decision - not on design.
    done: every CI run records three seeded/unseeded workload pairs and
    asserts a yield table (witnesses per run, first witness position);
    `scripts/weighting_history.py` tabulates the accumulation in one
-   command. Today the arms tie. The decision resolves itself when
-   accumulated runs show a yield delta favoring the seed - or provable
-   ties at every budget, which retires the question.
+   command (`--json` for machine reads). Today the arms tie at every
+   workload and budget. The decision resolves itself when accumulated
+   runs show a yield delta favoring the seed - or provable ties at
+   every budget, which retires the question.
 2. **The execution plane (Priority 1).** The arming arc (filter, arm
    records, delivery pairing) is landed; the open interaction is the
    reboot-path hang under a moved episode, and the next KVM iterations
