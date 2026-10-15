@@ -5,13 +5,12 @@ The seed-default decision reads accumulated recordings, not one run. This
 script fetches the most recent `weighting-experiment` artifacts from the
 repository's Actions history, parses each cross-workload summary's yield
 table (witnesses per run and first witness position, seeded minus
-unseeded), and prints one combined trend table oldest-first.
+unseeded), and prints the trend oldest-first - as a markdown table, or
+with `--json` as one JSON document for machine reads.
 
 Requires the `gh` CLI authenticated against the repository. Usage:
 
-    weighting_history.py [--runs N] [--repo OWNER/NAME]
-
-`--runs` bounds how many of the newest artifacts to read (default 10).
+    weighting_history.py [--runs N] [--repo OWNER/NAME] [--json]
 """
 
 import argparse
@@ -46,13 +45,16 @@ def newest_artifacts(repo: str, limit: int):
 
 
 def yield_rows(archive: bytes):
-    """Parse one artifact's yield table: (workload, budget, row) tuples."""
+    """Parse one artifact's yield table: (workload, budget, unseeded/run,
+    seeded/run, delta, first-witness positions) per row."""
     rows = []
     with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-        names = [n for n in bundle.namelist() if n.endswith("summary.md")]
-        if not names:
+        summary = next(
+            (n for n in bundle.namelist() if n.endswith("summary.md")), None
+        )
+        if summary is None:
             return rows
-        text = bundle.read(names[0]).decode()
+        text = bundle.read(summary).decode()
     section = text.split("## Yield comparison", 1)[-1]
     for line in section.splitlines():
         if not line.startswith("| ") or line.startswith("| ---"):
@@ -60,8 +62,30 @@ def yield_rows(archive: bytes):
         cells = [cell.strip() for cell in line.split("|")]
         if len(cells) < 7 or cells[1] in ("workload", ""):
             continue
-        rows.append((cells[1], cells[2], cells[3], cells[4], cells[5], cells[6]))
+        rows.append(
+            {
+                "workload": cells[1],
+                "budget": cells[2],
+                "unseeded_per_run": cells[3],
+                "seeded_per_run": cells[4],
+                "delta": cells[5],
+                "first_witness": cells[6],
+            }
+        )
     return rows
+
+
+def origin_repo() -> str:
+    origin = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        check=True,
+        capture_output=True,
+    )
+    tail = origin.stdout.decode().strip()
+    # Both remote forms carry OWNER/NAME at the tail:
+    # git@github.com:OWNER/NAME.git and https://github.com/OWNER/NAME.git
+    parts = tail.removesuffix(".git").rstrip("/").split("/")
+    return f"{parts[-2]}/{parts[-1]}"
 
 
 def main() -> None:
@@ -72,41 +96,41 @@ def main() -> None:
         default=None,
         help="OWNER/NAME; defaults to the checkout's origin",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit one JSON document instead of the markdown table",
+    )
     args = parser.parse_args()
-    repo = args.repo
-    if repo is None:
-        origin = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            check=True,
-            capture_output=True,
-        ).stdout.decode().strip()
-        # Both remote forms carry OWNER/NAME at the tail:
-        # git@github.com:OWNER/NAME.git and https://github.com/OWNER/NAME.git
-        tail = origin.rstrip("/").removesuffix(".git")
-        repo = tail.split("/")[-2] + "/" + tail.split("/")[-1]
+    repo = args.repo or origin_repo()
 
     artifacts = newest_artifacts(repo, args.runs)
     if not artifacts:
         print("no weighting-experiment artifacts found")
         return
 
+    collected = []
+    for artifact in reversed(artifacts):
+        archive = gh(f"repos/{repo}/actions/artifacts/{artifact['id']}/zip")
+        recorded = artifact["created_at"][:16]
+        for row in yield_rows(archive):
+            collected.append({"recorded": recorded, **row})
+
+    if args.json:
+        print(json.dumps(collected, indent=2))
+        return
+
     print(
         "| recorded | workload | budget | unseeded/run | seeded/run "
         "| delta | first witness (unseeded/seeded) |"
     )
-    print("| --- | --- | --- | --- | --- | --- | --- |")
-    for artifact in reversed(artifacts):
-        recorded = artifact["created_at"][:16]
-        archive = gh(
-            f"repos/{repo}/actions/artifacts/{artifact['id']}/zip"
+    print("| " + " | ".join(["---"] * 7) + " |")
+    for row in collected:
+        print(
+            f"| {row['recorded']} | {row['workload']} | {row['budget']} "
+            f"| {row['unseeded_per_run']} | {row['seeded_per_run']} "
+            f"| {row['delta']} | {row['first_witness']} |"
         )
-        for workload, budget, unseeded, seeded, delta, positions in yield_rows(
-            archive
-        ):
-            print(
-                f"| {recorded} | {workload} | {budget} | {unseeded} "
-                f"| {seeded} | {delta} | {positions} |"
-            )
 
 
 if __name__ == "__main__":
