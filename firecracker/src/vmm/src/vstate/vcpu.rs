@@ -1564,44 +1564,6 @@ impl Vcpu {
             // passing.
             match self.kvm_vcpu.hold_lapic_timer() {
                 Ok(Some(vector)) => {
-                    // Stage 4: the delivery position is the deadline. The
-                    // host hrtimer fired in host time; the virtual clock
-                    // advances to the deadline's virtual instant first
-                    // (recorded as a jump host turn), and the delivery
-                    // turn lands after it - the guest's post-interrupt
-                    // time base reads the deadline, deterministically.
-                    if let (Some(deadline_ticks), Some(vclock), Ok(tsc_khz)) = (
-                        self.timer_deadline_ticks,
-                        self.vclock.as_ref(),
-                        self.kvm_vcpu.cached_tsc_khz(),
-                    ) {
-                        let deadline_ns =
-                            crate::vstate::vclock::VirtualClock::ns_for_ticks(
-                                deadline_ticks,
-                                u64::from(tsc_khz) * 1_000,
-                            );
-                        let target =
-                            deadline_ns.saturating_sub(vclock.now_ns());
-                        if target > 0 {
-                            let jump = format!("virtual_time_jump:+{target}");
-                            if let Err(detail) = self
-                                .machine_execution
-                                .apply_host_effect::<(), ()>(jump, || Ok(()))
-                            {
-                                error!(
-                                    "Failed to record the timer jump: {detail}"
-                                );
-                                METRICS.vcpu.failures.inc();
-                            } else if let Err(err) =
-                                self.jump_virtual_time(target as i64)
-                            {
-                                error!(
-                                    "Failed to jump to the deadline: {err:?}"
-                                );
-                                METRICS.vcpu.failures.inc();
-                            }
-                        }
-                    }
                     self.timer_deadline_ticks = None;
                     if let Err(error) = self
                         .machine_execution
