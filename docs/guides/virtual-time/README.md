@@ -14,6 +14,27 @@ Enable it in the machine configuration:
 `tick_ns` is the amount of virtual time per tick. `exits_per_tick` chooses
 when the next tick occurs.
 
+## Hold kernel timers and observe their arming
+
+Under virtual time, in-kernel timer deliveries are invisible to the
+machine stream. Two `run.virtual_time` flags close part of that gap on
+amd64:
+
+- `hold_kernel_timers` holds an asserted LAPIC-timer delivery at the
+  handled exit where it appears and injects it at its recorded stream
+  turn, which replay gates like any other vCPU turn.
+- `filter_timer_msrs` (stage 1 of deterministic arming) steers the guest
+  into x2APIC mode and routes the timer registers (TMICT, TMCCT, TDCR,
+  and the TSC-deadline MSR) to userspace, so every arming write is
+  logged with its virtual timestamp. In hold mode the arming write is
+  also a recorded machine-stream decision, and the delivery admits only
+  against its own arm.
+
+The experimental `halt_timer_delivery` flag delivers the interrupt at
+the arming write itself; its status and the deterministic-arming design
+are in
+[design/deterministic-timer-arming.md](../../design/deterministic-timer-arming.md).
+
 ## Inspect the source-level check
 
 This is a developer check, not a command inside a published runtime image.

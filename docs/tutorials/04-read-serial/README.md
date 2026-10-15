@@ -79,7 +79,13 @@ host-clock values; it still checks every retained device decision.
 On an amd64 host, `hold.toml` enables held kernel timers: an asserted
 in-kernel LAPIC-timer delivery is cleared at the handled exit where it
 appears and injected at its recorded stream turn, which replay gates like
-any other vCPU turn.
+any other vCPU turn. The same plan turns on the timer-MSR observation
+stage (`filter_timer_msrs`): the guest runs in x2APIC mode and every
+timer arming write is logged with its virtual timestamp in
+`firecracker.log`. The experimental `halt_timer_delivery` flag (off
+here) delivers the interrupt at the arming write itself - see the
+[arming design](../../design/deterministic-timer-arming.md) for its
+status.
 
 ```sh
 theseus test --output work/hold-replay hold.toml
@@ -90,7 +96,8 @@ theseus replay --output work/hold-rerun work/hold-replay
 
 A replay either passes exactly, or fails closed when an episode moved across
 a handled-exit boundary between the runs; the diagnostics name the
-`lapic-timer` delivery. Forging a turn is always rejected. `forge-timer-turn.py`
+`lapic-timer` delivery (and, with the arming recorded, the `timer:arm`
+decision). Forging a turn is always rejected. `forge-timer-turn.py`
 inserts one forged record into a copy of the bundle and rebuilds the evidence
 digests exactly as the evidence contract defines them, so the only tampering
 is the forged turn itself. Review it before running:
