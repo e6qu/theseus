@@ -105,6 +105,17 @@ Workloads, faults, and campaigns:
   Every run carries a replay-checked decision trace; default
   crash/completed/OOM verdicts classify kernel OOM evidence; `status` answers
   "what did this campaign conclude" in one stable shape.
+- Deterministic timer arming, stages 1-2 and the pairing: on amd64,
+  `filter_timer_msrs` steers the guest into x2APIC mode and routes the
+  timer registers (TMICT/TMCCT/TDCR and the TSC-deadline MSR) to
+  userspace; in hold mode every arming write is a recorded
+  machine-stream decision admitted by replay, and the held delivery
+  admits only against its own arm (the immediately preceding stream
+  decision). The COM2 debug serial console (port 0x2f8, IRQ 3,
+  output-only, `debug_serial_out_path`) carries kernel diagnostics on a
+  channel separate from the workload's data port. The halt-time
+  delivery (idle consumes no time) is behind the experimental
+  `halt_timer_delivery` flag; the halt frontier is in What remains.
 
 Investigation:
 
