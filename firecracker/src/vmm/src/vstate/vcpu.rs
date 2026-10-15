@@ -1606,14 +1606,14 @@ impl Vcpu {
                     if let Err(error) = self
                         .machine_execution
                         .admit_arm_delivery(self.kvm_vcpu.index)
-                        .and_then(|()| {
-                            self.machine_execution.request_interrupt(
-                                "lapic-timer",
-                                u32::from(vector),
-                                true,
-                            )
-                        })
                     {
+                        error!("Failed to admit the held LAPIC-timer delivery against its arm: {error}");
+                    }
+                    if let Err(error) = self.machine_execution.request_interrupt(
+                        "lapic-timer",
+                        u32::from(vector),
+                        true,
+                    ) {
                         error!("Failed to queue the held LAPIC-timer delivery: {error}");
                         METRICS.vcpu.failures.inc();
                     }
