@@ -114,7 +114,7 @@ jobs:
           python3 -c 'import json; e = json.load(open("work/hold-rejected/execution.json")); assert e["replay_error"], e'
 
       - name: Retain the hold-replay bundle on failure
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: hold-replay-debug
