@@ -140,6 +140,10 @@ today's honest divergence.
    attempted implementations are reverted; the recording path stands at
    stage-2 behavior (host hrtimer arms; hold diverges on movement; the
    tamper contract is "the tampered bundle does not replay cleanly").
+   The path forward is admission-side (see the candidate resolution
+   below): write-through arming stays the wake, the arm record stays
+   the replay-admitted decision, and the delivery admits only against
+   its own arm - which is landed.
 
    **The refined stage-3 contract** (the wake-timer design) — implemented
    behind the experimental `halt_timer_delivery` flag: the HLT exit is
