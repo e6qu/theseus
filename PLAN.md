@@ -412,23 +412,16 @@ measurement, a KVM host, or a product decision - not on design.
    command. Today the arms tie. The decision resolves itself when
    accumulated runs show a yield delta favoring the seed - or provable
    ties at every budget, which retires the question.
-2. **The execution plane (Priority 1).** Stages 1-2 of deterministic
-   timer arming landed: the timer-MSR filter is live in CI's KVM step
-   (the guest boots in x2APIC mode; Linux arms through the TSC-deadline
-   MSR, not TMICT), and in hold mode every arming write is a recorded
-   machine-stream decision admitted by replay, with the delivery
-   admitted against its own arm (the candidate resolution landed: the
-   write-through arming is back as the halt wake, and a moved episode
-   diverges at the delivery admission, named). The remaining work is
-   making the delivery *position* virtual (the halt consumes virtual
-   time up to the deadline at the wake) — the halt frontier needs the
-   guest-side input consumption work the roadmap names
+2. **The execution plane (Priority 1).** The arming arc (filter, arm
+   records, delivery pairing) is landed; the halt-time delivery runs
+   behind the experimental `halt_timer_delivery` flag, and the
+   reboot-path hang under it is the open interaction
    ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)
-   records the full arc: attempts, findings, the landed pairing, and
-   the open position question). Then runnable guest entities and
-   virtual-clock reads. The forks' remaining sliver is analyzed too
-   ([checkpoint-addressed-forks.md](docs/design/checkpoint-addressed-forks.md)):
-   re-executing the shared prefix is deterministic and stays the default.
+   records the arc, the probe findings, and the wake contract). The
+   next KVM iterations: resolve that interaction, then runnable guest
+   entities and virtual-clock reads. The forks' remaining sliver
+   (executing from the nearest checkpoint) is analyzed in
+   [checkpoint-addressed-forks.md](docs/design/checkpoint-addressed-forks.md).
 3. **Product operations (Priority 6).** A hosted campaign service on
    the stable API record, catalog management UX, and a web
    investigation interface over the same portable evidence - each a
