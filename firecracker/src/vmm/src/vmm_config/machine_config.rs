@@ -50,13 +50,6 @@ pub struct VirtualTimeConfig {
     /// guest runs in x2APIC mode (the CPUID bit is steered on).
     #[serde(default)]
     pub filter_timer_msrs: bool,
-    /// Stage 3 (experimental): deliver the LAPIC-timer interrupt at the
-    /// arming write itself - the halt-time policy "idle consumes no time".
-    /// Requires `filter_timer_msrs`. Not yet deterministic end to end; the
-    /// reboot-path interaction is under KVM-host iteration (see
-    /// docs/design/deterministic-timer-arming.md).
-    #[serde(default)]
-    pub halt_timer_delivery: bool,
 }
 
 /// The default memory size of the VM, in MiB.

@@ -113,9 +113,8 @@ Workloads, faults, and campaigns:
   admits only against its own arm (the immediately preceding stream
   decision). The COM2 debug serial console (port 0x2f8, IRQ 3,
   output-only, `debug_serial_out_path`) carries kernel diagnostics on a
-  channel separate from the workload's data port. The halt-time
-  delivery (idle consumes no time) is behind the experimental
-  `halt_timer_delivery` flag; the halt frontier is in What remains.
+  channel separate from the workload's data port. The halt frontier
+  (making the delivery position virtual) is in What remains.
 
 Investigation:
 
@@ -413,14 +412,13 @@ measurement, a KVM host, or a product decision - not on design.
    accumulated runs show a yield delta favoring the seed - or provable
    ties at every budget, which retires the question.
 2. **The execution plane (Priority 1).** The arming arc (filter, arm
-   records, delivery pairing) is landed; the halt-time delivery runs
-   behind the experimental `halt_timer_delivery` flag, and the
-   reboot-path hang under it is the open interaction
-   ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)
+   records, delivery pairing) is landed; the open interaction is the
+   reboot-path hang under a moved episode, and the next KVM iterations
+   are resolving it, then runnable guest entities and virtual-clock
+   reads ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)
    records the arc, the probe findings, and the wake contract). The
-   next KVM iterations: resolve that interaction, then runnable guest
-   entities and virtual-clock reads. The forks' remaining sliver
-   (executing from the nearest checkpoint) is analyzed in
+   forks' remaining sliver (executing from the nearest checkpoint) is
+   analyzed in
    [checkpoint-addressed-forks.md](docs/design/checkpoint-addressed-forks.md).
 3. **Product operations (Priority 6).** A hosted campaign service on
    the stable API record, catalog management UX, and a web
