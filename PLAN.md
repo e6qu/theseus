@@ -413,13 +413,14 @@ measurement, a KVM host, or a product decision - not on design.
    runs show a yield delta favoring the seed - or provable ties at
    every budget, which retires the question.
 2. **The execution plane (Priority 1).** The arming arc (filter, arm
-   records, delivery pairing) is landed; the open interaction is the
-   reboot-path hang under a moved episode, and the next KVM iterations
-   are resolving it, then runnable guest entities and virtual-clock
-   reads ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)
-   records the arc, the probe findings, and the wake contract). The
-   forks' remaining sliver (executing from the nearest checkpoint) is
-   analyzed in
+   records, delivery pairing) is landed. The retained hold trace shows
+   the precise frontier: KVM's in-kernel irqchip delivers lapic-timer
+   interrupts without a userspace-visible turn (66 arms, zero recorded
+   deliveries), so hold-mode timer determinism requires the userspace
+   APIC ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)
+   records the full arc and the option analysis). Then runnable guest
+   entities and virtual-clock reads. The forks' remaining sliver
+   (executing from the nearest checkpoint) is analyzed in
    [checkpoint-addressed-forks.md](docs/design/checkpoint-addressed-forks.md).
 3. **Product operations (Priority 6).** A hosted campaign service on
    the stable API record, catalog management UX, and a web

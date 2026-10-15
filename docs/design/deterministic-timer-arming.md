@@ -158,20 +158,21 @@ today's honest divergence.
    jump. The wake's host timing does not enter the stream: the jump lands
    at the deterministic deadline and the delivery turn follows it.
 
-   **Open frontier (KVM-host iteration):** the probe with the halt
-   policy on pinned the hang precisely: the workload completes (sensor
-   read on ttyS0), the guest prints the reboot-point marker, and then
-   **hangs inside the reboot path** — `reboot -f` runs but the i8042
-   reset (port 0x64, 0xfe) never lands, so guest_exit is never recorded
-   and the run times out. Under the halt-time delivery, an idle guest's
-   timer arms deliver instantly (idle consumes no guest time), so by the
-   time of the reboot the kernel's own clock events have been
-   delivered-and-consumed in a tight cycle; the reboot path's expectation
-   of a *future* timer deadline (or the lapic disarm ordering under
-   filtered MSRs) is the remaining interaction. The guest's kernel
-   messages are on the retained ttyS1 log (firecracker-debug.log) for
-   the KVM-host session that raises loglevel and reads the reboot path's
-   own account. Stage 2 (arm records) stays the shipped, green behavior.
+   **Open frontier (KVM-host iteration) — the precise statement:** the
+   retained hold-replay trace shows **66 arm records and zero
+   lapic-timer delivery records**: KVM's in-kernel irqchip injects the
+   lapic-timer interrupt directly (waking the halted vCPU, advancing the
+   guest's view of time) without a userspace-visible turn, so the hold
+   path's clear-IRR-and-queue almost never catches one. The hold-mode
+   determinism claim therefore reduces to the assert *timing* (a moved
+   episode diverges at the arm records' admission), not the deliveries —
+   and the reboot-path hang under the halt-time delivery is the same
+   in-kernel delivery interacting with the reboot path's expectations.
+   The real fix is the userspace APIC (option B above): with the LAPIC
+   emulated in userspace, arms, asserts, and deliveries all become
+   recorded stream turns. That is a large, deliberate slice for a
+   KVM-host session; the arm records (stage 2) are its foundation and
+   are shipped and green.
 
    The debug-console wiring (COM2 device, checkpoint-path serial config,
    validator admission) and the reboot-point marker are the standing
