@@ -852,7 +852,6 @@ fn configure_boot(
             "exits_per_tick": virtual_time.exits_per_tick,
             "hold_kernel_timers": virtual_time.hold_kernel_timers,
             "filter_timer_msrs": virtual_time.filter_timer_msrs,
-            "halt_timer_delivery": virtual_time.halt_timer_delivery,
         });
     }
     api_put(socket, "/machine-config", machine)?;
@@ -1544,11 +1543,7 @@ fn checkpoint_metadata(base: &Path, plan: &RunPlan) -> Result<Value, RunError> {
     // that actually holds timers still requires matching metadata.
     let strip_default_hold = |value: &serde_json::Value| {
         let mut virtual_time = value.clone();
-        let defaults = [
-            ("hold_kernel_timers", false),
-            ("filter_timer_msrs", false),
-            ("halt_timer_delivery", false),
-        ];
+        let defaults = [("hold_kernel_timers", false), ("filter_timer_msrs", false)];
         for (key, default) in defaults {
             if virtual_time.get(key) == Some(&serde_json::Value::Bool(default)) {
                 virtual_time

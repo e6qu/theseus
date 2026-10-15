@@ -468,7 +468,6 @@ mod tests {
             exits_per_tick: 10,
             hold_kernel_timers: false,
             filter_timer_msrs: false,
-            halt_timer_delivery: false,
         });
         let metadata = CheckpointMetadata {
             format: "theseus-checkpoint-v1".into(),

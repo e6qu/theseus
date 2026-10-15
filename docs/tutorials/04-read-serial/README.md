@@ -82,10 +82,9 @@ appears and injected at its recorded stream turn, which replay gates like
 any other vCPU turn. The same plan turns on the timer-MSR observation
 stage (`filter_timer_msrs`): the guest runs in x2APIC mode and every
 timer arming write is logged with its virtual timestamp in
-`firecracker.log`. The experimental `halt_timer_delivery` flag (off
-here) delivers the interrupt at the arming write itself - see the
-[arming design](../../design/deterministic-timer-arming.md) for its
-status.
+`firecracker.log`. The arm→delivery pairing and the deterministic-arming design are in
+[the exploration guide](../../exploration.md) and
+[design/deterministic-timer-arming.md](../../design/deterministic-timer-arming.md).
 
 ```sh
 theseus test --output work/hold-replay hold.toml

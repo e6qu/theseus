@@ -30,9 +30,8 @@ amd64:
   also a recorded machine-stream decision, and the delivery admits only
   against its own arm.
 
-The experimental `halt_timer_delivery` flag delivers the interrupt at
-the arming write itself; its status and the deterministic-arming design
-are in
+The arm→delivery pairing (the delivery admits only against its own
+arm) and the deterministic-arming design are in
 [design/deterministic-timer-arming.md](../../design/deterministic-timer-arming.md).
 
 ## Inspect the source-level check
