@@ -184,10 +184,23 @@ today's honest divergence.
    in a wake thread delivers the **first tick** — and the guest then
    hangs before re-arming or rebooting (guest_exit/completion fail). The
    first delivery works; the guest's progress after it does not. The
-   interaction is in the re-arm cycle or the halt re-entry — needing
-   host-session debugging with the guest's own log (ttyS1 retention is
-   in place). The write-through arming is restored as the passing
-   behavior.
+   write-through arming was restored as the passing behavior.
+
+   **The wake design resurrected behind `halt_timer_delivery`
+   (fourth attempt, kernel-visible):** the flag restores the third
+   attempt's design behind the manifest: the TSC-deadline arming write
+   is **blocked** from the in-kernel LAPIC (no host hrtimer, no
+   in-kernel delivery), the deadline is owned by the hold path, and a
+   wake thread breaks a halted KVM_RUN near the deadline so the run
+   loop can advance the virtual clock to it and queue the delivery
+   turn (`virtual_time_jump` + `lapic-timer` delivery,
+   replay-admitted). Unlike the third attempt, this probe runs with
+   the kernel's own account on the COM2 log: when the guest stalls,
+   the retained `firecracker-debug.log` names the exact kernel
+   position instead of leaving the re-arm cycle to guesswork. A stale
+   wake (a newer arm superseded it) never delivers early — each arm
+   carries a generation and only the latest one's wake requests the
+   delivery.
 
    **The candidate resolution — landed:** the write-through arming is
    restored (KVM's hrtimer wakes the halted vCPU — no storm, no hang),

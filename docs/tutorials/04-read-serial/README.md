@@ -76,7 +76,11 @@ host-clock values; it still checks every retained device decision.
 
 ## 6. Hold kernel timers on amd64 (optional)
 
-On an amd64 host, `hold.toml` enables held kernel timers: an asserted
+On an amd64 host, `hold.toml` enables held kernel timers
+(`halt_timer_delivery` additionally blocks the arming write from the
+in-kernel LAPIC and delivers each interrupt at its virtual position -
+a stage-3 probe; the kernel's account lands on
+`work/hold-replay/firecracker-debug.log`): an asserted
 in-kernel LAPIC-timer delivery is cleared at the handled exit where it
 appears and injected at its recorded stream turn, which replay gates like
 any other vCPU turn. The same plan turns on the timer-MSR observation

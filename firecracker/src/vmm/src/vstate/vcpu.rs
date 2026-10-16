@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::os::fd::AsRawFd;
-use std::sync::atomic::{AtomicBool, Ordering, fence};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::sync::{Arc, Barrier, Condvar, Mutex, Weak};
 use std::time::Duration;
@@ -1343,6 +1343,13 @@ pub struct Vcpu {
     /// virtual clock advances to the deadline at the halt exit and the
     /// turn is delivered there (x86_64 only).
     timer_deadline_ticks: Option<u64>,
+    /// Stage 3 probe: hold mode blocks the arming write from reaching the
+    /// in-kernel LAPIC; the deadline is owned here and delivered at its
+    /// virtual position (see the arm handler).
+    halt_timer_delivery: bool,
+    /// The latest arm's generation. Each arm supersedes the previous
+    /// wake; a stale wake must not deliver early.
+    timer_arm_generation: Arc<AtomicU64>,
 }
 
 /// States of the vCPU thread's run loop.
@@ -1406,6 +1413,8 @@ impl Vcpu {
             machine_execution,
             kernel_timer_asserted: false,
             hold_kernel_timers: false,
+            halt_timer_delivery: false,
+            timer_arm_generation: Arc::new(AtomicU64::new(0)),
             timer_msrs_filtered: false,
             timer_deadline_ticks: None,
         })
@@ -1426,6 +1435,7 @@ impl Vcpu {
         exits_per_tick: u64,
         hold_kernel_timers: bool,
         timer_msrs_filtered: bool,
+        halt_timer_delivery: bool,
     ) {
         self.vclock = Some(crate::vstate::vclock::VirtualClock::new(tick_ns));
         self.exits_per_tick = exits_per_tick.max(1);
@@ -1433,6 +1443,7 @@ impl Vcpu {
         self.vclock_anchored = false;
         self.hold_kernel_timers = hold_kernel_timers;
         self.timer_msrs_filtered = timer_msrs_filtered;
+        self.halt_timer_delivery = halt_timer_delivery;
         self.timer_deadline_ticks = None;
     }
 
@@ -1454,11 +1465,13 @@ impl Vcpu {
         exits: u64,
         exits_per_tick: u64,
         timer_msrs_filtered: bool,
+        halt_timer_delivery: bool,
     ) {
         self.vclock = Some(crate::vstate::vclock::VirtualClock::restore(vc_state));
         self.exits_per_tick = exits_per_tick.max(1);
         self.exits_since_tick = exits;
         self.timer_msrs_filtered = timer_msrs_filtered;
+        self.halt_timer_delivery = halt_timer_delivery;
         self.vclock_anchored = false;
     }
 
@@ -1962,6 +1975,26 @@ impl Vcpu {
         VcpuRunState::Finished
     }
 
+    /// The virtual interval between now and an armed TSC-deadline, in
+    /// virtual nanoseconds. The wake thread sleeps this as host time: a
+    /// coarse estimate whose only job is to break a halted KVM_RUN near
+    /// the deadline - the delivery position itself is the deterministic
+    /// jump the run loop records at the wake.
+    fn timer_deadline_ns(&mut self, deadline_ticks: u64) -> Option<u64> {
+        let now_ns = self.vclock.as_ref().map(|clock| clock.now_ns());
+        let tsc_khz = self.kvm_vcpu.cached_tsc_khz().ok();
+        match (now_ns, tsc_khz) {
+            (Some(now_ns), Some(tsc_khz)) => {
+                let deadline_ns = crate::vstate::vclock::VirtualClock::ns_for_ticks(
+                    deadline_ticks,
+                    u64::from(tsc_khz) * 1_000,
+                );
+                Some(deadline_ns.saturating_sub(now_ns))
+            }
+            _ => None,
+        }
+    }
+
     /// Runs the vCPU in KVM context and handles the kvm exit reason.
     ///
     /// Returns error or enum specifying whether emulation was handled or interrupted.
@@ -2092,17 +2125,62 @@ impl Vcpu {
                 drop(exit);
                 let timer_arm =
                     index == MSR_IA32_TSC_DEADLINE || index == 0x838;
-                let halt_delivery =
-                    timer_arm && self.hold_kernel_timers;
                 if timer_arm && self.hold_kernel_timers {
                     let decision = format!("timer:arm:{:#x}:{data}", index);
                     let record =
                         format!("vcpu:{}:{decision}", self.kvm_vcpu.index);
-                    self.kvm_vcpu
-                        .tsc_deadline_write(data)
-                        .map_err(|error| {
-                            VcpuError::UnhandledKvmExit(error.to_string())
-                        })?;
+                    if self.halt_timer_delivery
+                        && index == MSR_IA32_TSC_DEADLINE
+                    {
+                        // The blocked deadline must be absolute (TSC
+                        // ticks); a TMICT count stays write-through.
+
+                        // Stage 3 probe: the deadline is owned here. The
+                        // write is blocked (no host hrtimer, no in-kernel
+                        // delivery); a wake thread breaks a halted KVM_RUN
+                        // after the virtual interval so the run loop can
+                        // advance the virtual clock to the deadline and
+                        // queue the delivery turn at its virtual position.
+                        self.timer_deadline_ticks = Some(data);
+                        let deadline_ns = self.timer_deadline_ns(data);
+                        let machine_execution =
+                            Arc::clone(&self.machine_execution);
+                        let generation = Arc::clone(&self.timer_arm_generation);
+                        let arm_generation =
+                            generation.fetch_add(1, Ordering::SeqCst) + 1;
+                        std::thread::spawn(move || {
+                            if let Some(interval) = deadline_ns {
+                                std::thread::sleep(Duration::from_nanos(
+                                    interval,
+                                ));
+                            }
+                            // A stale wake (a newer arm superseded this
+                            // one) must not deliver early: only the
+                            // latest arm's wake requests the delivery.
+                            if generation.load(Ordering::SeqCst)
+                                == arm_generation
+                            {
+                                machine_execution.request_timer_wake();
+                            }
+                        });
+                    } else if index == MSR_IA32_TSC_DEADLINE {
+                        // Write-through: KVM's hrtimer remains the wake
+                        // source; the delivery admits against this arm.
+                        self.kvm_vcpu
+                            .tsc_deadline_write(data)
+                            .map_err(|error| {
+                                VcpuError::UnhandledKvmExit(error.to_string())
+                            })?;
+                    } else {
+                        // A TMICT count under hold: write through to the
+                        // LAPIC register the in-kernel APIC reads.
+                        let word = (data & 0xffff_ffff) as u32;
+                        self.kvm_vcpu
+                            .set_lapic_timer_word(index, word)
+                            .map_err(|error| {
+                                VcpuError::UnhandledKvmExit(error.to_string())
+                            })?;
+                    }
                     self.machine_execution
                         .record_vcpu_decision_with_ledger(
                             record,

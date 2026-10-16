@@ -171,6 +171,11 @@ pub struct VirtualTime {
     /// timer-MSR access with its virtual timestamp (write-through).
     #[serde(default)]
     pub filter_timer_msrs: bool,
+    /// Stage 3 probe: hold mode also blocks the arming write from the
+    /// in-kernel LAPIC and delivers the interrupt at its virtual
+    /// position (amd64 only).
+    #[serde(default)]
+    pub halt_timer_delivery: bool,
 }
 
 #[derive(Debug, Deserialize)]
