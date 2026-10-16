@@ -2141,6 +2141,30 @@ impl Vcpu {
                         // after the virtual interval so the run loop can
                         // advance the virtual clock to the deadline and
                         // queue the delivery turn at its virtual position.
+                        // A zero deadline is a DISARM: the clockevent
+                        // layer disarms between periods, and delivering a
+                        // spurious tick there corrupts the guest's clock
+                        // state (the fourth-attempt probe hung the guest
+                        // at its first idle halt exactly this way).
+                        if data == 0 {
+                            self.timer_deadline_ticks = None;
+                            // Invalidate any pending wake for the
+                            // disarmed deadline.
+                            self.timer_arm_generation
+                                .fetch_add(1, Ordering::SeqCst);
+                            self.machine_execution
+                                .record_vcpu_decision_with_ledger(
+                                    record,
+                                    &self.execution_ledger,
+                                    decision,
+                                )
+                                .map_err(VcpuError::FaultyKvmExit)?;
+                            info!(
+                                "vcpu:{}:timer-msr:disarm:{:#x}=0 vtime:{:?}",
+                                self.kvm_vcpu.index, index, self.virtual_time_ns()
+                            );
+                            return Ok(VcpuEmulation::Handled);
+                        }
                         self.timer_deadline_ticks = Some(data);
                         let deadline_ns = self.timer_deadline_ns(data);
                         let machine_execution =
