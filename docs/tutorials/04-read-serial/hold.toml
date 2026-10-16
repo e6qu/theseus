@@ -20,7 +20,6 @@ tick_ns = 1000000
 exits_per_tick = 10
 hold_kernel_timers = true # amd64 only; rejected before boot elsewhere.
 filter_timer_msrs = true # Stage 1: observe every timer-MSR arming write.
-halt_timer_delivery = true # Stage 3 probe: halt-time delivery.
 
 [[events]]
 when = "ready"
