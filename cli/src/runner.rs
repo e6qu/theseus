@@ -41,7 +41,6 @@ fn captures_execution(plan: &RunPlan) -> bool {
 // Match the topology runner: host-clock-dependent kernel diagnostics are not
 // application evidence. This is the boot policy of version-2 replay plans;
 // legacy plans keep their original command line.
-const EXECUTION_BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=-1 quiet loglevel=0";
 
 #[derive(Debug)]
 pub enum RunError {

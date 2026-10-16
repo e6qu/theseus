@@ -1,0 +1,7 @@
+{
+  "format": "theseus-result-v1",
+  "status": "failed",
+  "error": "guest did not emit the Theseus ready marker",
+  "checks": [],
+  "execution_evidence": "execution.json"
+}

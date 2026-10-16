@@ -1,0 +1,60 @@
+{
+  "format": "theseus-replay-plan-v2",
+  "manifest": "manifest.toml",
+  "runtime": {
+    "firecracker": {
+      "path": "artifacts/firecracker",
+      "sha256": "f25ec78830c13dd97257f0f9cf28258d035ae1a2e208231512fd347d90d3b3f8"
+    }
+  },
+  "guest": {
+    "kernel": {
+      "path": "artifacts/vmlinux",
+      "sha256": "5cc83bcd5b3e28c2ba6692e2a8439d8fd06896a88759100cc08029cd02a6df0d"
+    },
+    "initramfs": {
+      "path": "artifacts/initramfs",
+      "sha256": "55fe2e31403d85b598107e4374e13212430ee9f966e5cff11cab50000f30231a"
+    }
+  },
+  "run": {
+    "seed": 42,
+    "entropy_device": false,
+    "vcpu_count": 1,
+    "mem_size_mib": 128,
+    "timeout_secs": 10,
+    "virtual_time": {
+      "tick_ns": 1000000,
+      "exits_per_tick": 10,
+      "hold_kernel_timers": false,
+      "filter_timer_msrs": false
+    }
+  },
+  "events": [
+    {
+      "when": "ready",
+      "data_hex": "32312e35430a"
+    }
+  ],
+  "network": {
+    "loopback": false,
+    "drop_ppm": 0,
+    "duplicate_ppm": 0,
+    "corrupt_ppm": 0,
+    "partitioned": false,
+    "latency_rounds": 0,
+    "jitter_rounds": 0,
+    "tx_bytes_per_round": 0,
+    "mtu_bytes": 0,
+    "tx_queue_frames": 0,
+    "rx_queue_frames": 0
+  },
+  "storage": [],
+  "checks": [
+    {
+      "name": "sensor reading",
+      "kind": "serial_contains",
+      "value": "sensor reading: 21.5C"
+    }
+  ]
+}
