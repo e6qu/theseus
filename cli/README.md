@@ -630,6 +630,11 @@ seed = 42
 vcpu_count = 1
 mem_size_mib = 128
 timeout_secs = 30
+# Optional override of the capture boot arguments. The default keeps the
+# kernel console on ttyS0 (the deterministic data channel). Diagnostic
+# plans steer printk to the COM2 debug console instead; COM2 traffic is
+# observation only and never enters the machine stream.
+# boot_args = "console=ttyS1 reboot=k panic=-1 loglevel=7 earlyprintk=serial,0x2f8"
 
 [run.virtual_time]
 tick_ns = 1000000
