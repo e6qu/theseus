@@ -839,7 +839,16 @@ fn configure_boot(
         json!({
             "kernel_image_path": kernel,
             "initrd_path": initramfs,
-            "boot_args": if capture { EXECUTION_BOOT_ARGS } else { "console=ttyS0 reboot=k panic=-1" },
+            "boot_args": if capture {
+                // Kernel diagnostics ride the COM2 debug console (ttyS1):
+                // no console=ttyS0, so printk never interleaves with the
+                // ttyS0 data channel. loglevel raised for halt-frontier
+                // diagnosis; earlyprintk pinned to COM2's port.
+                "console=ttyS1 reboot=k panic=-1 loglevel=7 earlyprintk=serial,0x2f8"
+                    .to_owned()
+            } else {
+                "console=ttyS0 reboot=k panic=-1".to_owned()
+            },
         }),
     )?;
     let mut machine = json!({
