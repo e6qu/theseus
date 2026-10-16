@@ -194,3 +194,5 @@ docs/tutorials/41-reject-execution-divergence/comparison.json
 
 orchestrator/pivot/target/
 .github/wexp-*
+.github/hrd*/
+.github/wexp-*/
