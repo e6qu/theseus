@@ -84,7 +84,7 @@ while True:
         if endpoint == "/boot-source":
             assert body["boot_args"] in (
                 "console=ttyS0 reboot=k panic=-1 quiet loglevel=0",
-                "console=ttyS1 reboot=k panic=-1 loglevel=7 earlyprintk=serial,0x2f8",
+                "earlyprintk=serial,0x2f8,keep reboot=k panic=-1 loglevel=7",
             )
         elif endpoint == "/machine-config":
             machine = body

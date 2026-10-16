@@ -634,7 +634,7 @@ timeout_secs = 30
 # kernel console on ttyS0 (the deterministic data channel). Diagnostic
 # plans steer printk to the COM2 debug console instead; COM2 traffic is
 # observation only and never enters the machine stream.
-# boot_args = "console=ttyS1 reboot=k panic=-1 loglevel=7 earlyprintk=serial,0x2f8"
+# boot_args = "earlyprintk=serial,0x2f8,keep reboot=k panic=-1 loglevel=7"
 
 [run.virtual_time]
 tick_ns = 1000000
