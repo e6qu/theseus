@@ -1975,26 +1975,6 @@ impl Vcpu {
         VcpuRunState::Finished
     }
 
-    /// The virtual interval between now and an armed TSC-deadline, in
-    /// virtual nanoseconds. The wake thread sleeps this as host time: a
-    /// coarse estimate whose only job is to break a halted KVM_RUN near
-    /// the deadline - the delivery position itself is the deterministic
-    /// jump the run loop records at the wake.
-    fn timer_deadline_ns(&mut self, deadline_ticks: u64) -> Option<u64> {
-        let now_ns = self.vclock.as_ref().map(|clock| clock.now_ns());
-        let tsc_khz = self.kvm_vcpu.cached_tsc_khz().ok();
-        match (now_ns, tsc_khz) {
-            (Some(now_ns), Some(tsc_khz)) => {
-                let deadline_ns = crate::vstate::vclock::VirtualClock::ns_for_ticks(
-                    deadline_ticks,
-                    u64::from(tsc_khz) * 1_000,
-                );
-                Some(deadline_ns.saturating_sub(now_ns))
-            }
-            _ => None,
-        }
-    }
-
     /// Runs the vCPU in KVM context and handles the kvm exit reason.
     ///
     /// Returns error or enum specifying whether emulation was handled or interrupted.
@@ -2166,18 +2146,19 @@ impl Vcpu {
                             return Ok(VcpuEmulation::Handled);
                         }
                         self.timer_deadline_ticks = Some(data);
-                        let deadline_ns = self.timer_deadline_ns(data);
                         let machine_execution =
                             Arc::clone(&self.machine_execution);
                         let generation = Arc::clone(&self.timer_arm_generation);
                         let arm_generation =
                             generation.fetch_add(1, Ordering::SeqCst) + 1;
+                        // The wake thread's only job is to break a halted
+                        // KVM_RUN: virtual time advances on handled exits,
+                        // so a host-side sleep cannot track the deadline
+                        // (the fourth-attempt probe starved the guest's
+                        // tick that way). The wake fires immediately; the
+                        // run loop positions the delivery by jumping the
+                        // virtual clock to the deadline.
                         std::thread::spawn(move || {
-                            if let Some(interval) = deadline_ns {
-                                std::thread::sleep(Duration::from_nanos(
-                                    interval,
-                                ));
-                            }
                             // A stale wake (a newer arm superseded this
                             // one) must not deliver early: only the
                             // latest arm's wake requests the delivery.
