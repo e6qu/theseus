@@ -937,8 +937,11 @@ impl KvmVcpu {
         match self.inject_lapic_vector(vector as u8) {
             Ok(_) => Ok(()),
             Err(KvmVcpuError::InjectInterrupt(error))
-                if error.errno() == libc::ENODEV =>
+                if error.errno() == libc::ENXIO
+                    || error.errno() == libc::ENODEV =>
             {
+                // KVM returns ENXIO for KVM_INTERRUPT under the
+                // in-kernel irqchip.
                 self.assert_lapic_vector_irr(vector as u8)
             }
             Err(error) => Err(error),
