@@ -2095,15 +2095,14 @@ impl Vcpu {
                 let halt_delivery =
                     timer_arm && self.hold_kernel_timers;
                 if timer_arm && self.hold_kernel_timers {
-                    // Stage 3: the arm write is recorded, KVM's hrtimer is
-                    // never armed (no in-kernel injection to race with),
-                    // and a wake thread sleeps the remaining guest interval
-                    // and requests the timer wake - which advances the
-                    // virtual clock to the deadline and queues the delivery
-                    // as a recorded turn.
                     let decision = format!("timer:arm:{:#x}:{data}", index);
                     let record =
                         format!("vcpu:{}:{decision}", self.kvm_vcpu.index);
+                    self.kvm_vcpu
+                        .tsc_deadline_write(data)
+                        .map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })?;
                     self.machine_execution
                         .record_vcpu_decision_with_ledger(
                             record,
@@ -2111,36 +2110,6 @@ impl Vcpu {
                             decision,
                         )
                         .map_err(VcpuError::FaultyKvmExit)?;
-                    if index == MSR_IA32_TSC_DEADLINE && data != 0 {
-                        let (now_ns, tsc_khz) = {
-                            let Some(vclock) = self.vclock.as_ref() else {
-                                return Ok(VcpuEmulation::Handled);
-                            };
-                            let khz = self
-                                .kvm_vcpu
-                                .cached_tsc_khz()
-                                .map_err(|error| {
-                                    VcpuError::UnhandledKvmExit(
-                                        error.to_string(),
-                                    )
-                                })?;
-                            (vclock.now_ns(), khz)
-                        };
-                        let deadline_ns = crate::vstate::vclock::VirtualClock::ns_for_ticks(data, u64::from(tsc_khz) * 1_000);
-                        let remaining = deadline_ns.saturating_sub(now_ns);
-                        let controller = self.machine_execution.clone();
-                        std::thread::Builder::new()
-                            .name("theseus-timer-wake".to_owned())
-                            .spawn(move || {
-                                std::thread::sleep(
-                                    std::time::Duration::from_nanos(remaining),
-                                );
-                                controller.request_timer_wake();
-                            })
-                            .map_err(|error| {
-                                VcpuError::UnhandledKvmExit(error.to_string())
-                            })?;
-                    }
                     info!(
                         "vcpu:{}:timer-msr:arm:{:#x}={:#x} vtime:{:?}",
                         self.kvm_vcpu.index, index, data, self.virtual_time_ns()
