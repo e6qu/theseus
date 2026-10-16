@@ -179,6 +179,16 @@ today's honest divergence.
    diagnostics: every future probe retains both serial logs and pins the
    hang position on the ttyS0 timeline.
 
+   **The wake design probed through CI (third attempt):** recording the
+   arm, skipping write-through, and sleeping the remaining guest interval
+   in a wake thread delivers the **first tick** — and the guest then
+   hangs before re-arming or rebooting (guest_exit/completion fail). The
+   first delivery works; the guest's progress after it does not. The
+   interaction is in the re-arm cycle or the halt re-entry — needing
+   host-session debugging with the guest's own log (ttyS1 retention is
+   in place). The write-through arming is restored as the passing
+   behavior.
+
    **The candidate resolution — landed:** the write-through arming is
    restored (KVM's hrtimer wakes the halted vCPU — no storm, no hang),
    the arm record is the replay-admitted decision, and the delivery
