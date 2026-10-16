@@ -2251,6 +2251,7 @@ impl Vcpu {
     #[cfg(target_arch = "x86_64")]
     fn handle_timer_wake(&mut self) -> Result<(), VcpuError> {
         let Some(deadline_ticks) = self.timer_deadline_ticks else {
+            info!("halt-timer wake: no deadline pending");
             return Ok(());
         };
         self.timer_deadline_ticks = None;
@@ -2260,6 +2261,9 @@ impl Vcpu {
             (Some(now_ns), Some(tsc_khz)) => (now_ns, tsc_khz),
             // No virtual clock: fire the delivery without a jump.
             _ => {
+                info!(
+                    "halt-timer wake: no clock (now={now_ns:?} tsc={tsc_khz:?}), delivering without a jump"
+                );
                 let vector = self
                     .kvm_vcpu
                     .lapic_timer_lvt_vector()
@@ -2279,11 +2283,15 @@ impl Vcpu {
                 deadline_ticks,
                 u64::from(tsc_khz) * 1_000,
             );
+        info!(
+            "halt-timer wake: deadline_ticks={deadline_ticks} tsc_khz={tsc_khz} deadline_ns={deadline_ns} now_ns={now_ns}"
+        );
         // A deadline that already passed (the guest produced exits between
         // the arm and the wake) fires immediately, like hardware asserts a
         // passed deadline until handled - the jump is zero and only the
         // delivery turn is recorded.
         let target = deadline_ns.saturating_sub(now_ns);
+        info!("halt-timer wake: target={target}");
         if target > 0 {
             // Record the halt's virtual-time consumption as a jump host turn.
             let jump = format!("virtual_time_jump:+{target}");
