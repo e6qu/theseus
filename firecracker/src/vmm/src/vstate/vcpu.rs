@@ -2154,7 +2154,15 @@ impl Vcpu {
                         // the exit-driven virtual clock diverge, so the
                         // deadline is carried in the clock the delivery
                         // positions against.
-                        let arm_vtime = self.virtual_time_ns();
+                        let arm_vtime = self
+                            .vclock
+                            .as_ref()
+                            .map(|clock| clock.now_ns())
+                            .ok_or_else(|| {
+                                VcpuError::FaultyKvmExit(
+                                    "halt-timer arm arrived with virtual time disabled".to_owned(),
+                                )
+                            })?;
                         let tsc_at_arm = self
                             .kvm_vcpu
                             .guest_tsc()
