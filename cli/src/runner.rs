@@ -41,7 +41,6 @@ fn captures_execution(plan: &RunPlan) -> bool {
 // Match the topology runner: host-clock-dependent kernel diagnostics are not
 // application evidence. This is the boot policy of version-2 replay plans;
 // legacy plans keep their original command line.
-const EXECUTION_BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=-1 quiet loglevel=0";
 
 #[derive(Debug)]
 pub enum RunError {
@@ -367,7 +366,7 @@ impl Bundle {
             source,
         })?;
         let initramfs = materialize_initramfs(&self.replay_plan, &self.root, &boot)?;
-        let (mut child, socket, serial, _debug_serial) =
+        let (mut child, socket, serial, debug_serial) =
             launch_runtime(&self.replay_plan, &self.root, &boot)?;
         let directory = self.root.join("checkpoint");
         let capture = (|| {
@@ -378,6 +377,7 @@ impl Bundle {
                 &initramfs,
                 &socket,
                 &serial,
+                &debug_serial,
                 true,
                 None,
             )?;
@@ -811,6 +811,7 @@ fn configure_and_wait(
             initramfs.expect("fresh boot initramfs"),
             socket,
             serial_log,
+            &serial_log.with_file_name("firecracker-debug.log"),
             capture,
             expected_trace,
         )?;
@@ -826,6 +827,7 @@ fn configure_boot(
     initramfs: &Path,
     socket: &Path,
     serial_log: &Path,
+    debug_serial_log: &Path,
     capture: bool,
     expected_trace: Option<&Path>,
 ) -> Result<(), RunError> {
@@ -833,6 +835,7 @@ fn configure_boot(
     let kernel = path_text(&resolved_path(artifact_base, &plan.guest.kernel.path))?;
     let initramfs = path_text(initramfs)?;
     let serial_log_text = path_text(serial_log)?;
+    let debug_serial_log_text = path_text(debug_serial_log)?;
     api_put(
         socket,
         "/boot-source",
@@ -840,12 +843,10 @@ fn configure_boot(
             "kernel_image_path": kernel,
             "initrd_path": initramfs,
             "boot_args": if capture {
-                // Kernel diagnostics ride the COM2 debug console (ttyS1):
-                // no console=ttyS0, so printk never interleaves with the
-                // ttyS0 data channel. loglevel raised for halt-frontier
-                // diagnosis; earlyprintk pinned to COM2's port.
-                "console=ttyS1 reboot=k panic=-1 loglevel=7 earlyprintk=serial,0x2f8"
-                    .to_owned()
+                plan.run
+                    .boot_args
+                    .clone()
+                    .unwrap_or_else(|| "console=ttyS0 reboot=k panic=-1 quiet loglevel=0".to_owned())
             } else {
                 "console=ttyS0 reboot=k panic=-1".to_owned()
             },
@@ -867,7 +868,10 @@ fn configure_boot(
     api_put(
         socket,
         "/serial",
-        json!({ "serial_out_path": serial_log_text }),
+        json!({
+            "serial_out_path": serial_log_text,
+            "debug_serial_out_path": debug_serial_log_text,
+        }),
     )?;
     if plan.run.entropy_device {
         api_put(socket, "/entropy", json!({ "seed": plan.run.seed }))?;

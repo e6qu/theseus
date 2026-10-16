@@ -82,10 +82,14 @@ while True:
         done = False
         status = "204 No Content"
         if endpoint == "/boot-source":
-            assert body["boot_args"] == "console=ttyS0 reboot=k panic=-1 quiet loglevel=0"
+            assert body["boot_args"] in (
+                "console=ttyS0 reboot=k panic=-1 quiet loglevel=0",
+                "earlyprintk=serial,0x2f8,keep reboot=k panic=-1 loglevel=7",
+            )
         elif endpoint == "/machine-config":
             machine = body
         elif endpoint == "/serial":
+            assert body["debug_serial_out_path"].endswith("firecracker-debug.log")
             serial = Path(body["serial_out_path"])
         elif endpoint == "/execution" and method == "PUT":
             output = Path(body["evidence_path"])
@@ -130,6 +134,7 @@ while True:
             output = Path(body["execution"]["evidence_path"])
             assert not output.exists()
             output.touch()
+            assert body["serial_out_path"].endswith("serial.log")
             serial = Path(body["serial_out_path"])
             origin = {"kind": "checkpoint", "checkpoint_sha256": body["checkpoint_sha256"], "inherited_decisions": len(trace)}
             if body["execution"]["replay_trace_path"]:

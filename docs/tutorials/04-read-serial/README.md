@@ -82,7 +82,13 @@ appears and injected at its recorded stream turn, which replay gates like
 any other vCPU turn. The same plan turns on the timer-MSR observation
 stage (`filter_timer_msrs`): the guest runs in x2APIC mode and every
 timer arming write is logged with its virtual timestamp in
-`firecracker.log`. The arm→delivery pairing and the deterministic-arming design are in
+`firecracker.log`. This plan also steers the kernel's early console to the COM2
+debug console and keeps it for the whole run (`boot_args` override with
+`earlyprintk=serial,0x2f8,keep`): the kernel's own account lands on
+`work/hold-replay/firecracker-debug.log` while ttyS0 stays the clean
+data channel. COM2 traffic is diagnostic observation - it never enters
+the machine stream, so replays stay exact.
+The arm→delivery pairing and the deterministic-arming design are in
 [the exploration guide](../../exploration.md) and
 [design/deterministic-timer-arming.md](../../design/deterministic-timer-arming.md).
 

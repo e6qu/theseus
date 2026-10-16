@@ -2294,6 +2294,12 @@ fn handle_kvm_exit_recorded(
     // Writes have a complete payload before emulation; read requests have
     // only an address and width. Reject both identities before touching a
     // device. Read values are checked after the device supplies them.
+    // The COM2 debug console is a diagnostic observation channel: kernel
+    // printk content depends on real host time, so its accesses are handled
+    // by the device but never recorded or replay-matched.
+    let debug_serial_access = |port: u16| {
+        (0x2f8..0x300).contains(&u64::from(port))
+    };
     let admission = match &emulation_result {
         Ok(VcpuExit::MmioWrite(address, data)) => Some((
             format!("vcpu:{vcpu}:mmio_write:{address:#x}:{}:{}", data.len(), hex_bytes(data)),
@@ -2303,6 +2309,10 @@ fn handle_kvm_exit_recorded(
             format!("vcpu:{vcpu}:mmio_read:{address:#x}:{}:", data.len()),
             false,
         )),
+        #[cfg(target_arch = "x86_64")]
+        Ok(VcpuExit::IoOut(port, data)) if debug_serial_access(*port) => None,
+        #[cfg(target_arch = "x86_64")]
+        Ok(VcpuExit::IoIn(port, data)) if debug_serial_access(*port) => None,
         #[cfg(target_arch = "x86_64")]
         Ok(VcpuExit::IoOut(port, data)) => Some((
             format!("vcpu:{vcpu}:pio_write:{port:#x}:{}:{}", data.len(), hex_bytes(data)),
@@ -2341,8 +2351,10 @@ fn handle_kvm_exit_recorded(
         #[cfg(target_arch = "x86_64")]
         Ok(VcpuExit::IoIn(port, data)) => {
             let outcome = handle_kvm_exit(peripherals, Ok(VcpuExit::IoIn(port, &mut *data)));
-            let decision = format!("pio_read:{port:#x}:{}:{}", data.len(), hex_bytes(data));
-            (outcome, Some(decision))
+            let decision = (!debug_serial_access(port)).then(|| {
+                format!("pio_read:{port:#x}:{}:{}", data.len(), hex_bytes(data))
+            });
+            (outcome, decision)
         }
         Ok(VcpuExit::MmioWrite(address, data)) => {
             let decision = format!("mmio_write:{address:#x}:{}:{}", data.len(), hex_bytes(data));
@@ -2353,10 +2365,12 @@ fn handle_kvm_exit_recorded(
         }
         #[cfg(target_arch = "x86_64")]
         Ok(VcpuExit::IoOut(port, data)) => {
-            let decision = format!("pio_write:{port:#x}:{}:{}", data.len(), hex_bytes(data));
+            let decision = (!debug_serial_access(port)).then(|| {
+                format!("pio_write:{port:#x}:{}:{}", data.len(), hex_bytes(data))
+            });
             (
                 handle_kvm_exit(peripherals, Ok(VcpuExit::IoOut(port, data))),
-                Some(decision),
+                decision,
             )
         }
         other => {

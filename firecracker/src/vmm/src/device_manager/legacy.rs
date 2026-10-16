@@ -50,8 +50,6 @@ impl PortIODeviceManager {
     const SERIAL_PORT_SIZE: u64 = 0x8;
     /// Legacy debug serial port address (COM2).
     const DEBUG_SERIAL_PORT_ADDRESS: u64 = 0x2f8;
-    /// Global system interrupt for the debug serial port.
-    const COM2_GSI: u32 = 3;
     /// i8042 keyboard data register address. See
     /// <https://elixir.bootlin.com/linux/latest/source/drivers/input/serio/i8042-io.h#L41>.
     const I8042_KDB_DATA_REGISTER_ADDRESS: u64 = 0x060;
@@ -73,22 +71,15 @@ impl PortIODeviceManager {
         )?;
 
         if let Some(debug_serial) = &self.debug_serial {
+            // Output-only diagnostic channel: kernel printk pacing depends
+            // on real host time, so neither the port accesses nor any
+            // output-complete interrupt may enter the machine stream. The
+            // interrupt event fd stays with the device, unregistered.
             io_bus.insert(
                 debug_serial.clone(),
                 Self::DEBUG_SERIAL_PORT_ADDRESS,
                 Self::SERIAL_PORT_SIZE,
             )?;
-            let debug_serial = debug_serial.lock().expect("Poisoned lock");
-            let interrupt = debug_serial.serial.interrupt_evt();
-            if let Some(controller) = vm.deterministic_interrupt_controller() {
-                interrupt
-                    .defer_level_interrupt(controller, "debug-serial", Self::COM2_GSI)?;
-                vm.register_irq_route(Self::COM2_GSI);
-            } else {
-                vm.register_irq(interrupt, Self::COM2_GSI).map_err(|e| {
-                    LegacyDeviceError::EventFd(std::io::Error::from_raw_os_error(e.errno()))
-                })?;
-            }
         }
 
         let serial = self.stdio_serial.lock().expect("Poisoned lock");

@@ -222,11 +222,22 @@ today's honest divergence.
    VM has the COM2 device), and the COM2 output-complete interrupts are
    admitted as `vcpu:N:interrupt:debug-serial:3` machine-stream records
    (the vmm validator, the offline evidence validator, and the
-   checkpoint source mapping all accept the source). The boot-steering
-   probe (`console=ttyS1`, loglevel raised, earlyprintk to COM2) is the
-   next KVM-iteration step; with kernel messages on ttyS1's log and
-   ttyS0 as the clean data channel, the halt-frontier hang names
-   itself.
+   checkpoint source mapping all accept the source).
+
+   **Kernel visibility (landed):** plans can override the capture boot
+   arguments, and the probe plan steers `console=ttyS1` with the
+   loglevel raised and `earlyprintk=serial,0x2f8`. The kernel's own
+   account now lands on the retained COM2 log while ttyS0 stays the
+   clean data channel. Because kernel printk content depends on real
+   host time (the kvm-clock offset, calibration values), the COM2
+   port range is a **diagnostic observation channel**: accesses to it
+   are handled by the device and visible in the debug log, but never
+   recorded into the machine stream and never replay-matched. With
+   that exclusion, a hold-mode recording with kernel visibility
+   completes its workload end to end (`THES:M:42`, the sensor reading,
+   and the reboot marker all land on ttyS0) - the halt-frontier
+   iteration can now read the kernel's account at the hang point
+   instead of guessing.
    The first implementation armed a virtual deadline and asserted at the
    first handled exit whose virtual TSC reached it. CI showed why that is
    not enough: an idle guest arms the deadline and **halts** - and

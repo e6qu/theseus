@@ -153,6 +153,11 @@ struct Run {
     max_rounds: u64,
     #[serde(default)]
     virtual_time: Option<VirtualTime>,
+    /// Override the capture boot arguments. The default keeps the kernel
+    /// console on ttyS0 (the deterministic data channel); a diagnostic
+    /// plan steers printk to the COM2 debug console instead.
+    #[serde(default)]
+    boot_args: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -515,6 +520,10 @@ pub struct RunPlanConfig {
     )]
     pub max_rounds: u64,
     pub virtual_time: Option<VirtualTime>,
+    /// Diagnostic override for the capture boot arguments (kernel console
+    /// on the COM2 debug console).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_args: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -908,6 +917,7 @@ pub fn load_plan(path: impl AsRef<Path>) -> Result<RunPlan, LoadError> {
             timeout_secs: manifest.run.timeout_secs,
             max_rounds: manifest.run.max_rounds,
             virtual_time: manifest.run.virtual_time,
+            boot_args: manifest.run.boot_args,
         },
         checkpoint: None,
         events,
