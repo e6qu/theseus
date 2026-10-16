@@ -235,9 +235,15 @@ today's honest divergence.
    recorded into the machine stream and never replay-matched. With
    that exclusion, a hold-mode recording with kernel visibility
    completes its workload end to end (`THES:M:42`, the sensor reading,
-   and the reboot marker all land on ttyS0) - the halt-frontier
-   iteration can now read the kernel's account at the hang point
-   instead of guessing.
+   and the reboot marker all land on ttyS0).
+   The first probe with visibility is on record: the kernel boots clean
+   through `TSC deadline timer available`, runs the whole workload, and
+   reaches `reboot: machine restart` **in hold mode** - the
+   halt-frontier hang from the earlier probes did not reproduce under
+   the shipped write-through arming. The kernel's full account sits in
+   the retained COM2 log for every subsequent iteration, and the hold
+   replay still fails closed on episode movement (naming the
+   `lapic-timer` delivery), exactly as designed.
    The first implementation armed a virtual deadline and asserted at the
    first handled exit whose virtual TSC reached it. CI showed why that is
    not enough: an idle guest arms the deadline and **halts** - and
