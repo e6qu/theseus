@@ -367,7 +367,7 @@ impl Bundle {
             source,
         })?;
         let initramfs = materialize_initramfs(&self.replay_plan, &self.root, &boot)?;
-        let (mut child, socket, serial, _debug_serial) =
+        let (mut child, socket, serial, debug_serial) =
             launch_runtime(&self.replay_plan, &self.root, &boot)?;
         let directory = self.root.join("checkpoint");
         let capture = (|| {
@@ -378,6 +378,7 @@ impl Bundle {
                 &initramfs,
                 &socket,
                 &serial,
+                &debug_serial,
                 true,
                 None,
             )?;
@@ -811,6 +812,7 @@ fn configure_and_wait(
             initramfs.expect("fresh boot initramfs"),
             socket,
             serial_log,
+            &serial_log.with_file_name("firecracker-debug.log"),
             capture,
             expected_trace,
         )?;
@@ -826,6 +828,7 @@ fn configure_boot(
     initramfs: &Path,
     socket: &Path,
     serial_log: &Path,
+    debug_serial_log: &Path,
     capture: bool,
     expected_trace: Option<&Path>,
 ) -> Result<(), RunError> {
@@ -833,6 +836,7 @@ fn configure_boot(
     let kernel = path_text(&resolved_path(artifact_base, &plan.guest.kernel.path))?;
     let initramfs = path_text(initramfs)?;
     let serial_log_text = path_text(serial_log)?;
+    let debug_serial_log_text = path_text(debug_serial_log)?;
     api_put(
         socket,
         "/boot-source",
@@ -867,7 +871,10 @@ fn configure_boot(
     api_put(
         socket,
         "/serial",
-        json!({ "serial_out_path": serial_log_text }),
+        json!({
+            "serial_out_path": serial_log_text,
+            "debug_serial_out_path": debug_serial_log_text,
+        }),
     )?;
     if plan.run.entropy_device {
         api_put(socket, "/entropy", json!({ "seed": plan.run.seed }))?;

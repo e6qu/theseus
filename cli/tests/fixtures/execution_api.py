@@ -86,6 +86,7 @@ while True:
         elif endpoint == "/machine-config":
             machine = body
         elif endpoint == "/serial":
+            assert body["debug_serial_out_path"].endswith("firecracker-debug.log")
             serial = Path(body["serial_out_path"])
         elif endpoint == "/execution" and method == "PUT":
             output = Path(body["evidence_path"])
@@ -130,6 +131,7 @@ while True:
             output = Path(body["execution"]["evidence_path"])
             assert not output.exists()
             output.touch()
+            assert body["serial_out_path"].endswith("serial.log")
             serial = Path(body["serial_out_path"])
             origin = {"kind": "checkpoint", "checkpoint_sha256": body["checkpoint_sha256"], "inherited_decisions": len(trace)}
             if body["execution"]["replay_trace_path"]:
