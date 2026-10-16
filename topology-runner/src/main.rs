@@ -14120,6 +14120,7 @@ fn service_resources(
                     exits_per_tick: time.exits_per_tick as u64,
                     hold_kernel_timers: time.hold_kernel_timers,
                     filter_timer_msrs: time.filter_timer_msrs,
+                    halt_timer_delivery: false,
                 }),
             ..Default::default()
         })
