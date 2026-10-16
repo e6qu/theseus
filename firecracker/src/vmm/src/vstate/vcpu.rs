@@ -2278,20 +2278,27 @@ impl Vcpu {
                 return Ok(());
             }
         };
-        let deadline_ns =
-            crate::vstate::vclock::VirtualClock::ns_for_ticks(
-                deadline_ticks,
-                u64::from(tsc_khz) * 1_000,
-            );
-        info!(
-            "halt-timer wake: deadline_ticks={deadline_ticks} tsc_khz={tsc_khz} deadline_ns={deadline_ns} now_ns={now_ns}"
-        );
+        // The guest arms against ITS TSC - which is the virtual TSC the
+        // vclock publishes (apply_virtual_time binds them) - so the
+        // deadline's distance is measured from the virtual TSC's value at
+        // now, not from the virtual nanoseconds themselves. Mixing the
+        // bases reads the deadline as long past (the instrumented probe
+        // showed target=0 with the vclock at 1.6s against a 247ms TSC
+        // deadline) and every tick degenerates to an immediate delivery.
+        let tsc_at_now =
+            crate::vstate::vclock::VirtualClock::tsc_value(now_ns, tsc_khz);
+        let target_ticks = deadline_ticks.saturating_sub(tsc_at_now);
         // A deadline that already passed (the guest produced exits between
         // the arm and the wake) fires immediately, like hardware asserts a
         // passed deadline until handled - the jump is zero and only the
         // delivery turn is recorded.
-        let target = deadline_ns.saturating_sub(now_ns);
-        info!("halt-timer wake: target={target}");
+        let target = crate::vstate::vclock::VirtualClock::ns_for_ticks(
+            target_ticks,
+            u64::from(tsc_khz) * 1_000,
+        );
+        info!(
+            "halt-timer wake: deadline_ticks={deadline_ticks} tsc_khz={tsc_khz} tsc_at_now={tsc_at_now} target_ticks={target_ticks} target_ns={target}"
+        );
         if target > 0 {
             // Record the halt's virtual-time consumption as a jump host turn.
             let jump = format!("virtual_time_jump:+{target}");
