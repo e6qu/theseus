@@ -2312,7 +2312,7 @@ impl Vcpu {
         );
         if target > 0 {
             // Record the halt's virtual-time consumption as a jump host turn.
-            let jump = format!("virtual_time_jump:+{target}");
+            let jump = format!("virtual_time_jump:{target}");
             if let Err(detail) = self
                 .machine_execution
                 .apply_host_effect::<(), ()>(jump, || Ok(()))
