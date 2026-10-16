@@ -2095,18 +2095,6 @@ impl Vcpu {
                 let halt_delivery =
                     timer_arm && self.hold_kernel_timers;
                 if timer_arm && self.hold_kernel_timers {
-                    // The candidate resolution: write-through arms KVM's
-                    // host hrtimer, whose fire wakes the halted vCPU (no
-                    // storm, no hang); the arm record is the
-                    // replay-admitted decision, and the delivery turn
-                    // (when the assert is observed at a handled exit)
-                    // admits against it via admit_arm_delivery. The
-                    // deadline is remembered in guest TSC ticks: stage 4
-                    // advances the virtual clock to it at the delivery.
-                    if index == MSR_IA32_TSC_DEADLINE {
-                        self.timer_deadline_ticks =
-                            (data != 0).then_some(data);
-                    }
                     let decision = format!("timer:arm:{:#x}:{data}", index);
                     let record =
                         format!("vcpu:{}:{decision}", self.kvm_vcpu.index);
