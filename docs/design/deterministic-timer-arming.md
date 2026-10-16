@@ -184,10 +184,43 @@ today's honest divergence.
    in a wake thread delivers the **first tick** — and the guest then
    hangs before re-arming or rebooting (guest_exit/completion fail). The
    first delivery works; the guest's progress after it does not. The
-   interaction is in the re-arm cycle or the halt re-entry — needing
-   host-session debugging with the guest's own log (ttyS1 retention is
-   in place). The write-through arming is restored as the passing
-   behavior.
+   write-through arming was restored as the passing behavior.
+
+   **The wake design resurrected behind `halt_timer_delivery`
+   (fourth attempt, kernel-visible):** the flag restores the third
+   attempt's design behind the manifest: the TSC-deadline arming write
+   is **blocked** from the in-kernel LAPIC (no host hrtimer, no
+   in-kernel delivery), the deadline is owned by the hold path, and a
+   wake thread breaks a halted KVM_RUN near the deadline so the run
+   loop can advance the virtual clock to it and queue the delivery
+   turn (`virtual_time_jump` + `lapic-timer` delivery,
+   replay-admitted). Unlike the third attempt, this probe runs with
+   the kernel's own account on the COM2 log: when the guest stalls,
+   the retained `firecracker-debug.log` names the exact kernel
+   position instead of leaving the re-arm cycle to guesswork. A stale
+   wake (a newer arm superseded it) never delivers early — each arm
+   carries a generation and only the latest one's wake requests the
+   delivery.
+
+   **What the fourth attempt proved (all evidenced in one CI run):**
+   the arm record lands (`halt-timer arm:` log), the wake fires
+   immediately, the virtual jump positions the tick at the deadline —
+   `arm_vtime + (deadline_ticks − tsc_at_arm)` in the guest's own TSC
+   arithmetic, the base-mixing bug that first degenerated every tick
+   into an immediate delivery — the host turn is recorded
+   (`virtual_time_jump:3977034`), the delivery turn queues, and the
+   vector is asserted through the LAPIC IRR (KVM_INTERRUPT is
+   userspace-irqchip only and returns ENXIO under the in-kernel
+   irqchip). **The open frontier is one link:** the guest never
+   re-arms after the first delivery — the kernel's tick handler does
+   not visibly run, so the question is whether the in-kernel APIC
+   surfaces a SET_LAPIC IRR assert through its event-injection path at
+   the guest's interrupt windows. The next probe reads
+   `/proc/interrupts` on the debug console (the init prints it when a
+   `/dev/ttyS1` node exists); if the timer vector's count stays zero,
+   the remaining link needs the userspace APIC (option B) — until
+   then the flag ships off and the write-through arming stays the
+   passing behavior.
 
    **The candidate resolution — landed:** the write-through arming is
    restored (KVM's hrtimer wakes the halted vCPU — no storm, no hang),

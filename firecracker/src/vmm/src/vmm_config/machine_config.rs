@@ -50,6 +50,14 @@ pub struct VirtualTimeConfig {
     /// guest runs in x2APIC mode (the CPUID bit is steered on).
     #[serde(default)]
     pub filter_timer_msrs: bool,
+    /// Stage 3 probe of deterministic timer arming: hold mode also blocks
+    /// the arming write from reaching the in-kernel LAPIC (no host hrtimer),
+    /// records the deadline, and delivers the interrupt at its virtual
+    /// position - a wake thread breaks a halted KVM_RUN so the run loop can
+    /// advance the virtual clock to the deadline and queue the delivery
+    /// turn. Requires `hold_kernel_timers`.
+    #[serde(default)]
+    pub halt_timer_delivery: bool,
 }
 
 /// The default memory size of the VM, in MiB.
