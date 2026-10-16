@@ -1338,10 +1338,12 @@ pub struct Vcpu {
     /// filtered to userspace, and this vCPU answers them write-through
     /// against the in-kernel LAPIC page (x86_64 only).
     timer_msrs_filtered: bool,
-    /// Stage 3 of deterministic timer arming: the armed TSC-deadline in
-    /// guest TSC ticks. When set, the timer delivery rides the halt: the
-    /// virtual clock advances to the deadline at the halt exit and the
-    /// turn is delivered there (x86_64 only).
+    /// Stage 3 of deterministic timer arming: the armed deadline in
+    /// VIRTUAL nanoseconds (arm vtime + the period the guest asked for,
+    /// converted from its own TSC arithmetic). When set, the timer
+    /// delivery rides the halt: the virtual clock advances to the
+    /// deadline at the wake and the turn is delivered there (x86_64
+    /// only).
     timer_deadline_ticks: Option<u64>,
     /// Stage 3 probe: hold mode blocks the arming write from reaching the
     /// in-kernel LAPIC; the deadline is owned here and delivered at its
@@ -2145,7 +2147,35 @@ impl Vcpu {
                             );
                             return Ok(VcpuEmulation::Handled);
                         }
-                        self.timer_deadline_ticks = Some(data);
+                        // The guest armed `data` against its own TSC.
+                        // Convert the requested period to VIRTUAL
+                        // nanoseconds from the arm's virtual instant -
+                        // the guest TSC's own scale (host-real rate) and
+                        // the exit-driven virtual clock diverge, so the
+                        // deadline is carried in the clock the delivery
+                        // positions against.
+                        let arm_vtime = self.virtual_time_ns();
+                        let tsc_at_arm = self
+                            .kvm_vcpu
+                            .guest_tsc()
+                            .map_err(|error| {
+                                VcpuError::UnhandledKvmExit(error.to_string())
+                            })?;
+                        let period_ticks = data.saturating_sub(tsc_at_arm);
+                        let tsc_khz = self
+                            .kvm_vcpu
+                            .cached_tsc_khz()
+                            .map_err(|error| {
+                                VcpuError::UnhandledKvmExit(error.to_string())
+                            })?;
+                        let period_ns = crate::vstate::vclock::VirtualClock::ns_for_ticks(
+                            period_ticks,
+                            u64::from(tsc_khz) * 1_000,
+                        );
+                        self.timer_deadline_ticks = Some(arm_vtime + period_ns);
+                        info!(
+                            "halt-timer arm: deadline={data} tsc_at_arm={tsc_at_arm} period_ns={period_ns} arm_vtime={arm_vtime}"
+                        );
                         let machine_execution =
                             Arc::clone(&self.machine_execution);
                         let generation = Arc::clone(&self.timer_arm_generation);
@@ -2250,54 +2280,27 @@ impl Vcpu {
     /// then queue the LAPIC-timer delivery as the next recorded turn.
     #[cfg(target_arch = "x86_64")]
     fn handle_timer_wake(&mut self) -> Result<(), VcpuError> {
-        let Some(deadline_ticks) = self.timer_deadline_ticks else {
+        let Some(deadline_ns) = self.timer_deadline_ticks else {
             info!("halt-timer wake: no deadline pending");
             return Ok(());
         };
         self.timer_deadline_ticks = None;
-        let now_ns = self.vclock.as_ref().map(|clock| clock.now_ns());
-        let tsc_khz = self.kvm_vcpu.cached_tsc_khz().ok();
-        let (now_ns, tsc_khz) = match (now_ns, tsc_khz) {
-            (Some(now_ns), Some(tsc_khz)) => (now_ns, tsc_khz),
-            // No virtual clock: fire the delivery without a jump.
-            _ => {
-                info!(
-                    "halt-timer wake: no clock (now={now_ns:?} tsc={tsc_khz:?}), delivering without a jump"
-                );
-                let vector = self
-                    .kvm_vcpu
-                    .lapic_timer_lvt_vector()
-                    .map_err(|error| {
-                        VcpuError::UnhandledKvmExit(error.to_string())
-                    })?;
-                self.machine_execution
-                    .request_interrupt("lapic-timer", u32::from(vector), true)
-                    .map_err(|error| {
-                        VcpuError::UnhandledKvmExit(error.to_string())
-                    })?;
-                return Ok(());
-            }
-        };
-        // The guest arms against ITS TSC - which is the virtual TSC the
-        // vclock publishes (apply_virtual_time binds them) - so the
-        // deadline's distance is measured from the virtual TSC's value at
-        // now, not from the virtual nanoseconds themselves. Mixing the
-        // bases reads the deadline as long past (the instrumented probe
-        // showed target=0 with the vclock at 1.6s against a 247ms TSC
-        // deadline) and every tick degenerates to an immediate delivery.
-        let tsc_at_now =
-            crate::vstate::vclock::VirtualClock::tsc_value(now_ns, tsc_khz);
-        let target_ticks = deadline_ticks.saturating_sub(tsc_at_now);
+        let now_ns = self
+            .vclock
+            .as_ref()
+            .map(|clock| clock.now_ns())
+            .ok_or_else(|| {
+                VcpuError::FaultyKvmExit(
+                    "halt-timer wake arrived with virtual time disabled".to_owned(),
+                )
+            })?;
         // A deadline that already passed (the guest produced exits between
         // the arm and the wake) fires immediately, like hardware asserts a
         // passed deadline until handled - the jump is zero and only the
         // delivery turn is recorded.
-        let target = crate::vstate::vclock::VirtualClock::ns_for_ticks(
-            target_ticks,
-            u64::from(tsc_khz) * 1_000,
-        );
+        let target = deadline_ns.saturating_sub(now_ns);
         info!(
-            "halt-timer wake: deadline_ticks={deadline_ticks} tsc_khz={tsc_khz} tsc_at_now={tsc_at_now} target_ticks={target_ticks} target_ns={target}"
+            "halt-timer wake: deadline_ns={deadline_ns} now_ns={now_ns} target_ns={target}"
         );
         if target > 0 {
             // Record the halt's virtual-time consumption as a jump host turn.
