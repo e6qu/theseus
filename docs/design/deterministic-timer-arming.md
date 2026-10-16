@@ -202,6 +202,26 @@ today's honest divergence.
    carries a generation and only the latest one's wake requests the
    delivery.
 
+   **What the fourth attempt proved (all evidenced in one CI run):**
+   the arm record lands (`halt-timer arm:` log), the wake fires
+   immediately, the virtual jump positions the tick at the deadline —
+   `arm_vtime + (deadline_ticks − tsc_at_arm)` in the guest's own TSC
+   arithmetic, the base-mixing bug that first degenerated every tick
+   into an immediate delivery — the host turn is recorded
+   (`virtual_time_jump:3977034`), the delivery turn queues, and the
+   vector is asserted through the LAPIC IRR (KVM_INTERRUPT is
+   userspace-irqchip only and returns ENXIO under the in-kernel
+   irqchip). **The open frontier is one link:** the guest never
+   re-arms after the first delivery — the kernel's tick handler does
+   not visibly run, so the question is whether the in-kernel APIC
+   surfaces a SET_LAPIC IRR assert through its event-injection path at
+   the guest's interrupt windows. The next probe reads
+   `/proc/interrupts` on the debug console (the init prints it when a
+   `/dev/ttyS1` node exists); if the timer vector's count stays zero,
+   the remaining link needs the userspace APIC (option B) — until
+   then the flag ships off and the write-through arming stays the
+   passing behavior.
+
    **The candidate resolution — landed:** the write-through arming is
    restored (KVM's hrtimer wakes the halted vCPU — no storm, no hang),
    the arm record is the replay-admitted decision, and the delivery
