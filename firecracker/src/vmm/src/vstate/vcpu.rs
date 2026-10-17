@@ -1840,6 +1840,25 @@ impl Vcpu {
                 // Emulation errors lead to vCPU exit.
                 Err(error) => {
                     error!("vCPU {} emulation failed: {error}", self.kvm_vcpu.index);
+                    // A vmentry failure names the guest state that KVM
+                    // rejected: dump it before the exit so the probe
+                    // names the corruption instead of guessing.
+                    if error.to_string().contains("FailEntry") {
+                        match (self.kvm_vcpu.fd.get_regs(), self.kvm_vcpu.fd.get_sregs()) {
+                            (Ok(regs), Ok(sregs)) => {
+                                error!(
+                                    "fail-entry state: rip={:#x} rsp={:#x} rflags={:#x} cs={:#x}/{:#x} ss={:#x}/{:#x} cr0={:#x} cr4={:#x} efer={:#x}",
+                                    regs.rip, regs.rsp, regs.rflags,
+                                    sregs.cs.selector, sregs.cs.base,
+                                    sregs.ss.selector, sregs.ss.base,
+                                    sregs.cr0, sregs.cr4, sregs.efer
+                                );
+                            }
+                            (Err(e), _) | (_, Err(e)) => {
+                                error!("fail-entry state dump failed: {e}");
+                            }
+                        }
+                    }
                     return self.exit(FcExitCode::GenericError);
                 }
             }
@@ -2498,6 +2517,44 @@ impl Vcpu {
     /// deadline at the wake, deliver) builds on this handler.
     #[cfg(target_arch = "x86_64")]
     fn handle_hlt_exit(&mut self) -> Result<VcpuEmulation, VcpuError> {
+        if self.userspace_apic {
+            // The halt boundary: virtual time advances to the next timer
+            // deadline (the halt consumed it - recorded as a jump host
+            // turn) and the tick delivers here, waking the halted vCPU
+            // at its own virtual position. Without this the halted guest
+            // would deadlock on a clock that only advances on handled
+            // exits.
+            let Some(now_ns) = self.vclock.as_ref().map(|clock| clock.now_ns()) else {
+                return Ok(VcpuEmulation::Handled);
+            };
+            if let Ok(tsc_khz) = self.kvm_vcpu.cached_tsc_khz() {
+                self.apic_tsc_khz
+                    .store(tsc_khz, Ordering::Relaxed);
+            }
+            let halt_delivery = self
+                .lapic
+                .lock()
+                .expect("userspace local APIC lock poisoned")
+                .halt_due(now_ns);
+            if let Some((vector, jump)) = halt_delivery {
+                if jump > 0 {
+                    let record = format!("virtual_time_jump:{jump}");
+                    if let Err(detail) = self
+                        .machine_execution
+                        .apply_host_effect::<(), ()>(record, || Ok(()))
+                    {
+                        return Err(VcpuError::FaultyKvmExit(detail));
+                    }
+                    self.jump_virtual_time(jump as i64)?;
+                }
+                self.machine_execution
+                    .request_interrupt("lapic-timer", u32::from(vector), true)
+                    .map_err(|error| {
+                        VcpuError::UnhandledKvmExit(error.to_string())
+                    })?;
+            }
+            return Ok(VcpuEmulation::Handled);
+        }
         if !self.hold_kernel_timers || !self.timer_msrs_filtered {
             return Err(VcpuError::UnhandledKvmExit(
                 "HLT exit arrived without the timer-MSR filter enabled".to_owned(),

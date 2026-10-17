@@ -125,12 +125,22 @@ end to end. Two integration lessons are on record: the bus stores weak
 handles, so the MMIO adapters need strong keepalive owners, and the
 timer's deadlines must ride the virtual clock's nanoseconds (the guest's
 TSC is periodically rewritten at quantum boundaries, so TSC-tick
-absolutes break at every rewrite). **The current frontier:** the first
-tick's delivery lands, but a later delivery path hits
-`KVM_EXIT_FAIL_ENTRY` (invalid guest state, 0x80000021) right after an
-`immediate_exit` kick skip - the `KVM_INTERRUPT` + kick interaction on a
-no-irqchip vCPU is the next thing the probe names. The flag ships off;
-the default in-kernel-irqchip paths are untouched and green.
+absolutes break at every rewrite). **The current frontier:** the timer
+   loop runs (arm -> virtual-deadline assert -> `KVM_INTERRUPT` ->
+   re-arm), and the halt boundary is handled the design's way - the
+   halt consumes virtual time up to the next deadline (a recorded
+   `virtual_time_jump`) and the tick delivers at that position, so a
+   halted guest cannot deadlock on a clock that only advances on
+   handled exits. A later vmentry then fails with
+   `KVM_EXIT_FAIL_ENTRY` (invalid guest state, 0x80000021), and the
+   boot-time state dump names the shape: `ss=0` where the kernel's
+   `__KERNEL_DS` (0x18) belongs, with interrupts disabled and a
+   kernel-text RIP - the guest's stack segment is lost across the
+   delivery + kick sequence on the no-irqchip vCPU. The next iteration
+   dumps the segment attributes and the vCPU events beside the
+   registers to decide between a KVM unrestricted-guest quirk and an
+   injection-path state save. The flag ships off; the default
+   in-kernel-irqchip paths are untouched and green.
 
 ### C. Re-arm at boundaries without interception (rejected)
 

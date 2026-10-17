@@ -230,6 +230,30 @@ impl UserspaceLapic {
         Ok(())
     }
 
+    /// The halt boundary's timer handling: when a deadline is pending,
+    /// the halt consumes virtual time up to it - the returned jump is the
+    /// nanoseconds the halt advances the virtual clock - and the timer
+    /// asserts at the boundary (due now, or due after the jump). The
+    /// guest wakes from the halt at its own virtual position instead of
+    /// deadlocking on a clock that only advances on handled exits.
+    pub fn halt_due(&mut self, now_ns: u64) -> Option<(u8, u64)> {
+        let vector = self.timer_vector()?;
+        let mode = (self.lvt_timer >> LVT_MODE_SHIFT) & 0x3;
+        let deadline = if mode == MODE_TSC_DEADLINE {
+            self.tsc_deadline
+        } else {
+            self.tmict_expiry
+        }?;
+        if now_ns >= deadline {
+            return self.timer_due(now_ns).map(|vector| (vector, 0));
+        }
+        let jump = deadline - now_ns;
+        if mode == MODE_TSC_DEADLINE {
+            self.tsc_deadline = None;
+        }
+        Some((vector, jump))
+    }
+
     /// The timer assertion at a handled-exit boundary: when the deadline
     /// has passed, disarms (or re-arms, periodic mode) and returns the
     /// vector to inject. `now_ns` is the virtual clock's instant.
@@ -494,6 +518,23 @@ mod tests {
         assert_eq!(lapic.timer_due(4_500), Some(236));
         assert_eq!(lapic.timer_due(5_000), None);
         assert_eq!(lapic.timer_due(6_000), Some(236));
+    }
+
+    #[test]
+    fn the_halt_consumes_virtual_time_up_to_the_deadline() {
+        let mut lapic = UserspaceLapic::default();
+        lapic.write_msr(MSR_X2APIC_LVT_TIMER, 236, 0, 0, 2_400_000).unwrap();
+        lapic
+            .write_msr(MSR_IA32_TSC_DEADLINE, 486_000_000, 0, 476_000_000, 2_400_000)
+            .unwrap();
+        // The halt jumps the virtual clock to the deadline and delivers.
+        let (vector, jump) = lapic.halt_due(0).expect("halt delivery");
+        assert_eq!(vector, 236);
+        assert_eq!(jump, 4_200_000);
+        // The deadline was consumed by the jump: the boundary after the
+        // jump fires it, and the next halt carries no deadline.
+        assert_eq!(lapic.timer_due(4_200_000), Some(236));
+        assert_eq!(lapic.halt_due(5_000_000), None);
     }
 
     #[test]
