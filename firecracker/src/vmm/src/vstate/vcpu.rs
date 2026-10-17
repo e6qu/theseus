@@ -1597,33 +1597,23 @@ impl Vcpu {
     /// per asserted episode; arming depends on guest counter reads over host
     /// drift, so these stay observations, never replay decisions.
     /// The userspace APIC's timer assertion at this handled-exit
-    /// boundary: the deadline lives in the virtual clock, so the delivery
-    /// position is `arm_vtime + period` regardless of host speed.
+    /// boundary: the deadline lives on the guest's free-running TSC, so
+    /// the delivery position is the armed deadline itself.
     fn observe_userspace_apic_timer(&mut self) {
         if !self.userspace_apic {
             return;
         }
-        // The guest's OWN TSC is the deadline scale: the arming write
-        // subtracted its live TSC read, and the TSC free-runs from the
-        // anchor at host rate - not the exit-driven virtual clock's
-        // tsc_value (the same base lesson the halt-time probe taught).
-        let Some(now_ns) = self.vclock.as_ref().map(|clock| clock.now_ns()) else {
-            return;
-        };
+        let tsc_now = self.kvm_vcpu.guest_tsc().unwrap_or(0);
         self.apic_tsc_now
-            .store(now_ns, Ordering::Relaxed);
-        if let Ok(tsc_khz) = self.kvm_vcpu.cached_tsc_khz() {
-            self.apic_tsc_khz
-                .store(tsc_khz, Ordering::Relaxed);
-        }
+            .store(tsc_now, Ordering::Relaxed);
         if let Some(vector) = self
             .lapic
             .lock()
             .expect("userspace local APIC lock poisoned")
-            .timer_due(now_ns)
+            .timer_due(tsc_now)
         {
             info!(
-                "vcpu:{}:userspace-apic:timer-due vector={vector} vtime={now_ns}",
+                "vcpu:{}:userspace-apic:timer-due vector={vector} tsc_now={tsc_now}",
                 self.kvm_vcpu.index
             );
             self.last_timer_vector = Some(vector);
@@ -2284,24 +2274,20 @@ impl Vcpu {
                 {
                     let (index, data) = (exit.index, exit.data);
                     drop(exit);
-                    let now_ns = self
-                        .vclock
-                        .as_ref()
-                        .map(|clock| clock.now_ns())
+                    let tsc_now = self
+                        .kvm_vcpu
+                        .guest_tsc()
+                        .map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })
                         .unwrap_or(0);
                     self.lapic
                         .lock()
                         .expect("userspace local APIC lock poisoned")
-                        .write_msr(
-                            index,
-                            data,
-                            now_ns,
-                            self.kvm_vcpu.guest_tsc().unwrap_or(0),
-                            self.kvm_vcpu.cached_tsc_khz().unwrap_or(0),
-                        )
+                        .write_msr(index, data, tsc_now)
                         .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
                     info!(
-                        "vcpu:{}:userspace-apic:wr:{:#x}={:#x} vtime={now_ns}",
+                        "vcpu:{}:userspace-apic:wr:{:#x}={:#x} tsc_now={tsc_now}",
                         self.kvm_vcpu.index, index, data
                     );
                     return Ok(VcpuEmulation::Handled);
