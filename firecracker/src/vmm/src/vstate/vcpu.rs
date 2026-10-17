@@ -1840,6 +1840,25 @@ impl Vcpu {
                 // Emulation errors lead to vCPU exit.
                 Err(error) => {
                     error!("vCPU {} emulation failed: {error}", self.kvm_vcpu.index);
+                    // A vmentry failure names the guest state that KVM
+                    // rejected: dump it before the exit so the probe
+                    // names the corruption instead of guessing.
+                    if error.to_string().contains("FailEntry") {
+                        match (self.kvm_vcpu.fd.get_regs(), self.kvm_vcpu.fd.get_sregs()) {
+                            (Ok(regs), Ok(sregs)) => {
+                                error!(
+                                    "fail-entry state: rip={:#x} rsp={:#x} rflags={:#x} cs={:#x}/{:#x} ss={:#x}/{:#x} cr0={:#x} cr4={:#x} efer={:#x}",
+                                    regs.rip, regs.rsp, regs.rflags,
+                                    sregs.cs.selector, sregs.cs.base,
+                                    sregs.ss.selector, sregs.ss.base,
+                                    sregs.cr0, sregs.cr4, sregs.efer
+                                );
+                            }
+                            (Err(e), _) | (_, Err(e)) => {
+                                error!("fail-entry state dump failed: {e}");
+                            }
+                        }
+                    }
                     return self.exit(FcExitCode::GenericError);
                 }
             }
