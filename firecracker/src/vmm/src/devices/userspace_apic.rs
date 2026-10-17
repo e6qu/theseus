@@ -277,6 +277,25 @@ pub struct UserspaceIoapic {
     redirections: [u64; 24],
 }
 
+/// The bus adapter exposing [`UserspaceIoapic`] over its MMIO page.
+pub struct UserspaceIoapicBus(pub Arc<Mutex<UserspaceIoapic>>);
+
+impl BusDevice for UserspaceIoapicBus {
+    fn read(&mut self, _base: u64, offset: u64, data: &mut [u8]) {
+        self.0
+            .lock()
+            .expect("userspace IOAPIC lock poisoned")
+            .read(_base, offset, data);
+    }
+
+    fn write(&mut self, _base: u64, offset: u64, data: &[u8]) -> Option<Arc<std::sync::Barrier>> {
+        self.0
+            .lock()
+            .expect("userspace IOAPIC lock poisoned")
+            .write(_base, offset, data)
+    }
+}
+
 impl UserspaceIoapic {
     /// The vector to inject when `pin` asserts, if its entry is
     /// unmasked and carries a vector.

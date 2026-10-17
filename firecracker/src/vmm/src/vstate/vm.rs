@@ -62,6 +62,20 @@ pub struct RoutingEntry {
     masked: bool,
 }
 
+/// Strong references keeping bus devices whose owners hold none: the
+/// bus stores weak handles, so an adapter with no other owner would
+/// silently drop out of its range.
+#[derive(Default)]
+pub struct BusKeepalives(
+    pub Mutex<Vec<Arc<Mutex<dyn BusDevice + Send>>>>,
+);
+
+impl std::fmt::Debug for BusKeepalives {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BusKeepalives")
+    }
+}
+
 /// Architecture independent parts of a VM.
 #[derive(Debug)]
 pub struct VmCommon {
@@ -90,7 +104,7 @@ pub struct VmCommon {
     pub vcpus_exit_evt: EventFd,
     /// Strong references keeping bus devices whose owners hold none
     /// (the bus itself stores weak references).
-    pub bus_keepalives: Mutex<Vec<Arc<Mutex<dyn BusDevice>>>>,
+    pub bus_keepalives: BusKeepalives,
 }
 
 /// Errors associated with the wrappers over KVM ioctls.
@@ -200,7 +214,7 @@ impl KvmVm {
             vcpus_handles: Mutex::new(Vec::new()),
             machine_execution: Arc::new(MachineExecutionController::default()),
             vcpus_exit_evt,
-            bus_keepalives: Mutex::new(Vec::new()),
+            bus_keepalives: BusKeepalives(Mutex::new(Vec::new())),
         })
     }
 

@@ -298,14 +298,20 @@ pub fn build_microvm_for_boot(
                     ),
                 ));
             let ioapic_mmio: Arc<Mutex<dyn crate::vstate::bus::BusDevice>> =
-                Arc::new(Mutex::new(ioapic.clone()));
+                Arc::new(Mutex::new(
+                    crate::devices::userspace_apic::UserspaceIoapicBus(
+                        ioapic.clone(),
+                    ),
+                ));
             vm.common
                 .bus_keepalives
+                .0
                 .lock()
                 .expect("bus keepalive lock poisoned")
                 .push(apic_mmio.clone());
             vm.common
                 .bus_keepalives
+                .0
                 .lock()
                 .expect("bus keepalive lock poisoned")
                 .push(ioapic_mmio.clone());
