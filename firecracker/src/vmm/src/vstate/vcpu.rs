@@ -1352,6 +1352,14 @@ pub struct Vcpu {
     /// The latest arm's generation. Each arm supersedes the previous
     /// wake; a stale wake must not deliver early.
     timer_arm_generation: Arc<AtomicU64>,
+    /// The userspace APIC mode (no in-kernel irqchip): the local APIC
+    /// state and its virtual-clock timer live here, and GSI devices
+    /// deliver through the userspace IOAPIC.
+    userspace_apic: bool,
+    /// The local APIC state for the userspace APIC mode.
+    lapic: crate::devices::userspace_apic::UserspaceLapic,
+    /// The IOAPIC state for the userspace APIC mode.
+    ioapic: Option<Arc<Mutex<crate::devices::userspace_apic::UserspaceIoapic>>>,
 }
 
 /// States of the vCPU thread's run loop.
@@ -1417,6 +1425,9 @@ impl Vcpu {
             hold_kernel_timers: false,
             halt_timer_delivery: false,
             timer_arm_generation: Arc::new(AtomicU64::new(0)),
+            userspace_apic: false,
+            lapic: crate::devices::userspace_apic::UserspaceLapic::default(),
+            ioapic: None,
             timer_msrs_filtered: false,
             timer_deadline_ticks: None,
         })
@@ -1452,6 +1463,16 @@ impl Vcpu {
     /// Current virtual-clock state, if enabled.
     pub fn vclock(&self) -> Option<&crate::vstate::vclock::VirtualClock> {
         self.vclock.as_ref()
+    }
+
+    /// Enables the userspace APIC mode: the local APIC and IOAPIC are
+    /// emulated here and delivery goes through `KVM_INTERRUPT`.
+    pub fn enable_userspace_apic(
+        &mut self,
+        ioapic: Arc<Mutex<crate::devices::userspace_apic::UserspaceIoapic>>,
+    ) {
+        self.userspace_apic = true;
+        self.ioapic = Some(ioapic);
     }
 
     /// Restore virtual-clock bookkeeping from a snapshotted vCPU state.
@@ -1544,6 +1565,32 @@ impl Vcpu {
     /// every handled exit while virtual time is enabled and keep one entry
     /// per asserted episode; arming depends on guest counter reads over host
     /// drift, so these stay observations, never replay decisions.
+    /// The userspace APIC's timer assertion at this handled-exit
+    /// boundary: the deadline lives in the virtual clock, so the delivery
+    /// position is `arm_vtime + period` regardless of host speed.
+    fn observe_userspace_apic_timer(&mut self) {
+        if !self.userspace_apic {
+            return;
+        }
+        let Some(now_ns) = self.vclock.as_ref().map(|clock| clock.now_ns()) else {
+            return;
+        };
+        let Ok(tsc_khz) = self.kvm_vcpu.cached_tsc_khz() else {
+            return;
+        };
+        let tsc_now =
+            crate::vstate::vclock::VirtualClock::tsc_value(now_ns, tsc_khz);
+        if let Some(vector) = self.lapic.timer_due(tsc_now) {
+            if let Err(error) = self
+                .machine_execution
+                .request_interrupt("lapic-timer", u32::from(vector), true)
+            {
+                error!("Failed to queue the userspace LAPIC-timer delivery: {error}");
+                METRICS.vcpu.failures.inc();
+            }
+        }
+    }
+
     fn observe_kernel_timer(&mut self) {
         if self.vclock.is_none() {
             return;
@@ -1745,6 +1792,7 @@ impl Vcpu {
                     // counting them bounds quanta deterministically (Track B′).
                     self.maybe_tick();
                     self.observe_kernel_timer();
+                    self.observe_userspace_apic_timer();
                 }
                 // Emulation was interrupted, check external events.
                 Ok(VcpuEmulation::Interrupted) => break,
@@ -2017,11 +2065,31 @@ impl Vcpu {
                         .set_irq_line(interrupt.gsi, true)
                         .and_then(|()| self.vm_fd.set_irq_line(interrupt.gsi, false))
                         .map_err(|error| error.to_string()),
-                    _ => self
-                        .vm_fd
-                        .set_irq_line(interrupt.gsi, true)
-                        .and_then(|()| self.vm_fd.set_irq_line(interrupt.gsi, false))
-                        .map_err(|error| error.to_string()),
+                    _ => {
+                        // Without an irqchip, `KVM_IRQ_LINE` has no
+                        // destination: GSI devices deliver through the
+                        // userspace IOAPIC's programmed vector.
+                        if let Some(ioapic) = &self.ioapic {
+                            let vector = ioapic
+                                .lock()
+                                .expect("userspace IOAPIC lock poisoned")
+                                .assert_line(interrupt.gsi as u8);
+                            match vector {
+                                Some(vector) => self
+                                    .kvm_vcpu
+                                    .inject_held_kernel_timer(vector)
+                                    .map_err(|error| error.to_string()),
+                                None => Ok(()),
+                            }
+                        } else {
+                            self.vm_fd
+                                .set_irq_line(interrupt.gsi, true)
+                                .and_then(|()| {
+                                    self.vm_fd.set_irq_line(interrupt.gsi, false)
+                                })
+                                .map_err(|error| error.to_string())
+                        }
+                    }
                 },
             )
             .map_err(VcpuError::FaultyKvmExit)?;
@@ -2059,6 +2127,35 @@ impl Vcpu {
                         "x86 RDMSR exit arrived with the timer-MSR filter not enabled"
                             .to_owned(),
                     ));
+                }
+                if self.userspace_apic
+                    && crate::devices::userspace_apic::UserspaceLapic::owns_msr(exit.index)
+                {
+                    let out: *mut u64 = exit.data;
+                    let index = exit.index;
+                    drop(exit);
+                    let now_ns = self
+                        .vclock
+                        .as_ref()
+                        .map(|clock| clock.now_ns())
+                        .unwrap_or(0);
+                    let tsc_khz = self.kvm_vcpu.cached_tsc_khz().unwrap_or(0);
+                    let tsc_now = crate::vstate::vclock::VirtualClock::tsc_value(
+                        now_ns,
+                        tsc_khz,
+                    );
+                    let value = self.lapic.read_msr(index, tsc_now).map_err(|error| {
+                        VcpuError::UnhandledKvmExit(error.to_string())
+                    })?;
+                    // SAFETY: `out` points into this vCPU's KVM run buffer,
+                    // which outlives the exit borrow and is consumed by the
+                    // next KVM_RUN on this thread.
+                    unsafe { *out = value };
+                    info!(
+                        "vcpu:{}:userspace-apic:rd:{:#x}={value:#x} vtime:{now_ns:?}",
+                        self.kvm_vcpu.index, index
+                    );
+                    return Ok(VcpuEmulation::Handled);
                 }
                 // The exit's data pointer targets KVM's run buffer for this
                 // vCPU, which stays valid past the exit borrow; the LAPIC
@@ -2099,6 +2196,30 @@ impl Vcpu {
                         "x86 WRMSR exit arrived with the timer-MSR filter not enabled"
                             .to_owned(),
                     ));
+                }
+                if self.userspace_apic
+                    && crate::devices::userspace_apic::UserspaceLapic::owns_msr(exit.index)
+                {
+                    let (index, data) = (exit.index, exit.data);
+                    drop(exit);
+                    let now_ns = self
+                        .vclock
+                        .as_ref()
+                        .map(|clock| clock.now_ns())
+                        .unwrap_or(0);
+                    let tsc_khz = self.kvm_vcpu.cached_tsc_khz().unwrap_or(0);
+                    let tsc_now = crate::vstate::vclock::VirtualClock::tsc_value(
+                        now_ns,
+                        tsc_khz,
+                    );
+                    self.lapic.write_msr(index, data, tsc_now).map_err(|error| {
+                        VcpuError::UnhandledKvmExit(error.to_string())
+                    })?;
+                    info!(
+                        "vcpu:{}:userspace-apic:wr:{:#x}={:#x} vtime:{now_ns:?}",
+                        self.kvm_vcpu.index, index, data
+                    );
+                    return Ok(VcpuEmulation::Handled);
                 }
                 // Copy the exit's payload out and drop the run-buffer
                 // borrow before the LAPIC write and the stream record,

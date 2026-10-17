@@ -176,6 +176,11 @@ pub struct VirtualTime {
     /// position (amd64 only).
     #[serde(default)]
     pub halt_timer_delivery: bool,
+    /// The userspace APIC: no in-kernel irqchip. The local APIC and the
+    /// IOAPIC are emulated and every delivery is a recorded turn at its
+    /// virtual position (amd64 only).
+    #[serde(default)]
+    pub userspace_apic: bool,
 }
 
 #[derive(Debug, Deserialize)]

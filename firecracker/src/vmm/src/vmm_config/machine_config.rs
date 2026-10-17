@@ -58,6 +58,12 @@ pub struct VirtualTimeConfig {
     /// turn. Requires `hold_kernel_timers`.
     #[serde(default)]
     pub halt_timer_delivery: bool,
+    /// The userspace APIC: no in-kernel irqchip. The local APIC and the
+    /// IOAPIC are emulated in Theseus - every timer and GSI-routed
+    /// delivery is a recorded turn asserted through `KVM_INTERRUPT` at
+    /// its virtual position (amd64 only).
+    #[serde(default)]
+    pub userspace_apic: bool,
 }
 
 /// The default memory size of the VM, in MiB.

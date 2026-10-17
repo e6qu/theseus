@@ -70,16 +70,48 @@ Bare-metal-style guests already programmed against xAPIC MMIO need the
 CPUID/base steering verified per kernel; that verification is KVM-session
 work.
 
-### B. Userspace APIC (the end state)
+### B. Userspace APIC (the end state, the implementation contract)
 
-Drop the in-kernel APIC and emulate the local APIC in Theseus: EOI, ICR
-broadcasts, LVT lines, the timer, TMCCT - everything - against the virtual
-clock, injecting through the existing `KVM_INTERRUPT` path.
+Drop the in-kernel irqchip entirely - no `KVM_CREATE_IRQCHIP` - and emulate
+what the guest needs in Theseus, injecting through `KVM_INTERRUPT`. Without
+an irqchip KVM still runs the vCPU: `KVM_INTERRUPT` injects any vector at
+the guest's interrupt window (the original pre-irqchip semantics, exactly
+the primitive the IRR probe proved the in-kernel irqchip withholds), and
+`RFLAGS.IF` gating stays KVM's job.
 
-Tradeoffs: removes the whole class (the timer stops being special), but it
-is a large, subtle surface (ICR deliveries across vCPUs, EOI semantics,
-level-triggered lines) and it changes injection ordering interactions with
-the recorded interrupt turns. Not a first slice.
+The emulation surface for this workload (one vCPU, Linux, x2APIC):
+
+- **Local APIC over x2APIC MSRs.** The existing steering already presents
+  x2APIC; widen the MSR interception from the timer registers to the whole
+  local-vector range (0x800-0x83F) plus the TSC-deadline MSR. State: the
+  spurious vector + enable, TPR (0x808), EOI (0x80B, edge-timer no-op but
+  recorded), ICR (0x830; self-IPI for one vCPU), SELF_IPI (0x83F), LVT
+  timer (0x832), TMICT (0x838), TDCR (0x83E), TMCCT (0x839, read from the
+  virtual clock), TSC-deadline (0x6E0). The timer is the design's core:
+  the deadline lives in the virtual clock, asserted at the first handled
+  exit at or after `arm_vtime + period` - no host hrtimer anywhere.
+- **IOAPIC over its MMIO page.** GSI-routed devices (the UART on IRQ 4,
+  the keyboard on IRQ 1) reach the guest through the IOAPIC the ACPI
+  tables declare at 0xFEC00000: emulate the IORESEL/IOWIN register pair
+  and 24 RTEs (vector, delivery mode, level/edge, mask). A device fire
+  asserts its pin; an unmasked, edge- or level-asserted RTE delivers its
+  vector through `KVM_INTERRUPT` at a recorded turn.
+- **What KVM keeps:** interrupt-window gating, TSC/kvmclock virtualization,
+  the vCPU run loop, HLT blocking (woken by a pending `KVM_INTERRUPT`).
+
+Tradeoffs: removes the whole class (the timer stops being special; every
+register access is a recorded stream turn), but it is a large, subtle
+surface (ICR deliveries across vCPUs, EOI semantics, level-triggered
+lines) and it changes injection ordering interactions with the recorded
+interrupt turns. Not a first slice - it is the final one, staged behind a
+flag, iterated with the kernel's own account on the COM2 console.
+
+**PR sequence:** (1) the flag + no-irqchip VM creation + the widened MSR
+interception with a state-carrying LAPIC + the IOAPIC with the serial
+path, the guest booting as far as the COM2 log names; (2) the timer
+delivery at virtual positions, replay-admitted; (3) the remaining
+registers the kernel's account names, then the flag flip and the stage-4
+contract (episode-movement replay expects a match).
 
 ### C. Re-arm at boundaries without interception (rejected)
 

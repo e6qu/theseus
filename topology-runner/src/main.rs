@@ -14121,6 +14121,7 @@ fn service_resources(
                     hold_kernel_timers: time.hold_kernel_timers,
                     filter_timer_msrs: time.filter_timer_msrs,
                     halt_timer_delivery: false,
+                    userspace_apic: false,
                 }),
             ..Default::default()
         })

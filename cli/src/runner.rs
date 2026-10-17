@@ -863,6 +863,7 @@ fn configure_boot(
             "hold_kernel_timers": virtual_time.hold_kernel_timers,
             "filter_timer_msrs": virtual_time.filter_timer_msrs,
             "halt_timer_delivery": virtual_time.halt_timer_delivery,
+            "userspace_apic": virtual_time.userspace_apic,
         });
     }
     api_put(socket, "/machine-config", machine)?;
@@ -1561,6 +1562,7 @@ fn checkpoint_metadata(base: &Path, plan: &RunPlan) -> Result<Value, RunError> {
             ("hold_kernel_timers", false),
             ("filter_timer_msrs", false),
             ("halt_timer_delivery", false),
+            ("userspace_apic", false),
         ];
         for (key, default) in defaults {
             if virtual_time.get(key) == Some(&serde_json::Value::Bool(default)) {
