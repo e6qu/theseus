@@ -211,16 +211,20 @@ today's honest divergence.
    (`virtual_time_jump:3977034`), the delivery turn queues, and the
    vector is asserted through the LAPIC IRR (KVM_INTERRUPT is
    userspace-irqchip only and returns ENXIO under the in-kernel
-   irqchip). **The open frontier is one link:** the guest never
-   re-arms after the first delivery — the kernel's tick handler does
-   not visibly run, so the question is whether the in-kernel APIC
-   surfaces a SET_LAPIC IRR assert through its event-injection path at
-   the guest's interrupt windows. The next probe reads
-   `/proc/interrupts` on the debug console (the init prints it when a
-   `/dev/ttyS1` node exists); if the timer vector's count stays zero,
-   the remaining link needs the userspace APIC (option B) — until
-   then the flag ships off and the write-through arming stays the
-   passing behavior.
+   irqchip). **The frontier is settled by the kernel's own account:**
+   the probe writes `/proc/interrupts` into `/dev/kmsg` so the kernel
+   emits it on the COM2 early console, and the retained log answers
+   in one line: `LOC: 0 Local timer interrupts`. The guest never took
+   a single LAPIC-timer interrupt - the SET_LAPIC IRR assert is
+   written into the restored LAPIC state but KVM's event-injection
+   path does not surface it at the guest's interrupt windows. The
+   wake/jump/queue chain is correct and evidenced; the missing
+   primitive is userspace local-vector injection itself, which the
+   in-kernel irqchip does not offer. The userspace APIC (option B) is
+   the required path for stages 3-4; until then the flag ships off
+   and the write-through arming stays the passing behavior, with the
+   arm records (stage 2) and the pairing admission as the shipped,
+   green foundation.
 
    **The candidate resolution — landed:** the write-through arming is
    restored (KVM's hrtimer wakes the halted vCPU — no storm, no hang),
