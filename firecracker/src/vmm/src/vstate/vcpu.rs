@@ -2531,12 +2531,12 @@ impl Vcpu {
                 self.apic_tsc_khz
                     .store(tsc_khz, Ordering::Relaxed);
             }
-            if let Some((vector, jump)) = self
+            let halt_delivery = self
                 .lapic
                 .lock()
                 .expect("userspace local APIC lock poisoned")
-                .halt_due(now_ns)
-            {
+                .halt_due(now_ns);
+            if let Some((vector, jump)) = halt_delivery {
                 if jump > 0 {
                     let record = format!("virtual_time_jump:{jump}");
                     if let Err(detail) = self
