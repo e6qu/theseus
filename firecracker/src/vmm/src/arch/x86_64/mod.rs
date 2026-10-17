@@ -220,7 +220,9 @@ fn configure_vcpus_for_boot(
         .virtual_time
         .as_ref()
         .is_some_and(|virtual_time| {
-            virtual_time.filter_timer_msrs || virtual_time.userspace_apic
+            // The userspace APIC keeps the guest in xAPIC mode: its
+            // registers are the MMIO page, not MSRs.
+            virtual_time.filter_timer_msrs && !virtual_time.userspace_apic
         })
     {
         if let Some(leaf_1) =

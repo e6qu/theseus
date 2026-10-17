@@ -289,18 +289,11 @@ impl KvmVm {
         //   without it the arming write never touches TMICT.
         let bitmap = [0u8, 0u8];
         let deadline_bitmap = [0u8];
-        // The whole x2APIC local range (0x800-0x83F) plus the APIC base
-        // MSR: the userspace APIC owns them all.
-        let apic_bitmap = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        // The APIC base MSR plus the TSC-deadline MSR: the registers
+        // themselves are the APIC's MMIO page.
         let apic_base_bitmap = [0u8];
         let ranges: Vec<MsrFilterRange> = if wide {
             vec![
-                MsrFilterRange {
-                    flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
-                    base: 0x800,
-                    msr_count: 0x40,
-                    bitmap: &apic_bitmap,
-                },
                 MsrFilterRange {
                     flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
                     base: 0x1B,

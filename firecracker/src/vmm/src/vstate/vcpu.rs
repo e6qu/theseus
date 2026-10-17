@@ -1356,8 +1356,12 @@ pub struct Vcpu {
     /// state and its virtual-clock timer live here, and GSI devices
     /// deliver through the userspace IOAPIC.
     userspace_apic: bool,
-    /// The local APIC state for the userspace APIC mode.
-    lapic: crate::devices::userspace_apic::UserspaceLapic,
+    /// The local APIC state for the userspace APIC mode (shared with
+    /// the MMIO adapter).
+    lapic: Arc<Mutex<crate::devices::userspace_apic::UserspaceLapic>>,
+    /// The guest's current virtual TSC tick, refreshed at every handled
+    /// exit for the APIC's MMIO readers.
+    apic_tsc_now: Arc<AtomicU64>,
     /// The IOAPIC state for the userspace APIC mode.
     ioapic: Option<Arc<Mutex<crate::devices::userspace_apic::UserspaceIoapic>>>,
 }
@@ -1426,7 +1430,10 @@ impl Vcpu {
             halt_timer_delivery: false,
             timer_arm_generation: Arc::new(AtomicU64::new(0)),
             userspace_apic: false,
-            lapic: crate::devices::userspace_apic::UserspaceLapic::default(),
+            lapic: Arc::new(Mutex::new(
+                crate::devices::userspace_apic::UserspaceLapic::default(),
+            )),
+            apic_tsc_now: Arc::new(AtomicU64::new(0)),
             ioapic: None,
             timer_msrs_filtered: false,
             timer_deadline_ticks: None,
@@ -1470,9 +1477,13 @@ impl Vcpu {
     pub fn enable_userspace_apic(
         &mut self,
         ioapic: Arc<Mutex<crate::devices::userspace_apic::UserspaceIoapic>>,
+        lapic: Arc<Mutex<crate::devices::userspace_apic::UserspaceLapic>>,
+        apic_tsc_now: Arc<AtomicU64>,
     ) {
         self.userspace_apic = true;
         self.ioapic = Some(ioapic);
+        self.lapic = lapic;
+        self.apic_tsc_now = apic_tsc_now;
     }
 
     /// Restore virtual-clock bookkeeping from a snapshotted vCPU state.
@@ -1580,7 +1591,14 @@ impl Vcpu {
         };
         let tsc_now =
             crate::vstate::vclock::VirtualClock::tsc_value(now_ns, tsc_khz);
-        if let Some(vector) = self.lapic.timer_due(tsc_now) {
+        self.apic_tsc_now
+            .store(tsc_now, Ordering::Relaxed);
+        if let Some(vector) = self
+            .lapic
+            .lock()
+            .expect("userspace local APIC lock poisoned")
+            .timer_due(tsc_now)
+        {
             if let Err(error) = self
                 .machine_execution
                 .request_interrupt("lapic-timer", u32::from(vector), true)
@@ -2144,9 +2162,12 @@ impl Vcpu {
                         now_ns,
                         tsc_khz,
                     );
-                    let value = self.lapic.read_msr(index, tsc_now).map_err(|error| {
-                        VcpuError::UnhandledKvmExit(error.to_string())
-                    })?;
+                    let value = self
+                        .lapic
+                        .lock()
+                        .expect("userspace local APIC lock poisoned")
+                        .read_msr(index, tsc_now)
+                        .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
                     // SAFETY: `out` points into this vCPU's KVM run buffer,
                     // which outlives the exit borrow and is consumed by the
                     // next KVM_RUN on this thread.
@@ -2212,9 +2233,11 @@ impl Vcpu {
                         now_ns,
                         tsc_khz,
                     );
-                    self.lapic.write_msr(index, data, tsc_now).map_err(|error| {
-                        VcpuError::UnhandledKvmExit(error.to_string())
-                    })?;
+                    self.lapic
+                        .lock()
+                        .expect("userspace local APIC lock poisoned")
+                        .write_msr(index, data, tsc_now)
+                        .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
                     info!(
                         "vcpu:{}:userspace-apic:wr:{:#x}={:#x} vtime:{now_ns:?}",
                         self.kvm_vcpu.index, index, data

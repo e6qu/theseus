@@ -217,6 +217,55 @@ impl UserspaceLapic {
     }
 }
 
+/// The APIC's MMIO page: the register window the guest maps at
+/// 0xFEE00000 in xAPIC mode. Every local-APIC register access is an MMIO
+/// exit against the same [`UserspaceLapic`] state the (intercepted)
+/// TSC-deadline MSR touches.
+pub const APIC_MMIO_BASE: u64 = 0xFEE0_0000;
+/// The APIC MMIO page size: 4 KiB, one page.
+pub const APIC_MMIO_SIZE: u64 = 0x1000;
+/// The xAPIC register window: MMIO offset = register offset, 32-bit
+/// little-endian; the x2APIC MSR index is `0x800 + offset / 16`.
+const APIC_MMIO_STRIDE: u64 = 16;
+
+/// The bus adapter exposing [`UserspaceLapic`] over its MMIO page. The
+/// second field is the guest's current virtual TSC tick, refreshed by the
+/// vCPU at every handled exit - the TMCCT countdown reads live state.
+pub struct UserspaceLapicMmio(
+    pub Arc<Mutex<UserspaceLapic>>,
+    pub Arc<std::sync::atomic::AtomicU64>,
+);
+
+impl BusDevice for UserspaceLapicMmio {
+    fn read(&mut self, _base: u64, offset: u64, data: &mut [u8]) {
+        let mut lapic = self.0.lock().expect("userspace local APIC lock poisoned");
+        let tsc_now = self
+            .1
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let index = MSR_X2APIC_FIRST + (offset / APIC_MMIO_STRIDE) as u32;
+        let value = lapic.read_msr(index, tsc_now).unwrap_or(0) as u32;
+        let bytes = value.to_le_bytes();
+        for (index, byte) in bytes.iter().enumerate().take(data.len()) {
+            data[index] = *byte;
+        }
+    }
+
+    fn write(&mut self, _base: u64, offset: u64, data: &[u8]) -> Option<Arc<std::sync::Barrier>> {
+        let mut raw = [0u8; 4];
+        for (index, byte) in data.iter().take(4).enumerate() {
+            raw[index] = *byte;
+        }
+        let value = u64::from(u32::from_le_bytes(raw));
+        let mut lapic = self.0.lock().expect("userspace local APIC lock poisoned");
+        let tsc_now = self
+            .1
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let index = MSR_X2APIC_FIRST + (offset / APIC_MMIO_STRIDE) as u32;
+        let _ = lapic.write_msr(index, value, tsc_now);
+        None
+    }
+}
+
 /// The guest's IOAPIC: the ACPI-declared MMIO page at 0xFEC00000. GSI
 /// devices assert pins here and an unmasked entry hands back the vector
 /// the guest programmed, for `KVM_INTERRUPT` delivery.

@@ -281,9 +281,28 @@ pub fn build_microvm_for_boot(
                 .map_err(|error| {
                     StartMicrovmError::TimerMsrFilter(error.to_string())
                 })?;
+            let lapic = Arc::new(Mutex::new(
+                crate::devices::userspace_apic::UserspaceLapic::default(),
+            ));
+            let apic_tsc_now = Arc::new(std::sync::atomic::AtomicU64::new(0));
             let ioapic = Arc::new(Mutex::new(
                 crate::devices::userspace_apic::UserspaceIoapic::default(),
             ));
+            vm.common
+                .mmio_bus
+                .insert(
+                    Arc::new(Mutex::new(
+                        crate::devices::userspace_apic::UserspaceLapicMmio(
+                            lapic.clone(),
+                            apic_tsc_now.clone(),
+                        ),
+                    )),
+                    crate::devices::userspace_apic::APIC_MMIO_BASE,
+                    crate::devices::userspace_apic::APIC_MMIO_SIZE,
+                )
+                .map_err(|error| {
+                    StartMicrovmError::TimerMsrFilter(error.to_string())
+                })?;
             vm.common
                 .mmio_bus
                 .insert(
@@ -299,7 +318,11 @@ pub fn build_microvm_for_boot(
                  and the IOAPIC are emulated and delivery rides KVM_INTERRUPT"
             );
             for vcpu in &mut vcpus {
-                vcpu.enable_userspace_apic(ioapic.clone());
+                vcpu.enable_userspace_apic(
+                    ioapic.clone(),
+                    lapic.clone(),
+                    apic_tsc_now.clone(),
+                );
             }
         }
         #[cfg(target_arch = "x86_64")]
