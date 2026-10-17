@@ -2155,6 +2155,13 @@ impl Vcpu {
                 // Notify that this KVM_RUN was interrupted.
                 Ok(VcpuEmulation::Interrupted)
             }
+            // A vmentry refused because events are blocked by MOV SS:
+            // the block clears after the guest's next instruction, so
+            // the run is simply retried.
+            Err(ref err) if err.errno() == libc::EAGAIN => {
+                self.kvm_vcpu.fd.set_kvm_immediate_exit(0);
+                Ok(VcpuEmulation::Handled)
+            }
             #[cfg(feature = "gdb")]
             Ok(VcpuExit::Debug(_)) => {
                 if let Some(gdb_event) = &self.gdb_event {
