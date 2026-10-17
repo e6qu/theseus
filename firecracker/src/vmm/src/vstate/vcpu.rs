@@ -2155,13 +2155,6 @@ impl Vcpu {
                 // Notify that this KVM_RUN was interrupted.
                 Ok(VcpuEmulation::Interrupted)
             }
-            // A vmentry refused because events are blocked by MOV SS:
-            // the block clears after the guest's next instruction, so
-            // the run is simply retried.
-            Err(ref err) if err.errno() == libc::EAGAIN => {
-                self.kvm_vcpu.fd.set_kvm_immediate_exit(0);
-                Ok(VcpuEmulation::Handled)
-            }
             #[cfg(feature = "gdb")]
             Ok(VcpuExit::Debug(_)) => {
                 if let Some(gdb_event) = &self.gdb_event {
@@ -3732,7 +3725,15 @@ fn handle_kvm_exit(
             // Documentation specifies that below kvm exits are considered
             // errors.
             VcpuExit::FailEntry(hardware_entry_failure_reason, cpu) => {
-                // Hardware entry failure.
+                // VMX entry-failure info 33: events blocked by MOV SS.
+                // The block clears after the guest's next instruction,
+                // so this vmentry refusal is retried, not fatal.
+                if hardware_entry_failure_reason & 0x7FFF_FFFF == 0x21 {
+                    warn!(
+                        "vmentry refused while events are blocked by MOV SS; retrying"
+                    );
+                    return Ok(VcpuEmulation::Handled);
+                }
                 METRICS.vcpu.failures.inc();
                 error!(
                     "Received KVM_EXIT_FAIL_ENTRY signal: {} on cpu {}",
