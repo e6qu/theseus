@@ -10,7 +10,7 @@ set -eu
 # the halt-frontier probes retain. It never enters the machine stream,
 # so replays stay exact.
 if [ -w /dev/kmsg ]; then
-  cat /proc/interrupts > /dev/kmsg 2>&1 || true
+  /bin/busybox cat /proc/interrupts > /dev/kmsg 2>&1 || true
 fi
 /bin/busybox stty -echo -opost </dev/ttyS0
 printf 'THES:M:42\n' >/dev/ttyS0
