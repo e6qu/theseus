@@ -216,19 +216,26 @@ fn configure_vcpus_for_boot(
         .virtual_time
         .as_ref()
         .is_some_and(|virtual_time| virtual_time.userspace_apic);
-    if machine_config
+    // The userspace APIC keeps the guest in xAPIC mode: its registers
+    // are the MMIO page, not MSRs. KVM's supported CPUID reports the
+    // host's x2APIC feature, so the bit is actively cleared, not just
+    // left unsteered.
+    let userspace_apic = machine_config
         .virtual_time
         .as_ref()
-        .is_some_and(|virtual_time| {
-            // The userspace APIC keeps the guest in xAPIC mode: its
-            // registers are the MMIO page, not MSRs.
-            virtual_time.filter_timer_msrs && !virtual_time.userspace_apic
-        })
+        .is_some_and(|virtual_time| virtual_time.userspace_apic);
+    if let Some(leaf_1) =
+        cpuid.get_mut(&crate::cpu_config::x86_64::cpuid::CpuidKey::leaf(1))
     {
-        if let Some(leaf_1) =
-            cpuid.get_mut(&crate::cpu_config::x86_64::cpuid::CpuidKey::leaf(1))
+        if machine_config
+            .virtual_time
+            .as_ref()
+            .is_some_and(|virtual_time| virtual_time.filter_timer_msrs)
         {
             leaf_1.result.ecx |= 1 << 21;
+        }
+        if userspace_apic {
+            leaf_1.result.ecx &= !(1 << 21);
         }
     }
 
