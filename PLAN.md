@@ -258,8 +258,10 @@ next actor and payload; guest reset is a terminal admission turn. Fixed-run
 replay enforces the complete stream; portable checkpoint-backed campaigns
 enforce its explicit host-input projection.
 
-The next slices, in order: fully deterministic in-kernel timer arming, then
-runnable guest entities, virtual-clock reads, and guest-side input consumption
+The next slices, in order: the userspace APIC (the settled arming
+frontier - deterministic in-kernel timer arming needs userspace local-vector
+injection), then runnable guest entities, virtual-clock reads, and
+guest-side input consumption
 between KVM exits. Controlled injection is not general interrupt determinism:
 the guest can still service an injected interrupt at an uncontrolled
 instruction boundary.
@@ -412,14 +414,19 @@ measurement, a KVM host, or a product decision - not on design.
    workload and budget. The decision resolves itself when accumulated
    runs show a yield delta favoring the seed - or provable ties at
    every budget, which retires the question.
-2. **The execution plane (Priority 1).** The arming arc (filter, arm
-   records, delivery pairing) is landed. The retained hold trace shows
-   the precise frontier: KVM's in-kernel irqchip delivers lapic-timer
-   interrupts without a userspace-visible turn (66 arms, zero recorded
-   deliveries), so hold-mode timer determinism requires the userspace
-   APIC ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)
-   records the full arc and the option analysis). Then runnable guest
-   entities and virtual-clock reads. The forks' remaining sliver
+2. **The execution plane (Priority 1).** The arming arc is settled:
+   the filter, the arm records, and the delivery pairing are landed,
+   and the halt-time delivery probe settled its own frontier with the
+   kernel's own account (`LOC: 0` - the in-kernel irqchip never
+   surfaces a userspace-asserted timer vector, so hold-mode timer
+   determinism requires the userspace APIC;
+   [deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)
+   records the full arc: the mechanism, four probed attempts with
+   their evidence, and the option analysis). The kernel-visible
+   diagnostic loop (kernel log and interrupt account on the COM2
+   debug console, retained per run) is standing infrastructure for
+   the next KVM-host slice. Then runnable guest entities and
+   virtual-clock reads. The forks' remaining sliver
    (executing from the nearest checkpoint) is analyzed in
    [checkpoint-addressed-forks.md](docs/design/checkpoint-addressed-forks.md).
 3. **Product operations (Priority 6).** A hosted campaign service on
