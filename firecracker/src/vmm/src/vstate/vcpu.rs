@@ -2182,7 +2182,7 @@ impl Vcpu {
                     // next KVM_RUN on this thread.
                     unsafe { *out = value };
                     info!(
-                        "vcpu:{}:userspace-apic:rd:{:#x}={value:#x} vtime:{now_ns:?}",
+                        "vcpu:{}:userspace-apic:rd:{:#x}={value:#x} tsc_now={tsc_now}",
                         self.kvm_vcpu.index, index
                     );
                     return Ok(VcpuEmulation::Handled);
@@ -2245,7 +2245,7 @@ impl Vcpu {
                         .write_msr(index, data, tsc_now)
                         .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
                     info!(
-                        "vcpu:{}:userspace-apic:wr:{:#x}={:#x} vtime:{now_ns:?}",
+                        "vcpu:{}:userspace-apic:wr:{:#x}={:#x} tsc_now={tsc_now}",
                         self.kvm_vcpu.index, index, data
                     );
                     return Ok(VcpuEmulation::Handled);
