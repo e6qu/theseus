@@ -1583,14 +1583,22 @@ impl Vcpu {
         if !self.userspace_apic {
             return;
         }
-        let Some(now_ns) = self.vclock.as_ref().map(|clock| clock.now_ns()) else {
-            return;
-        };
-        let Ok(tsc_khz) = self.kvm_vcpu.cached_tsc_khz() else {
-            return;
-        };
-        let tsc_now =
-            crate::vstate::vclock::VirtualClock::tsc_value(now_ns, tsc_khz);
+        // The guest's OWN TSC is the deadline scale: the arming write
+        // subtracted its live TSC read, and the TSC free-runs from the
+        // anchor at host rate - not the exit-driven virtual clock's
+        // tsc_value (the same base lesson the halt-time probe taught).
+        let tsc_now = self
+            .kvm_vcpu
+            .guest_tsc()
+            .unwrap_or_else(|_| {
+                let now_ns = self
+                    .vclock
+                    .as_ref()
+                    .map(|clock| clock.now_ns())
+                    .unwrap_or(0);
+                let tsc_khz = self.kvm_vcpu.cached_tsc_khz().unwrap_or(0);
+                crate::vstate::vclock::VirtualClock::tsc_value(now_ns, tsc_khz)
+            });
         self.apic_tsc_now
             .store(tsc_now, Ordering::Relaxed);
         if let Some(vector) = self
@@ -1599,6 +1607,10 @@ impl Vcpu {
             .expect("userspace local APIC lock poisoned")
             .timer_due(tsc_now)
         {
+            info!(
+                "vcpu:{}:userspace-apic:timer-due vector={vector} tsc_now={tsc_now}",
+                self.kvm_vcpu.index
+            );
             if let Err(error) = self
                 .machine_execution
                 .request_interrupt("lapic-timer", u32::from(vector), true)
@@ -2152,16 +2164,13 @@ impl Vcpu {
                     let out: *mut u64 = exit.data;
                     let index = exit.index;
                     drop(exit);
-                    let now_ns = self
-                        .vclock
-                        .as_ref()
-                        .map(|clock| clock.now_ns())
+                    let tsc_now = self
+                        .kvm_vcpu
+                        .guest_tsc()
+                        .map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })
                         .unwrap_or(0);
-                    let tsc_khz = self.kvm_vcpu.cached_tsc_khz().unwrap_or(0);
-                    let tsc_now = crate::vstate::vclock::VirtualClock::tsc_value(
-                        now_ns,
-                        tsc_khz,
-                    );
                     let value = self
                         .lapic
                         .lock()
@@ -2223,16 +2232,13 @@ impl Vcpu {
                 {
                     let (index, data) = (exit.index, exit.data);
                     drop(exit);
-                    let now_ns = self
-                        .vclock
-                        .as_ref()
-                        .map(|clock| clock.now_ns())
+                    let tsc_now = self
+                        .kvm_vcpu
+                        .guest_tsc()
+                        .map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })
                         .unwrap_or(0);
-                    let tsc_khz = self.kvm_vcpu.cached_tsc_khz().unwrap_or(0);
-                    let tsc_now = crate::vstate::vclock::VirtualClock::tsc_value(
-                        now_ns,
-                        tsc_khz,
-                    );
                     self.lapic
                         .lock()
                         .expect("userspace local APIC lock poisoned")
