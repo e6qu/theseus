@@ -1207,7 +1207,7 @@ mod tests {
         let msrs = vcpu.get_msrs(template.msr_index_iter())?;
         let msrs = apply_template_to_msrs(msrs, template)?;
         vcpu.configure_msrs_for_boot(&msrs, &configured_cpuid)?;
-        vcpu.configure_boot_state(vm.guest_memory(), entry_point)?;
+        vcpu.configure_boot_state(vm.guest_memory(), entry_point, false)?;
 
         Ok(())
     }
