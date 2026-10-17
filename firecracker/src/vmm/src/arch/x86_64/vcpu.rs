@@ -915,8 +915,10 @@ impl KvmVcpu {
             .fd
             .get_vcpu_events()
             .map_err(KvmVcpuError::VcpuGetVcpuEvents)?;
-        events.interrupt.pending = 0;
+        // The UAPI's `injected` carries the KVM_INTERRUPT-queued
+        // interrupt: zeroing it withdraws the pending vector.
         events.interrupt.injected = 0;
+        events.interrupt.nr = 0;
         self.fd
             .set_vcpu_events(&events)
             .map_err(KvmVcpuError::VcpuSetVcpuEvents)
