@@ -914,7 +914,7 @@ impl KvmVcpu {
         let mut events = self
             .fd
             .get_vcpu_events()
-            .map_err(KvmVcpuError::VcpuGetEvents)?;
+            .map_err(KvmVcpuError::VcpuGetVcpuEvents)?;
         events.interrupt.pending = 0;
         events.interrupt.injected = 0;
         self.fd
