@@ -35,7 +35,7 @@ use crate::pci::PciSBDF;
 use crate::pci::msix::MsixTableEntry;
 use crate::persist::CreateSnapshotError;
 use crate::vmm_config::snapshot::SnapshotType;
-use crate::vstate::bus::Bus;
+use crate::vstate::bus::{Bus, BusDevice};
 use crate::vstate::interrupts::{InterruptError, MsixVector, MsixVectorGroup};
 use crate::vstate::kvm::Kvm;
 use crate::vstate::memory::{
@@ -60,6 +60,20 @@ pub enum StartVcpusError {
 pub struct RoutingEntry {
     entry: kvm_irq_routing_entry,
     masked: bool,
+}
+
+/// Strong references keeping bus devices whose owners hold none: the
+/// bus stores weak handles, so an adapter with no other owner would
+/// silently drop out of its range.
+#[derive(Default)]
+pub struct BusKeepalives(
+    pub Mutex<Vec<Arc<Mutex<dyn BusDevice + Send>>>>,
+);
+
+impl std::fmt::Debug for BusKeepalives {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BusKeepalives")
+    }
 }
 
 /// Architecture independent parts of a VM.
@@ -88,6 +102,9 @@ pub struct VmCommon {
     pub machine_execution: Arc<MachineExecutionController>,
     /// Event fd written to by vCPUs on exit.
     pub vcpus_exit_evt: EventFd,
+    /// Strong references keeping bus devices whose owners hold none
+    /// (the bus itself stores weak references).
+    pub bus_keepalives: BusKeepalives,
 }
 
 /// Errors associated with the wrappers over KVM ioctls.
@@ -197,6 +214,7 @@ impl KvmVm {
             vcpus_handles: Mutex::new(Vec::new()),
             machine_execution: Arc::new(MachineExecutionController::default()),
             vcpus_exit_evt,
+            bus_keepalives: BusKeepalives(Mutex::new(Vec::new())),
         })
     }
 
@@ -289,18 +307,11 @@ impl KvmVm {
         //   without it the arming write never touches TMICT.
         let bitmap = [0u8, 0u8];
         let deadline_bitmap = [0u8];
-        // The whole x2APIC local range (0x800-0x83F) plus the APIC base
-        // MSR: the userspace APIC owns them all.
-        let apic_bitmap = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        // The APIC base MSR plus the TSC-deadline MSR: the registers
+        // themselves are the APIC's MMIO page.
         let apic_base_bitmap = [0u8];
         let ranges: Vec<MsrFilterRange> = if wide {
             vec![
-                MsrFilterRange {
-                    flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
-                    base: 0x800,
-                    msr_count: 0x40,
-                    bitmap: &apic_bitmap,
-                },
                 MsrFilterRange {
                     flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
                     base: 0x1B,

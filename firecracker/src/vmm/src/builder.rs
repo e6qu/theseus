@@ -281,25 +281,87 @@ pub fn build_microvm_for_boot(
                 .map_err(|error| {
                     StartMicrovmError::TimerMsrFilter(error.to_string())
                 })?;
+            let lapic = Arc::new(Mutex::new(
+                crate::devices::userspace_apic::UserspaceLapic::default(),
+            ));
+            let apic_tsc_now = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let apic_tsc_khz = Arc::new(std::sync::atomic::AtomicU32::new(0));
             let ioapic = Arc::new(Mutex::new(
                 crate::devices::userspace_apic::UserspaceIoapic::default(),
             ));
+            // The bus stores weak references: the adapters need strong
+            // owners or the lookups miss.
+            let apic_mmio: Arc<Mutex<dyn crate::vstate::bus::BusDevice>> =
+                Arc::new(Mutex::new(
+                    crate::devices::userspace_apic::UserspaceLapicMmio(
+                        lapic.clone(),
+                        apic_tsc_now.clone(),
+                        apic_tsc_khz.clone(),
+                    ),
+                ));
+            let ioapic_mmio: Arc<Mutex<dyn crate::vstate::bus::BusDevice>> =
+                Arc::new(Mutex::new(
+                    crate::devices::userspace_apic::UserspaceIoapicBus(
+                        ioapic.clone(),
+                    ),
+                ));
+            vm.common
+                .bus_keepalives
+                .0
+                .lock()
+                .expect("bus keepalive lock poisoned")
+                .push(apic_mmio.clone());
+            vm.common
+                .bus_keepalives
+                .0
+                .lock()
+                .expect("bus keepalive lock poisoned")
+                .push(ioapic_mmio.clone());
             vm.common
                 .mmio_bus
                 .insert(
-                    ioapic.clone(),
+                    apic_mmio,
+                    crate::devices::userspace_apic::APIC_MMIO_BASE,
+                    crate::devices::userspace_apic::APIC_MMIO_SIZE,
+                )
+                .map_err(|error| {
+                    StartMicrovmError::TimerMsrFilter(error.to_string())
+                })?;
+            vm.common
+                .mmio_bus
+                .insert(
+                    ioapic_mmio,
                     crate::devices::userspace_apic::IOAPIC_MMIO_BASE,
                     crate::devices::userspace_apic::IOAPIC_MMIO_SIZE,
                 )
                 .map_err(|error| {
                     StartMicrovmError::TimerMsrFilter(error.to_string())
                 })?;
+            {
+                let mut probe = [0u8; 4];
+                match vm.common.mmio_bus.read(
+                    crate::devices::userspace_apic::APIC_MMIO_BASE + 0x30,
+                    &mut probe,
+                ) {
+                    Ok(()) => crate::logger::info!(
+                        "apic page probe: found, version bytes {probe:02x?}"
+                    ),
+                    Err(error) => crate::logger::info!(
+                        "apic page probe: MISSING after insert: {error}"
+                    ),
+                }
+            }
             crate::logger::info!(
                 "userspace APIC installed: no in-kernel irqchip; the local APIC \
                  and the IOAPIC are emulated and delivery rides KVM_INTERRUPT"
             );
             for vcpu in &mut vcpus {
-                vcpu.enable_userspace_apic(ioapic.clone());
+                vcpu.enable_userspace_apic(
+                    ioapic.clone(),
+                    lapic.clone(),
+                    apic_tsc_now.clone(),
+                    apic_tsc_khz.clone(),
+                );
             }
         }
         #[cfg(target_arch = "x86_64")]

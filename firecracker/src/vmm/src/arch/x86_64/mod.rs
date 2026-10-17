@@ -212,15 +212,30 @@ fn configure_vcpus_for_boot(
     // MSRs the filter intercepts. Expose the x2APIC CPUID feature bit
     // (CPUID.01H:ECX[21]); the kernel then enables x2APIC through
     // IA32_APIC_BASE, which KVM's in-kernel APIC handles on its own.
-    if machine_config
+    let userspace_apic = machine_config
         .virtual_time
         .as_ref()
-        .is_some_and(|virtual_time| virtual_time.filter_timer_msrs)
+        .is_some_and(|virtual_time| virtual_time.userspace_apic);
+    // The userspace APIC keeps the guest in xAPIC mode: its registers
+    // are the MMIO page, not MSRs. KVM's supported CPUID reports the
+    // host's x2APIC feature, so the bit is actively cleared, not just
+    // left unsteered.
+    let userspace_apic = machine_config
+        .virtual_time
+        .as_ref()
+        .is_some_and(|virtual_time| virtual_time.userspace_apic);
+    if let Some(leaf_1) =
+        cpuid.get_mut(&crate::cpu_config::x86_64::cpuid::CpuidKey::leaf(1))
     {
-        if let Some(leaf_1) =
-            cpuid.get_mut(&crate::cpu_config::x86_64::cpuid::CpuidKey::leaf(1))
+        if machine_config
+            .virtual_time
+            .as_ref()
+            .is_some_and(|virtual_time| virtual_time.filter_timer_msrs)
         {
             leaf_1.result.ecx |= 1 << 21;
+        }
+        if userspace_apic {
+            leaf_1.result.ecx &= !(1 << 21);
         }
     }
 
@@ -244,7 +259,8 @@ fn configure_vcpus_for_boot(
     for (vcpu, configured_cpuid) in vcpus.iter_mut().zip(&configured_cpuids) {
         vcpu.kvm_vcpu
             .configure_msrs_for_boot(&msrs, configured_cpuid)?;
-        vcpu.kvm_vcpu.configure_boot_state(guest_mem, entry_point)?;
+        vcpu.kvm_vcpu
+            .configure_boot_state(guest_mem, entry_point, userspace_apic)?;
     }
 
     Ok(())

@@ -20,6 +20,11 @@ tick_ns = 1000000
 exits_per_tick = 10
 hold_kernel_timers = true # amd64 only; rejected before boot elsewhere.
 filter_timer_msrs = true # Stage 1: observe every timer-MSR arming write.
+# The userspace APIC probe (`userspace_apic = true`): no in-kernel
+# irqchip - the kernel boots against Theseus's local APIC and IOAPIC,
+# arms the TSC-deadline timer, and takes ticks at virtual positions.
+# Its current frontier: a KVM_EXIT_FAIL_ENTRY (invalid guest state) at
+# the delivery - see design/deterministic-timer-arming.md.
 # Stage 3 probe context (the flag above): the arming write is
 # blocked from the in-kernel LAPIC and each interrupt is delivered at its
 # virtual position. The wake/jump/inject chain works end to end; the open
