@@ -1368,8 +1368,6 @@ pub struct Vcpu {
     /// The most recent userspace timer vector, for re-queueing a
     /// delivery that a vmentry refusal deferred.
     last_timer_vector: Option<u8>,
-    /// The vector a halt's wake thread will deliver.
-    pending_wake_vector: Option<u8>,
 }
 
 /// States of the vCPU thread's run loop.
@@ -1443,7 +1441,6 @@ impl Vcpu {
 
             ioapic: None,
             last_timer_vector: None,
-            pending_wake_vector: None,
             timer_msrs_filtered: false,
             timer_deadline_ticks: None,
         })
@@ -2094,10 +2091,15 @@ impl Vcpu {
         if self.machine_execution.timer_wake_requested() {
             self.machine_execution.clear_timer_wake();
             if self.userspace_apic {
-                if let Some(vector) = self.pending_wake_vector.take() {
-                    let tsc_now = self.kvm_vcpu.guest_tsc().unwrap_or(0);
-                    self.apic_tsc_now
-                        .store(tsc_now, Ordering::Relaxed);
+                let tsc_now = self.kvm_vcpu.guest_tsc().unwrap_or(0);
+                self.apic_tsc_now
+                    .store(tsc_now, Ordering::Relaxed);
+                if let Some(vector) = self
+                    .lapic
+                    .lock()
+                    .expect("userspace local APIC lock poisoned")
+                    .timer_due(tsc_now)
+                {
                     info!(
                         "vcpu:{}:userspace-apic:wake vector={vector} tsc_now={tsc_now}",
                         self.kvm_vcpu.index
@@ -2290,6 +2292,40 @@ impl Vcpu {
                         "vcpu:{}:userspace-apic:wr:{:#x}={:#x} tsc_now={tsc_now}",
                         self.kvm_vcpu.index, index, data
                     );
+                    // The arm schedules its own wake: KVM emulates the
+                    // halt in-kernel and never surfaces the boundary, so
+                    // the delivery needs a host-paced wake that fires at
+                    // the deadline whether the guest is running, halted,
+                    // or blocked in KVM_RUN.
+                    if index == MSR_IA32_TSC_DEADLINE && data != 0 {
+                        let tsc_khz = self
+                            .kvm_vcpu
+                            .cached_tsc_khz()
+                            .map_err(|error| {
+                                VcpuError::UnhandledKvmExit(error.to_string())
+                            })
+                            .unwrap_or(0);
+                        let machine_execution =
+                            Arc::clone(&self.machine_execution);
+                        let generation = Arc::clone(&self.timer_arm_generation);
+                        let arm_generation =
+                            generation.fetch_add(1, Ordering::SeqCst) + 1;
+                        std::thread::spawn(move || {
+                            let interval_ns =
+                                data.saturating_sub(tsc_now) * 1_000_000
+                                    / u64::from(tsc_khz.max(1));
+                            std::thread::sleep(Duration::from_nanos(
+                                interval_ns,
+                            ));
+                            // A stale wake (a newer arm superseded this
+                            // one) must not deliver early.
+                            if generation.load(Ordering::SeqCst)
+                                == arm_generation
+                            {
+                                machine_execution.request_timer_wake();
+                            }
+                        });
+                    }
                     return Ok(VcpuEmulation::Handled);
                 }
                 // Copy the exit's payload out and drop the run-buffer
@@ -2555,40 +2591,12 @@ impl Vcpu {
     #[cfg(target_arch = "x86_64")]
     fn handle_hlt_exit(&mut self) -> Result<VcpuEmulation, VcpuError> {
         if self.userspace_apic {
-            // The halt boundary: the guest's TSC free-runs, so a pending
-            // deadline arrives in host time - a wake thread sleeps the
-            // remaining interval and the delivery rides the wake, waking
-            // the halted vCPU at its own deadline instead of deadlocking
-            // in a halt with no exits to serve it.
+            // The halt boundary: KVM emulates the halt in-kernel and this
+            // exit rarely surfaces. The arm path schedules the deadline's
+            // wake thread, whose kick breaks the halt at the deadline.
             let tsc_now = self.kvm_vcpu.guest_tsc().unwrap_or(0);
             self.apic_tsc_now
                 .store(tsc_now, Ordering::Relaxed);
-            let halt_delivery = self
-                .lapic
-                .lock()
-                .expect("userspace local APIC lock poisoned")
-                .halt_due(tsc_now);
-            info!(
-                "vcpu:{}:userspace-apic:hlt tsc_now={tsc_now} delivery={halt_delivery:?}",
-                self.kvm_vcpu.index
-            );
-            if let Some((vector, to_go_ticks)) = halt_delivery {
-                let tsc_khz = self.kvm_vcpu.cached_tsc_khz().unwrap_or(0);
-                let machine_execution = Arc::clone(&self.machine_execution);
-                let generation = Arc::clone(&self.timer_arm_generation);
-                let arm_generation =
-                    generation.fetch_add(1, Ordering::SeqCst) + 1;
-                std::thread::spawn(move || {
-                    let interval_ns =
-                        to_go_ticks * 1_000_000 / u64::from(tsc_khz.max(1));
-                    std::thread::sleep(Duration::from_nanos(interval_ns));
-                    if generation.load(Ordering::SeqCst) == arm_generation {
-                        machine_execution.request_timer_wake();
-                    }
-                });
-                // Stash the vector for the wake's delivery.
-                self.pending_wake_vector = Some(vector);
-            }
             return Ok(VcpuEmulation::Handled);
         }
         if !self.hold_kernel_timers || !self.timer_msrs_filtered {
