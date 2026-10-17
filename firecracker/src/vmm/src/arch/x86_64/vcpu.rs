@@ -906,6 +906,24 @@ impl KvmVcpu {
         Ok(Some(vector))
     }
 
+    /// Withdraw a pending user-injected interrupt. A vmentry refused
+    /// while events are blocked by MOV SS leaves the interrupt queued in
+    /// KVM; the delivery re-queues it after the withdrawal instead of
+    /// racing the block.
+    pub fn withdraw_user_interrupt(&self) -> Result<(), KvmVcpuError> {
+        let mut events = self
+            .fd
+            .get_vcpu_events()
+            .map_err(KvmVcpuError::VcpuGetVcpuEvents)?;
+        // The UAPI's `injected` carries the KVM_INTERRUPT-queued
+        // interrupt: zeroing it withdraws the pending vector.
+        events.interrupt.injected = 0;
+        events.interrupt.nr = 0;
+        self.fd
+            .set_vcpu_events(&events)
+            .map_err(KvmVcpuError::VcpuSetVcpuEvents)
+    }
+
     /// Queue `vector` for delivery on the next guest entry through
     /// KVM_INTERRUPT. Returns `false` when KVM already holds a pending
     /// user-injected interrupt; the held delivery then stays pending in KVM

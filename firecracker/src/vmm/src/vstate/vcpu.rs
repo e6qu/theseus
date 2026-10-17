@@ -1366,6 +1366,9 @@ pub struct Vcpu {
     apic_tsc_khz: Arc<AtomicU32>,
     /// The IOAPIC state for the userspace APIC mode.
     ioapic: Option<Arc<Mutex<crate::devices::userspace_apic::UserspaceIoapic>>>,
+    /// The most recent userspace timer vector, for re-queueing a
+    /// delivery that a vmentry refusal deferred.
+    last_timer_vector: Option<u8>,
 }
 
 /// States of the vCPU thread's run loop.
@@ -1438,6 +1441,7 @@ impl Vcpu {
             apic_tsc_now: Arc::new(AtomicU64::new(0)),
             apic_tsc_khz: Arc::new(AtomicU32::new(0)),
             ioapic: None,
+            last_timer_vector: None,
             timer_msrs_filtered: false,
             timer_deadline_ticks: None,
         })
@@ -1611,6 +1615,7 @@ impl Vcpu {
                 "vcpu:{}:userspace-apic:timer-due vector={vector} vtime={now_ns}",
                 self.kvm_vcpu.index
             );
+            self.last_timer_vector = Some(vector);
             if let Err(error) = self
                 .machine_execution
                 .request_interrupt("lapic-timer", u32::from(vector), true)
@@ -2450,13 +2455,36 @@ impl Vcpu {
                 );
                 Ok(VcpuEmulation::Handled)
             }
-            emulation_result => handle_kvm_exit_recorded(
-                &mut self.kvm_vcpu.peripherals,
-                emulation_result,
-                self.kvm_vcpu.index,
-                &self.execution_ledger,
-                &self.machine_execution,
-            ),
+            emulation_result => {
+                let outcome = handle_kvm_exit_recorded(
+                    &mut self.kvm_vcpu.peripherals,
+                    emulation_result,
+                    self.kvm_vcpu.index,
+                    &self.execution_ledger,
+                    &self.machine_execution,
+                );
+                // A vmentry refused while events are blocked by MOV SS:
+                // withdraw the queued interrupt so the block can clear,
+                // and re-queue the tick for the next boundary.
+                if let Err(VcpuError::FaultyKvmExit(detail)) = &outcome
+                    && detail.contains("blocked by MOV SS")
+                {
+                    if let Err(error) =
+                        self.kvm_vcpu.withdraw_user_interrupt()
+                    {
+                        error!("Failed to withdraw the blocked interrupt: {error:?}");
+                    }
+                    if let Some(vector) = self.last_timer_vector {
+                        let _ = self.machine_execution.request_interrupt(
+                            "lapic-timer",
+                            u32::from(vector),
+                            true,
+                        );
+                    }
+                    return Ok(VcpuEmulation::Handled);
+                }
+                outcome
+            }
         }
     }
 
@@ -3725,7 +3753,15 @@ fn handle_kvm_exit(
             // Documentation specifies that below kvm exits are considered
             // errors.
             VcpuExit::FailEntry(hardware_entry_failure_reason, cpu) => {
-                // Hardware entry failure.
+                // VMX entry-failure info 33: events blocked by MOV SS.
+                // The caller withdraws the queued interrupt and re-queues
+                // the delivery at the next boundary.
+                if hardware_entry_failure_reason & 0x7FFF_FFFF == 0x21 {
+                    return Err(VcpuError::FaultyKvmExit(
+                        "vmentry refused while events are blocked by MOV SS"
+                            .to_owned(),
+                    ));
+                }
                 METRICS.vcpu.failures.inc();
                 error!(
                     "Received KVM_EXIT_FAIL_ENTRY signal: {} on cpu {}",

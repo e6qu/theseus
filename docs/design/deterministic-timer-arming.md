@@ -139,7 +139,19 @@ absolutes break at every rewrite). **The current frontier:** the timer
    delivery + kick sequence on the no-irqchip vCPU. The next iteration
    dumps the segment attributes and the vCPU events beside the
    registers to decide between a KVM unrestricted-guest quirk and an
-   injection-path state save. The flag ships off; the default
+   injection-path state save. The MOV-SS refusal resolved as designed:
+   the injected tick is withdrawn through the vCPU events and re-queued
+   at the next boundary. The deeper finding followed immediately: the
+   tick stream dies at ~10 ticks, every run, at the same kernel line -
+   **the kernel's LAPIC-clock calibration measures the TSC delta across
+   ticks, and the quantum-boundary TSC rewrites distort that measure**,
+   so the calibrated period is wrong and the clockevents core stops
+   trusting the device. The userspace APIC therefore needs its time
+   base unified first: either the guest's TSC free-runs (a probe-mode
+   cadence, host-paced) or the virtual-clock reads reach the guest's
+   own timer arithmetic (the design's next slice) so calibration
+   measures the virtual rate. That unification is the remaining work
+   before the flag can flip; it ships off meanwhile, and the default
    in-kernel-irqchip paths are untouched and green.
 
 ### C. Re-arm at boundaries without interception (rejected)
