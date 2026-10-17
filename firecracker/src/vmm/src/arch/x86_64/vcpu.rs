@@ -369,11 +369,16 @@ impl KvmVcpu {
         &self,
         guest_mem: &GuestMemoryMmap,
         kernel_entry_point: EntryPoint,
+        userspace_apic: bool,
     ) -> Result<(), KvmVcpuConfigureError> {
         crate::arch::x86_64::regs::setup_regs(&self.fd, kernel_entry_point)?;
         crate::arch::x86_64::regs::setup_fpu(&self.fd)?;
         crate::arch::x86_64::regs::setup_sregs(guest_mem, &self.fd, kernel_entry_point.protocol)?;
-        crate::arch::x86_64::interrupts::set_lint(&self.fd)?;
+        // The LVT LINT0/LINT1 routing lives in the in-kernel LAPIC page;
+        // with the userspace APIC there is none to configure.
+        if !userspace_apic {
+            crate::arch::x86_64::interrupts::set_lint(&self.fd)?;
+        }
         Ok(())
     }
 
