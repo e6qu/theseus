@@ -924,6 +924,24 @@ impl KvmVcpu {
             .map_err(KvmVcpuError::VcpuSetVcpuEvents)
     }
 
+    /// Mark `vector` as the pending user interrupt through
+    /// KVM_SET_VCPU_EVENTS: the documented no-irqchip delivery path,
+    /// where KVM injects it at the guest's next enabled window (and
+    /// wakes a halted vCPU).
+    pub fn inject_vector_via_events(&self, vector: u8) -> Result<(), KvmVcpuError> {
+        let mut events = self
+            .fd
+            .get_vcpu_events()
+            .map_err(KvmVcpuError::VcpuGetVcpuEvents)?;
+        events.interrupt.injected = 1;
+        events.interrupt.nr = vector;
+        events.interrupt.soft = 0;
+        events.interrupt.shadow = 0;
+        self.fd
+            .set_vcpu_events(&events)
+            .map_err(KvmVcpuError::VcpuSetVcpuEvents)
+    }
+
     /// Queue `vector` for delivery on the next guest entry through
     /// KVM_INTERRUPT. Returns `false` when KVM already holds a pending
     /// user-injected interrupt; the held delivery then stays pending in KVM

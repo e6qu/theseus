@@ -1614,6 +1614,10 @@ impl Vcpu {
                 self.kvm_vcpu.index
             );
             self.last_timer_vector = Some(vector);
+            if let Err(error) = self.kvm_vcpu.inject_vector_via_events(vector) {
+                error!("Failed to mark the userspace timer vector: {error:?}");
+                METRICS.vcpu.failures.inc();
+            }
             if let Err(error) = self
                 .machine_execution
                 .request_interrupt("lapic-timer", u32::from(vector), true)
@@ -2104,6 +2108,11 @@ impl Vcpu {
                         "vcpu:{}:userspace-apic:wake vector={vector} tsc_now={tsc_now}",
                         self.kvm_vcpu.index
                     );
+                    self.kvm_vcpu
+                        .inject_vector_via_events(vector)
+                        .map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })?;
                     self.machine_execution
                         .request_interrupt("lapic-timer", u32::from(vector), true)
                         .map_err(|error| {
