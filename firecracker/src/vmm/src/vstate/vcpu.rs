@@ -2568,6 +2568,10 @@ impl Vcpu {
                 .lock()
                 .expect("userspace local APIC lock poisoned")
                 .halt_due(tsc_now);
+            info!(
+                "vcpu:{}:userspace-apic:hlt tsc_now={tsc_now} delivery={halt_delivery:?}",
+                self.kvm_vcpu.index
+            );
             if let Some((vector, to_go_ticks)) = halt_delivery {
                 let tsc_khz = self.kvm_vcpu.cached_tsc_khz().unwrap_or(0);
                 let machine_execution = Arc::clone(&self.machine_execution);
