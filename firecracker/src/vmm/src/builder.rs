@@ -285,7 +285,6 @@ pub fn build_microvm_for_boot(
                 crate::devices::userspace_apic::UserspaceLapic::default(),
             ));
             let apic_tsc_now = Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let apic_tsc_khz = Arc::new(std::sync::atomic::AtomicU32::new(0));
             let ioapic = Arc::new(Mutex::new(
                 crate::devices::userspace_apic::UserspaceIoapic::default(),
             ));
@@ -296,7 +295,6 @@ pub fn build_microvm_for_boot(
                     crate::devices::userspace_apic::UserspaceLapicMmio(
                         lapic.clone(),
                         apic_tsc_now.clone(),
-                        apic_tsc_khz.clone(),
                     ),
                 ));
             let ioapic_mmio: Arc<Mutex<dyn crate::vstate::bus::BusDevice>> =
@@ -360,7 +358,6 @@ pub fn build_microvm_for_boot(
                     ioapic.clone(),
                     lapic.clone(),
                     apic_tsc_now.clone(),
-                    apic_tsc_khz.clone(),
                 );
             }
         }
