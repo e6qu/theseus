@@ -20,6 +20,7 @@ tick_ns = 1000000
 exits_per_tick = 10
 hold_kernel_timers = true # amd64 only; rejected before boot elsewhere.
 filter_timer_msrs = true # Stage 1: observe every timer-MSR arming write.
+userspace_apic = true # The userspace APIC: no in-kernel irqchip at all.
 # Stage 3 probe context (the flag above): the arming write is
 # blocked from the in-kernel LAPIC and each interrupt is delivered at its
 # virtual position. The wake/jump/inject chain works end to end; the open
