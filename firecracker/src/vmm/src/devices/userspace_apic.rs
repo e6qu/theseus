@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::vstate::bus::BusDevice;
+use crate::vstate::vclock::VirtualClock;
 
 /// `IA32_APIC_BASE`: the guest's local APIC base and mode bits.
 pub const MSR_IA32_APIC_BASE: u32 = 0x1B;
