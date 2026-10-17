@@ -257,6 +257,14 @@ impl KvmVm {
     /// page, so guest-visible behavior is unchanged.
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn install_timer_msr_filter(&self) -> Result<(), errno::Error> {
+        self.install_msr_filter(false)
+    }
+
+    /// Installs the MSR filter, wide when the userspace APIC owns the
+    /// whole local-APIC MSR range (plus the APIC base) instead of just
+    /// the timer registers.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn install_msr_filter(&self, wide: bool) -> Result<(), errno::Error> {
         use kvm_ioctls::{Cap, MsrFilterDefaultAction, MsrFilterRangeFlags};
 
         // The capability routes filtered MSR accesses to userspace exits.
@@ -281,9 +289,33 @@ impl KvmVm {
         //   without it the arming write never touches TMICT.
         let bitmap = [0u8, 0u8];
         let deadline_bitmap = [0u8];
-        self.fd().set_msr_filter(
-            MsrFilterDefaultAction::ALLOW,
-            &[
+        // The whole x2APIC local range (0x800-0x83F) plus the APIC base
+        // MSR: the userspace APIC owns them all.
+        let apic_bitmap = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let apic_base_bitmap = [0u8];
+        let ranges: Vec<MsrFilterRange> = if wide {
+            vec![
+                MsrFilterRange {
+                    flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
+                    base: 0x800,
+                    msr_count: 0x40,
+                    bitmap: &apic_bitmap,
+                },
+                MsrFilterRange {
+                    flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
+                    base: 0x1B,
+                    msr_count: 1,
+                    bitmap: &apic_base_bitmap,
+                },
+                MsrFilterRange {
+                    flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
+                    base: 0x6E0,
+                    msr_count: 1,
+                    bitmap: &deadline_bitmap,
+                },
+            ]
+        } else {
+            vec![
                 MsrFilterRange {
                     flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
                     base: 0x838,
@@ -296,8 +328,9 @@ impl KvmVm {
                     msr_count: 1,
                     bitmap: &deadline_bitmap,
                 },
-            ],
-        )
+            ]
+        };
+        self.fd().set_msr_filter(MsrFilterDefaultAction::ALLOW, &ranges)
     }
 
     /// Return the deterministic interrupt controller when this VM uses it.

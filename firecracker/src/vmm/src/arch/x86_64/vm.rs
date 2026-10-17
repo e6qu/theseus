@@ -67,6 +67,10 @@ pub struct KvmVm {
     xsave2_size: Option<usize>,
     /// Port IO bus
     pub pio_bus: Arc<Bus>,
+    /// The userspace APIC mode: no in-kernel irqchip - the local APIC
+    /// and the IOAPIC are emulated in Theseus and delivery goes through
+    /// `KVM_INTERRUPT`.
+    pub userspace_apic: bool,
 }
 
 impl KvmVm {
@@ -110,12 +114,17 @@ impl KvmVm {
             msrs_to_save,
             xsave2_size,
             pio_bus,
+            userspace_apic: false,
         })
     }
 
     /// Pre-vCPU creation setup.
     pub fn arch_pre_create_vcpus(&mut self, _: u8) -> Result<(), KvmVmError> {
-        // For x86_64 we need to create the interrupt controller before calling `KVM_CREATE_VCPUS`
+        // For x86_64 we need to create the interrupt controller before calling `KVM_CREATE_VCPUS` -
+        // unless the userspace APIC mode owns it.
+        if self.userspace_apic {
+            return Ok(());
+        }
         self.setup_irqchip()
     }
 

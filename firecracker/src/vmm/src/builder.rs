@@ -210,6 +210,7 @@ fn validate_deterministic_config(
             virtual_time.hold_kernel_timers
                 || virtual_time.filter_timer_msrs
                 || virtual_time.halt_timer_delivery
+                || virtual_time.userspace_apic
         })
     {
         return Err(StartMicrovmError::HoldKernelTimersNotSupportedOnArch);
@@ -258,7 +259,13 @@ pub fn build_microvm_for_boot(
     let kvm = Kvm::new(cpu_template.kvm_capabilities.clone())?;
     // Set up KVM VM and register memory regions.
     // Build custom CPU config if a custom template is provided.
+    let userspace_apic = vm_resources
+        .machine_config
+        .virtual_time
+        .as_ref()
+        .is_some_and(|virtual_time| virtual_time.userspace_apic);
     let mut vm = KvmVm::new(kvm)?;
+    vm.userspace_apic = userspace_apic;
     let mut vcpus = vm.create_vcpus(vm_resources.machine_config.vcpu_count)?;
 
     // Theseus (Track B′): enable deterministic virtual time. The guest clock
@@ -269,7 +276,34 @@ pub fn build_microvm_for_boot(
         #[cfg(target_arch = "x86_64")]
         vm.set_virtual_clock_ns(0).map_err(VmError::Arch)?;
         #[cfg(target_arch = "x86_64")]
-        if virtual_time.filter_timer_msrs {
+        if userspace_apic {
+            vm.install_msr_filter(true)
+                .map_err(|error| {
+                    StartMicrovmError::TimerMsrFilter(error.to_string())
+                })?;
+            let ioapic = Arc::new(Mutex::new(
+                crate::devices::userspace_apic::UserspaceIoapic::default(),
+            ));
+            vm.common
+                .mmio_bus
+                .insert(
+                    ioapic.clone(),
+                    crate::devices::userspace_apic::IOAPIC_MMIO_BASE,
+                    crate::devices::userspace_apic::IOAPIC_MMIO_SIZE,
+                )
+                .map_err(|error| {
+                    StartMicrovmError::TimerMsrFilter(error.to_string())
+                })?;
+            crate::logger::info!(
+                "userspace APIC installed: no in-kernel irqchip; the local APIC \
+                 and the IOAPIC are emulated and delivery rides KVM_INTERRUPT"
+            );
+            for vcpu in &mut vcpus {
+                vcpu.enable_userspace_apic(ioapic.clone());
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        if virtual_time.filter_timer_msrs && !userspace_apic {
             vm.install_timer_msr_filter()
                 .map_err(|error| {
                     StartMicrovmError::TimerMsrFilter(error.to_string())
@@ -283,9 +317,9 @@ pub fn build_microvm_for_boot(
             vcpu.enable_virtual_time(
                 virtual_time.tick_ns,
                 virtual_time.exits_per_tick,
-                virtual_time.hold_kernel_timers,
-                virtual_time.filter_timer_msrs,
-                virtual_time.halt_timer_delivery,
+                virtual_time.hold_kernel_timers && !userspace_apic,
+                virtual_time.filter_timer_msrs || userspace_apic,
+                virtual_time.halt_timer_delivery && !userspace_apic,
             );
             // aarch64: the counter offset can only be written after the
             // KVM_ARM_VCPU_INIT ioctl, which happens at vCPU configure time —
@@ -1045,6 +1079,7 @@ pub(crate) mod tests {
             hold_kernel_timers: false,
             filter_timer_msrs: false,
             halt_timer_delivery: false,
+            userspace_apic: false,
         });
         resources
     }

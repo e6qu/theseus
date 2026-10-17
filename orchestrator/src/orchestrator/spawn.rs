@@ -547,6 +547,7 @@ mod tests {
             hold_kernel_timers: false,
             filter_timer_msrs: false,
             halt_timer_delivery: false,
+            userspace_apic: false,
         });
         let vt_run1 = boot_and_read_vtime(vt);
         let vt_run2 = boot_and_read_vtime(vt);
