@@ -35,7 +35,7 @@ use crate::pci::PciSBDF;
 use crate::pci::msix::MsixTableEntry;
 use crate::persist::CreateSnapshotError;
 use crate::vmm_config::snapshot::SnapshotType;
-use crate::vstate::bus::Bus;
+use crate::vstate::bus::{Bus, BusDevice};
 use crate::vstate::interrupts::{InterruptError, MsixVector, MsixVectorGroup};
 use crate::vstate::kvm::Kvm;
 use crate::vstate::memory::{
@@ -88,6 +88,9 @@ pub struct VmCommon {
     pub machine_execution: Arc<MachineExecutionController>,
     /// Event fd written to by vCPUs on exit.
     pub vcpus_exit_evt: EventFd,
+    /// Strong references keeping bus devices whose owners hold none
+    /// (the bus itself stores weak references).
+    pub bus_keepalives: Mutex<Vec<Arc<Mutex<dyn BusDevice>>>>,
 }
 
 /// Errors associated with the wrappers over KVM ioctls.
@@ -197,6 +200,7 @@ impl KvmVm {
             vcpus_handles: Mutex::new(Vec::new()),
             machine_execution: Arc::new(MachineExecutionController::default()),
             vcpus_exit_evt,
+            bus_keepalives: Mutex::new(Vec::new()),
         })
     }
 

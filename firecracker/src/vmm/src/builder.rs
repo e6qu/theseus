@@ -288,15 +288,31 @@ pub fn build_microvm_for_boot(
             let ioapic = Arc::new(Mutex::new(
                 crate::devices::userspace_apic::UserspaceIoapic::default(),
             ));
+            // The bus stores weak references: the adapters need strong
+            // owners or the lookups miss.
+            let apic_mmio: Arc<Mutex<dyn crate::vstate::bus::BusDevice>> =
+                Arc::new(Mutex::new(
+                    crate::devices::userspace_apic::UserspaceLapicMmio(
+                        lapic.clone(),
+                        apic_tsc_now.clone(),
+                    ),
+                ));
+            let ioapic_mmio: Arc<Mutex<dyn crate::vstate::bus::BusDevice>> =
+                Arc::new(Mutex::new(ioapic.clone()));
+            vm.common
+                .bus_keepalives
+                .lock()
+                .expect("bus keepalive lock poisoned")
+                .push(apic_mmio.clone());
+            vm.common
+                .bus_keepalives
+                .lock()
+                .expect("bus keepalive lock poisoned")
+                .push(ioapic_mmio.clone());
             vm.common
                 .mmio_bus
                 .insert(
-                    Arc::new(Mutex::new(
-                        crate::devices::userspace_apic::UserspaceLapicMmio(
-                            lapic.clone(),
-                            apic_tsc_now.clone(),
-                        ),
-                    )),
+                    apic_mmio,
                     crate::devices::userspace_apic::APIC_MMIO_BASE,
                     crate::devices::userspace_apic::APIC_MMIO_SIZE,
                 )
@@ -306,7 +322,7 @@ pub fn build_microvm_for_boot(
             vm.common
                 .mmio_bus
                 .insert(
-                    ioapic.clone(),
+                    ioapic_mmio,
                     crate::devices::userspace_apic::IOAPIC_MMIO_BASE,
                     crate::devices::userspace_apic::IOAPIC_MMIO_SIZE,
                 )
