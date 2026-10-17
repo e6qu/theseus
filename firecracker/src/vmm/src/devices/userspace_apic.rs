@@ -73,15 +73,46 @@ pub struct UserspaceLapic {
     initial_count: u64,
     divide_config: u64,
     icr: u64,
-    /// The absolute virtual TSC tick the TSC-deadline mode fires at.
+    /// The virtual-clock instant the TSC-deadline mode fires at, in
+    /// virtual nanoseconds. The deadline rides the virtual clock - the
+    /// guest's TSC is periodically rewritten to it at quantum
+    /// boundaries, so TSC-tick absolutes would break at every rewrite.
     tsc_deadline: Option<u64>,
-    /// The absolute virtual TSC tick the TMICT (one-shot or periodic)
-    /// mode fires at.
+    /// The virtual-clock instant the TMICT (one-shot or periodic) mode
+    /// fires at, in virtual nanoseconds.
     tmict_expiry: Option<u64>,
-    /// The TMICT-mode period in virtual TSC ticks (initial count times
-    /// the divider), kept for periodic re-arming.
+    /// The TMICT-mode period in virtual nanoseconds (initial count
+    /// times the divider), kept for periodic re-arming.
     tmict_period: Option<u64>,
     eoi_count: u64,
+}
+
+/// The virtual-nanosecond period a TMICT arm asks for: initial count
+/// times the divider, at the guest's TSC frequency.
+fn tmict_period_ns(initial_count: u64, tdcr: u64, tsc_khz: u32) -> u64 {
+    let ticks = initial_count * divider(tdcr);
+    VirtualClock::ns_for_ticks(ticks, u64::from(tsc_khz) * 1_000)
+}
+
+/// The virtual-nanosecond period a TSC-deadline arm asks for: the
+/// deadline's distance from the guest's live TSC read.
+fn deadline_period_ns(deadline_ticks: u64, tsc_now_ticks: u64, tsc_khz: u32) -> u64 {
+    let ticks = deadline_ticks.saturating_sub(tsc_now_ticks);
+    VirtualClock::ns_for_ticks(ticks, u64::from(tsc_khz) * 1_000)
+}
+
+fn divider(tdcr: u64) -> u64 {
+    match tdcr & 0xF {
+        0xB => 1,
+        0x0 => 2,
+        0x1 => 4,
+        0x2 => 8,
+        0x3 => 16,
+        0x8 => 32,
+        0x9 => 64,
+        0xA => 128,
+        _ => 2,
+    }
 }
 
 impl UserspaceLapic {
@@ -92,22 +123,6 @@ impl UserspaceLapic {
             || (MSR_X2APIC_FIRST..=MSR_X2APIC_LAST).contains(&index)
     }
 
-    /// The divide-value encoding of the TDCR register: how many TSC ticks
-    /// one timer-count tick spans.
-    fn divider(tdcr: u64) -> u64 {
-        match tdcr & 0xF {
-            0xB => 1,
-            0x0 => 2,
-            0x1 => 4,
-            0x2 => 8,
-            0x3 => 16,
-            0x8 => 32,
-            0x9 => 64,
-            0xA => 128,
-            _ => 2,
-        }
-    }
-
     fn timer_vector(&self) -> Option<u8> {
         if self.lvt_timer & LVT_MASKED != 0 {
             return None;
@@ -116,11 +131,24 @@ impl UserspaceLapic {
         (vector != 0).then_some(vector)
     }
 
-    /// Reads an MSR. `tsc_now` is the guest's current virtual TSC tick.
-    pub fn read_msr(&mut self, index: u32, tsc_now: u64) -> Result<u64, UserspaceApicError> {
+    /// Reads an MSR. `now_ns` is the virtual clock's instant.
+    pub fn read_msr(
+        &mut self,
+        index: u32,
+        now_ns: u64,
+        tsc_khz: u32,
+    ) -> Result<u64, UserspaceApicError> {
         let value = match index {
             MSR_IA32_APIC_BASE => self.apic_base,
-            MSR_IA32_TSC_DEADLINE => self.tsc_deadline.unwrap_or(0),
+            MSR_IA32_TSC_DEADLINE => self
+                .tsc_deadline
+                .map(|deadline| {
+                    // The guest reads back its own TSC-scale deadline.
+                    let remaining_ns = deadline.saturating_sub(now_ns);
+                    tsc_now_ticks(now_ns, tsc_khz)
+                        + VirtualClock::ticks_for_time(remaining_ns, u64::from(tsc_khz) * 1_000)
+                })
+                .unwrap_or(0),
             MSR_X2APIC_TPR => self.tpr,
             MSR_X2APIC_EOI => 0,
             MSR_X2APIC_SPIV => self.spurious,
@@ -129,13 +157,17 @@ impl UserspaceLapic {
             MSR_X2APIC_TMICT => self.initial_count,
             MSR_X2APIC_TMCCT => {
                 let mode = (self.lvt_timer >> LVT_MODE_SHIFT) & 0x3;
-                if mode == MODE_TSC_DEADLINE {
-                    self.tsc_deadline.unwrap_or(0).saturating_sub(tsc_now)
+                let remaining_ns = if mode == MODE_TSC_DEADLINE {
+                    self.tsc_deadline.unwrap_or(0).saturating_sub(now_ns)
                 } else {
-                    self.tmict_expiry
-                        .unwrap_or(0)
-                        .saturating_sub(tsc_now)
-                        / Self::divider(self.divide_config)
+                    self.tmict_expiry.unwrap_or(0).saturating_sub(now_ns)
+                };
+                let ticks =
+                    VirtualClock::ticks_for_time(remaining_ns, u64::from(tsc_khz) * 1_000);
+                if mode == MODE_TSC_DEADLINE {
+                    ticks
+                } else {
+                    ticks / divider(self.divide_config)
                 }
             }
             MSR_X2APIC_TDCR => self.divide_config,
@@ -146,19 +178,31 @@ impl UserspaceLapic {
         Ok(value)
     }
 
-    /// Writes an MSR. `tsc_now` is the guest's current virtual TSC tick.
+    /// Writes an MSR. `now_ns` is the virtual clock's instant and
+    /// `tsc_now_ticks` the guest's live TSC read, for the arm's period
+    /// arithmetic.
+    #[allow(clippy::too_many_arguments)]
     pub fn write_msr(
         &mut self,
         index: u32,
         value: u64,
-        tsc_now: u64,
+        now_ns: u64,
+        tsc_now_ticks: u64,
+        tsc_khz: u32,
     ) -> Result<(), UserspaceApicError> {
         match index {
             MSR_IA32_APIC_BASE => self.apic_base = value,
             MSR_IA32_TSC_DEADLINE => {
                 // Zero is the disarm the clockevent layer writes between
                 // periods; it never schedules a delivery.
-                self.tsc_deadline = (value != 0).then_some(value);
+                self.tsc_deadline = if value == 0 {
+                    None
+                } else {
+                    Some(
+                        now_ns
+                            + deadline_period_ns(value, tsc_now_ticks, tsc_khz),
+                    )
+                };
             }
             MSR_X2APIC_TPR => self.tpr = value & 0xFF,
             MSR_X2APIC_EOI => self.eoi_count += 1,
@@ -171,9 +215,10 @@ impl UserspaceLapic {
                     self.tmict_period = None;
                     None
                 } else {
-                    let period = value * Self::divider(self.divide_config);
+                    let period =
+                        tmict_period_ns(value, self.divide_config, tsc_khz);
                     self.tmict_period = Some(period);
-                    Some(tsc_now + period)
+                    Some(now_ns + period)
                 };
             }
             MSR_X2APIC_TDCR => self.divide_config = value & 0xF,
@@ -186,12 +231,12 @@ impl UserspaceLapic {
 
     /// The timer assertion at a handled-exit boundary: when the deadline
     /// has passed, disarms (or re-arms, periodic mode) and returns the
-    /// vector to inject.
-    pub fn timer_due(&mut self, tsc_now: u64) -> Option<u8> {
+    /// vector to inject. `now_ns` is the virtual clock's instant.
+    pub fn timer_due(&mut self, now_ns: u64) -> Option<u8> {
         let vector = self.timer_vector()?;
         let mode = (self.lvt_timer >> LVT_MODE_SHIFT) & 0x3;
         if mode == MODE_TSC_DEADLINE {
-            let due = self.tsc_deadline.is_some_and(|deadline| tsc_now >= deadline);
+            let due = self.tsc_deadline.is_some_and(|deadline| now_ns >= deadline);
             if due {
                 self.tsc_deadline = None;
                 return Some(vector);
@@ -199,7 +244,7 @@ impl UserspaceLapic {
             return None;
         }
         let expiry = self.tmict_expiry?;
-        if tsc_now < expiry {
+        if now_ns < expiry {
             return None;
         }
         if mode == MODE_PERIODIC
@@ -208,13 +253,18 @@ impl UserspaceLapic {
             // Re-arm at the next multiple that is in the future, so a
             // run of late boundaries advances whole periods - the guest
             // observes the ticks it asked for, at virtual positions.
-            let missed = (tsc_now - expiry) / period + 1;
+            let missed = (now_ns - expiry) / period + 1;
             self.tmict_expiry = Some(expiry + missed * period);
             return Some(vector);
         }
         self.tmict_expiry = None;
         Some(vector)
     }
+}
+
+/// The guest's live TSC tick for `now_ns`.
+fn tsc_now_ticks(now_ns: u64, tsc_khz: u32) -> u64 {
+    VirtualClock::tsc_value(now_ns, tsc_khz)
 }
 
 /// The APIC's MMIO page: the register window the guest maps at
@@ -233,18 +283,30 @@ const APIC_MMIO_STRIDE: u64 = 16;
 /// vCPU at every handled exit - the TMCCT countdown reads live state.
 pub struct UserspaceLapicMmio(
     pub Arc<Mutex<UserspaceLapic>>,
+    /// The virtual clock's instant, refreshed by the vCPU at every
+    /// handled exit.
     pub Arc<std::sync::atomic::AtomicU64>,
+    /// The guest's TSC frequency, for the TMCCT/TSC-deadline readbacks,
+    /// refreshed by the vCPU.
+    pub Arc<std::sync::atomic::AtomicU32>,
 );
 
 impl BusDevice for UserspaceLapicMmio {
     fn read(&mut self, _base: u64, offset: u64, data: &mut [u8]) {
         let mut lapic = self.0.lock().expect("userspace local APIC lock poisoned");
-        let tsc_now = self
+        let now_ns = self
             .1
             .load(std::sync::atomic::Ordering::Relaxed);
+        let tsc_khz = self
+            .2
+            .load(std::sync::atomic::Ordering::Relaxed);
         let index = MSR_X2APIC_FIRST + (offset / APIC_MMIO_STRIDE) as u32;
-        let value = lapic.read_msr(index, tsc_now).unwrap_or(0) as u32;
-        crate::logger::info!("userspace-apic:rd:{index:#x}={value:#x} tsc_now={tsc_now}");
+        let value = if tsc_khz == 0 {
+            0
+        } else {
+            lapic.read_msr(index, now_ns, tsc_khz).unwrap_or(0) as u32
+        };
+        crate::logger::info!("userspace-apic:rd:{index:#x}={value:#x} vtime={now_ns}");
         let bytes = value.to_le_bytes();
         for (index, byte) in bytes.iter().enumerate().take(data.len()) {
             data[index] = *byte;
@@ -258,12 +320,17 @@ impl BusDevice for UserspaceLapicMmio {
         }
         let value = u64::from(u32::from_le_bytes(raw));
         let mut lapic = self.0.lock().expect("userspace local APIC lock poisoned");
-        let tsc_now = self
+        let now_ns = self
             .1
             .load(std::sync::atomic::Ordering::Relaxed);
+        let tsc_khz = self
+            .2
+            .load(std::sync::atomic::Ordering::Relaxed);
         let index = MSR_X2APIC_FIRST + (offset / APIC_MMIO_STRIDE) as u32;
-        crate::logger::info!("userspace-apic:wr:{index:#x}={value:#x} tsc_now={tsc_now}");
-        let _ = lapic.write_msr(index, value, tsc_now);
+        crate::logger::info!("userspace-apic:wr:{index:#x}={value:#x} vtime={now_ns}");
+        if tsc_khz != 0 {
+            let _ = lapic.write_msr(index, value, now_ns, tsc_now_ticks(now_ns, tsc_khz), tsc_khz);
+        }
         None
     }
 }
@@ -378,30 +445,29 @@ mod tests {
     fn tsc_deadline_arms_and_fires_at_its_virtual_position() {
         let mut lapic = UserspaceLapic::default();
         // The kernel's LVT timer: vector 236, unmasked, one-shot mode.
-        lapic.write_msr(MSR_X2APIC_LVT_TIMER, 236, 0).unwrap();
-        // The guest arms 9.5ms ahead of its own TSC.
+        lapic.write_msr(MSR_X2APIC_LVT_TIMER, 236, 0, 0, 2_400_000).unwrap();
+        // The guest arms 10M ticks (about 4.2ms) ahead of its own TSC.
         lapic
-            .write_msr(MSR_IA32_TSC_DEADLINE, 486_000_000, 476_000_000)
+            .write_msr(MSR_IA32_TSC_DEADLINE, 486_000_000, 0, 476_000_000, 2_400_000)
             .unwrap();
-        assert_eq!(
-            lapic.read_msr(MSR_IA32_TSC_DEADLINE, 476_000_000).unwrap(),
-            486_000_000
-        );
         // Not yet due.
-        assert_eq!(lapic.timer_due(480_000_000), None);
+        assert_eq!(lapic.timer_due(0), None);
         // Due: the vector, and the deadline disarms (one-shot).
-        assert_eq!(lapic.timer_due(486_000_000), Some(236));
-        assert_eq!(lapic.read_msr(MSR_IA32_TSC_DEADLINE, 486_000_000).unwrap(), 0);
+        assert_eq!(lapic.timer_due(4_200_000), Some(236));
+        assert_eq!(
+            lapic.read_msr(MSR_IA32_TSC_DEADLINE, 4_200_000, 2_400_000).unwrap(),
+            0
+        );
         // The next boundary carries no spurious delivery.
-        assert_eq!(lapic.timer_due(490_000_000), None);
+        assert_eq!(lapic.timer_due(5_000_000), None);
     }
 
     #[test]
     fn zero_tsc_deadline_is_a_disarm() {
         let mut lapic = UserspaceLapic::default();
-        lapic.write_msr(MSR_X2APIC_LVT_TIMER, 236, 0).unwrap();
-        lapic.write_msr(MSR_IA32_TSC_DEADLINE, 1_000, 0).unwrap();
-        lapic.write_msr(MSR_IA32_TSC_DEADLINE, 0, 500).unwrap();
+        lapic.write_msr(MSR_X2APIC_LVT_TIMER, 236, 0, 0, 2_400_000).unwrap();
+        lapic.write_msr(MSR_IA32_TSC_DEADLINE, 1_000, 0, 0, 2_400_000).unwrap();
+        lapic.write_msr(MSR_IA32_TSC_DEADLINE, 0, 500, 500, 2_400_000).unwrap();
         assert_eq!(lapic.timer_due(2_000), None);
     }
 
@@ -410,29 +476,32 @@ mod tests {
         let mut lapic = UserspaceLapic::default();
         // Periodic mode, vector 236: LVT mode bits (18:17) = 01.
         lapic
-            .write_msr(MSR_X2APIC_LVT_TIMER, (1 << LVT_MODE_SHIFT) | 236, 0)
+            .write_msr(MSR_X2APIC_LVT_TIMER, (1 << LVT_MODE_SHIFT) | 236, 0, 0, 2_400_000)
             .unwrap();
-        // TDCR divide by 2, initial count 100: a 200-tsc-tick period.
-        lapic.write_msr(MSR_X2APIC_TDCR, 0x0, 0).unwrap();
-        lapic.write_msr(MSR_X2APIC_TMICT, 100, 1_000).unwrap();
+        // TDCR divide by 2, initial count 2400 at 2.4GHz: a 2us period.
+        lapic.write_msr(MSR_X2APIC_TDCR, 0x0, 0, 0, 2_400_000).unwrap();
+        lapic.write_msr(MSR_X2APIC_TMICT, 2_400, 0, 0, 2_400_000).unwrap();
         // The countdown reads in divided ticks.
-        assert_eq!(lapic.read_msr(MSR_X2APIC_TMCCT, 1_050).unwrap(), 75);
-        // First tick at 1200.
-        assert_eq!(lapic.timer_due(1_100), None);
-        assert_eq!(lapic.timer_due(1_200), Some(236));
-        // Re-armed to 1400; a late boundary at 1900 advances one whole
+        let remaining = lapic.read_msr(MSR_X2APIC_TMCCT, 500, 2_400_000).unwrap();
+        assert_eq!(remaining, 1_800);
+        // First tick at 2us.
+        assert_eq!(lapic.timer_due(1_000), None);
+        assert_eq!(lapic.timer_due(2_000), Some(236));
+        // Re-armed to 4us; a late boundary at 4.5us advances one whole
         // period, not a burst.
-        assert_eq!(lapic.timer_due(1_300), None);
-        assert_eq!(lapic.timer_due(1_900), Some(236));
-        assert_eq!(lapic.timer_due(2_000), None);
-        assert_eq!(lapic.timer_due(2_100), Some(236));
+        assert_eq!(lapic.timer_due(3_000), None);
+        assert_eq!(lapic.timer_due(4_500), Some(236));
+        assert_eq!(lapic.timer_due(5_000), None);
+        assert_eq!(lapic.timer_due(6_000), Some(236));
     }
 
     #[test]
     fn masked_lvt_never_delivers() {
         let mut lapic = UserspaceLapic::default();
-        lapic.write_msr(MSR_X2APIC_LVT_TIMER, LVT_MASKED | 236, 0).unwrap();
-        lapic.write_msr(MSR_IA32_TSC_DEADLINE, 1_000, 0).unwrap();
+        lapic
+            .write_msr(MSR_X2APIC_LVT_TIMER, LVT_MASKED | 236, 0, 0, 2_400_000)
+            .unwrap();
+        lapic.write_msr(MSR_IA32_TSC_DEADLINE, 1_000, 0, 0, 2_400_000).unwrap();
         assert_eq!(lapic.timer_due(2_000), None);
     }
 

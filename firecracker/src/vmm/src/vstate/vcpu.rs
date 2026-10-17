@@ -1359,9 +1359,11 @@ pub struct Vcpu {
     /// The local APIC state for the userspace APIC mode (shared with
     /// the MMIO adapter).
     lapic: Arc<Mutex<crate::devices::userspace_apic::UserspaceLapic>>,
-    /// The guest's current virtual TSC tick, refreshed at every handled
-    /// exit for the APIC's MMIO readers.
+    /// The virtual clock's instant, refreshed at every handled exit for
+    /// the APIC's MMIO readers.
     apic_tsc_now: Arc<AtomicU64>,
+    /// The guest's TSC frequency, shared with the APIC's MMIO readers.
+    apic_tsc_khz: Arc<AtomicU32>,
     /// The IOAPIC state for the userspace APIC mode.
     ioapic: Option<Arc<Mutex<crate::devices::userspace_apic::UserspaceIoapic>>>,
 }
@@ -1434,6 +1436,7 @@ impl Vcpu {
                 crate::devices::userspace_apic::UserspaceLapic::default(),
             )),
             apic_tsc_now: Arc::new(AtomicU64::new(0)),
+            apic_tsc_khz: Arc::new(AtomicU32::new(0)),
             ioapic: None,
             timer_msrs_filtered: false,
             timer_deadline_ticks: None,
@@ -1479,11 +1482,13 @@ impl Vcpu {
         ioapic: Arc<Mutex<crate::devices::userspace_apic::UserspaceIoapic>>,
         lapic: Arc<Mutex<crate::devices::userspace_apic::UserspaceLapic>>,
         apic_tsc_now: Arc<AtomicU64>,
+        apic_tsc_khz: Arc<AtomicU32>,
     ) {
         self.userspace_apic = true;
         self.ioapic = Some(ioapic);
         self.lapic = lapic;
         self.apic_tsc_now = apic_tsc_now;
+        self.apic_tsc_khz = apic_tsc_khz;
     }
 
     /// Restore virtual-clock bookkeeping from a snapshotted vCPU state.
@@ -1587,28 +1592,23 @@ impl Vcpu {
         // subtracted its live TSC read, and the TSC free-runs from the
         // anchor at host rate - not the exit-driven virtual clock's
         // tsc_value (the same base lesson the halt-time probe taught).
-        let tsc_now = self
-            .kvm_vcpu
-            .guest_tsc()
-            .unwrap_or_else(|_| {
-                let now_ns = self
-                    .vclock
-                    .as_ref()
-                    .map(|clock| clock.now_ns())
-                    .unwrap_or(0);
-                let tsc_khz = self.kvm_vcpu.cached_tsc_khz().unwrap_or(0);
-                crate::vstate::vclock::VirtualClock::tsc_value(now_ns, tsc_khz)
-            });
+        let Some(now_ns) = self.vclock.as_ref().map(|clock| clock.now_ns()) else {
+            return;
+        };
         self.apic_tsc_now
-            .store(tsc_now, Ordering::Relaxed);
+            .store(now_ns, Ordering::Relaxed);
+        if let Ok(tsc_khz) = self.kvm_vcpu.cached_tsc_khz() {
+            self.apic_tsc_khz
+                .store(tsc_khz, Ordering::Relaxed);
+        }
         if let Some(vector) = self
             .lapic
             .lock()
             .expect("userspace local APIC lock poisoned")
-            .timer_due(tsc_now)
+            .timer_due(now_ns)
         {
             info!(
-                "vcpu:{}:userspace-apic:timer-due vector={vector} tsc_now={tsc_now}",
+                "vcpu:{}:userspace-apic:timer-due vector={vector} vtime={now_ns}",
                 self.kvm_vcpu.index
             );
             if let Err(error) = self
@@ -2164,9 +2164,14 @@ impl Vcpu {
                     let out: *mut u64 = exit.data;
                     let index = exit.index;
                     drop(exit);
-                    let tsc_now = self
+                    let now_ns = self
+                        .vclock
+                        .as_ref()
+                        .map(|clock| clock.now_ns())
+                        .unwrap_or(0);
+                    let tsc_khz = self
                         .kvm_vcpu
-                        .guest_tsc()
+                        .cached_tsc_khz()
                         .map_err(|error| {
                             VcpuError::UnhandledKvmExit(error.to_string())
                         })
@@ -2175,14 +2180,14 @@ impl Vcpu {
                         .lapic
                         .lock()
                         .expect("userspace local APIC lock poisoned")
-                        .read_msr(index, tsc_now)
+                        .read_msr(index, now_ns, tsc_khz)
                         .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
                     // SAFETY: `out` points into this vCPU's KVM run buffer,
                     // which outlives the exit borrow and is consumed by the
                     // next KVM_RUN on this thread.
                     unsafe { *out = value };
                     info!(
-                        "vcpu:{}:userspace-apic:rd:{:#x}={value:#x} tsc_now={tsc_now}",
+                        "vcpu:{}:userspace-apic:rd:{:#x}={value:#x} vtime={now_ns}",
                         self.kvm_vcpu.index, index
                     );
                     return Ok(VcpuEmulation::Handled);
@@ -2232,20 +2237,24 @@ impl Vcpu {
                 {
                     let (index, data) = (exit.index, exit.data);
                     drop(exit);
-                    let tsc_now = self
-                        .kvm_vcpu
-                        .guest_tsc()
-                        .map_err(|error| {
-                            VcpuError::UnhandledKvmExit(error.to_string())
-                        })
+                    let now_ns = self
+                        .vclock
+                        .as_ref()
+                        .map(|clock| clock.now_ns())
                         .unwrap_or(0);
                     self.lapic
                         .lock()
                         .expect("userspace local APIC lock poisoned")
-                        .write_msr(index, data, tsc_now)
+                        .write_msr(
+                            index,
+                            data,
+                            now_ns,
+                            self.kvm_vcpu.guest_tsc().unwrap_or(0),
+                            self.kvm_vcpu.cached_tsc_khz().unwrap_or(0),
+                        )
                         .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
                     info!(
-                        "vcpu:{}:userspace-apic:wr:{:#x}={:#x} tsc_now={tsc_now}",
+                        "vcpu:{}:userspace-apic:wr:{:#x}={:#x} vtime={now_ns}",
                         self.kvm_vcpu.index, index, data
                     );
                     return Ok(VcpuEmulation::Handled);
