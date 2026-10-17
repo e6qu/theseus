@@ -5,7 +5,7 @@
 // stream turn asserted through `KVM_INTERRUPT` (see
 // docs/design/deterministic-timer-arming.md, option B).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::vstate::bus::BusDevice;
 
