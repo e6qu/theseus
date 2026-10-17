@@ -313,6 +313,20 @@ pub fn build_microvm_for_boot(
                 .map_err(|error| {
                     StartMicrovmError::TimerMsrFilter(error.to_string())
                 })?;
+            {
+                let mut probe = [0u8; 4];
+                match vm.common.mmio_bus.read(
+                    crate::devices::userspace_apic::APIC_MMIO_BASE + 0x30,
+                    &mut probe,
+                ) {
+                    Ok(()) => crate::logger::info!(
+                        "apic page probe: found, version bytes {probe:02x?}"
+                    ),
+                    Err(error) => crate::logger::info!(
+                        "apic page probe: MISSING after insert: {error}"
+                    ),
+                }
+            }
             crate::logger::info!(
                 "userspace APIC installed: no in-kernel irqchip; the local APIC \
                  and the IOAPIC are emulated and delivery rides KVM_INTERRUPT"
