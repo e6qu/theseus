@@ -163,12 +163,16 @@ absolutes break at every rewrite). **The current frontier:** the timer
    stalls deterministically in the silent initcall stretch after
    `ip_rt_init` (the last visible line: `IP idents hash table
    entries`), with the tick stream alive and no lockup warnings -
-   `initcall_debug` prints through pr_debug, which the guest kernel
-   compiles out without CONFIG_DYNAMIC_DEBUG, so the boot args cannot
-   name the blocking initcall. Naming it needs a guest kernel built
-   with dynamic debug (a new artifact) - the next session's first
-   probe. The flag ships off; the default in-kernel-irqchip paths are
-   untouched and green.
+   and every boot-time diagnostic is compiled out of the shipped CI
+   kernel: `initcall_debug` prints through pr_debug (no
+   CONFIG_DYNAMIC_DEBUG), and `hung_task_timeout_secs` is refused as an
+   unknown parameter (no CONFIG_DETECT_HUNG_TASK). The blocking
+   initcall therefore cannot be named from boot args; the probe needs
+   the guest kernel rebuilt with dynamic debug or the hung-task
+   detector (the config fragments live in
+   `firecracker/resources/guest_configs/`; the vmlinux itself is built
+   outside this repository and ships in the release). The flag ships
+   off; the default in-kernel-irqchip paths are untouched and green.
 
 ### C. Re-arm at boundaries without interception (rejected)
 
