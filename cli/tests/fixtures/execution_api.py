@@ -85,6 +85,8 @@ while True:
             assert body["boot_args"] in (
                 "console=ttyS0 reboot=k panic=-1 quiet loglevel=0",
                 "earlyprintk=serial,0x2f8,keep reboot=k panic=-1 loglevel=7",
+                "earlyprintk=serial,0x2f8,keep reboot=k panic=-1 loglevel=7 initcall_debug watchdog_thresh=2 rcupdate.rcu_cpu_stall_timeout=1",
+                "earlyprintk=serial,0x2f8,keep reboot=k panic=-1 loglevel=7 initcall_debug dyndbg=\"file init/main.c +p\"",
             )
         elif endpoint == "/machine-config":
             machine = body

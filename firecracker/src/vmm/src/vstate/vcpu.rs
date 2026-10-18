@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::os::fd::AsRawFd;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::sync::{Arc, Barrier, Condvar, Mutex, Weak};
 use std::time::Duration;
@@ -1362,8 +1362,7 @@ pub struct Vcpu {
     /// The virtual clock's instant, refreshed at every handled exit for
     /// the APIC's MMIO readers.
     apic_tsc_now: Arc<AtomicU64>,
-    /// The guest's TSC frequency, shared with the APIC's MMIO readers.
-    apic_tsc_khz: Arc<AtomicU32>,
+
     /// The IOAPIC state for the userspace APIC mode.
     ioapic: Option<Arc<Mutex<crate::devices::userspace_apic::UserspaceIoapic>>>,
     /// The most recent userspace timer vector, for re-queueing a
@@ -1439,7 +1438,7 @@ impl Vcpu {
                 crate::devices::userspace_apic::UserspaceLapic::default(),
             )),
             apic_tsc_now: Arc::new(AtomicU64::new(0)),
-            apic_tsc_khz: Arc::new(AtomicU32::new(0)),
+
             ioapic: None,
             last_timer_vector: None,
             timer_msrs_filtered: false,
@@ -1486,13 +1485,12 @@ impl Vcpu {
         ioapic: Arc<Mutex<crate::devices::userspace_apic::UserspaceIoapic>>,
         lapic: Arc<Mutex<crate::devices::userspace_apic::UserspaceLapic>>,
         apic_tsc_now: Arc<AtomicU64>,
-        apic_tsc_khz: Arc<AtomicU32>,
     ) {
         self.userspace_apic = true;
         self.ioapic = Some(ioapic);
         self.lapic = lapic;
         self.apic_tsc_now = apic_tsc_now;
-        self.apic_tsc_khz = apic_tsc_khz;
+
     }
 
     /// Restore virtual-clock bookkeeping from a snapshotted vCPU state.
@@ -1572,7 +1570,17 @@ impl Vcpu {
         vclock.advance();
 
         // Arch-specific application: TSC write on x86_64, counter offset on
-        // aarch64. Both between KVM_RUN invocations.
+        // aarch64. Both between KVM_RUN invocations. The userspace APIC
+        // keeps the guest TSC free-running: the kernel calibrates its
+        // LAPIC clock against that TSC, and the boundary rewrites distort
+        // the calibration until the clockevents core stops trusting the
+        // device (the ten-tick finding). The virtual clock still advances
+        // for the stream's bookkeeping; the guest's own timer arithmetic
+        // rides the free-running TSC.
+        #[cfg(target_arch = "x86_64")]
+        if self.userspace_apic {
+            return;
+        }
         if let Err(err) = self.kvm_vcpu.apply_virtual_time(vclock.now_ns()) {
             error!("Failed to apply virtual time: {err:?}");
             METRICS.vcpu.failures.inc();
@@ -1586,36 +1594,30 @@ impl Vcpu {
     /// per asserted episode; arming depends on guest counter reads over host
     /// drift, so these stay observations, never replay decisions.
     /// The userspace APIC's timer assertion at this handled-exit
-    /// boundary: the deadline lives in the virtual clock, so the delivery
-    /// position is `arm_vtime + period` regardless of host speed.
+    /// boundary: the deadline lives on the guest's free-running TSC, so
+    /// the delivery position is the armed deadline itself.
     fn observe_userspace_apic_timer(&mut self) {
         if !self.userspace_apic {
             return;
         }
-        // The guest's OWN TSC is the deadline scale: the arming write
-        // subtracted its live TSC read, and the TSC free-runs from the
-        // anchor at host rate - not the exit-driven virtual clock's
-        // tsc_value (the same base lesson the halt-time probe taught).
-        let Some(now_ns) = self.vclock.as_ref().map(|clock| clock.now_ns()) else {
-            return;
-        };
+        let tsc_now = self.kvm_vcpu.guest_tsc().unwrap_or(0);
         self.apic_tsc_now
-            .store(now_ns, Ordering::Relaxed);
-        if let Ok(tsc_khz) = self.kvm_vcpu.cached_tsc_khz() {
-            self.apic_tsc_khz
-                .store(tsc_khz, Ordering::Relaxed);
-        }
+            .store(tsc_now, Ordering::Relaxed);
         if let Some(vector) = self
             .lapic
             .lock()
             .expect("userspace local APIC lock poisoned")
-            .timer_due(now_ns)
+            .timer_due(tsc_now)
         {
             info!(
-                "vcpu:{}:userspace-apic:timer-due vector={vector} vtime={now_ns}",
+                "vcpu:{}:userspace-apic:timer-due vector={vector} tsc_now={tsc_now}",
                 self.kvm_vcpu.index
             );
             self.last_timer_vector = Some(vector);
+            if let Err(error) = self.kvm_vcpu.inject_vector_via_events(vector) {
+                error!("Failed to mark the userspace timer vector: {error:?}");
+                METRICS.vcpu.failures.inc();
+            }
             if let Err(error) = self
                 .machine_execution
                 .request_interrupt("lapic-timer", u32::from(vector), true)
@@ -2092,7 +2094,34 @@ impl Vcpu {
         #[cfg(target_arch = "x86_64")]
         if self.machine_execution.timer_wake_requested() {
             self.machine_execution.clear_timer_wake();
-            self.handle_timer_wake()?;
+            if self.userspace_apic {
+                let tsc_now = self.kvm_vcpu.guest_tsc().unwrap_or(0);
+                self.apic_tsc_now
+                    .store(tsc_now, Ordering::Relaxed);
+                if let Some(vector) = self
+                    .lapic
+                    .lock()
+                    .expect("userspace local APIC lock poisoned")
+                    .timer_due(tsc_now)
+                {
+                    info!(
+                        "vcpu:{}:userspace-apic:wake vector={vector} tsc_now={tsc_now}",
+                        self.kvm_vcpu.index
+                    );
+                    self.kvm_vcpu
+                        .inject_vector_via_events(vector)
+                        .map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })?;
+                    self.machine_execution
+                        .request_interrupt("lapic-timer", u32::from(vector), true)
+                        .map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })?;
+                }
+            } else {
+                self.handle_timer_wake()?;
+            }
         }
         // Theseus: anchor the guest clock before the first KVM_RUN. On
         // aarch64 the counter offset is only writable after vCPU init (which
@@ -2188,14 +2217,9 @@ impl Vcpu {
                     let out: *mut u64 = exit.data;
                     let index = exit.index;
                     drop(exit);
-                    let now_ns = self
-                        .vclock
-                        .as_ref()
-                        .map(|clock| clock.now_ns())
-                        .unwrap_or(0);
-                    let tsc_khz = self
+                    let tsc_now = self
                         .kvm_vcpu
-                        .cached_tsc_khz()
+                        .guest_tsc()
                         .map_err(|error| {
                             VcpuError::UnhandledKvmExit(error.to_string())
                         })
@@ -2204,14 +2228,14 @@ impl Vcpu {
                         .lapic
                         .lock()
                         .expect("userspace local APIC lock poisoned")
-                        .read_msr(index, now_ns, tsc_khz)
+                        .read_msr(index, tsc_now)
                         .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
                     // SAFETY: `out` points into this vCPU's KVM run buffer,
                     // which outlives the exit borrow and is consumed by the
                     // next KVM_RUN on this thread.
                     unsafe { *out = value };
                     info!(
-                        "vcpu:{}:userspace-apic:rd:{:#x}={value:#x} vtime={now_ns}",
+                        "vcpu:{}:userspace-apic:rd:{:#x}={value:#x} tsc_now={tsc_now}",
                         self.kvm_vcpu.index, index
                     );
                     return Ok(VcpuEmulation::Handled);
@@ -2261,26 +2285,56 @@ impl Vcpu {
                 {
                     let (index, data) = (exit.index, exit.data);
                     drop(exit);
-                    let now_ns = self
-                        .vclock
-                        .as_ref()
-                        .map(|clock| clock.now_ns())
+                    let tsc_now = self
+                        .kvm_vcpu
+                        .guest_tsc()
+                        .map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })
                         .unwrap_or(0);
                     self.lapic
                         .lock()
                         .expect("userspace local APIC lock poisoned")
-                        .write_msr(
-                            index,
-                            data,
-                            now_ns,
-                            self.kvm_vcpu.guest_tsc().unwrap_or(0),
-                            self.kvm_vcpu.cached_tsc_khz().unwrap_or(0),
-                        )
+                        .write_msr(index, data, tsc_now)
                         .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
                     info!(
-                        "vcpu:{}:userspace-apic:wr:{:#x}={:#x} vtime={now_ns}",
+                        "vcpu:{}:userspace-apic:wr:{:#x}={:#x} tsc_now={tsc_now}",
                         self.kvm_vcpu.index, index, data
                     );
+                    // The arm schedules its own wake: KVM emulates the
+                    // halt in-kernel and never surfaces the boundary, so
+                    // the delivery needs a host-paced wake that fires at
+                    // the deadline whether the guest is running, halted,
+                    // or blocked in KVM_RUN.
+                    if index == MSR_IA32_TSC_DEADLINE && data != 0 {
+                        let tsc_khz = self
+                            .kvm_vcpu
+                            .cached_tsc_khz()
+                            .map_err(|error| {
+                                VcpuError::UnhandledKvmExit(error.to_string())
+                            })
+                            .unwrap_or(0);
+                        let machine_execution =
+                            Arc::clone(&self.machine_execution);
+                        let generation = Arc::clone(&self.timer_arm_generation);
+                        let arm_generation =
+                            generation.fetch_add(1, Ordering::SeqCst) + 1;
+                        std::thread::spawn(move || {
+                            let interval_ns =
+                                data.saturating_sub(tsc_now) * 1_000_000
+                                    / u64::from(tsc_khz.max(1));
+                            std::thread::sleep(Duration::from_nanos(
+                                interval_ns,
+                            ));
+                            // A stale wake (a newer arm superseded this
+                            // one) must not deliver early.
+                            if generation.load(Ordering::SeqCst)
+                                == arm_generation
+                            {
+                                machine_execution.request_timer_wake();
+                            }
+                        });
+                    }
                     return Ok(VcpuEmulation::Handled);
                 }
                 // Copy the exit's payload out and drop the run-buffer
@@ -2546,41 +2600,12 @@ impl Vcpu {
     #[cfg(target_arch = "x86_64")]
     fn handle_hlt_exit(&mut self) -> Result<VcpuEmulation, VcpuError> {
         if self.userspace_apic {
-            // The halt boundary: virtual time advances to the next timer
-            // deadline (the halt consumed it - recorded as a jump host
-            // turn) and the tick delivers here, waking the halted vCPU
-            // at its own virtual position. Without this the halted guest
-            // would deadlock on a clock that only advances on handled
-            // exits.
-            let Some(now_ns) = self.vclock.as_ref().map(|clock| clock.now_ns()) else {
-                return Ok(VcpuEmulation::Handled);
-            };
-            if let Ok(tsc_khz) = self.kvm_vcpu.cached_tsc_khz() {
-                self.apic_tsc_khz
-                    .store(tsc_khz, Ordering::Relaxed);
-            }
-            let halt_delivery = self
-                .lapic
-                .lock()
-                .expect("userspace local APIC lock poisoned")
-                .halt_due(now_ns);
-            if let Some((vector, jump)) = halt_delivery {
-                if jump > 0 {
-                    let record = format!("virtual_time_jump:{jump}");
-                    if let Err(detail) = self
-                        .machine_execution
-                        .apply_host_effect::<(), ()>(record, || Ok(()))
-                    {
-                        return Err(VcpuError::FaultyKvmExit(detail));
-                    }
-                    self.jump_virtual_time(jump as i64)?;
-                }
-                self.machine_execution
-                    .request_interrupt("lapic-timer", u32::from(vector), true)
-                    .map_err(|error| {
-                        VcpuError::UnhandledKvmExit(error.to_string())
-                    })?;
-            }
+            // The halt boundary: KVM emulates the halt in-kernel and this
+            // exit rarely surfaces. The arm path schedules the deadline's
+            // wake thread, whose kick breaks the halt at the deadline.
+            let tsc_now = self.kvm_vcpu.guest_tsc().unwrap_or(0);
+            self.apic_tsc_now
+                .store(tsc_now, Ordering::Relaxed);
             return Ok(VcpuEmulation::Handled);
         }
         if !self.hold_kernel_timers || !self.timer_msrs_filtered {

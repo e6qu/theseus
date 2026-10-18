@@ -154,6 +154,22 @@ absolutes break at every rewrite). **The current frontier:** the timer
    before the flag can flip; it ships off meanwhile, and the default
    in-kernel-irqchip paths are untouched and green.
 
+   **The free-running-TSC probe (landed):** with the TSC free-running
+   the kernel calibrates correctly - the ticks flow at their programmed
+   10M-tick cadence (`timer-due ... tsc_now=923460297` ->
+   `933518625` -> `943606500`, exact 4ms intervals), the halt boundary
+   wakes by the arm-scheduled host wait, and both delivery primitives
+   (KVM_INTERRUPT and the vCPU events) are exercised. The boot then
+   stalls deterministically in the silent initcall stretch after
+   `ip_rt_init` (the last visible line: `IP idents hash table
+   entries`), with the tick stream alive and no lockup warnings -
+   `initcall_debug` prints through pr_debug, which the guest kernel
+   compiles out without CONFIG_DYNAMIC_DEBUG, so the boot args cannot
+   name the blocking initcall. Naming it needs a guest kernel built
+   with dynamic debug (a new artifact) - the next session's first
+   probe. The flag ships off; the default in-kernel-irqchip paths are
+   untouched and green.
+
 ### C. Re-arm at boundaries without interception (rejected)
 
 At each handled exit, read TMICT/TDCR from the LAPIC page, compute the
