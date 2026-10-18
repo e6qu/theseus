@@ -268,7 +268,15 @@ impl BusDevice for UserspaceLapicMmio {
             .1
             .load(std::sync::atomic::Ordering::Relaxed);
         let index = MSR_X2APIC_FIRST + (offset / APIC_MMIO_STRIDE) as u32;
-        let value = lapic.read_msr(index, tsc_now).unwrap_or(0) as u32;
+        let value = match lapic.read_msr(index, tsc_now) {
+            Ok(value) => value as u32,
+            Err(error) => {
+                crate::logger::error!(
+                    "userspace-apic:rd:{index:#x} refused: {error}"
+                );
+                0
+            }
+        };
         crate::logger::info!("userspace-apic:rd:{index:#x}={value:#x} tsc_now={tsc_now}");
         let bytes = value.to_le_bytes();
         for (index, byte) in bytes.iter().enumerate().take(data.len()) {
