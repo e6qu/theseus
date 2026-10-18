@@ -20,7 +20,8 @@ tick_ns = 1000000
 exits_per_tick = 10
 hold_kernel_timers = true # amd64 only; rejected before boot elsewhere.
 filter_timer_msrs = true # Stage 1: observe every timer-MSR arming write.
-# The userspace APIC probe (`userspace_apic = true`): no in-kernel
+userspace_apic = true # The userspace APIC: no in-kernel irqchip at all.
+# The userspace APIC probe: no in-kernel
 # irqchip - the kernel boots against Theseus's local APIC and IOAPIC,
 # arms the TSC-deadline timer, and takes ticks at virtual positions.
 # Its current frontier: a KVM_EXIT_FAIL_ENTRY (invalid guest state) at
