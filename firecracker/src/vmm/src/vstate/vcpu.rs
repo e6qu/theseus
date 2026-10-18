@@ -1368,6 +1368,8 @@ pub struct Vcpu {
     /// The most recent userspace timer vector, for re-queueing a
     /// delivery that a vmentry refusal deferred.
     last_timer_vector: Option<u8>,
+    /// Handled exits since the last GSI sweep (the IRQ-wait probe).
+    exits_since_gsi_sweep: u32,
 }
 
 /// States of the vCPU thread's run loop.
@@ -1441,6 +1443,7 @@ impl Vcpu {
 
             ioapic: None,
             last_timer_vector: None,
+            exits_since_gsi_sweep: 0,
             timer_msrs_filtered: false,
             timer_deadline_ticks: None,
         })
@@ -1839,6 +1842,36 @@ impl Vcpu {
                         );
                         return self.exit(FcExitCode::GenericError);
                     }
+                    #[cfg(target_arch = "x86_64")]
+                    if self.userspace_apic {
+                        self.exits_since_gsi_sweep += 1;
+                        // Every 4096 handled exits (~a few hundred ms of
+                        // guest progress), re-assert every routed pin:
+                        // a blocked interruptible init unsticks if it
+                        // awaited one, and the log names the pin.
+                        if self.exits_since_gsi_sweep >= 4096 {
+                            self.exits_since_gsi_sweep = 0;
+                            if let Some(ioapic) = &self.ioapic {
+                                for pin in 0..24u8 {
+                                    if let Some(vector) = ioapic
+                                        .lock()
+                                        .expect("userspace IOAPIC lock poisoned")
+                                        .assert_line(pin)
+                                    {
+                                        info!(
+                                            "vcpu:{}:userspace-apic:gsi-sweep pin={pin} vector={vector}",
+                                            self.kvm_vcpu.index
+                                        );
+                                        let _ = self.machine_execution.request_interrupt(
+                                            "gsi-sweep",
+                                            u32::from(pin),
+                                            false,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 // Emulation was interrupted, check external events.
                 Ok(VcpuEmulation::Interrupted) => break,
@@ -2161,6 +2194,25 @@ impl Vcpu {
                         .set_irq_line(interrupt.gsi, true)
                         .and_then(|()| self.vm_fd.set_irq_line(interrupt.gsi, false))
                         .map_err(|error| error.to_string()),
+                    "gsi-sweep" => {
+                        // The IRQ-wait probe: re-assert the pin so the
+                        // sweep delivers its current vector.
+                        if let Some(ioapic) = &self.ioapic {
+                            let vector = ioapic
+                                .lock()
+                                .expect("userspace IOAPIC lock poisoned")
+                                .assert_line(interrupt.gsi as u8);
+                            match vector {
+                                Some(vector) => self
+                                    .kvm_vcpu
+                                    .inject_held_kernel_timer(vector)
+                                    .map_err(|error| error.to_string()),
+                                None => Ok(()),
+                            }
+                        } else {
+                            Ok(())
+                        }
+                    }
                     _ => {
                         // Without an irqchip, `KVM_IRQ_LINE` has no
                         // destination: GSI devices deliver through the
