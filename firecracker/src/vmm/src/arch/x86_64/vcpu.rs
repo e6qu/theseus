@@ -979,6 +979,16 @@ impl KvmVcpu {
         self.inject_lapic_vector(vector as u8).map(|_| ())
     }
 
+    /// The guest's live TSC value. Valid between `KVM_RUN` calls, like
+    /// every other MSR access.
+    pub fn guest_tsc(&self) -> Result<u64, KvmVcpuError> {
+        let msrs = self.get_msrs([MSR_IA32_TSC].into_iter())?;
+        msrs
+            .get(&MSR_IA32_TSC)
+            .copied()
+            .ok_or(KvmVcpuError::VcpuSetMsrsIncomplete)
+    }
+
     /// Use provided state to populate KVM internal state.
     pub fn restore_state(&self, state: &VcpuState) -> Result<(), KvmVcpuError> {
         // Ordering requirements:

@@ -1832,7 +1832,13 @@ impl Vcpu {
                     self.maybe_tick();
                     self.observe_kernel_timer();
                     #[cfg(target_arch = "x86_64")]
-                    self.observe_userspace_apic_timer()?;
+                    if let Err(error) = self.observe_userspace_apic_timer() {
+                        error!(
+                            "vCPU {} userspace APIC timer failed: {error}",
+                            self.kvm_vcpu.index
+                        );
+                        return self.exit(FcExitCode::GenericError);
+                    }
                 }
                 // Emulation was interrupted, check external events.
                 Ok(VcpuEmulation::Interrupted) => break,
