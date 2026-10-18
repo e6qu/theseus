@@ -29,8 +29,11 @@ jobs:
       - name: Check workspace for the other architecture
         working-directory: firecracker
         run: |
-          rustup target add ${{ runner.arch == 'X64' && 'aarch64' || 'x86_64' }}-unknown-linux-gnu
-          cargo check --workspace --target ${{ runner.arch == 'X64' && 'aarch64' || 'x86_64' }}-unknown-linux-gnu
+          other=${{ runner.arch == 'X64' && 'aarch64' || 'x86_64' }}
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-$other-linux-gnu
+          rustup target add $other-unknown-linux-gnu
+          cargo check --workspace --target $other-unknown-linux-gnu
 
       - name: Deterministic unit suites
         working-directory: firecracker
