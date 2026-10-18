@@ -171,7 +171,17 @@ absolutes break at every rewrite). **The current frontier:** the timer
    the guest kernel rebuilt with dynamic debug or the hung-task
    detector (the config fragments live in
    `firecracker/resources/guest_configs/`; the vmlinux itself is built
-   outside this repository and ships in the release). The flag ships
+   outside this repository and ships in the release). Two further
+   probes sharpened it: the runtime pin in CI pointed at an older
+   release whose kernel predated the config, and after advancing the
+   pin the new kernel accepted `hung_task_timeout_secs` - and no
+   warning fired, which clears the uninterruptible-wait hypothesis:
+   **the blocked init is sleeping interruptibly, waiting for a wakeup
+   that never comes** - plausibly an IRQ the userspace APIC's IOAPIC
+   path owes it. The definitive probe is repo-side: enable
+   CONFIG_DYNAMIC_DEBUG in the x86_64 6.1 config (which the release's
+   Docker build already compiles), publish, advance the pin, and the
+   `calling initcall` sequence names the blocking call. The flag ships
    off; the default in-kernel-irqchip paths are untouched and green.
 
 ### C. Re-arm at boundaries without interception (rejected)
