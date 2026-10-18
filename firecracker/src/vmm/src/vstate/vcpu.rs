@@ -1597,11 +1597,14 @@ impl Vcpu {
     /// boundary: the deadline lives on the guest's free-running TSC, so
     /// the delivery position is the armed deadline itself.
     #[cfg(target_arch = "x86_64")]
-    fn observe_userspace_apic_timer(&mut self) {
+    fn observe_userspace_apic_timer(&mut self) -> Result<(), VcpuError> {
         if !self.userspace_apic {
-            return;
+            return Ok(());
         }
-        let tsc_now = self.kvm_vcpu.guest_tsc().unwrap_or(0);
+        let tsc_now = self
+            .kvm_vcpu
+            .guest_tsc()
+            .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
         self.apic_tsc_now
             .store(tsc_now, Ordering::Relaxed);
         if let Some(vector) = self
@@ -1615,18 +1618,16 @@ impl Vcpu {
                 self.kvm_vcpu.index
             );
             self.last_timer_vector = Some(vector);
-            if let Err(error) = self.kvm_vcpu.inject_vector_via_events(vector) {
-                error!("Failed to mark the userspace timer vector: {error:?}");
-                METRICS.vcpu.failures.inc();
-            }
-            if let Err(error) = self
-                .machine_execution
+            self.kvm_vcpu
+                .inject_vector_via_events(vector)
+                .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
+            self.machine_execution
                 .request_interrupt("lapic-timer", u32::from(vector), true)
-            {
-                error!("Failed to queue the userspace LAPIC-timer delivery: {error}");
-                METRICS.vcpu.failures.inc();
-            }
+                .map_err(|error| {
+                    VcpuError::UnhandledKvmExit(error.to_string())
+                })?;
         }
+        Ok(())
     }
 
     fn observe_kernel_timer(&mut self) {
@@ -1831,7 +1832,13 @@ impl Vcpu {
                     self.maybe_tick();
                     self.observe_kernel_timer();
                     #[cfg(target_arch = "x86_64")]
-                    self.observe_userspace_apic_timer();
+                    if let Err(error) = self.observe_userspace_apic_timer() {
+                        error!(
+                            "vCPU {} userspace APIC timer failed: {error}",
+                            self.kvm_vcpu.index
+                        );
+                        return self.exit(FcExitCode::GenericError);
+                    }
                 }
                 // Emulation was interrupted, check external events.
                 Ok(VcpuEmulation::Interrupted) => break,
@@ -2098,7 +2105,10 @@ impl Vcpu {
         if self.machine_execution.timer_wake_requested() {
             self.machine_execution.clear_timer_wake();
             if self.userspace_apic {
-                let tsc_now = self.kvm_vcpu.guest_tsc().unwrap_or(0);
+                let tsc_now = self
+                    .kvm_vcpu
+                    .guest_tsc()
+                    .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
                 self.apic_tsc_now
                     .store(tsc_now, Ordering::Relaxed);
                 if let Some(vector) = self
@@ -2225,8 +2235,7 @@ impl Vcpu {
                         .guest_tsc()
                         .map_err(|error| {
                             VcpuError::UnhandledKvmExit(error.to_string())
-                        })
-                        .unwrap_or(0);
+                        })?;
                     let value = self
                         .lapic
                         .lock()
@@ -2293,8 +2302,7 @@ impl Vcpu {
                         .guest_tsc()
                         .map_err(|error| {
                             VcpuError::UnhandledKvmExit(error.to_string())
-                        })
-                        .unwrap_or(0);
+                        })?;
                     self.lapic
                         .lock()
                         .expect("userspace local APIC lock poisoned")
@@ -2310,22 +2318,22 @@ impl Vcpu {
                     // the deadline whether the guest is running, halted,
                     // or blocked in KVM_RUN.
                     if index == MSR_IA32_TSC_DEADLINE && data != 0 {
-                        let tsc_khz = self
-                            .kvm_vcpu
-                            .cached_tsc_khz()
-                            .map_err(|error| {
-                                VcpuError::UnhandledKvmExit(error.to_string())
-                            })
-                            .unwrap_or(0);
+                        let tsc_khz = u64::from(
+                            self.kvm_vcpu
+                                .cached_tsc_khz()
+                                .map_err(|error| {
+                                    VcpuError::UnhandledKvmExit(error.to_string())
+                                })?,
+                        );
+                        let interval_ns = data.saturating_sub(tsc_now)
+                            * 1_000_000
+                            / tsc_khz;
                         let machine_execution =
                             Arc::clone(&self.machine_execution);
                         let generation = Arc::clone(&self.timer_arm_generation);
                         let arm_generation =
                             generation.fetch_add(1, Ordering::SeqCst) + 1;
                         std::thread::spawn(move || {
-                            let interval_ns =
-                                data.saturating_sub(tsc_now) * 1_000_000
-                                    / u64::from(tsc_khz.max(1));
                             std::thread::sleep(Duration::from_nanos(
                                 interval_ns,
                             ));
@@ -2607,7 +2615,10 @@ impl Vcpu {
             // The halt boundary: KVM emulates the halt in-kernel and this
             // exit rarely surfaces. The arm path schedules the deadline's
             // wake thread, whose kick breaks the halt at the deadline.
-            let tsc_now = self.kvm_vcpu.guest_tsc().unwrap_or(0);
+            let tsc_now = self
+                .kvm_vcpu
+                .guest_tsc()
+                .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
             self.apic_tsc_now
                 .store(tsc_now, Ordering::Relaxed);
             return Ok(VcpuEmulation::Handled);

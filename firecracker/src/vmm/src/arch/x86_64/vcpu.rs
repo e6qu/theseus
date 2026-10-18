@@ -943,9 +943,10 @@ impl KvmVcpu {
     }
 
     /// Queue `vector` for delivery on the next guest entry through
-    /// KVM_INTERRUPT. Returns `false` when KVM already holds a pending
-    /// user-injected interrupt; the held delivery then stays pending in KVM
-    /// and the caller keeps its request queued for a later turn.
+    /// KVM_INTERRUPT. Returns `false` when KVM already holds this pending
+    /// user-injected interrupt; the caller then removes its queue entry -
+    /// KVM delivers the held vector at the guest's next enabled window on
+    /// its own.
     pub fn inject_lapic_vector(&self, vector: u8) -> Result<bool, KvmVcpuError> {
         let interrupt = kvm_interrupt {
             irq: u32::from(vector),
@@ -964,44 +965,18 @@ impl KvmVcpu {
     }
 
     /// Admit one held in-kernel timer delivery recorded as `vcpu:<id>:
-    /// interrupt:lapic-timer:<vector>`. KVM_INTERRUPT is userspace-irqchip
-    /// only - with the in-kernel irqchip it returns ENODEV - so the vector
-    /// is asserted through the LAPIC page instead: set the IRR bit and the
-    /// in-kernel APIC delivers it at the guest's next enabled window (and
-    /// wakes a halted vCPU, like any pending interrupt).
+    /// interrupt:lapic-timer:<vector>`: queue it through KVM_INTERRUPT,
+    /// which delivers at the guest's next interrupt window. This is the
+    /// no-irqchip delivery path - with the in-kernel irqchip the ioctl
+    /// errors (and the LOC:0 probe proved an IRR assert there delivers
+    /// nothing), so the error surfaces instead of a silent no-op.
     pub fn inject_held_kernel_timer(&self, vector: u32) -> Result<(), KvmVcpuError> {
         if vector >= 256 {
             return Err(KvmVcpuError::InjectInterrupt(vmm_sys_util::errno::Error::new(
                 libc::EINVAL,
             )));
         }
-        match self.inject_lapic_vector(vector as u8) {
-            Ok(_) => Ok(()),
-            Err(KvmVcpuError::InjectInterrupt(error))
-                if error.errno() == libc::ENXIO
-                    || error.errno() == libc::ENODEV =>
-            {
-                // KVM returns ENXIO for KVM_INTERRUPT under the
-                // in-kernel irqchip.
-                self.assert_lapic_vector_irr(vector as u8)
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    /// Assert `vector` in the in-kernel LAPIC's IRR. The in-kernel APIC
-    /// owns delivery: it pends the interrupt until the guest's interrupt
-    /// window opens and wakes a halted vCPU.
-    fn assert_lapic_vector_irr(&self, vector: u8) -> Result<(), KvmVcpuError> {
-        let mut lapic = self.fd.get_lapic().map_err(KvmVcpuError::VcpuGetLapic)?;
-        let irr_word = APIC_OFF_IRR + (vector as usize / 32) * 4;
-        let asserted = apic_word(&lapic, irr_word) | (1 << (vector % 32));
-        let bytes = asserted.to_le_bytes();
-        for (index, byte) in bytes.iter().enumerate() {
-            lapic.regs[irr_word + index] = *byte as std::os::raw::c_char;
-        }
-        self.fd.set_lapic(&lapic).map_err(KvmVcpuError::VcpuSetLapic)?;
-        Ok(())
+        self.inject_lapic_vector(vector as u8).map(|_| ())
     }
 
     /// The guest's live TSC value. Valid between `KVM_RUN` calls, like
