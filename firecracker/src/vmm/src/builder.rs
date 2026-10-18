@@ -259,13 +259,17 @@ pub fn build_microvm_for_boot(
     let kvm = Kvm::new(cpu_template.kvm_capabilities.clone())?;
     // Set up KVM VM and register memory regions.
     // Build custom CPU config if a custom template is provided.
+    #[cfg_attr(target_arch = "aarch64", allow(unused_variables))]
     let userspace_apic = vm_resources
         .machine_config
         .virtual_time
         .as_ref()
         .is_some_and(|virtual_time| virtual_time.userspace_apic);
     let mut vm = KvmVm::new(kvm)?;
-    vm.userspace_apic = userspace_apic;
+    #[cfg(target_arch = "x86_64")]
+    {
+        vm.userspace_apic = userspace_apic;
+    }
     let mut vcpus = vm.create_vcpus(vm_resources.machine_config.vcpu_count)?;
 
     // Theseus (Track B′): enable deterministic virtual time. The guest clock

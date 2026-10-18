@@ -1596,6 +1596,7 @@ impl Vcpu {
     /// The userspace APIC's timer assertion at this handled-exit
     /// boundary: the deadline lives on the guest's free-running TSC, so
     /// the delivery position is the armed deadline itself.
+    #[cfg(target_arch = "x86_64")]
     fn observe_userspace_apic_timer(&mut self) {
         if !self.userspace_apic {
             return;
@@ -1829,6 +1830,7 @@ impl Vcpu {
                     // counting them bounds quanta deterministically (Track B′).
                     self.maybe_tick();
                     self.observe_kernel_timer();
+                    #[cfg(target_arch = "x86_64")]
                     self.observe_userspace_apic_timer();
                 }
                 // Emulation was interrupted, check external events.
@@ -1850,6 +1852,7 @@ impl Vcpu {
                     // A vmentry failure names the guest state that KVM
                     // rejected: dump it before the exit so the probe
                     // names the corruption instead of guessing.
+                    #[cfg(target_arch = "x86_64")]
                     if error.to_string().contains("FailEntry") {
                         match (self.kvm_vcpu.fd.get_regs(), self.kvm_vcpu.fd.get_sregs()) {
                             (Ok(regs), Ok(sregs)) => {
@@ -2520,6 +2523,7 @@ impl Vcpu {
                 // A vmentry refused while events are blocked by MOV SS:
                 // withdraw the queued interrupt so the block can clear,
                 // and re-queue the tick for the next boundary.
+                #[cfg(target_arch = "x86_64")]
                 if let Err(VcpuError::FaultyKvmExit(detail)) = &outcome
                     && detail.contains("blocked by MOV SS")
                 {
@@ -2675,6 +2679,7 @@ fn handle_kvm_exit_recorded(
     // The COM2 debug console is a diagnostic observation channel: kernel
     // printk content depends on real host time, so its accesses are handled
     // by the device but never recorded or replay-matched.
+    #[cfg(target_arch = "x86_64")]
     let debug_serial_access = |port: u16| {
         (0x2f8..0x300).contains(&u64::from(port))
     };
