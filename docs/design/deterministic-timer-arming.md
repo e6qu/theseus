@@ -184,6 +184,19 @@ absolutes break at every rewrite). **The current frontier:** the timer
    `calling initcall` sequence names the blocking call. The flag ships
    off; the default in-kernel-irqchip paths are untouched and green.
 
+   **The dynamic-debug probe (landed):** the pin advanced to the
+   dynamic-debug kernel and `initcall_debug dyndbg="file init/main.c
+   +p"` and the global `dyndbg=+p` both ran - and no `calling initcall`
+   line printed either way, while the boot otherwise looked normal
+   (no debug flood). The 6.1 initcall-tracing prints evidently do not
+   reach the console through the dyndbg machinery in this build. The
+   remaining repo-side move is a kernel patch: `rebuild.sh` already
+   applies `firecracker/resources/patches/<version>/*.patch` before
+   building, so a patch switching do_one_initcall's tracing prints
+   from pr_debug to printk(KERN_INFO) makes `initcall_debug` work
+   unconditionally on the next release. That patch is the next
+   session's opener.
+
 ### C. Re-arm at boundaries without interception (rejected)
 
 At each handled exit, read TMICT/TDCR from the LAPIC page, compute the
