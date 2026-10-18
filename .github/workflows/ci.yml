@@ -23,6 +23,18 @@ jobs:
         working-directory: firecracker
         run: cargo check --workspace
 
+      # The release builds every architecture; the gate only runs on the
+      # host's. Cross-check the other so an arch-only mistake fails here
+      # instead of the release.
+      - name: Check workspace for the other architecture
+        working-directory: firecracker
+        run: |
+          other=${{ runner.arch == 'X64' && 'aarch64' || 'x86_64' }}
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-$other-linux-gnu
+          rustup target add $other-unknown-linux-gnu
+          cargo check --workspace --target $other-unknown-linux-gnu
+
       - name: Deterministic unit suites
         working-directory: firecracker
         run: |
