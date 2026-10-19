@@ -258,6 +258,17 @@ absolutes break at every rewrite). **The current frontier:** the timer
    IRQ routing skipped, which sidesteps the Ged's request_irq while
    keeping the local APIC alive.
 
+   **The ftrace fragment reverted:** merging the fragment into the
+   shipped kernel's build broke the APIC under the green boot args
+   (`APIC: disable apic facility` -> `switched to apic NOOP` -> no
+   timer-MSR arming at all) - the olddefconfig interaction between the
+   tracing options and the APIC support needs its own investigation
+   before the fragment can ride the shipped kernel. The pin is
+   restored to the last good release; the fragment stays available
+   for a dedicated debug-kernel build path (the debug variant of
+   `rebuild.sh kernels` already builds one) rather than the shipped
+   one.
+
 ### C. Re-arm at boundaries without interception (rejected)
 
 At each handled exit, read TMICT/TDCR from the LAPIC page, compute the
