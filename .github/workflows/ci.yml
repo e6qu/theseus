@@ -78,7 +78,7 @@ jobs:
           (cd ../../../firecracker && cargo build -p firecracker)
           cargo build --manifest-path ../../../cli/Cargo.toml --locked
           release=$(mktemp -d)
-          tag=01f8ae564e86
+          tag=8a30a0453af0
           url="https://github.com/e6qu/theseus/releases/download/$tag"
           curl -fsSL "$url/theseus-$tag-linux-amd64.tar.gz" -o "$release/theseus-$tag-linux-amd64.tar.gz"
           curl -fsSL "$url/SHA256SUMS" -o "$release/SHA256SUMS"
@@ -217,7 +217,7 @@ jobs:
           cargo build --manifest-path ../../../cli/Cargo.toml --locked
           cargo build --manifest-path ../../../image-runner/Cargo.toml --locked
           release=$(mktemp -d)
-          tag=01f8ae564e86
+          tag=8a30a0453af0
           url="https://github.com/e6qu/theseus/releases/download/$tag"
           curl -fsSL "$url/theseus-$tag-linux-amd64.tar.gz" -o "$release/theseus-$tag-linux-amd64.tar.gz"
           curl -fsSL "$url/SHA256SUMS" -o "$release/SHA256SUMS"

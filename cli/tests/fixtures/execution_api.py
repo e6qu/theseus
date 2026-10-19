@@ -87,6 +87,7 @@ while True:
                 "earlyprintk=serial,0x2f8,keep reboot=k panic=-1 loglevel=7",
                 "earlyprintk=serial,0x2f8,keep reboot=k panic=-1 loglevel=8",
                 "earlyprintk=serial,0x2f8,keep console=ttyS0 reboot=k panic=-1 loglevel=8 initcall_debug highres=off acpi=off",
+                "earlyprintk=serial,0x2f8,keep console=ttyS0 reboot=k panic=-1 loglevel=8 initcall_debug highres=off acpi=off ftrace=function ftrace_filter=ged_probe ftrace_dump_on_oops hung_task_timeout_secs=5 hung_task_panic=1 trace_buf_size=8M",
             )
         elif endpoint == "/machine-config":
             machine = body
