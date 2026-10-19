@@ -197,6 +197,25 @@ absolutes break at every rewrite). **The current frontier:** the timer
    unconditionally on the next release. That patch is the next
    session's opener.
 
+   **Solved without the patch (the loglevel off-by-one):** the 6.1
+   initcall tracing prints `printk(KERN_DEBUG)` - level 7 - and
+   `loglevel=7` suppresses exactly level 7 (the console shows levels
+   strictly below it). `loglevel=8 initcall_debug` printed the full
+   calling/returned trace on the unmodified kernel, and the trace
+   named the stall: `calling inet_init+0x0/0x296`, never returning,
+   while the periodic tick ran and the guest EOI-ed every tick (the
+   machine stream shows the `lapic-timer`/EOI loop). **`highres=off`
+   unblocked it**: the hrtimer high-resolution switch is what breaks
+   under the userspace APIC - with it off the boot passes inet_init
+   and the entire core-initcall sequence (~390 initcalls traced), and
+   stalls next at the ACPI `ged_driver_init` (the Generic Event
+   Device's GSI 6 path - the IOAPIC RTE for that pin is never
+   programmed before the stall). The userspace APIC's remaining work
+   is therefore the clock-event/hrtimer contract (the oneshot
+   retrigger semantics the high-res switch relies on) and the Ged's
+   interrupt path, both kernel-visible now. The flag ships off; the
+   default in-kernel-irqchip paths are untouched and green.
+
 ### C. Re-arm at boundaries without interception (rejected)
 
 At each handled exit, read TMICT/TDCR from the LAPIC page, compute the

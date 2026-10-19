@@ -13,7 +13,7 @@ entropy_device = false # This guest needs only the UART, not a virtio RNG.
 vcpu_count = 1
 mem_size_mib = 128
 timeout_secs = 10
-boot_args = "earlyprintk=serial,0x2f8,keep reboot=k panic=-1 loglevel=7 initcall_debug dyndbg=+p"
+boot_args = "earlyprintk=serial,0x2f8,keep reboot=k panic=-1 loglevel=8 initcall_debug highres=off"
 
 [run.virtual_time]
 tick_ns = 1000000
