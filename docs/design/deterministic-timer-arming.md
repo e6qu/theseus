@@ -246,6 +246,18 @@ absolutes break at every rewrite). **The current frontier:** the timer
    (`trace_buf_size=1M ftrace_dump_on_oops` or a snapshot read from
    the retained log).
 
+   **The ftrace probe (landed, two findings):** the ftrace-enabled
+   kernel boots differently on its own - the ftrace build passed
+   `ged_driver_init` and the whole initcall sequence, freezing only at
+   the init exec (the RCU starved of a scheduling clock). And with
+   `acpi=off` the kernel NOOPs its local APIC regardless of the `lapic`
+   force flag - the guest never touches the APIC page, the userspace
+   timer never arms, and the boot crawls timer-less through the
+   initcalls. The next probe is `acpi=noirq`: ACPI on (the MADT
+   declares the LAPIC and the IOAPIC, both served by Theseus) with the
+   IRQ routing skipped, which sidesteps the Ged's request_irq while
+   keeping the local APIC alive.
+
 ### C. Re-arm at boundaries without interception (rejected)
 
 At each handled exit, read TMICT/TDCR from the LAPIC page, compute the
