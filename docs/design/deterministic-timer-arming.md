@@ -232,6 +232,20 @@ absolutes break at every rewrite). **The current frontier:** the timer
    exit-0-replay semantics. The flag ships off; the default
    in-kernel-irqchip paths are untouched and green.
 
+   **The Ged detail (recorded):** our DSDT contains no Ged device
+   (the devices are the COM1, the PS/2, and the VCLK with _STA=0), so
+   the "ACPI:Ged" platform device comes from the Amazon microvm
+   kernel's own machine code, and `ged_driver_init` blocks inside
+   `platform_driver_register` before any of our IOAPIC RTEs are
+   written. The next session's opener is ftrace: the repo ships
+   `firecracker/resources/guest_configs/ftrace.config`
+   (FUNCTION_TRACER, FUNCTION_GRAPH_TRACER), and a release built with
+   that fragment plus the boot params
+   `ftrace=function ftrace_filter=ged_probe*` traces the blocked
+   probe's call graph directly on the COM2 console
+   (`trace_buf_size=1M ftrace_dump_on_oops` or a snapshot read from
+   the retained log).
+
 ### C. Re-arm at boundaries without interception (rejected)
 
 At each handled exit, read TMICT/TDCR from the LAPIC page, compute the
