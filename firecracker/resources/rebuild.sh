@@ -284,7 +284,11 @@ function build_al_kernels {
         build_al_kernel $PWD/guest_configs/microvm-kernel-ci-$ARCH-5.10-no-acpi.config "$CI_CONFIG" "$NVME_CONFIG"
     fi
     if [[ "$KERNEL_VERSION" == @(all|6.1) ]]; then
-        build_al_kernel $PWD/guest_configs/microvm-kernel-ci-$ARCH-6.1.config "$CI_CONFIG" "$NVME_CONFIG"
+        # The ftrace fragment rides the shipped kernel: the boot-time
+        # function tracing is the probe instrument for guest-side boot
+        # stalls (see docs/design/deterministic-timer-arming.md).
+        FTRACE_CONFIG="$PWD/guest_configs/ftrace.config"
+        build_al_kernel $PWD/guest_configs/microvm-kernel-ci-$ARCH-6.1.config "$CI_CONFIG" "$NVME_CONFIG" "$FTRACE_CONFIG"
     fi
     if [[ "$KERNEL_VERSION" == @(all|6.18) ]]; then
         build_al_kernel $PWD/guest_configs/microvm-kernel-ci-$ARCH-6.18.config "$CI_CONFIG" "$NVME_CONFIG"
