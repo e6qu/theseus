@@ -1,9 +1,12 @@
 #!/bin/busybox sh
 set -eux
+kmsg() { /bin/busybox echo "init: $*" > /dev/kmsg 2>&1 || true; }
+kmsg starting
 /bin/busybox mkdir -p /dev
-/bin/busybox mount -t devtmpfs devtmpfs /dev
+/bin/busybox mount -t devtmpfs devtmpfs /dev || kmsg devtmpfs mount failed
 /bin/busybox mkdir -p /proc
-/bin/busybox mount -t proc proc /proc
+/bin/busybox mount -t proc proc /proc || kmsg proc mount failed
+/bin/busybox ls /dev/ttyS0 > /dev/kmsg 2>&1 || kmsg no ttyS0 node
 
 # A Raspberry Pi exposes its UART as a TTY too (commonly ttyAMA0 or ttyS0).
 # This guest's NS16550 UART is ttyS0. The kernel's interrupt account
@@ -14,7 +17,9 @@ set -eux
 if [ -w /dev/kmsg ]; then
   /bin/busybox cat /proc/interrupts > /dev/kmsg 2>&1 || true
 fi
-/bin/busybox stty -echo -opost </dev/ttyS0
+kmsg stty next
+/bin/busybox stty -echo -opost </dev/ttyS0 || kmsg stty failed
+kmsg stty done
 printf 'THES:M:42\n' >/dev/ttyS0
 IFS= read -r measurement </dev/ttyS0
 printf 'sensor reading: %s\n' "$measurement" >/dev/ttyS0
