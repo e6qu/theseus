@@ -213,8 +213,24 @@ absolutes break at every rewrite). **The current frontier:** the timer
    programmed before the stall). The userspace APIC's remaining work
    is therefore the clock-event/hrtimer contract (the oneshot
    retrigger semantics the high-res switch relies on) and the Ged's
-   interrupt path, both kernel-visible now. The flag ships off; the
-   default in-kernel-irqchip paths are untouched and green.
+   interrupt path, both kernel-visible now.
+
+   **The full workload ran under the userspace APIC (landed):** with
+   `highres=off acpi=off` and `console=ttyS0` (which gives the init a
+   working stderr - the set -x traces and every step are visible), the
+   boot completes the initcall sequence, `/init` runs, the workload's
+   UART interrupt delivers through the userspace IOAPIC, the sensor
+   read completes, and `reboot -f` lands: firecracker exits 0 on the
+   reset. Two probe lessons are on record: a console-mirrored
+   `/proc/interrupts` dump breaks replay determinism (the interrupt
+   counts differ per run - removed), and the remaining guest_exit
+   check failure is the runner's replay semantics for an exit-0
+   reset, not the reset itself. What remains before the flag can flip
+   is the clock-event/hrtimer contract (the oneshot retrigger
+   semantics under `highres=on`), the Ged interrupt path (or the
+   device's removal from the ACPI tables), and the runner's
+   exit-0-replay semantics. The flag ships off; the default
+   in-kernel-irqchip paths are untouched and green.
 
 ### C. Re-arm at boundaries without interception (rejected)
 
