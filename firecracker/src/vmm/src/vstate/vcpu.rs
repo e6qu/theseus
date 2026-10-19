@@ -1845,11 +1845,10 @@ impl Vcpu {
                     #[cfg(target_arch = "x86_64")]
                     if self.userspace_apic {
                         self.exits_since_gsi_sweep += 1;
-                        // Every 4096 handled exits (~a few hundred ms of
-                        // guest progress), re-assert every routed pin:
+                        // Every 64 handled exits, re-assert every routed pin:
                         // a blocked interruptible init unsticks if it
                         // awaited one, and the log names the pin.
-                        if self.exits_since_gsi_sweep >= 4096 {
+                        if self.exits_since_gsi_sweep >= 64 {
                             self.exits_since_gsi_sweep = 0;
                             if let Some(ioapic) = &self.ioapic {
                                 for pin in 0..24u8 {
