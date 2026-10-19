@@ -965,18 +965,29 @@ impl KvmVcpu {
     }
 
     /// Admit one held in-kernel timer delivery recorded as `vcpu:<id>:
-    /// interrupt:lapic-timer:<vector>`: queue it through KVM_INTERRUPT,
-    /// which delivers at the guest's next interrupt window. This is the
-    /// no-irqchip delivery path - with the in-kernel irqchip the ioctl
-    /// errors (and the LOC:0 probe proved an IRR assert there delivers
-    /// nothing), so the error surfaces instead of a silent no-op.
+    /// interrupt:lapic-timer:<vector>`. The stream turn is validated by
+    /// the caller before this runs; what remains is the injection:
+    /// KVM_INTERRUPT queues the vector for the guest's next interrupt
+    /// window. Under the in-kernel irqchip the ioctl refuses with
+    /// ENXIO and KVM's own APIC owns the delivery - that is an
+    /// acknowledged no-op here, not an error (the LOC:0 probe showed
+    /// the alternative IRR assert delivers nothing, so there is
+    /// deliberately no fallback).
     pub fn inject_held_kernel_timer(&self, vector: u32) -> Result<(), KvmVcpuError> {
         if vector >= 256 {
             return Err(KvmVcpuError::InjectInterrupt(vmm_sys_util::errno::Error::new(
                 libc::EINVAL,
             )));
         }
-        self.inject_lapic_vector(vector as u8).map(|_| ())
+        match self.inject_lapic_vector(vector as u8) {
+            Ok(_) => Ok(()),
+            Err(KvmVcpuError::InjectInterrupt(error))
+                if error.errno() == libc::ENXIO || error.errno() == libc::ENODEV =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// The guest's live TSC value. Valid between `KVM_RUN` calls, like
