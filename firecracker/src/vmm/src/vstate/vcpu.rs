@@ -1842,35 +1842,6 @@ impl Vcpu {
                         );
                         return self.exit(FcExitCode::GenericError);
                     }
-                    #[cfg(target_arch = "x86_64")]
-                    if self.userspace_apic {
-                        self.exits_since_gsi_sweep += 1;
-                        // Every 64 handled exits, re-assert every routed pin:
-                        // a blocked interruptible init unsticks if it
-                        // awaited one, and the log names the pin.
-                        if self.exits_since_gsi_sweep >= 64 {
-                            self.exits_since_gsi_sweep = 0;
-                            if let Some(ioapic) = &self.ioapic {
-                                for pin in 0..24u8 {
-                                    if let Some(vector) = ioapic
-                                        .lock()
-                                        .expect("userspace IOAPIC lock poisoned")
-                                        .assert_line(pin)
-                                    {
-                                        info!(
-                                            "vcpu:{}:userspace-apic:gsi-sweep pin={pin} vector={vector}",
-                                            self.kvm_vcpu.index
-                                        );
-                                        let _ = self.machine_execution.request_interrupt(
-                                            "gsi-sweep",
-                                            u32::from(pin),
-                                            false,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
                 // Emulation was interrupted, check external events.
                 Ok(VcpuEmulation::Interrupted) => break,
@@ -2133,6 +2104,38 @@ impl Vcpu {
         if self.machine_execution.vcpu_control_requested() {
             return Ok(VcpuEmulation::Interrupted);
         }
+        // The IRQ-wait probe: every KVM_RUN cycle (including the
+        // kick-driven wake cycles, where the guest spends most of a
+        // stalled boot), re-assert every routed pin - a blocked
+        // interruptible init unsticks if it awaited one, and the log
+        // names the pin.
+        #[cfg(target_arch = "x86_64")]
+        if self.userspace_apic {
+            self.exits_since_gsi_sweep += 1;
+            if self.exits_since_gsi_sweep >= 8 {
+                self.exits_since_gsi_sweep = 0;
+                if let Some(ioapic) = &self.ioapic {
+                    for pin in 0..24u8 {
+                        let vector = ioapic
+                            .lock()
+                            .expect("userspace IOAPIC lock poisoned")
+                            .assert_line(pin);
+                        if let Some(vector) = vector {
+                            info!(
+                                "vcpu:{}:userspace-apic:gsi-sweep pin={pin} vector={vector}",
+                                self.kvm_vcpu.index
+                            );
+                            let _ = self.machine_execution.request_interrupt(
+                                "gsi-sweep",
+                                u32::from(pin),
+                                false,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         #[cfg(target_arch = "x86_64")]
         if self.machine_execution.timer_wake_requested() {
             self.machine_execution.clear_timer_wake();
