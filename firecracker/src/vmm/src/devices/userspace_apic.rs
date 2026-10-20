@@ -86,7 +86,9 @@ pub struct UserspaceLapic {
     eoi_count: u64,
 }
 
-fn divider(tdcr: u64) -> u64 {
+/// The divide-value encoding of the TDCR register: how many TSC ticks
+/// one timer-count tick spans.
+pub fn divider(tdcr: u64) -> u64 {
     match tdcr & 0xF {
         0xB => 1,
         0x0 => 2,
