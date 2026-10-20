@@ -1,0 +1,33 @@
+# The userspace APIC probe: the no-irqchip configuration, the debug
+# kernel (ftrace), and the boot arguments that keep the kernel's local
+# APIC alive while sidestepping the hrtimer high-res switch. The probe
+# asserts the workload's completion and the timer deliveries - not the
+# hold path's arming assertions. See
+# docs/design/deterministic-timer-arming.md for the frontier map.
+version = 1
+
+[runtime]
+firecracker = "work/runtime/firecracker"
+
+[guest]
+kernel = "work/guest/vmlinux-debug"
+initramfs = "work/guest/initramfs.cpio.gz"
+
+[run]
+seed = 42
+entropy_device = false
+vcpu_count = 1
+mem_size_mib = 128
+timeout_secs = 30
+boot_args = "earlyprintk=serial,0x2f8,keep console=ttyS0 reboot=k panic=-1 loglevel=8 initcall_debug highres=off acpi=off ftrace=function ftrace_filter=ged_probe ftrace_dump_on_oops trace_buf_size=8M"
+
+[run.virtual_time]
+tick_ns = 1000000
+exits_per_tick = 10
+hold_kernel_timers = true
+filter_timer_msrs = true
+userspace_apic = true
+
+[[events]]
+when = "ready"
+data = "32312e35430a" # 21.5C followed by newline

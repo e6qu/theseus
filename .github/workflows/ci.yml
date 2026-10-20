@@ -78,7 +78,7 @@ jobs:
           (cd ../../../firecracker && cargo build -p firecracker)
           cargo build --manifest-path ../../../cli/Cargo.toml --locked
           release=$(mktemp -d)
-          tag=01f8ae564e86
+          tag=5e78fa22e9fd
           url="https://github.com/e6qu/theseus/releases/download/$tag"
           curl -fsSL "$url/theseus-$tag-linux-amd64.tar.gz" -o "$release/theseus-$tag-linux-amd64.tar.gz"
           curl -fsSL "$url/SHA256SUMS" -o "$release/SHA256SUMS"
@@ -88,6 +88,7 @@ jobs:
           cp ../../../firecracker/build/cargo_target/debug/firecracker work/runtime/firecracker
           strip work/runtime/firecracker
           cp "$release/theseus-$tag-linux-amd64/vmlinux" work/guest/vmlinux
+          cp "$release/theseus-$tag-linux-amd64/vmlinux-debug" work/guest/vmlinux-debug
           cp /bin/busybox work/guest/root/bin/busybox
           cp init work/guest/root/init
           chmod +x work/guest/root/init
@@ -125,6 +126,32 @@ jobs:
           fi
           python3 -c 'import json; e = json.load(open("work/hold-rejected/execution.json")); assert e["replay_error"], e'
 
+      - name: Probe the userspace APIC on the debug kernel
+        working-directory: docs/tutorials/04-read-serial
+        # Experimental: the probe iterates on the userspace APIC's boot
+        # contract; its findings ride the retained diagnostics without
+        # gating the merge.
+        continue-on-error: true
+        run: |
+          cp work/guest/vmlinux-debug work/guest/vmlinux-debug.probe
+          sed -i 's|work/guest/vmlinux-debug|work/guest/vmlinux-debug.probe|' probe.toml
+          ../../../cli/target/debug/theseus test --output work/probe probe.toml
+          grep -aq 'THES:M:42' work/probe/serial.log
+          grep -aq 'sensor reading: 21.5C' work/probe/serial.log
+          grep -aq 'timer-due' work/probe/firecracker.log
+
+      - name: Retain the userspace APIC probe diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: userspace-apic-probe
+          path: |
+            docs/tutorials/04-read-serial/work/probe/firecracker-debug.log
+            docs/tutorials/04-read-serial/work/probe/firecracker.log
+            docs/tutorials/04-read-serial/work/probe/serial.log
+            docs/tutorials/04-read-serial/work/probe/execution.json
+          if-no-files-found: ignore
+
       - name: Retain the hold-replay bundle on failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -136,7 +163,9 @@ jobs:
             docs/tutorials/04-read-serial/work/hold-replay/serial.log
             docs/tutorials/04-read-serial/work/hold-replay/execution.json
             docs/tutorials/04-read-serial/work/hold-rerun/firecracker-debug.log
+            docs/tutorials/04-read-serial/work/hold-rerun/firecracker.log
             docs/tutorials/04-read-serial/work/hold-rerun/serial.log
+            docs/tutorials/04-read-serial/work/hold-rerun/execution.json
           if-no-files-found: ignore
 
       - name: Replay RNG and UART from a retained ready checkpoint on native KVM
@@ -217,7 +246,7 @@ jobs:
           cargo build --manifest-path ../../../cli/Cargo.toml --locked
           cargo build --manifest-path ../../../image-runner/Cargo.toml --locked
           release=$(mktemp -d)
-          tag=01f8ae564e86
+          tag=5e78fa22e9fd
           url="https://github.com/e6qu/theseus/releases/download/$tag"
           curl -fsSL "$url/theseus-$tag-linux-amd64.tar.gz" -o "$release/theseus-$tag-linux-amd64.tar.gz"
           curl -fsSL "$url/SHA256SUMS" -o "$release/SHA256SUMS"
