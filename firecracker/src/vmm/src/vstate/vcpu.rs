@@ -1481,6 +1481,33 @@ impl Vcpu {
         self.vclock.as_ref()
     }
 
+    /// Schedules the host-side wake for a userspace timer deadline: the
+    /// thread sleeps the remaining interval at host pace and kicks the
+    /// vCPU - the only way a timer fires across a halt, where KVM never
+    /// surfaces an exit for the delivery to ride.
+    #[cfg(target_arch = "x86_64")]
+    fn schedule_userspace_timer_wake(
+        &mut self,
+        deadline_ticks: u64,
+        tsc_now: u64,
+        tsc_khz: u32,
+    ) -> Result<(), VcpuError> {
+        let interval_ns =
+            deadline_ticks.saturating_sub(tsc_now) * 1_000_000 / u64::from(tsc_khz);
+        let machine_execution = Arc::clone(&self.machine_execution);
+        let generation = Arc::clone(&self.timer_arm_generation);
+        let arm_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_nanos(interval_ns));
+            // A stale wake (a newer arm superseded this one) must not
+            // deliver early.
+            if generation.load(Ordering::SeqCst) == arm_generation {
+                machine_execution.request_timer_wake();
+            }
+        });
+        Ok(())
+    }
+
     /// Enables the userspace APIC mode: the local APIC and IOAPIC are
     /// emulated here and delivery goes through `KVM_INTERRUPT`.
     pub fn enable_userspace_apic(
@@ -1610,12 +1637,12 @@ impl Vcpu {
             .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
         self.apic_tsc_now
             .store(tsc_now, Ordering::Relaxed);
-        if let Some(vector) = self
+        let due = self
             .lapic
             .lock()
             .expect("userspace local APIC lock poisoned")
-            .timer_due(tsc_now)
-        {
+            .timer_due(tsc_now);
+        if let Some(vector) = due {
             info!(
                 "vcpu:{}:userspace-apic:timer-due vector={vector} tsc_now={tsc_now}",
                 self.kvm_vcpu.index
@@ -1629,6 +1656,20 @@ impl Vcpu {
                 .map_err(|error| {
                     VcpuError::UnhandledKvmExit(error.to_string())
                 })?;
+        }
+        // Periodic mode: the LAPIC re-arms itself at whole periods -
+        // schedule the next host-side wake so the halt wakes for it.
+        let tsc_khz = self.kvm_vcpu.cached_tsc_khz().unwrap_or(0);
+        if tsc_khz > 0 {
+            let lapic = self
+                .lapic
+                .lock()
+                .expect("userspace local APIC lock poisoned");
+            let mode = (lapic.lvt_timer() >> 17) & 0x3;
+            if let Some(expiry) = lapic.next_expiry(mode) {
+                drop(lapic);
+                self.schedule_userspace_timer_wake(expiry, tsc_now, tsc_khz)?;
+            }
         }
         Ok(())
     }
@@ -2370,35 +2411,37 @@ impl Vcpu {
                     // halt in-kernel and never surfaces the boundary, so
                     // the delivery needs a host-paced wake that fires at
                     // the deadline whether the guest is running, halted,
-                    // or blocked in KVM_RUN.
-                    if index == MSR_IA32_TSC_DEADLINE && data != 0 {
-                        let tsc_khz = u64::from(
-                            self.kvm_vcpu
-                                .cached_tsc_khz()
-                                .map_err(|error| {
-                                    VcpuError::UnhandledKvmExit(error.to_string())
-                                })?,
-                        );
-                        let interval_ns = data.saturating_sub(tsc_now)
-                            * 1_000_000
-                            / tsc_khz;
-                        let machine_execution =
-                            Arc::clone(&self.machine_execution);
-                        let generation = Arc::clone(&self.timer_arm_generation);
-                        let arm_generation =
-                            generation.fetch_add(1, Ordering::SeqCst) + 1;
-                        std::thread::spawn(move || {
-                            std::thread::sleep(Duration::from_nanos(
-                                interval_ns,
-                            ));
-                            // A stale wake (a newer arm superseded this
-                            // one) must not deliver early.
-                            if generation.load(Ordering::SeqCst)
-                                == arm_generation
-                            {
-                                machine_execution.request_timer_wake();
-                            }
-                        });
+                    // or blocked in KVM_RUN. Both arming registers
+                    // schedule it: the TSC-deadline's deadline is
+                    // absolute, the TMICT's is one period out.
+                    let tsc_khz = self
+                        .kvm_vcpu
+                        .cached_tsc_khz()
+                        .map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })?;
+                    let wake_deadline = match (index, data) {
+                        (MSR_IA32_TSC_DEADLINE, d) if d != 0 => Some(d),
+                        (crate::devices::userspace_apic::MSR_X2APIC_TMICT, d)
+                            if d != 0 =>
+                        {
+                            let period = d
+                                * crate::devices::userspace_apic::divider(
+                                    self.lapic
+                                        .lock()
+                                        .expect("userspace local APIC lock poisoned")
+                                        .divide_config(),
+                                );
+                            Some(tsc_now + period)
+                        }
+                        _ => None,
+                    };
+                    if let Some(deadline_ticks) = wake_deadline {
+                        self.schedule_userspace_timer_wake(
+                            deadline_ticks,
+                            tsc_now,
+                            tsc_khz,
+                        )?;
                     }
                     return Ok(VcpuEmulation::Handled);
                 }

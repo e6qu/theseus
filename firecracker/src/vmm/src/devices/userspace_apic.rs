@@ -108,6 +108,17 @@ impl UserspaceLapic {
             || (MSR_X2APIC_FIRST..=MSR_X2APIC_LAST).contains(&index)
     }
 
+    /// The LVT timer entry: the vector, the mask, and the mode field.
+    pub fn lvt_timer(&self) -> u64 {
+        self.lvt_timer
+    }
+
+    /// The divide-value encoding of the TDCR register: how many TSC
+    /// ticks one timer-count tick spans.
+    pub fn divide_config(&self) -> u64 {
+        self.divide_config & 0xF
+    }
+
     fn timer_vector(&self) -> Option<u8> {
         if self.lvt_timer & LVT_MASKED != 0 {
             return None;
@@ -206,6 +217,17 @@ impl UserspaceLapic {
         }
         Some((vector, to_go))
     }
+
+    /// The timer's next expiry in guest TSC ticks, if armed.
+    pub fn next_expiry(&self, mode: u64) -> Option<u64> {
+        if mode == MODE_TSC_DEADLINE {
+            self.tsc_deadline
+        } else {
+            self.tmict_expiry
+        }
+    }
+
+
 
     /// The timer assertion at a handled-exit boundary: when the deadline
     /// has passed, disarms (or re-arms, periodic mode) and returns the
