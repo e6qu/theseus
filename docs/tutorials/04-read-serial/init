@@ -1,5 +1,10 @@
 #!/bin/busybox sh
-set -eux
+# No `set -x` here: the shell's traces write through /dev/console (which
+# maps to ttyS0 in this initramfs), and the tty layer's TX flow control
+# makes console bytes timing-dependent - the replay diverges at the
+# first trace byte. Diagnostics ride /dev/kmsg instead: printk reaches
+# the COM2 early console only, which the machine stream never records.
+set -eu
 kmsg() { /bin/busybox echo "init: $*" > /dev/kmsg 2>&1 || true; }
 kmsg starting
 /bin/busybox mkdir -p /dev
