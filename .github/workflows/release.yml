@@ -83,6 +83,7 @@ jobs:
             test -x /usr/local/bin/theseus-image
             jq --version
             test -s /opt/theseus/vmlinux
+            test -s /opt/theseus/vmlinux-debug
             test -x /opt/theseus/pivot
             test -s /opt/theseus/pivot.json
             test -x /opt/theseus/instrumentation/c/theseus-coverage-cc
@@ -159,6 +160,7 @@ jobs:
           docker cp "$container:/usr/local/bin/theseus-explorer" "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-explorer"
           docker cp "$container:/usr/local/bin/theseus-image" "theseus-${TAG}-linux-${{ matrix.arch }}/theseus-image"
           docker cp "$container:/opt/theseus/vmlinux" "theseus-${TAG}-linux-${{ matrix.arch }}/vmlinux"
+          docker cp "$container:/opt/theseus/vmlinux-debug" "theseus-${TAG}-linux-${{ matrix.arch }}/vmlinux-debug"
           docker cp "$container:/opt/theseus/." "theseus-${TAG}-linux-${{ matrix.arch }}/"
           docker rm "$container"
           chmod +x "theseus-${TAG}-linux-${{ matrix.arch }}/firecracker"
@@ -412,6 +414,7 @@ jobs:
             test -x /usr/local/bin/theseus-image
             jq --version
             test -s /opt/theseus/vmlinux
+            test -s /opt/theseus/vmlinux-debug
             test -x /opt/theseus/pivot
             test -s /opt/theseus/pivot.json
             test -x /opt/theseus/instrumentation/c/theseus-coverage-cc
@@ -527,6 +530,7 @@ jobs:
             test -x theseus-explorer
             test -x theseus-image
             test -s vmlinux
+            test -s vmlinux-debug
             test -x pivot
             test -s pivot.json
             test -x instrumentation/c/theseus-coverage-cc
