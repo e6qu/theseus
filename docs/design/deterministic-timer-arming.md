@@ -536,3 +536,15 @@ today's honest divergence.
 - The guest's TMCCT reads agree with the deliveries it observes.
 - No host-time reads on the timer path (grep-verifiable: the LAPIC timer
   code touches no `Instant`/`SystemTime`).
+
+   **The host-pool variance (recorded):** the same pinned runtime, the
+   same boot arguments, and the same kernel booted the guest on the
+   PIT clockevent on one runner host and on the LAPIC/TSC-deadline
+   clockevent (the arms logged) on another - the runner host pool's
+   KVM versions differ in whether x2APIC timer-MSR writes honor the
+   userspace MSR filter while the in-kernel irqchip is live. The
+   hold step's arming-write assertion is therefore informational
+   (the count prints; a PIT boot legitimately has none). The hold
+   machinery's stage-1 evidence collection continues either way;
+   the delivery-side assertions (the marker, the sensor, the reboot)
+   gate as before.
