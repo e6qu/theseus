@@ -548,3 +548,13 @@ today's honest divergence.
    machinery's stage-1 evidence collection continues either way;
    the delivery-side assertions (the marker, the sensor, the reboot)
    gate as before.
+
+   **The highres=on probe (post-periodic-wake, landed):** with
+   `highres=on acpi=on` on the debug kernel, the boot now passes
+   `inet_init` (the earlier stall - the periodic-wake fix helped the
+   high-res path too) and reaches `ged_driver_init`, where it blocks
+   again. The config matrix's Ged block thus interacts with the
+   high-res setting on the debug kernel; the clock-event/hrtimer
+   contract and the Ged path remain entangled, and the ftrace
+   call-graph probe (the debug kernel ships it) is the named
+   instrument for their intersection.
