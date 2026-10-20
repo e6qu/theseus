@@ -78,7 +78,7 @@ jobs:
           (cd ../../../firecracker && cargo build -p firecracker)
           cargo build --manifest-path ../../../cli/Cargo.toml --locked
           release=$(mktemp -d)
-          tag=01f8ae564e86
+          tag=5e78fa22e9fd
           url="https://github.com/e6qu/theseus/releases/download/$tag"
           curl -fsSL "$url/theseus-$tag-linux-amd64.tar.gz" -o "$release/theseus-$tag-linux-amd64.tar.gz"
           curl -fsSL "$url/SHA256SUMS" -o "$release/SHA256SUMS"
@@ -88,6 +88,7 @@ jobs:
           cp ../../../firecracker/build/cargo_target/debug/firecracker work/runtime/firecracker
           strip work/runtime/firecracker
           cp "$release/theseus-$tag-linux-amd64/vmlinux" work/guest/vmlinux
+          cp "$release/theseus-$tag-linux-amd64/vmlinux-debug" work/guest/vmlinux-debug
           cp /bin/busybox work/guest/root/bin/busybox
           cp init work/guest/root/init
           chmod +x work/guest/root/init
@@ -217,7 +218,7 @@ jobs:
           cargo build --manifest-path ../../../cli/Cargo.toml --locked
           cargo build --manifest-path ../../../image-runner/Cargo.toml --locked
           release=$(mktemp -d)
-          tag=01f8ae564e86
+          tag=5e78fa22e9fd
           url="https://github.com/e6qu/theseus/releases/download/$tag"
           curl -fsSL "$url/theseus-$tag-linux-amd64.tar.gz" -o "$release/theseus-$tag-linux-amd64.tar.gz"
           curl -fsSL "$url/SHA256SUMS" -o "$release/SHA256SUMS"
