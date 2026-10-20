@@ -31,6 +31,12 @@ pub struct ACPIDeviceManager {
     vmgenid: Option<VmGenId>,
     /// VMclock device
     vmclock: Option<VmClock>,
+    /// Whether the DSDT declares the GED (Generic Event Device) for the
+    /// vmgenid/vmclock notifications. The userspace APIC mode omits it:
+    /// the kernel's Ged driver probes the device synchronously inside
+    /// driver registration, and under the no-irqchip configuration that
+    /// probe blocks.
+    ged_present: bool,
 }
 
 impl ACPIDeviceManager {
@@ -39,6 +45,7 @@ impl ACPIDeviceManager {
         ACPIDeviceManager {
             vmgenid: Some(vmgenid),
             vmclock: Some(vmclock),
+            ged_present: true,
         }
     }
 
@@ -106,6 +113,11 @@ impl ACPIDeviceManager {
         Ok(())
     }
 
+    /// Omits (or restores) the DSDT's GED device.
+    pub fn set_ged_present(&mut self, present: bool) {
+        self.ged_present = present;
+    }
+
     pub fn do_post_restore_vmclock(
         &mut self,
         mem: &GuestMemoryMmap,
@@ -125,6 +137,10 @@ impl Aml for ACPIDeviceManager {
         self.vmgenid().append_aml_bytes(v)?;
         // AML for [`VmClock`] device.
         self.vmclock().append_aml_bytes(v)?;
+
+        if !self.ged_present {
+            return Ok(());
+        }
 
         // Create the AML for the GED interrupt handler
         aml::Device::new(
