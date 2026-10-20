@@ -77,6 +77,7 @@ RUN ./orchestrator/pivot/build.sh --target "$TARGETARCH" \
 RUN cd firecracker/resources \
     && THESEUS_SKIP_DEPENDENCIES=1 ./rebuild.sh kernels 6.1 \
     && cp "$(find "$(uname -m)" -maxdepth 1 -name 'vmlinux-6.1*' ! -name '*.config' | head -n 1)" /out/vmlinux \
+    && cp "$(find "$(uname -m)/debug" -maxdepth 1 -name 'vmlinux-6.1*' ! -name '*.config' ! -name '*.debug' ! -name '*.debug.gz' | head -n 1)" /out/vmlinux-debug \
     && module="$(find "$(uname -m)" -maxdepth 1 -name 'theseus_rng-6.1*.ko' | head -n 1)" \
     && if [ -n "$module" ]; then cp "$module" /out/theseus_rng.ko; fi
 
