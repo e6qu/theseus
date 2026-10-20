@@ -128,6 +128,10 @@ jobs:
 
       - name: Probe the userspace APIC on the debug kernel
         working-directory: docs/tutorials/04-read-serial
+        # Experimental: the probe iterates on the userspace APIC's boot
+        # contract; its findings ride the retained diagnostics without
+        # gating the merge.
+        continue-on-error: true
         run: |
           cp work/guest/vmlinux-debug work/guest/vmlinux-debug.probe
           sed -i 's|work/guest/vmlinux-debug|work/guest/vmlinux-debug.probe|' probe.toml

@@ -270,6 +270,19 @@ absolutes break at every rewrite). **The current frontier:** the timer
    scheduler progressing (a tick-accounting failure), and it is the
    next session's opener.
 
+   **The acpi=off synthesis:** under `acpi=off` the kernel falls back
+   to PIC mode (`APIC: Keep in PIC mode(8259)`) - and the no-irqchip
+   configuration has no PIC device to serve it. The probe's own
+   diagnostics named the failure: the init's `stty` on ttyS0 fails,
+   the marker never prints, and the panic's ftrace dump (now wired:
+   `ftrace_dump_on_oops` + the hung-task panic) shows the buffer.
+   `acpi=off` is therefore fundamentally incompatible with the
+   no-irqchip mode; the viable probe configuration is `acpi=on` (the
+   MADT-declared LAPIC and IOAPIC, both served by Theseus), which
+   leaves the clock-event/hrtimer contract as the one remaining
+   frontier. The probe step runs `continue-on-error` with the
+   diagnostics retained, so it iterates without gating merges.
+
    **The ftrace probe (landed, two findings):** the ftrace-enabled
    kernel boots differently on its own - the ftrace build passed
    `ged_driver_init` and the whole initcall sequence, freezing only at
