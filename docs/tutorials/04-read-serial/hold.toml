@@ -4,7 +4,7 @@ version = 1
 firecracker = "work/runtime/firecracker"
 
 [guest]
-kernel = "work/guest/vmlinux-debug"
+kernel = "work/guest/vmlinux"
 initramfs = "work/guest/initramfs.cpio.gz"
 
 [run]

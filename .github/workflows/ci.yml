@@ -126,6 +126,28 @@ jobs:
           fi
           python3 -c 'import json; e = json.load(open("work/hold-rejected/execution.json")); assert e["replay_error"], e'
 
+      - name: Probe the userspace APIC on the debug kernel
+        working-directory: docs/tutorials/04-read-serial
+        run: |
+          cp work/guest/vmlinux-debug work/guest/vmlinux-debug.probe
+          sed -i 's|work/guest/vmlinux-debug|work/guest/vmlinux-debug.probe|' probe.toml
+          ../../../cli/target/debug/theseus test --output work/probe probe.toml
+          grep -aq 'THES:M:42' work/probe/serial.log
+          grep -aq 'sensor reading: 21.5C' work/probe/serial.log
+          grep -aq 'timer-due' work/probe/firecracker.log
+
+      - name: Retain the userspace APIC probe diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: userspace-apic-probe
+          path: |
+            docs/tutorials/04-read-serial/work/probe/firecracker-debug.log
+            docs/tutorials/04-read-serial/work/probe/firecracker.log
+            docs/tutorials/04-read-serial/work/probe/serial.log
+            docs/tutorials/04-read-serial/work/probe/execution.json
+          if-no-files-found: ignore
+
       - name: Retain the hold-replay bundle on failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
