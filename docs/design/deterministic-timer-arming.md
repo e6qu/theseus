@@ -194,8 +194,15 @@ absolutes break at every rewrite). **The current frontier:** the timer
    applies `firecracker/resources/patches/<version>/*.patch` before
    building, so a patch switching do_one_initcall's tracing prints
    from pr_debug to printk(KERN_INFO) makes `initcall_debug` work
-   unconditionally on the next release. That patch is the next
-   session's opener.
+   unconditionally on the next release. **Superseded: the release now
+   ships the debug kernel** (`vmlinux-debug`, the ftrace/debug-config
+   variant `rebuild.sh` already builds) beside the plain `vmlinux` -
+   probes select it via the plan's `guest.kernel`, leaving the
+   shipped kernel's config untouched (the ftrace-fragment interaction
+   that broke the APIC cannot recur on the default path). The next
+   probe: boot the debug kernel against the userspace APIC with
+   `ftrace=function ftrace_filter=ged_probe* ftrace_dump_on_oops
+   hung_task_panic=1` and read the call graph on the retained console.
 
    **Solved without the patch (the loglevel off-by-one):** the 6.1
    initcall tracing prints `printk(KERN_DEBUG)` - level 7 - and
