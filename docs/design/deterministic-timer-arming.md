@@ -253,6 +253,23 @@ absolutes break at every rewrite). **The current frontier:** the timer
    (`trace_buf_size=1M ftrace_dump_on_oops` or a snapshot read from
    the retained log).
 
+   **The probe matrix (complete):** across every boot-argument
+   combination, the userspace APIC's arm -> virtual-deadline assert ->
+   injection loop works (the due lands within ~0.15ms of the armed
+   deadline), and the stall always shows the same shape: the tick
+   delivered, the kernel's re-arm never following. The matrix:
+   `highres=on acpi=on` stalls at inet_init (the tick/EOI loop);
+   `highres=off acpi=on` stalls at ged_driver_init on the shipped
+   kernel but PASSES it on the debug kernel (build-dependent); the
+   `acpi=off` variants NOOP the kernel's local APIC entirely (the
+   guest never touches the APIC page, even under the `lapic` force
+   flag). The decisive instrument is a kernel patch -
+   `firecracker/resources/patches/6.1/` - adding a periodic printk to
+   the LAPIC timer interrupt handler: it names whether the injected
+   vector's ISR runs (a delivery failure) or runs without the
+   scheduler progressing (a tick-accounting failure), and it is the
+   next session's opener.
+
    **The ftrace probe (landed, two findings):** the ftrace-enabled
    kernel boots differently on its own - the ftrace build passed
    `ged_driver_init` and the whole initcall sequence, freezing only at
