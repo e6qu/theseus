@@ -558,3 +558,18 @@ today's honest divergence.
    contract and the Ged path remain entangled, and the ftrace
    call-graph probe (the debug kernel ships it) is the named
    instrument for their intersection.
+
+   **The GED omission fixed the Ged block (landed):** omitting the
+   `_SB_.GED_` device from the DSDT under the userspace APIC mode
+   cleared the block - `ged_driver_init returned 0 after 30 usecs` -
+   and the boot drove through the net initcalls into IRQ activation:
+   159k machine-stream records (vs the 400-record stall), 58 timer
+   deliveries (the periodic wake working), reaching `inet_init` at
+   12.3s. The stalls recede one fix at a time; the current one is
+   inside inet_init with the periodic tick delivering - the same
+   tick-delivered-init-asleep shape, now with the GED variable
+   eliminated and the arm->due->EOI loop healthy. The boot also runs
+   timer-less-slow (12s to reach what the in-kernel path does in 0.5s)
+   because every timer wait costs a full wake-thread round trip - the
+   virtual-time-accelerated sleeps are the roadmap's answer once the
+   boot completes.
