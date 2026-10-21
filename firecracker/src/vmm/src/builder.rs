@@ -433,6 +433,19 @@ pub fn build_microvm_for_boot(
         vm_resources.serial_rate_limiter(),
         vm_resources.pci_enabled,
     )?;
+    // The kernel's Ged driver probes the ACPI GED synchronously inside
+    // driver registration, and under the no-irqchip configuration that
+    // probe blocks: omit the GED from the DSDT (the vmgenid/vmclock
+    // notifications it routes are not exercised by this mode).
+    #[cfg(target_arch = "x86_64")]
+    if userspace_apic {
+        device_manager
+            .acpi_devices
+            .set_ged_present(false);
+        crate::logger::info!(
+            "userspace APIC: the DSDT omits the GED device"
+        );
+    }
 
     let guest_memory = kvm_vm.guest_memory();
     let entry_point = load_kernel(&boot_config.kernel_file, guest_memory)?;
