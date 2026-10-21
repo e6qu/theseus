@@ -590,3 +590,17 @@ today's honest divergence.
    went red on the untriaged failures. Rehydrating it is a fast
    checkout of the PR ref once the triage names which failures are
    the host pool's.
+   The doc's own touch-up commit is the host-variance control run:
+   the gate on it runs main's code unchanged against the current
+   runner pool - decisive for the timer-speed triage (tutorial 42's
+   ready-checkpoint failures: the host pool's or the branch's).
+
+   **The triage's control result:** the docs-only control PR ran
+   main's code unchanged on the current runner pool - the gate passed
+   end to end, including tutorial 42's ready-checkpoint replay. The
+   timer-speed branch's failures were therefore run-level (the pool
+   assigns hosts per run; a run on a different host hit the
+   serial-input and digest mismatches), not the branch's code. The
+   experiment under PR #505's refs can be rehydrated and re-gated;
+   a 42 failure on its gate should be retried once before triaging
+   the code.
