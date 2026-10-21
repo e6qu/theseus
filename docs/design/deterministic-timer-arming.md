@@ -604,3 +604,21 @@ today's honest divergence.
    experiment under PR #505's refs can be rehydrated and re-gated;
    a 42 failure on its gate should be retried once before triaging
    the code.
+
+   **The highres probe with the GED omitted (landed):** the boot with
+   `highres=on acpi=on` on the debug kernel, the GED omitted, and the
+   periodic wake armed: the trace reached 204k records, the kernel
+   programmed the IOAPIC RTEs for the vmgenid/vmclock GSIs, set the
+   LVT timer to **TSC-deadline mode, unmasked, vector 236** (through
+   the emulated MMIO page - the mode switch itself works), and then
+   froze before the first arming WRMSR - zero MSR exits in the whole
+   trace, the console spinner (the LSR-read/data-write pairs)
+   filling the tail. The freeze sits in the i8042/ged region: the
+   kernel is executing (the RTE writes, the sweep) but the timer's
+   first arm never happened. The boot-args instruments are exhausted;
+   the named opener is the kernel patch -
+   `firecracker/resources/patches/6.1/` - switching
+   do_one_initcall's tracing prints to printk(KERN_INFO) AND adding a
+   periodic counter print to the LAPIC timer interrupt handler, which
+   names both the blocked initcall and whether the injected vector's
+   ISR runs.
