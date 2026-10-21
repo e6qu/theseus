@@ -583,3 +583,10 @@ today's honest divergence.
    expiry via the TIMER_SOFTIRQ at IRQ exit), which the next probe can
    verify by timing a deliberate `udelay`-free vs `msleep`-based
    initcall pair on the debug kernel.
+   **The experiment's preservation note:** the timer-speed branch's
+   commits (the wake-interval divide, the config field, the manifest
+   handling) remain accessible under PR #505's refs
+   (`627785d..1668540`); the branch itself was removed after its gate
+   went red on the untriaged failures. Rehydrating it is a fast
+   checkout of the PR ref once the triage names which failures are
+   the host pool's.
