@@ -573,3 +573,13 @@ today's honest divergence.
    because every timer wait costs a full wake-thread round trip - the
    virtual-time-accelerated sleeps are the roadmap's answer once the
    boot completes.
+
+   **The inet_init stall, narrowed further (the GED-fixed boot):** the
+   boot gets INTO inet_init and through `ip_rt_init` (the `IP idents`
+   line prints from inside it), then blocks before the TCP hash-table
+   line. The periodic tick delivers and jiffies advance; the block is
+   inside inet_init's post-ip_rt_init sequence - the prime suspect is
+   the tick-accounting/sleep path (schedule_timeout's timer wheel
+   expiry via the TIMER_SOFTIRQ at IRQ exit), which the next probe can
+   verify by timing a deliberate `udelay`-free vs `msleep`-based
+   initcall pair on the debug kernel.
