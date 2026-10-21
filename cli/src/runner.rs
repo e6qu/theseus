@@ -864,6 +864,7 @@ fn configure_boot(
             "filter_timer_msrs": virtual_time.filter_timer_msrs,
             "halt_timer_delivery": virtual_time.halt_timer_delivery,
             "userspace_apic": virtual_time.userspace_apic,
+            "timer_speed": virtual_time.timer_speed.max(1),
         });
     }
     api_put(socket, "/machine-config", machine)?;
@@ -1558,19 +1559,25 @@ fn checkpoint_metadata(base: &Path, plan: &RunPlan) -> Result<Value, RunError> {
     // that actually holds timers still requires matching metadata.
     let strip_default_hold = |value: &serde_json::Value| {
         let mut virtual_time = value.clone();
-        let defaults = [
-            ("hold_kernel_timers", false),
-            ("filter_timer_msrs", false),
-            ("halt_timer_delivery", false),
-            ("userspace_apic", false),
+        let bool_defaults = [
+            "hold_kernel_timers",
+            "filter_timer_msrs",
+            "halt_timer_delivery",
+            "userspace_apic",
         ];
-        for (key, default) in defaults {
-            if virtual_time.get(key) == Some(&serde_json::Value::Bool(default)) {
+        for key in bool_defaults {
+            if virtual_time.get(key) == Some(&serde_json::Value::Bool(false)) {
                 virtual_time
                     .as_object_mut()
                     .expect("virtual time serializes to an object")
                     .remove(key);
             }
+        }
+        if virtual_time.get("timer_speed") == Some(&serde_json::Value::from(1)) {
+            virtual_time
+                .as_object_mut()
+                .expect("virtual time serializes to an object")
+                .remove("timer_speed");
         }
         virtual_time
     };
