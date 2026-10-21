@@ -1370,6 +1370,9 @@ pub struct Vcpu {
     last_timer_vector: Option<u8>,
     /// Handled exits since the last GSI sweep (the IRQ-wait probe).
     exits_since_gsi_sweep: u32,
+    /// The userspace timer's acceleration: the wake interval divides
+    /// by this (1 = host pace).
+    timer_speed: u32,
 }
 
 /// States of the vCPU thread's run loop.
