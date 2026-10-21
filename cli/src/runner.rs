@@ -864,8 +864,14 @@ fn configure_boot(
             "filter_timer_msrs": virtual_time.filter_timer_msrs,
             "halt_timer_delivery": virtual_time.halt_timer_delivery,
             "userspace_apic": virtual_time.userspace_apic,
-            "timer_speed": virtual_time.timer_speed.max(1),
         });
+        // The timer speed is a runner-side probe acceleration; older
+        // runtimes reject the unknown field, and the identity speed is
+        // the explicit absence of acceleration.
+        if virtual_time.timer_speed > 1 {
+            machine["virtual_time"]["timer_speed"] =
+                serde_json::json!(virtual_time.timer_speed);
+        }
     }
     api_put(socket, "/machine-config", machine)?;
     api_put(
