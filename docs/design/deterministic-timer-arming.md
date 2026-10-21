@@ -590,3 +590,7 @@ today's honest divergence.
    went red on the untriaged failures. Rehydrating it is a fast
    checkout of the PR ref once the triage names which failures are
    the host pool's.
+   The doc's own touch-up commit is the host-variance control run:
+   the gate on it runs main's code unchanged against the current
+   runner pool - decisive for the timer-speed triage (tutorial 42's
+   ready-checkpoint failures: the host pool's or the branch's).
