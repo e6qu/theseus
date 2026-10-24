@@ -11,7 +11,7 @@ diff --git a/arch/x86/kernel/apic/apic.c b/arch/x86/kernel/apic/apic.c
  static unsigned long apic_phys __ro_after_init;
  
  /*
-@@ -1091,7 +1094,15 @@ static void local_apic_timer_interrupt(void)
+@@ -1091,7 +1094,19 @@ static void local_apic_timer_interrupt(void)
  	/*
  	 * the NMI deadlock-detector uses this.
  	 */
