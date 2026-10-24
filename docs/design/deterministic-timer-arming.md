@@ -622,3 +622,11 @@ today's honest divergence.
    periodic counter print to the LAPIC timer interrupt handler, which
    names both the blocked initcall and whether the injected vector's
    ISR runs.
+   **The probe recipe (queued, exact):** once the release carrying the
+   fixed patch publishes and certifies: advance the CI pin to it, and
+   the probe step (the userspace APIC, `highres=on acpi=on`, the GED
+   omitted, the debug kernel) prints the counter on the retained COM2
+   console every 16 ticks. The reading: the counter advances - the
+   injection delivers and the ISR runs (the frontier moves to why the
+   kernel's re-arm stalls); the counter stands at 0 - the injection
+   never reaches the handler (the frontier stays at the delivery).
