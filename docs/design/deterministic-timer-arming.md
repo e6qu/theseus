@@ -630,3 +630,22 @@ today's honest divergence.
    injection delivers and the ISR runs (the frontier moves to why the
    kernel's re-arm stalls); the counter stands at 0 - the injection
    never reaches the handler (the frontier stays at the delivery).
+   **The counter read (landed - the good outcome):** on the
+   d1f0c59 release (the patched kernel), the probe's delivery loop is
+   fully healthy: 43 TSC-deadline arms (`wr:0x6e0`), 43 timer dues,
+   23 wake-driven deliveries, and **33 x2APIC EOI writes** - the
+   kernel's timer ISR ran 33 times under the no-irqchip userspace
+   APIC, each ending with the EOI (the ISR's tail write, intercepted
+   by the emulated LAPIC). The injected vector's ISR runs; the
+   boot's timer waits complete; the workload's full run continues
+   past inet_init. The tick-counter print itself never reached the
+   consoles (the ISR-context printk with the console busy), so the
+   definitive counter read moves to the userspace side (/proc/
+   interrupts' LOC line once /init runs - the init already cats it
+   through kmsg). **The probe's gate passed end to end** (the clean
+   replay, the hold flow, the probe itself, and tutorial 42) - the
+   userspace APIC's probe configuration is green on the current
+   runner pool with the patched kernel. The remaining frontier for
+   the userspace APIC is the boot's pace (every wait costs a wake
+   round trip) and the replay-exactness of the userspace stream -
+   both named.
