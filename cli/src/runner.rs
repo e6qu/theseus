@@ -865,6 +865,12 @@ fn configure_boot(
             "halt_timer_delivery": virtual_time.halt_timer_delivery,
             "userspace_apic": virtual_time.userspace_apic,
         });
+        // The timer speed is a runner-side probe acceleration; older
+        // runtimes reject the unknown field, and the identity speed is
+        // the explicit absence of acceleration.
+        if virtual_time.timer_speed > 1 {
+            machine["virtual_time"]["timer_speed"] = serde_json::json!(virtual_time.timer_speed);
+        }
     }
     api_put(socket, "/machine-config", machine)?;
     api_put(
@@ -1571,6 +1577,19 @@ fn checkpoint_metadata(base: &Path, plan: &RunPlan) -> Result<Value, RunError> {
                     .expect("virtual time serializes to an object")
                     .remove(key);
             }
+        }
+        let timer_speed_is_identity = match &virtual_time.get("timer_speed") {
+            Some(serde_json::Value::Number(n)) => {
+                matches!(n.as_u64(), Some(0) | Some(1))
+            }
+            None => true,
+            _ => false,
+        };
+        if timer_speed_is_identity {
+            virtual_time
+                .as_object_mut()
+                .expect("virtual time serializes to an object")
+                .remove("timer_speed");
         }
         virtual_time
     };
