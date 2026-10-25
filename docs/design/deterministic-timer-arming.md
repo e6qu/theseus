@@ -676,3 +676,7 @@ today's honest divergence.
    lapic-tick-counter-probe branch and the reverted commit); the
    probes meanwhile run against the shipped kernel without the
    counter.
+   **The patch's local validation (recorded):** the 0002 patch applies
+   cleanly against the torvalds v6.1 apic.c (verified with git apply
+   in a scratch tree — since removed); the failure is specific to the
+   AL kernel tree in the release build.
