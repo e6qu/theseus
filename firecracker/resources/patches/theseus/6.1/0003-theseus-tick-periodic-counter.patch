@@ -1,0 +1,25 @@
+diff --git a/kernel/time/tick-common.c b/kernel/time/tick-common.c
+--- a/kernel/time/tick-common.c
++++ b/kernel/time/tick-common.c
+@@ -82,6 +82,9 @@ static void tick_periodic(int cpu)
+ 
+ static void tick_periodic(int cpu)
+ {
++	static unsigned int theseus_tick_periodic_count;
++
++	theseus_tick_periodic_count++;
++
+ 	if (tick_do_timer_cpu == cpu) {
+ 		raw_spin_lock(&jiffies_lock);
+ 		write_seqcount_begin(&jiffies_seq);
+@@ -98,6 +101,12 @@ static void tick_periodic(int cpu)
+ 		update_wall_time();
+ 	}
+ 
++	if (!(theseus_tick_periodic_count % 64))
++		printk(KERN_INFO "theseus: tick_periodic %u jiffies=%lu\n",
++		       theseus_tick_periodic_count, jiffies);
++
+ 	update_process_times(user_mode(get_irq_regs()));
+ 	profile_tick(CPU_PROFILING);
+ }
