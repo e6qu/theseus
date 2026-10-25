@@ -14122,6 +14122,7 @@ fn service_resources(
                     filter_timer_msrs: time.filter_timer_msrs,
                     halt_timer_delivery: false,
                     userspace_apic: false,
+                    timer_speed: 1,
                 }),
             ..Default::default()
         })

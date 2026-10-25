@@ -660,6 +660,7 @@ fn resources_from_plan(plan: &RunPlan, serial_log: Option<PathBuf>) -> Result<Vm
                     filter_timer_msrs: time.filter_timer_msrs,
                     halt_timer_delivery: false,
                     userspace_apic: false,
+                    timer_speed: 1,
                 }),
             ..Default::default()
         })
