@@ -649,3 +649,14 @@ today's honest divergence.
    the userspace APIC is the boot's pace (every wait costs a wake
    round trip) and the replay-exactness of the userspace stream -
    both named.
+   **The accelerated probe's result (the rehydrated branch):** with
+   `timer_speed = 20`, the probe's boot reached `inet_init` at 14.8s
+   with 78 timer deliveries - the acceleration works, and the stall
+   persists at the same place: inside inet_init, the tick delivered,
+   the init asleep. The acceleration also confirmed the boot's crawl
+   is not the wake round trips alone: the timer waits are 20x faster
+   and the stall remains. The frontier is now purely the
+   tick-accounting/sleep path inside inet_init - the kernel-side
+   question that the next probe answers with the /proc/interrupts LOC
+   counter (read once /init runs) or a kernel patch with a counter
+   print that survives the ISR-context printk suppression.
