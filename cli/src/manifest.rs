@@ -160,6 +160,10 @@ struct Run {
     boot_args: Option<String>,
 }
 
+fn is_identity_timer_speed(speed: &u32) -> bool {
+    *speed == 0 || *speed == 1
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VirtualTime {
@@ -181,6 +185,13 @@ pub struct VirtualTime {
     /// virtual position (amd64 only).
     #[serde(default)]
     pub userspace_apic: bool,
+    /// The userspace APIC's timer acceleration: the guest's timer
+    /// deadlines fire after `1/N` of the requested interval at host
+    /// pace. The guest's sleeps then complete faster, which accelerates
+    /// boot probes whose kernel-side timeouts would otherwise crawl.
+    /// `timer_speed = 1` (the default) runs the deadlines at host pace.
+    #[serde(default, skip_serializing_if = "is_identity_timer_speed")]
+    pub timer_speed: u32,
 }
 
 #[derive(Debug, Deserialize)]
