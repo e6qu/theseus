@@ -1370,6 +1370,9 @@ pub struct Vcpu {
     last_timer_vector: Option<u8>,
     /// Handled exits since the last GSI sweep (the IRQ-wait probe).
     exits_since_gsi_sweep: u32,
+    /// The userspace timer's acceleration: the wake interval divides
+    /// by this (1 = host pace).
+    timer_speed: u32,
 }
 
 /// States of the vCPU thread's run loop.
@@ -1444,6 +1447,7 @@ impl Vcpu {
             ioapic: None,
             last_timer_vector: None,
             exits_since_gsi_sweep: 0,
+            timer_speed: 1,
             timer_msrs_filtered: false,
             timer_deadline_ticks: None,
         })
@@ -1492,8 +1496,9 @@ impl Vcpu {
         tsc_now: u64,
         tsc_khz: u32,
     ) -> Result<(), VcpuError> {
-        let interval_ns =
-            deadline_ticks.saturating_sub(tsc_now) * 1_000_000 / u64::from(tsc_khz);
+        let interval_ns = deadline_ticks.saturating_sub(tsc_now) * 1_000_000
+            / u64::from(tsc_khz)
+            / u64::from(self.timer_speed.max(1));
         let machine_execution = Arc::clone(&self.machine_execution);
         let generation = Arc::clone(&self.timer_arm_generation);
         let arm_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
