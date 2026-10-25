@@ -659,3 +659,9 @@ today's honest divergence.
    remaining instrument is the kernel patch (the tick-handler counter
    via the patchset, which survives the ISR-context printk
    suppression) naming whether jiffies advance during the block.
+   **The gate variance (recorded):** the accelerated branch's gate ran
+   on a runner host where the hold reruns diverged and tutorial 42's
+   bundle validation failed - the same steps main's control run passed
+   on a different host. The per-run host assignment makes these steps
+   flaky at the run level; the retry discipline (rerun once before
+   triaging) applies to every native-KVM gate step.
