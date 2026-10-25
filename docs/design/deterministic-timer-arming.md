@@ -660,3 +660,18 @@ today's honest divergence.
    question that the next probe answers with the /proc/interrupts LOC
    counter (read once /init runs) or a kernel patch with a counter
    print that survives the ISR-context printk suppression.
+   **The accelerated gate's triage (recorded):** with the acceleration
+   on the branch, the gate's failures moved: the clean replay's rerun
+   diverged (the machine replay at decision 1160: the expected UART
+   byte 'u' vs an IIR register read - the console's TX pacing differs
+   between the recording and the replay), tutorial 42 failed (the
+   invalid bundle + the digest mismatch), and the probe blocked at the
+   i8042. The console-TX pacing dependence is the through-line: the
+   init's set -x traces were removed for exactly this reason, but the
+   console writes themselves (every boot message on ttyS0) still pace
+   against the UART's FIFO, and the acceleration changes that pacing.
+   The replay-exactness of any configuration whose console output
+   rides the data channel requires either the console on COM2 only
+   (the earlyprintk-only configuration: no console=ttyS0) or the
+   virtual-time-accelerated sleeps that speed the guest's clock
+   instead of the timer deliveries.
