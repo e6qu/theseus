@@ -665,3 +665,20 @@ today's honest divergence.
    on a different host. The per-run host assignment makes these steps
    flaky at the run level; the retry discipline (rerun once before
    triaging) applies to every native-KVM gate step.
+   **The hold-rerun divergence decoded (the arming nondeterminism, recorded):**
+   the tick-counter-patched kernel's hold flow failed its rerun with the
+   machine stream diverging at decision 2: the recorded
+   `timer:arm:0x6e0:564091097` vs the rerun's `614109857` - the arm
+   value is the guest's TSC read at the boot moment, which scales with
+   the boot's pace, and the recording/rerun phases ran at different
+   paces. This is the design's documented residual arming
+   nondeterminism surfacing through the host variance - not the patch's
+   doing. The tick counter print itself (every 64 ticks on the COM2
+   early console, excluded from the data channel) is innocent. The
+   counter instrument therefore cannot ride the shipped kernel used by
+   the hold flow; it returns via the debug kernel (the
+   `vmlinux-debug` artifact), which the probes select through the
+   plan's `guest.kernel` - the LAPIC counter patch is already in the
+   debug kernel's build (the patchset applies to every variant).
+   The userspace APIC remains the fix for the arming nondeterminism
+   itself: its arms land at virtual positions.
