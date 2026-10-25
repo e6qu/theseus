@@ -665,3 +665,14 @@ today's honest divergence.
    on a different host. The per-run host assignment makes these steps
    flaky at the run level; the retry discipline (rerun once before
    triaging) applies to every native-KVM gate step.
+   **The tick counter patch's build failure (recorded):** the 0002
+   patch (the LAPIC ISR counter in apic.c) applies cleanly against the
+   torvalds v6.1 source (verified locally with git apply) but fails in
+   the release docker build against the Amazon Linux 6.1 kernel tree
+   with `error: corrupt patch at line 110` — the AL kernel's apic.c
+   differs from upstream at the patch site, and the failure needs the
+   AL kernel tree to debug (the patch regenerated against the AL
+   source). The patch file is preserved in git history (the
+   lapic-tick-counter-probe branch and the reverted commit); the
+   probes meanwhile run against the shipped kernel without the
+   counter.
