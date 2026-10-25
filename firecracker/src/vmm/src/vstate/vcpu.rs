@@ -1515,12 +1515,13 @@ impl Vcpu {
         ioapic: Arc<Mutex<crate::devices::userspace_apic::UserspaceIoapic>>,
         lapic: Arc<Mutex<crate::devices::userspace_apic::UserspaceLapic>>,
         apic_tsc_now: Arc<AtomicU64>,
+        timer_speed: u32,
     ) {
         self.userspace_apic = true;
         self.ioapic = Some(ioapic);
         self.lapic = lapic;
         self.apic_tsc_now = apic_tsc_now;
-
+        self.timer_speed = timer_speed.max(1);
     }
 
     /// Restore virtual-clock bookkeeping from a snapshotted vCPU state.

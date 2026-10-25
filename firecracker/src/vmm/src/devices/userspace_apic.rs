@@ -179,7 +179,8 @@ impl UserspaceLapic {
                 self.tsc_deadline = if value == 0 {
                     None
                 } else {
-                    let interval = value.saturating_sub(tsc_now) / speed.max(1);
+                    let interval =
+                        value.saturating_sub(tsc_now) / u64::from(speed.max(1));
                     Some(tsc_now + interval)
                 };
             }
@@ -194,8 +195,8 @@ impl UserspaceLapic {
                     self.tmict_period = None;
                     None
                 } else {
-                    let period =
-                        value * divider(self.divide_config) / speed.max(1);
+                    let period = value * divider(self.divide_config)
+                        / u64::from(speed.max(1));
                     self.tmict_period = Some(period);
                     Some(tsc_now + period)
                 };
@@ -331,7 +332,7 @@ impl BusDevice for UserspaceLapicMmio {
             .load(std::sync::atomic::Ordering::Relaxed);
         let index = MSR_X2APIC_FIRST + (offset / APIC_MMIO_STRIDE) as u32;
         crate::logger::info!("userspace-apic:wr:{index:#x}={value:#x} tsc_now={tsc_now}");
-        let _ = lapic.write_msr(index, value, tsc_now);
+        let _ = lapic.write_msr(index, value, tsc_now, 1);
         None
     }
 }

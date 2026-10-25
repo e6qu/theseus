@@ -362,6 +362,7 @@ pub fn build_microvm_for_boot(
                     ioapic.clone(),
                     lapic.clone(),
                     apic_tsc_now.clone(),
+                    virtual_time.timer_speed.max(1),
                 );
             }
         }
