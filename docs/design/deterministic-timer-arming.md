@@ -649,3 +649,13 @@ today's honest divergence.
    the userspace APIC is the boot's pace (every wait costs a wake
    round trip) and the replay-exactness of the userspace stream -
    both named.
+   **The accelerated probe (landed, timer_speed = 20):** the timer
+   deliveries more than tripled (44 dues vs 12), the boot's timer
+   waits complete at the accelerated pace, and the boot reached
+   `inet_init` in 10s of guest time - the acceleration works. The
+   stall persists at the same shape: inside inet_init's
+   post-`ip_rt_init` sequence, the tick delivering, the init asleep.
+   The boot-argument and acceleration space is exhausted; the
+   remaining instrument is the kernel patch (the tick-handler counter
+   via the patchset, which survives the ISR-context printk
+   suppression) naming whether jiffies advance during the block.
