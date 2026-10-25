@@ -675,3 +675,17 @@ today's honest divergence.
    (the earlyprintk-only configuration: no console=ttyS0) or the
    virtual-time-accelerated sleeps that speed the guest's clock
    instead of the timer deliveries.
+   **The console-free accelerated probe (landed):** with the console
+   off the data channel and the acceleration armed, the boot reached
+   `inet_init` in 3.17s (the console writes were indeed the pace cost)
+   - and stalled at the same place: inside inet_init, the tick
+   delivering (19 deliveries logged), the kernel alive but the init
+   not progressing. The boot-argument matrix is now exhausted: every
+   configuration converges on this block. The named instrument is the
+   kernel patch: the tick-handler counter (in
+   `tick_periodic`/`tick_sched_handle`) alongside the LAPIC ISR
+   counter - together they separate "the ticks reach the kernel" from
+   "jiffies advance" from "the timers fire" - plus the
+   printk(KERN_INFO) initcall tracing for the initcall-phase block.
+   That patch set is the next session's opener; it rides the existing
+   patchset mechanism and the certify pipeline rebuild.
