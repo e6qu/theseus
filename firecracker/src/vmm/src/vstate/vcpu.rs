@@ -2401,7 +2401,12 @@ impl Vcpu {
                     self.lapic
                         .lock()
                         .expect("userspace local APIC lock poisoned")
-                        .write_msr(index, data, tsc_now)
+                        .write_msr(
+                            index,
+                            data,
+                            tsc_now,
+                            self.timer_speed.max(1),
+                        )
                         .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
                     info!(
                         "vcpu:{}:userspace-apic:wr:{:#x}={:#x} tsc_now={tsc_now}",

@@ -159,19 +159,29 @@ impl UserspaceLapic {
         Ok(value)
     }
 
-    /// Writes an MSR. `tsc_now` is the guest's live TSC tick.
+    /// Writes an MSR. `tsc_now` is the guest's live TSC tick and
+    /// `speed` the timer acceleration (1 = host pace).
     pub fn write_msr(
         &mut self,
         index: u32,
         value: u64,
         tsc_now: u64,
+        speed: u32,
     ) -> Result<(), UserspaceApicError> {
         match index {
             MSR_IA32_APIC_BASE => self.apic_base = value,
             MSR_IA32_TSC_DEADLINE => {
                 // Zero is the disarm the clockevent layer writes between
-                // periods; it never schedules a delivery.
-                self.tsc_deadline = (value != 0).then_some(value);
+                // periods; it never schedules a delivery. The stored
+                // deadline divides the requested interval by the speed:
+                // the delivery fires at the accelerated virtual position,
+                // and the kernel's subsequent re-arms inherit it.
+                self.tsc_deadline = if value == 0 {
+                    None
+                } else {
+                    let interval = value.saturating_sub(tsc_now) / speed.max(1);
+                    Some(tsc_now + interval)
+                };
             }
             MSR_X2APIC_TPR => self.tpr = value & 0xFF,
             MSR_X2APIC_EOI => self.eoi_count += 1,
@@ -184,7 +194,8 @@ impl UserspaceLapic {
                     self.tmict_period = None;
                     None
                 } else {
-                    let period = value * divider(self.divide_config);
+                    let period =
+                        value * divider(self.divide_config) / speed.max(1);
                     self.tmict_period = Some(period);
                     Some(tsc_now + period)
                 };
