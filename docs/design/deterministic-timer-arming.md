@@ -649,3 +649,43 @@ today's honest divergence.
    the userspace APIC is the boot's pace (every wait costs a wake
    round trip) and the replay-exactness of the userspace stream -
    both named.
+   **The accelerated probe's result (the rehydrated branch):** with
+   `timer_speed = 20`, the probe's boot reached `inet_init` at 14.8s
+   with 78 timer deliveries - the acceleration works, and the stall
+   persists at the same place: inside inet_init, the tick delivered,
+   the init asleep. The acceleration also confirmed the boot's crawl
+   is not the wake round trips alone: the timer waits are 20x faster
+   and the stall remains. The frontier is now purely the
+   tick-accounting/sleep path inside inet_init - the kernel-side
+   question that the next probe answers with the /proc/interrupts LOC
+   counter (read once /init runs) or a kernel patch with a counter
+   print that survives the ISR-context printk suppression.
+   **The accelerated gate's triage (recorded):** with the acceleration
+   on the branch, the gate's failures moved: the clean replay's rerun
+   diverged (the machine replay at decision 1160: the expected UART
+   byte 'u' vs an IIR register read - the console's TX pacing differs
+   between the recording and the replay), tutorial 42 failed (the
+   invalid bundle + the digest mismatch), and the probe blocked at the
+   i8042. The console-TX pacing dependence is the through-line: the
+   init's set -x traces were removed for exactly this reason, but the
+   console writes themselves (every boot message on ttyS0) still pace
+   against the UART's FIFO, and the acceleration changes that pacing.
+   The replay-exactness of any configuration whose console output
+   rides the data channel requires either the console on COM2 only
+   (the earlyprintk-only configuration: no console=ttyS0) or the
+   virtual-time-accelerated sleeps that speed the guest's clock
+   instead of the timer deliveries.
+   **The console-free accelerated probe (landed):** with the console
+   off the data channel and the acceleration armed, the boot reached
+   `inet_init` in 3.17s (the console writes were indeed the pace cost)
+   - and stalled at the same place: inside inet_init, the tick
+   delivering (19 deliveries logged), the kernel alive but the init
+   not progressing. The boot-argument matrix is now exhausted: every
+   configuration converges on this block. The named instrument is the
+   kernel patch: the tick-handler counter (in
+   `tick_periodic`/`tick_sched_handle`) alongside the LAPIC ISR
+   counter - together they separate "the ticks reach the kernel" from
+   "jiffies advance" from "the timers fire" - plus the
+   printk(KERN_INFO) initcall tracing for the initcall-phase block.
+   That patch set is the next session's opener; it rides the existing
+   patchset mechanism and the certify pipeline rebuild.

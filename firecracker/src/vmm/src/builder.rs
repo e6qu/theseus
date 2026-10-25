@@ -357,11 +357,13 @@ pub fn build_microvm_for_boot(
                 "userspace APIC installed: no in-kernel irqchip; the local APIC \
                  and the IOAPIC are emulated and delivery rides KVM_INTERRUPT"
             );
+            let timer_speed = virtual_time.timer_speed.max(1);
             for vcpu in &mut vcpus {
                 vcpu.enable_userspace_apic(
                     ioapic.clone(),
                     lapic.clone(),
                     apic_tsc_now.clone(),
+                    timer_speed,
                 );
             }
         }
@@ -1156,6 +1158,7 @@ pub(crate) mod tests {
             filter_timer_msrs: false,
             halt_timer_delivery: false,
             userspace_apic: false,
+            timer_speed: 1,
         });
         resources
     }
