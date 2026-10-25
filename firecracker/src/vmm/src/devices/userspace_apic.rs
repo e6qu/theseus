@@ -479,7 +479,7 @@ mod tests {
         let mut lapic = UserspaceLapic::default();
         // Periodic mode, vector 236: LVT mode bits (18:17) = 01.
         lapic
-            .write_msr(MSR_X2APIC_LVT_TIMER, (1 << LVT_MODE_SHIFT) | 236, 0)
+            .write_msr(MSR_X2APIC_LVT_TIMER, (1 << LVT_MODE_SHIFT) | 236, 0, 1)
             .unwrap();
         // TDCR divide by 2, initial count 100: a 200-tsc-tick period.
         lapic.write_msr(MSR_X2APIC_TDCR, 0x0, 0).unwrap();
