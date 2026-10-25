@@ -66,8 +66,9 @@ pub struct VirtualTimeConfig {
     pub userspace_apic: bool,
     /// The userspace APIC's timer acceleration: the guest's timer
     /// deadlines fire after `1/N` of the requested interval at host
-    /// pace. `timer_speed = 1` (the default) runs the deadlines at
-    /// host pace.
+    /// pace. The guest's sleeps then complete faster, which accelerates
+    /// boot probes whose kernel-side timeouts would otherwise crawl.
+    /// `timer_speed = 1` (the default) runs the deadlines at host pace.
     #[serde(default)]
     pub timer_speed: u32,
 }
