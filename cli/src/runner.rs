@@ -869,8 +869,7 @@ fn configure_boot(
         // runtimes reject the unknown field, and the identity speed is
         // the explicit absence of acceleration.
         if virtual_time.timer_speed > 1 {
-            machine["virtual_time"]["timer_speed"] =
-                serde_json::json!(virtual_time.timer_speed);
+            machine["virtual_time"]["timer_speed"] = serde_json::json!(virtual_time.timer_speed);
         }
     }
     api_put(socket, "/machine-config", machine)?;
