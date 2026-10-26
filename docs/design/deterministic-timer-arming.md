@@ -680,3 +680,16 @@ today's honest divergence.
    cleanly against the torvalds v6.1 apic.c (verified with git apply
    in a scratch tree — since removed); the failure is specific to the
    AL kernel tree in the release build.
+
+   **The hold-rerun divergence confirmed as the arming nondeterminism
+   (recorded):** with the console silenced (loglevel=0), the
+   hold-rerun still diverges at decision 2: the recorded
+   `timer:arm:0x6e0:146498577` vs the rerun's `157312100` — the arm
+   value is the guest's TSC read at the boot moment, and the boot's
+   pace between the recording and the replay phases differs (the
+   runner host's load). This is the fail-closed design working: the
+   hold diverges loudly on arming nondeterminism instead of silently
+   passing. The fix is the userspace APIC itself (the arms at virtual
+   positions); the hold flow's green runs require the host pace
+   stable across the recording and the replay — the retry discipline
+   covers the run-level variance.
