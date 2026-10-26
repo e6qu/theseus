@@ -680,3 +680,18 @@ today's honest divergence.
    cleanly against the torvalds v6.1 apic.c (verified with git apply
    in a scratch tree — since removed); the failure is specific to the
    AL kernel tree in the release build.
+   **The 300s accelerated boot (landed):** with the extended window,
+   the boot progresses through the initcall sequence continuously —
+   the guest clock at 124.8s reaching the block-layer initcalls
+   (blk_mq, genhd, blkcg), the timer deliveries healthy (62+), the
+   tick loop stepping. The pace: the guest clock at ~0.4× wall — the
+   kvm-clock (the TSC-based) reads slow while the timer waits fire at
+   the accelerated rate: the guest's sleep timeouts and the
+   clocksource disagree on the rate, and the boot's initcalls crawl
+   through their own sleeps. The named instrument: the guest clock's
+   rate accounting (the kvm-clock vs the tick-driven jiffies) — the
+   timekeeping-internal interplay that the next session's probe
+   reads (the printk-in-tick counter already in the kernel names the
+   tick rate; the clocksource's rate needs the paired print). The
+   boot's completion under the userspace APIC is the milestone once
+   the clock rates reconcile.
