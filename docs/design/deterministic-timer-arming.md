@@ -695,3 +695,29 @@ today's honest divergence.
    tick rate; the clocksource's rate needs the paired print). The
    boot's completion under the userspace APIC is the milestone once
    the clock rates reconcile.
+   **The boot-to-userspace milestone under the userspace APIC
+   (proven):** with the corrected TSC-frequency CPUID leaves, the
+   proven `highres=off acpi=off` boot arguments restored to the
+   probe, and the accelerated stored deadlines, the boot completes
+   the initcall sequence and reaches `Run /init as init process` in
+   10.5 seconds of consistent guest time — the entire firecracker
+   run, including the userspace init, exits cleanly in 11 seconds of
+   wall time with a closed execution ledger (204,505 decisions). The
+   two fixes that unblocked it: the CPUID 0x15/0x16 frequency leaves
+   now report the vCPU's actual KVM_GET_TSC_KHZ rate instead of the
+   host's nominal rate (the guest clock previously ran skewed by the
+   nominal-to-actual ratio, and every kernel sleep crawled), and the
+   probe's boot arguments now carry the proven no-highres/no-ACPI
+   configuration instead of the defaults that stall at the
+   initcall/userspace boundary.
+
+   **The named residual (the last mile):** the init reaches the tty
+   setup (`stty next` / `stty failed` / `stty done` all print through
+   kmsg), but exits 1 before the `THES:M:42` handshake appears on the
+   wire — the kernel panics with "Attempted to kill init!
+   exitcode=0x00000100". The failing step sits between the stty
+   setup and the sensor read: either the raw-mode `printf` to
+   /dev/ttyS0 fails or the tty-layer semantics under the accelerated
+   timers differ from the green runs. The next probe's init should
+   bracket every step with kmsg diagnostics to name the failing
+   line.
