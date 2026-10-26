@@ -17,8 +17,13 @@ kmsg starting
 kmsg stty next
 /bin/busybox stty -echo -opost </dev/ttyS0 || kmsg stty failed
 kmsg stty done
-printf 'THES:M:42\n' >/dev/ttyS0
-IFS= read -r measurement </dev/ttyS0
-printf 'sensor reading: %s\n' "$measurement" >/dev/ttyS0
-printf 'THES:M:reboot\n' >/dev/ttyS0
-/bin/busybox reboot -f
+measurement=unset
+printf 'THES:M:42\n' >/dev/ttyS0 || kmsg write42 failed rc=$?
+kmsg write42 done
+IFS= read -r measurement </dev/ttyS0 || kmsg read failed rc=$?
+kmsg "read done: $measurement"
+printf 'sensor reading: %s\n' "$measurement" >/dev/ttyS0 || kmsg report failed rc=$?
+kmsg report done
+printf 'THES:M:reboot\n' >/dev/ttyS0 || kmsg marker failed rc=$?
+kmsg reboot next
+/bin/busybox reboot -f || kmsg reboot failed rc=$?
