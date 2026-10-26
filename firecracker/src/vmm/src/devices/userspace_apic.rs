@@ -447,10 +447,10 @@ mod tests {
     fn tsc_deadline_arms_and_fires_at_its_position() {
         let mut lapic = UserspaceLapic::default();
         // The kernel's LVT timer: vector 236, unmasked, one-shot mode.
-        lapic.write_msr(MSR_X2APIC_LVT_TIMER, 236, 0).unwrap();
+        lapic.write_msr(MSR_X2APIC_LVT_TIMER, 236, 0, 1).unwrap();
         // The guest arms 10M ticks (about 4.2ms) ahead of its own TSC.
         lapic
-            .write_msr(MSR_IA32_TSC_DEADLINE, 486_000_000, 476_000_000)
+            .write_msr(MSR_IA32_TSC_DEADLINE, 486_000_000, 476_000_000, 1)
             .unwrap();
         assert_eq!(
             lapic.read_msr(MSR_IA32_TSC_DEADLINE, 476_000_000).unwrap(),
@@ -468,9 +468,9 @@ mod tests {
     #[test]
     fn zero_tsc_deadline_is_a_disarm() {
         let mut lapic = UserspaceLapic::default();
-        lapic.write_msr(MSR_X2APIC_LVT_TIMER, 236, 0).unwrap();
-        lapic.write_msr(MSR_IA32_TSC_DEADLINE, 1_000, 0).unwrap();
-        lapic.write_msr(MSR_IA32_TSC_DEADLINE, 0, 500).unwrap();
+        lapic.write_msr(MSR_X2APIC_LVT_TIMER, 236, 0, 1).unwrap();
+        lapic.write_msr(MSR_IA32_TSC_DEADLINE, 1_000, 0, 1).unwrap();
+        lapic.write_msr(MSR_IA32_TSC_DEADLINE, 0, 500, 1).unwrap();
         assert_eq!(lapic.timer_due(2_000), None);
     }
 
@@ -482,8 +482,8 @@ mod tests {
             .write_msr(MSR_X2APIC_LVT_TIMER, (1 << LVT_MODE_SHIFT) | 236, 0, 1)
             .unwrap();
         // TDCR divide by 2, initial count 100: a 200-tsc-tick period.
-        lapic.write_msr(MSR_X2APIC_TDCR, 0x0, 0).unwrap();
-        lapic.write_msr(MSR_X2APIC_TMICT, 100, 1_000).unwrap();
+        lapic.write_msr(MSR_X2APIC_TDCR, 0x0, 0, 1).unwrap();
+        lapic.write_msr(MSR_X2APIC_TMICT, 100, 1_000, 1).unwrap();
         // The countdown reads in divided ticks.
         assert_eq!(lapic.read_msr(MSR_X2APIC_TMCCT, 1_050).unwrap(), 75);
         // First tick at 1200.
@@ -500,9 +500,9 @@ mod tests {
     #[test]
     fn the_halt_returns_the_ticks_to_go() {
         let mut lapic = UserspaceLapic::default();
-        lapic.write_msr(MSR_X2APIC_LVT_TIMER, 236, 0).unwrap();
+        lapic.write_msr(MSR_X2APIC_LVT_TIMER, 236, 0, 1).unwrap();
         lapic
-            .write_msr(MSR_IA32_TSC_DEADLINE, 486_000_000, 476_000_000)
+            .write_msr(MSR_IA32_TSC_DEADLINE, 486_000_000, 476_000_000, 1)
             .unwrap();
         // The halt waits the remaining ticks and delivers there.
         let (vector, to_go) = lapic.halt_due(476_000_000).expect("halt delivery");
@@ -519,9 +519,9 @@ mod tests {
     fn masked_lvt_never_delivers() {
         let mut lapic = UserspaceLapic::default();
         lapic
-            .write_msr(MSR_X2APIC_LVT_TIMER, LVT_MASKED | 236, 0)
+            .write_msr(MSR_X2APIC_LVT_TIMER, LVT_MASKED | 236, 0, 1)
             .unwrap();
-        lapic.write_msr(MSR_IA32_TSC_DEADLINE, 1_000, 0).unwrap();
+        lapic.write_msr(MSR_IA32_TSC_DEADLINE, 1_000, 0, 1).unwrap();
         assert_eq!(lapic.timer_due(2_000), None);
     }
     #[test]
