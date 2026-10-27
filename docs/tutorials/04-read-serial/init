@@ -19,6 +19,9 @@ kmsg stty next
 /bin/busybox stty -echo -opost 2>/tmp/e </dev/ttyS0 || kmsg "stty err: $(/bin/busybox cat /tmp/e) rc=$?"
 kmsg stty done
 measurement=unset
+kmsg interrupts next
+/bin/busybox cat /proc/interrupts > /dev/kmsg 2>&1 || kmsg interrupts cat failed
+kmsg interrupts done
 printf 'THES:M:42\n' 2>/tmp/e >/dev/ttyS0 || kmsg "write42 err: $(/bin/busybox cat /tmp/e) rc=$?"
 printf 'probe\n' 2>/tmp/e >/dev/console || kmsg "console err: $(/bin/busybox cat /tmp/e) rc=$?"
 kmsg write42 done
