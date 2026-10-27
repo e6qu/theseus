@@ -16,11 +16,11 @@ kmsg starting
 
 # A Raspberry Pi exposes its UART as a TTY too (commonly ttyAMA0 or ttyS0).
 kmsg stty next
-/bin/busybox stty -echo -opost </dev/ttyS0 || kmsg stty failed
+/bin/busybox stty -echo -opost 2>/tmp/e </dev/ttyS0 || kmsg "stty err: $(/bin/busybox cat /tmp/e) rc=$?"
 kmsg stty done
 measurement=unset
-printf 'THES:M:42\n' >/dev/ttyS0 2>/tmp/e || kmsg "write42 err: $(/bin/busybox cat /tmp/e) rc=$?"
-printf 'probe\n' >/dev/console 2>/tmp/e || kmsg "console err: $(/bin/busybox cat /tmp/e) rc=$?"
+printf 'THES:M:42\n' 2>/tmp/e >/dev/ttyS0 || kmsg "write42 err: $(/bin/busybox cat /tmp/e) rc=$?"
+printf 'probe\n' 2>/tmp/e >/dev/console || kmsg "console err: $(/bin/busybox cat /tmp/e) rc=$?"
 kmsg write42 done
 IFS= read -r measurement </dev/ttyS0 || kmsg read failed rc=$?
 kmsg "read done: $measurement"
