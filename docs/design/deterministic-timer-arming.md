@@ -721,3 +721,35 @@ today's honest divergence.
    timers differ from the green runs. The next probe's init should
    bracket every step with kmsg diagnostics to name the failing
    line.
+   **The APIC-detection chain under acpi=off (named, fix pending):**
+   with `acpi=off` Linux disables the local APIC entirely — the boot
+   log shows "No local APIC present", "APIC: switched to apic NOOP",
+   "APIC disabled via kernel command line", "APIC: Keep in PIC
+   mode(8259)" — so the guest runs in PIC mode against an 8259 this
+   machine does not emulate. Every consequence follows: zero local
+   timer interrupts (LOC: 0 in /proc/interrupts), zero registered
+   device IRQs (no "4:" line at all), the UART's interrupt never
+   raised, and a userspace serial tty that fails every open/write/
+   ioctl with EIO. The green in-kernel runs did not see this because
+   KVM's in-kernel irqchip provides the 8259 PIC. The "lapic" boot
+   parameter alone does not recover: it still printed "No local APIC
+   present". Exposing the CPUID APIC feature bit (leaf 1 EDX bit 9)
+   and setting the APIC-base MSR (0x1B to 0xFEE00000 | enable | BSP)
+   in the userspace mode also did not recover — the kernel still
+   reports apic NOOP, and "pci=off" appended to the probe's command
+   line is a second suspect (its origin is the runner, not the
+   probe config). The next levers, in order: the MP table's
+   virtual-wire feature flag (the kernel keeps PIC mode without it),
+   the source of "APIC disabled via kernel command line" in the 6.1
+   tree, and why the acpi=on runs after the TSC-frequency CPUID fix
+   show zero timer dues where the pre-fix runs showed 15-62 (the
+   arming path regressed somewhere in the CPUID/MSR exposure).
+
+   **The delivery instrumentation (landed):** the vCPU's GSI delivery
+   now logs `gsi-deliver` on a successful vector injection and
+   `gsi-lost` with a pin-state description (unprogrammed/masked/
+   zero-vector) when the IOAPIC RTE has no vector, and the
+   `EventFdTrigger` logs once when a device raises with no deferred
+   route. The probe init dumps /proc/interrupts through kmsg and
+   brackets every serial step with captured errors, so the next
+   probe names the failing layer without further blind iteration.
