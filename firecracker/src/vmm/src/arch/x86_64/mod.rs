@@ -236,6 +236,12 @@ fn configure_vcpus_for_boot(
         }
         if userspace_apic {
             leaf_1.result.ecx &= !(1 << 21);
+            // The guest must also see the plain local-APIC feature bit;
+            // without it Linux prints "No local APIC present" and falls
+            // back to PIC mode even with the "lapic" boot parameter,
+            // leaving every device interrupt on the 8259 this machine
+            // does not emulate.
+            leaf_1.result.edx |= 1 << 9;
         }
     }
 
