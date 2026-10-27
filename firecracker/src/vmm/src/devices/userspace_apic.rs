@@ -378,6 +378,18 @@ impl UserspaceIoapic {
     pub fn redirection(&self, pin: u8) -> Option<u64> {
         self.redirections.get(usize::from(pin)).copied()
     }
+
+    /// A human-readable account of why `pin` has no vector to deliver:
+    /// unprogrammed, masked, or the zero vector.
+    pub fn describe_pin(&self, pin: u8) -> String {
+        match self.redirection(pin) {
+            None => format!("pin={pin} unprogrammed"),
+            Some(entry) if entry & (1 << 16) != 0 => {
+                format!("pin={pin} masked rte={entry:#x}")
+            }
+            Some(entry) => format!("pin={pin} zero-vector rte={entry:#x}"),
+        }
+    }
 }
 
 impl BusDevice for UserspaceIoapic {

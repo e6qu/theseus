@@ -2272,11 +2272,29 @@ impl Vcpu {
                                 .expect("userspace IOAPIC lock poisoned")
                                 .assert_line(interrupt.gsi as u8);
                             match vector {
-                                Some(vector) => self
-                                    .kvm_vcpu
-                                    .inject_held_kernel_timer(vector)
-                                    .map_err(|error| error.to_string()),
-                                None => Ok(()),
+                                Some(vector) => {
+                                    info!(
+                                        "vcpu:{}:gsi-deliver gsi={} vector={vector}",
+                                        self.kvm_vcpu.index, interrupt.gsi
+                                    );
+                                    self.kvm_vcpu
+                                        .inject_held_kernel_timer(vector)
+                                        .map_err(|error| error.to_string())
+                                }
+                                None => {
+                                    // Name the lost delivery: without the
+                                    // RTE the pin has no vector to inject,
+                                    // and the device's interrupt vanishes.
+                                    let state = ioapic
+                                        .lock()
+                                        .expect("userspace IOAPIC lock poisoned")
+                                        .describe_pin(interrupt.gsi as u8);
+                                    info!(
+                                        "vcpu:{}:gsi-lost gsi={} {state}",
+                                        self.kvm_vcpu.index, interrupt.gsi
+                                    );
+                                    Ok(())
+                                }
                             }
                         } else {
                             self.vm_fd
