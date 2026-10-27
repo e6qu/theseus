@@ -27,7 +27,6 @@ exits_per_tick = 10
 hold_kernel_timers = true
 filter_timer_msrs = true
 userspace_apic = true
-timer_speed = 20
 
 [[events]]
 when = "ready"
