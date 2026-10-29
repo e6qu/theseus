@@ -753,3 +753,26 @@ today's honest divergence.
    route. The probe init dumps /proc/interrupts through kmsg and
    brackets every serial step with captured errors, so the next
    probe names the failing layer without further blind iteration.
+   **The ACPI-on breakthrough and the new frontier (this round):**
+   with `acpi=off` removed from the probe (the 6.1 kernel is built
+   with CONFIG_X86_MPPARSE disabled, so the complete MP table - MPF,
+   processors, ISA bus, IOAPIC, INTSRCs, and both LINTSRC entries -
+   is never read, and the kernel stays in PIC mode against an absent
+   8259), Linux now reads the ACPI MADT, registers our emulated IOAPIC
+   ("IOAPIC[0]: apic_id 0, version 17, address 0xfec00000, GSI 0-23"),
+   and reaches "APIC: Switch to symmetric I/O mode setup". The APIC
+   hardware path is finally active in the guest.
+
+   The new frontier: the boot then stalls at the final initcall
+   (clk_disable_unused) with zero LAPIC timer arms. The kernel prints
+   "TSC deadline timer available" and the existing per-write MSR log
+   (`userspace-apic:wr:`) shows the guest never writes any LAPIC MSR
+   or the TSC-deadline MSR, so the LAPIC clockevent never takes over
+   from the PIT in `x86_late_time_init`/`tick_setup_periodic`. The
+   named next steps: whether the PIT clockevent (KVM PIT or emulated
+   i8254) is armed and what the tick core selects, whether
+   `setup_APIC_timer` runs at all (the "Using local APIC timer
+   interrupts" line is absent), and the MSR-exit path for 0x6E0
+   (an arm log now lands on every TSC-deadline/TMICT arm). The
+   /proc/interrupts dump and the per-step init diagnostics remain in
+   the probe for the next run.
