@@ -776,3 +776,21 @@ today's honest divergence.
    (an arm log now lands on every TSC-deadline/TMICT arm). The
    /proc/interrupts dump and the per-step init diagnostics remain in
    the probe for the next run.
+   **The missing PIT (named):** `KvmVm::setup_irqchip` - which calls
+   `create_irq_chip` AND `create_pit2` - is only invoked from unit
+   tests. Production boots in this fork never create the PIT, so the
+   guest kernel's `hpet_time_init` -> `setup_pit_timer` fallback
+   programs i8254 ports that nothing services, and the LAPIC
+   clockevent never observes a working timer to take over from. This
+   is true in every mode (the default mode has the in-kernel irqchip
+   when restored from snapshots, but fresh boots skip it too), which
+   explains why the LAPIC timer never arms in the userspace-APIC
+   boots even after the APIC itself became active through the ACPI
+   MADT. Candidate next moves, in order: create the PIT with
+   `KVM_PIT_SPEAKER_DUMMY` in the userspace-APIC path (its GSI 2
+   timer interrupt then flows through the emulated IOAPIC), and/or
+   audit whether the LAPIC clockevent's MMIO TMICT arm path schedules
+   the host-paced wake (only the x2APIC WRMSR path does today). The
+   stall boundary is now precisely known: the boot completes every
+   initcall through clk_disable_unused and blocks before "Freeing
+   unused kernel image (initmem) memory" with zero timer deliveries.
