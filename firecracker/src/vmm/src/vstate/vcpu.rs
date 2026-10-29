@@ -2466,6 +2466,11 @@ impl Vcpu {
                         _ => None,
                     };
                     if let Some(deadline_ticks) = wake_deadline {
+                        info!(
+                            "vcpu:{}:userspace-apic:arm msr={index:#x} value={data:#x} \
+                             tsc_now={tsc_now}",
+                            self.kvm_vcpu.index
+                        );
                         self.schedule_userspace_timer_wake(
                             deadline_ticks,
                             tsc_now,
