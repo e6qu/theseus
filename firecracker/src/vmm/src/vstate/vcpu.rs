@@ -2689,7 +2689,7 @@ impl Vcpu {
                                         error.to_string(),
                                     )
                                 })?;
-                            let period = tmict
+                            let period = u64::from(tmict)
                                 * crate::devices::userspace_apic::divider(
                                     self.lapic
                                         .lock()
