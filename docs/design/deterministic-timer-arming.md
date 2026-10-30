@@ -813,3 +813,24 @@ today's honest divergence.
    range, sharing the arithmetic and the stream-replay admission with
    the WRMSR path (the arm records must stay identical in kind so
    retained replays keep matching).
+   **THE WORKLOAD RUNS END TO END UNDER THE USERSPACE APIC
+   (proven in CI):** the root cause of the stall was the missing
+   host-paced wake on the xAPIC MMIO arm path - with the x2APIC CPUID
+   bit cleared the guest arms the LAPIC timer through the MMIO page's
+   TMICT, and only the WRMSR path scheduled a wake, so the armed guest
+   halted into a KVM_RUN with no exits left to observe the countdown.
+   The vCPU run loop now detects an MMIO write landing in the
+   TMICT/TDCR register range (capturing the copyable address before
+   the recorded exit handling, then scheduling the wake from the
+   LAPIC's own stored arm after the write has landed through the bus),
+   sharing the arithmetic and the generation gating with the WRMSR
+   path. With that, the probe's CI assertions all pass: the boot
+   reaches /init, the init writes THES:M:42 to the serial console,
+   reads the sensor measurement back (sensor reading: 21.5C), and the
+   timer-due deliveries appear in the log. The userspace APIC's boot
+   contract - emulated LAPIC and IOAPIC, no in-kernel irqchip, no PIT
+   (KVM refuses create_pit2 without an irqchip), delivery through
+   KVM_INTERRUPT and the vCPU events path, the TSC-frequency CPUID
+   leaves pinned to the actual rate, the APIC exposed as
+   hardware-enabled, and both arming paths scheduling their wake - is
+   complete and exercised end to end.
