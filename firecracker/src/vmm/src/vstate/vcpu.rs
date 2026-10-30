@@ -2660,56 +2660,56 @@ impl Vcpu {
                 // vCPU blocks in KVM_RUN with no exits left to observe
                 // the TMCCT countdown.
                 #[cfg(target_arch = "x86_64")]
-                if self.userspace_apic
-                    && let Ok(VcpuExit::MmioWrite(address, data)) =
-                        &emulation_result
-                {
-                    let offset = address
-                        .checked_sub(crate::devices::userspace_apic::APIC_MMIO_BASE);
-                    // The xAPIC register index sits in bits 7:4 of the
-                    // offset: 0x38 is the TMICT, 0x3E the TDCR.
-                    if let Some(offset) = offset
-                        && matches!(offset >> 4, 0x38 | 0x3E)
-                        && data.len() == 4
-                    {
-                        let tmict = u32::from_le_bytes(
-                            data[..4].try_into().expect("4-byte slice"),
-                        );
-                        if tmict != 0 {
-                            let tsc_now = self.kvm_vcpu.guest_tsc().map_err(
-                                |error| {
-                                    VcpuError::UnhandledKvmExit(
-                                        error.to_string(),
-                                    )
-                                },
-                            )?;
-                            let tsc_khz = self.kvm_vcpu.cached_tsc_khz()
-                                .map_err(|error| {
-                                    VcpuError::UnhandledKvmExit(
-                                        error.to_string(),
-                                    )
-                                })?;
-                            let period = u64::from(tmict)
-                                * crate::devices::userspace_apic::divider(
-                                    self.lapic
-                                        .lock()
-                                        .expect(
-                                            "userspace local APIC lock poisoned",
-                                        )
-                                        .divide_config(),
-                                );
-                            info!(
-                                "vcpu:{}:userspace-apic:arm mmio-tmict={tmict:#x} \
-                                 tsc_now={tsc_now}",
-                                self.kvm_vcpu.index
+                let mmio_arm = if self.userspace_apic {
+                    match &emulation_result {
+                        Ok(VcpuExit::MmioWrite(address, data)) => {
+                            let offset = address.checked_sub(
+                                crate::devices::userspace_apic::APIC_MMIO_BASE,
                             );
-                            self.schedule_userspace_timer_wake(
-                                tsc_now + period,
-                                tsc_now,
-                                tsc_khz,
-                            )?;
+                            // The xAPIC register index sits in bits 7:4 of
+                            // the offset: 0x38 is the TMICT, 0x3E the TDCR.
+                            if let Some(offset) = offset
+                                && matches!(offset >> 4, 0x38 | 0x3E)
+                                && data.len() == 4
+                            {
+                                Some(u32::from_le_bytes(
+                                    data[..4].try_into().expect("4-byte slice"),
+                                ))
+                            } else {
+                                None
+                            }
                         }
+                        _ => None,
                     }
+                } else {
+                    None
+                };
+                #[cfg(target_arch = "x86_64")]
+                if let Some(tmict) = mmio_arm
+                    && tmict != 0
+                {
+                    let tsc_now = self.kvm_vcpu.guest_tsc().map_err(|error| {
+                        VcpuError::UnhandledKvmExit(error.to_string())
+                    })?;
+                    let tsc_khz = self.kvm_vcpu.cached_tsc_khz().map_err(
+                        |error| VcpuError::UnhandledKvmExit(error.to_string()),
+                    )?;
+                    let period = u64::from(tmict)
+                        * crate::devices::userspace_apic::divider(
+                            self.lapic
+                                .lock()
+                                .expect("userspace local APIC lock poisoned")
+                                .divide_config(),
+                        );
+                    info!(
+                        "vcpu:{}:userspace-apic:arm mmio-tmict={tmict:#x} tsc_now={tsc_now}",
+                        self.kvm_vcpu.index
+                    );
+                    self.schedule_userspace_timer_wake(
+                        tsc_now + period,
+                        tsc_now,
+                        tsc_khz,
+                    )?;
                 }
                 let outcome = handle_kvm_exit_recorded(
                     &mut self.kvm_vcpu.peripherals,

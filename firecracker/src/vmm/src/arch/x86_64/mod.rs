@@ -220,10 +220,6 @@ fn configure_vcpus_for_boot(
     // are the MMIO page, not MSRs. KVM's supported CPUID reports the
     // host's x2APIC feature, so the bit is actively cleared, not just
     // left unsteered.
-    let userspace_apic = machine_config
-        .virtual_time
-        .as_ref()
-        .is_some_and(|virtual_time| virtual_time.userspace_apic);
     if let Some(leaf_1) =
         cpuid.get_mut(&crate::cpu_config::x86_64::cpuid::CpuidKey::leaf(1))
     {
