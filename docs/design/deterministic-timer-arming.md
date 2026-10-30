@@ -834,3 +834,14 @@ today's honest divergence.
    leaves pinned to the actual rate, the APIC exposed as
    hardware-enabled, and both arming paths scheduling their wake - is
    complete and exercised end to end.
+   **Release status:** the workload proof merged to main (0c4c8c3,
+   squash-merged as "Prove the userspace APIC workload end to end"),
+   and the release publish built and pushed both runtime images
+   (amd64 and arm64) successfully. The macOS CLI packaging job is
+   being cancelled by GitHub twelve seconds after start with zero
+   steps executed, across four attempts including a fresh push - a
+   runner-side or account-side cancellation outside the repo's
+   control (the actions minute quota is the likely cause). The
+   certify step is correctly skipped because it is gated on a complete
+   publish, so the deterministic-runtime certification will run once
+   the macOS job executes.
