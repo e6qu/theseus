@@ -118,7 +118,12 @@ impl UserspaceLapic {
     /// The divide-value encoding of the TDCR register: how many TSC
     /// ticks one timer-count tick spans.
     pub fn divide_config(&self) -> u64 {
-        self.divide_config & 0xF
+        self.divide_config
+    }
+
+    /// The TMICT's raw initial count (the guest's most recent arm).
+    pub fn initial_count(&self) -> u32 {
+        self.initial_count as u32
     }
 
     fn timer_vector(&self) -> Option<u8> {
