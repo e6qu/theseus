@@ -357,6 +357,11 @@ pub fn build_microvm_for_boot(
                 "userspace APIC installed: no in-kernel irqchip; the local APIC \
                  and the IOAPIC are emulated and delivery rides KVM_INTERRUPT"
             );
+            // No PIT here: KVM's in-kernel PIT requires an in-kernel
+            // irqchip (create_pit2 fails with ENOENT otherwise). The
+            // kernel's LAPIC clockevent is the working timer; its xAPIC
+            // MMIO TMICT arm path schedules the host-paced wake from the
+            // MMIO exit handling in vstate::vcpu.
             for vcpu in &mut vcpus {
                 vcpu.enable_userspace_apic(
                     ioapic.clone(),
@@ -1157,6 +1162,7 @@ pub(crate) mod tests {
             filter_timer_msrs: false,
             halt_timer_delivery: false,
             userspace_apic: false,
+            timer_speed: 1,
         });
         resources
     }

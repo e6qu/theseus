@@ -13,6 +13,7 @@ pub mod serial;
 
 use std::io;
 use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use serde::Serializer;
@@ -34,6 +35,9 @@ pub use self::serial::{SerialDevice, SerialEventsWrapper, SerialWrapper};
 pub struct EventFdTrigger {
     event: EventFd,
     deferred: OnceLock<DeferredInterrupt>,
+    /// Logs an unrouted raise once; the deterministic modes never read
+    /// the event fd, so an unrouted device interrupt silently vanishes.
+    unrouted_logged: AtomicBool,
 }
 
 impl Trigger for EventFdTrigger {
@@ -43,6 +47,10 @@ impl Trigger for EventFdTrigger {
         if let Some(deferred) = self.deferred.get() {
             deferred.trigger()
         } else {
+            if !self.unrouted_logged.swap(true, Ordering::AcqRel) {
+                log::warn!("device interrupt raised with no deferred route; \
+                            deterministic modes lose it at the event fd");
+            }
             self.write(1)
         }
     }
@@ -73,6 +81,7 @@ impl EventFdTrigger {
         Self {
             event: evt,
             deferred: OnceLock::new(),
+            unrouted_logged: AtomicBool::new(false),
         }
     }
 

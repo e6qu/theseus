@@ -2272,11 +2272,29 @@ impl Vcpu {
                                 .expect("userspace IOAPIC lock poisoned")
                                 .assert_line(interrupt.gsi as u8);
                             match vector {
-                                Some(vector) => self
-                                    .kvm_vcpu
-                                    .inject_held_kernel_timer(vector)
-                                    .map_err(|error| error.to_string()),
-                                None => Ok(()),
+                                Some(vector) => {
+                                    info!(
+                                        "vcpu:{}:gsi-deliver gsi={} vector={vector}",
+                                        self.kvm_vcpu.index, interrupt.gsi
+                                    );
+                                    self.kvm_vcpu
+                                        .inject_held_kernel_timer(vector)
+                                        .map_err(|error| error.to_string())
+                                }
+                                None => {
+                                    // Name the lost delivery: without the
+                                    // RTE the pin has no vector to inject,
+                                    // and the device's interrupt vanishes.
+                                    let state = ioapic
+                                        .lock()
+                                        .expect("userspace IOAPIC lock poisoned")
+                                        .describe_pin(interrupt.gsi as u8);
+                                    info!(
+                                        "vcpu:{}:gsi-lost gsi={} {state}",
+                                        self.kvm_vcpu.index, interrupt.gsi
+                                    );
+                                    Ok(())
+                                }
                             }
                         } else {
                             self.vm_fd
@@ -2448,6 +2466,11 @@ impl Vcpu {
                         _ => None,
                     };
                     if let Some(deadline_ticks) = wake_deadline {
+                        info!(
+                            "vcpu:{}:userspace-apic:arm msr={index:#x} value={data:#x} \
+                             tsc_now={tsc_now}",
+                            self.kvm_vcpu.index
+                        );
                         self.schedule_userspace_timer_wake(
                             deadline_ticks,
                             tsc_now,
@@ -2629,6 +2652,28 @@ impl Vcpu {
                 Ok(VcpuEmulation::Handled)
             }
             emulation_result => {
+                // Capture only the (copyable) address before the recorded
+                // handling moves the exit: the xAPIC-mode guest arms the
+                // LAPIC timer through MMIO writes to the TMICT (the
+                // userspace-APIC CPUID clears the x2APIC feature bit, so
+                // the LAPIC page is the arming path), and the WRMSR arm
+                // path schedules its own host-paced wake while the MMIO
+                // arm otherwise would not.
+                #[cfg(target_arch = "x86_64")]
+                let mmio_timer_arm = if self.userspace_apic {
+                    match &emulation_result {
+                        Ok(VcpuExit::MmioWrite(address, _)) => address
+                            .checked_sub(
+                                crate::devices::userspace_apic::APIC_MMIO_BASE,
+                            )
+                            .filter(|offset| {
+                                matches!(offset >> 4, 0x38 | 0x3E)
+                            }),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
                 let outcome = handle_kvm_exit_recorded(
                     &mut self.kvm_vcpu.peripherals,
                     emulation_result,
@@ -2636,6 +2681,46 @@ impl Vcpu {
                     &self.execution_ledger,
                     &self.machine_execution,
                 );
+                // The write has now landed in the LAPIC through the bus;
+                // schedule the host-paced wake from the LAPIC's own stored
+                // arm exactly as the WRMSR path does. Without it the
+                // armed guest halts and the vCPU blocks in KVM_RUN with
+                // no exits left to observe the TMCCT countdown.
+                #[cfg(target_arch = "x86_64")]
+                if mmio_timer_arm.is_some() {
+                    let tmict = self
+                        .lapic
+                        .lock()
+                        .expect("userspace local APIC lock poisoned")
+                        .initial_count();
+                    if tmict != 0 {
+                        let tsc_now = self.kvm_vcpu.guest_tsc().map_err(|error| {
+                            VcpuError::UnhandledKvmExit(error.to_string())
+                        })?;
+                        let tsc_khz = self
+                            .kvm_vcpu
+                            .cached_tsc_khz()
+                            .map_err(|error| {
+                                VcpuError::UnhandledKvmExit(error.to_string())
+                            })?;
+                        let period = u64::from(tmict)
+                            * crate::devices::userspace_apic::divider(
+                                self.lapic
+                                    .lock()
+                                    .expect("userspace local APIC lock poisoned")
+                                    .divide_config(),
+                            );
+                        info!(
+                            "vcpu:{}:userspace-apic:arm mmio-tmict={tmict:#x} tsc_now={tsc_now}",
+                            self.kvm_vcpu.index
+                        );
+                        self.schedule_userspace_timer_wake(
+                            tsc_now + period,
+                            tsc_now,
+                            tsc_khz,
+                        )?;
+                    }
+                }
                 // A vmentry refused while events are blocked by MOV SS:
                 // withdraw the queued interrupt so the block can clear,
                 // and re-queue the tick for the next boundary.

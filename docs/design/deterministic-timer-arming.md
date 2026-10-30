@@ -680,3 +680,157 @@ today's honest divergence.
    cleanly against the torvalds v6.1 apic.c (verified with git apply
    in a scratch tree — since removed); the failure is specific to the
    AL kernel tree in the release build.
+   **The 300s accelerated boot (landed):** with the extended window,
+   the boot progresses through the initcall sequence continuously —
+   the guest clock at 124.8s reaching the block-layer initcalls
+   (blk_mq, genhd, blkcg), the timer deliveries healthy (62+), the
+   tick loop stepping. The pace: the guest clock at ~0.4× wall — the
+   kvm-clock (the TSC-based) reads slow while the timer waits fire at
+   the accelerated rate: the guest's sleep timeouts and the
+   clocksource disagree on the rate, and the boot's initcalls crawl
+   through their own sleeps. The named instrument: the guest clock's
+   rate accounting (the kvm-clock vs the tick-driven jiffies) — the
+   timekeeping-internal interplay that the next session's probe
+   reads (the printk-in-tick counter already in the kernel names the
+   tick rate; the clocksource's rate needs the paired print). The
+   boot's completion under the userspace APIC is the milestone once
+   the clock rates reconcile.
+   **The boot-to-userspace milestone under the userspace APIC
+   (proven):** with the corrected TSC-frequency CPUID leaves, the
+   proven `highres=off acpi=off` boot arguments restored to the
+   probe, and the accelerated stored deadlines, the boot completes
+   the initcall sequence and reaches `Run /init as init process` in
+   10.5 seconds of consistent guest time — the entire firecracker
+   run, including the userspace init, exits cleanly in 11 seconds of
+   wall time with a closed execution ledger (204,505 decisions). The
+   two fixes that unblocked it: the CPUID 0x15/0x16 frequency leaves
+   now report the vCPU's actual KVM_GET_TSC_KHZ rate instead of the
+   host's nominal rate (the guest clock previously ran skewed by the
+   nominal-to-actual ratio, and every kernel sleep crawled), and the
+   probe's boot arguments now carry the proven no-highres/no-ACPI
+   configuration instead of the defaults that stall at the
+   initcall/userspace boundary.
+
+   **The named residual (the last mile):** the init reaches the tty
+   setup (`stty next` / `stty failed` / `stty done` all print through
+   kmsg), but exits 1 before the `THES:M:42` handshake appears on the
+   wire — the kernel panics with "Attempted to kill init!
+   exitcode=0x00000100". The failing step sits between the stty
+   setup and the sensor read: either the raw-mode `printf` to
+   /dev/ttyS0 fails or the tty-layer semantics under the accelerated
+   timers differ from the green runs. The next probe's init should
+   bracket every step with kmsg diagnostics to name the failing
+   line.
+   **The APIC-detection chain under acpi=off (named, fix pending):**
+   with `acpi=off` Linux disables the local APIC entirely — the boot
+   log shows "No local APIC present", "APIC: switched to apic NOOP",
+   "APIC disabled via kernel command line", "APIC: Keep in PIC
+   mode(8259)" — so the guest runs in PIC mode against an 8259 this
+   machine does not emulate. Every consequence follows: zero local
+   timer interrupts (LOC: 0 in /proc/interrupts), zero registered
+   device IRQs (no "4:" line at all), the UART's interrupt never
+   raised, and a userspace serial tty that fails every open/write/
+   ioctl with EIO. The green in-kernel runs did not see this because
+   KVM's in-kernel irqchip provides the 8259 PIC. The "lapic" boot
+   parameter alone does not recover: it still printed "No local APIC
+   present". Exposing the CPUID APIC feature bit (leaf 1 EDX bit 9)
+   and setting the APIC-base MSR (0x1B to 0xFEE00000 | enable | BSP)
+   in the userspace mode also did not recover — the kernel still
+   reports apic NOOP, and "pci=off" appended to the probe's command
+   line is a second suspect (its origin is the runner, not the
+   probe config). The next levers, in order: the MP table's
+   virtual-wire feature flag (the kernel keeps PIC mode without it),
+   the source of "APIC disabled via kernel command line" in the 6.1
+   tree, and why the acpi=on runs after the TSC-frequency CPUID fix
+   show zero timer dues where the pre-fix runs showed 15-62 (the
+   arming path regressed somewhere in the CPUID/MSR exposure).
+
+   **The delivery instrumentation (landed):** the vCPU's GSI delivery
+   now logs `gsi-deliver` on a successful vector injection and
+   `gsi-lost` with a pin-state description (unprogrammed/masked/
+   zero-vector) when the IOAPIC RTE has no vector, and the
+   `EventFdTrigger` logs once when a device raises with no deferred
+   route. The probe init dumps /proc/interrupts through kmsg and
+   brackets every serial step with captured errors, so the next
+   probe names the failing layer without further blind iteration.
+   **The ACPI-on breakthrough and the new frontier (this round):**
+   with `acpi=off` removed from the probe (the 6.1 kernel is built
+   with CONFIG_X86_MPPARSE disabled, so the complete MP table - MPF,
+   processors, ISA bus, IOAPIC, INTSRCs, and both LINTSRC entries -
+   is never read, and the kernel stays in PIC mode against an absent
+   8259), Linux now reads the ACPI MADT, registers our emulated IOAPIC
+   ("IOAPIC[0]: apic_id 0, version 17, address 0xfec00000, GSI 0-23"),
+   and reaches "APIC: Switch to symmetric I/O mode setup". The APIC
+   hardware path is finally active in the guest.
+
+   The new frontier: the boot then stalls at the final initcall
+   (clk_disable_unused) with zero LAPIC timer arms. The kernel prints
+   "TSC deadline timer available" and the existing per-write MSR log
+   (`userspace-apic:wr:`) shows the guest never writes any LAPIC MSR
+   or the TSC-deadline MSR, so the LAPIC clockevent never takes over
+   from the PIT in `x86_late_time_init`/`tick_setup_periodic`. The
+   named next steps: whether the PIT clockevent (KVM PIT or emulated
+   i8254) is armed and what the tick core selects, whether
+   `setup_APIC_timer` runs at all (the "Using local APIC timer
+   interrupts" line is absent), and the MSR-exit path for 0x6E0
+   (an arm log now lands on every TSC-deadline/TMICT arm). The
+   /proc/interrupts dump and the per-step init diagnostics remain in
+   the probe for the next run.
+   **The missing PIT (named):** `KvmVm::setup_irqchip` - which calls
+   `create_irq_chip` AND `create_pit2` - is only invoked from unit
+   tests. Production boots in this fork never create the PIT, so the
+   guest kernel's `hpet_time_init` -> `setup_pit_timer` fallback
+   programs i8254 ports that nothing services, and the LAPIC
+   clockevent never observes a working timer to take over from. This
+   is true in every mode (the default mode has the in-kernel irqchip
+   when restored from snapshots, but fresh boots skip it too), which
+   explains why the LAPIC timer never arms in the userspace-APIC
+   boots even after the APIC itself became active through the ACPI
+   MADT. Candidate next moves, in order: create the PIT with
+   `KVM_PIT_SPEAKER_DUMMY` in the userspace-APIC path (its GSI 2
+   timer interrupt then flows through the emulated IOAPIC), and/or
+   audit whether the LAPIC clockevent's MMIO TMICT arm path schedules
+   the host-paced wake (only the x2APIC WRMSR path does today). The
+   stall boundary is now precisely known: the boot completes every
+   initcall through clk_disable_unused and blocks before "Freeing
+   unused kernel image (initmem) memory" with zero timer deliveries.
+   **The xAPIC MMIO arm path (the stall root cause, fix pending):**
+   KVM's in-kernel PIT cannot be created without an in-kernel irqchip
+   (create_pit2 fails with ENOENT), so the PIT is architecturally
+   unavailable in the userspace-APIC machine and the setup_pit call
+   was reverted. That leaves the LAPIC clockevent as the only working
+   timer, and the kernel arms it through xAPIC MMIO writes: the
+   userspace-APIC CPUID clears the x2APIC feature bit, so the guest
+   runs in xAPIC mode and writes the TMICT through the LAPIC MMIO page
+   (0xFEE00380) rather than the x2APIC MSRs. Only the WRMSR arm path
+   schedules the generation-gated host-paced wake today; the MMIO
+   exit handling delivers the write to the UserspaceLapicMmio adapter
+   but never schedules a wake. The guest then arms the timer, halts,
+   the vCPU blocks in KVM_RUN with no exits to observe the TMCCT
+   countdown, and the boot stalls at the initcall/console boundary
+   with zero timer deliveries. The fix: schedule the same wake from
+   the MMIO exit handling when the write lands in the TMICT/TDCR
+   range, sharing the arithmetic and the stream-replay admission with
+   the WRMSR path (the arm records must stay identical in kind so
+   retained replays keep matching).
+   **THE WORKLOAD RUNS END TO END UNDER THE USERSPACE APIC
+   (proven in CI):** the root cause of the stall was the missing
+   host-paced wake on the xAPIC MMIO arm path - with the x2APIC CPUID
+   bit cleared the guest arms the LAPIC timer through the MMIO page's
+   TMICT, and only the WRMSR path scheduled a wake, so the armed guest
+   halted into a KVM_RUN with no exits left to observe the countdown.
+   The vCPU run loop now detects an MMIO write landing in the
+   TMICT/TDCR register range (capturing the copyable address before
+   the recorded exit handling, then scheduling the wake from the
+   LAPIC's own stored arm after the write has landed through the bus),
+   sharing the arithmetic and the generation gating with the WRMSR
+   path. With that, the probe's CI assertions all pass: the boot
+   reaches /init, the init writes THES:M:42 to the serial console,
+   reads the sensor measurement back (sensor reading: 21.5C), and the
+   timer-due deliveries appear in the log. The userspace APIC's boot
+   contract - emulated LAPIC and IOAPIC, no in-kernel irqchip, no PIT
+   (KVM refuses create_pit2 without an irqchip), delivery through
+   KVM_INTERRUPT and the vCPU events path, the TSC-frequency CPUID
+   leaves pinned to the actual rate, the APIC exposed as
+   hardware-enabled, and both arming paths scheduling their wake - is
+   complete and exercised end to end.

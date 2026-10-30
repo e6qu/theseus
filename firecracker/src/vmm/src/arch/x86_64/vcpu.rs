@@ -22,7 +22,10 @@ use vmm_sys_util::ioctl::ioctl_with_ref;
 use vmm_sys_util::ioctl_iow_nr;
 
 use crate::arch::EntryPoint;
-use crate::arch::x86_64::generated::msr_index::{MSR_IA32_TSC, MSR_IA32_TSC_DEADLINE};
+use crate::arch::x86_64::generated::msr_index::{
+    MSR_IA32_APICBASE, MSR_IA32_APICBASE_BSP, MSR_IA32_APICBASE_ENABLE, MSR_IA32_TSC,
+    MSR_IA32_TSC_DEADLINE,
+};
 use crate::arch::x86_64::interrupts;
 use crate::arch::x86_64::msr::{MsrError, create_boot_msr_entries};
 use crate::arch::x86_64::regs::{SetupFpuError, SetupRegistersError, SetupSpecialRegistersError};
@@ -292,7 +295,17 @@ impl KvmVcpu {
             u8::from(vcpu_count > 1 && smt),
         )?;
 
-        let kvm_cpuid = CpuId::try_from(cpuid)?;
+        let mut kvm_cpuid = CpuId::try_from(cpuid)?;
+        // The guest derives its TSC frequency from CPUID leaves 0x15/0x16,
+        // which pass through the host's nominal values. The vCPU's TSC is
+        // pinned by TSC scaling to the KVM_GET_TSC_KHZ rate, which differs
+        // from the nominal rate on hosts where the TSC doesn't count at P0
+        // (the guest then logs "TSC doesn't count with P0 frequency" and
+        // every clock derived from the detected rate runs skewed by the
+        // nominal-to-actual ratio). Pin the frequency leaves to the vCPU's
+        // actual TSC frequency so the guest's clocks match its TSC.
+        let tsc_khz = self.fd.get_tsc_khz()?;
+        set_tsc_frequency_leaves(&mut kvm_cpuid, tsc_khz);
         self.fd
             .set_cpuid2(&kvm_cpuid)
             .map_err(KvmVcpuConfigureError::SetCpuid)?;
@@ -378,6 +391,22 @@ impl KvmVcpu {
         // with the userspace APIC there is none to configure.
         if !userspace_apic {
             crate::arch::x86_64::interrupts::set_lint(&self.fd)?;
+        } else {
+            // With the userspace APIC there is no in-kernel LAPIC page,
+            // so the local APIC must be hardware-enabled through the
+            // APIC-base MSR; otherwise Linux detects "no local APIC",
+            // switches to apic NOOP, and every device interrupt lands on
+            // the 8259 PIC this machine does not emulate.
+            crate::arch::x86_64::msr::set_msrs(
+                &self.fd,
+                &[kvm_bindings::kvm_msr_entry {
+                    index: MSR_IA32_APICBASE,
+                    data: 0xFEE00000
+                        | u64::from(MSR_IA32_APICBASE_ENABLE)
+                        | u64::from(MSR_IA32_APICBASE_BSP),
+                    ..Default::default()
+                }],
+            )?;
         }
         Ok(())
     }
@@ -1070,6 +1099,34 @@ impl KvmVcpu {
     }
 }
 
+/// Pin the TSC-frequency CPUID leaves (0x15/0x16) to the vCPU's actual TSC
+/// frequency, expressed in kHz.
+///
+/// Leaf 0x15 reports the TSC-to-core-crystal ratio: the TSC frequency is the
+/// crystal frequency (ECX, in kHz) scaled by EAX/EBX. Reporting the actual
+/// frequency against a 1 GHz reference crystal keeps the kernel's arithmetic
+/// exact. Leaf 0x16 reports the nominal core frequency in MHz for the guest's
+/// frequency estimates.
+fn set_tsc_frequency_leaves(cpuid: &mut CpuId, tsc_khz: u32) {
+    for entry in cpuid.as_mut_slice() {
+        match entry.function {
+            0x15 => {
+                entry.eax = tsc_khz;
+                entry.ebx = 1_000_000;
+                entry.ecx = 1_000_000;
+                entry.edx = 0;
+            }
+            0x16 => {
+                entry.eax = tsc_khz / 1000;
+                entry.ebx = 0;
+                entry.ecx = 0;
+                entry.edx = 0;
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Peripherals {
     /// Runs the vCPU in KVM context and handles the kvm exit reason.
     ///
@@ -1232,6 +1289,43 @@ mod tests {
         vcpu.configure_boot_state(vm.guest_memory(), entry_point, false)?;
 
         Ok(())
+    }
+
+    #[test]
+    fn test_tsc_frequency_leaves_match_vcpu_frequency() {
+        let (vm, mut vcpu) = setup_vcpu(0x10000);
+
+        configure_vcpu(
+            &vm,
+            &mut vcpu,
+            &CustomCpuTemplate::default(),
+            EntryPoint {
+                entry_addr: GuestAddress(0),
+                protocol: BootProtocol::LinuxBoot,
+                setup_header: None,
+            },
+        )
+        .unwrap();
+
+        let expected = vcpu.fd.get_tsc_khz().unwrap();
+        let cpuid = vcpu.get_cpuid().unwrap();
+        let entry = cpuid
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == 0x15)
+            .expect("leaf 0x15 present on x86_64");
+        assert_eq!(entry.ebx, 1_000_000);
+        assert_eq!(entry.ecx, 1_000_000);
+        let derived =
+            u64::from(entry.ecx) * u64::from(entry.eax) / u64::from(entry.ebx);
+        assert_eq!(derived, u64::from(expected));
+
+        let entry = cpuid
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == 0x16)
+            .expect("leaf 0x16 present on x86_64");
+        assert_eq!(entry.eax, expected / 1000);
     }
 
     #[test]
