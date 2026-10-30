@@ -114,7 +114,13 @@ Workloads, faults, and campaigns:
   decision). The COM2 debug serial console (port 0x2f8, IRQ 3,
   output-only, `debug_serial_out_path`) carries kernel diagnostics on a
   channel separate from the workload's data port. The halt frontier
-  (making the delivery position virtual) is in What remains.
+  (making the delivery position virtual) is in What remains. The
+  userspace APIC mode (`userspace_apic`) is landed and its workload is
+  demonstrated: an emulated local APIC and IOAPIC replace the in-kernel
+  irqchip, both arming paths (the x2APIC MSRs and the xAPIC MMIO page)
+  schedule generation-gated host-paced wakes, delivery rides the KVM
+  events path, and the CI probe boots the guest through /init, runs the
+  serial sensor handshake, and reads the measurement back.
 
 Investigation:
 
@@ -258,9 +264,12 @@ next actor and payload; guest reset is a terminal admission turn. Fixed-run
 replay enforces the complete stream; portable checkpoint-backed campaigns
 enforce its explicit host-input projection.
 
-The next slices, in order: the userspace APIC (the settled arming
-frontier - deterministic in-kernel timer arming needs userspace local-vector
-injection), then runnable guest entities, virtual-clock reads, and
+The userspace APIC is landed and its workload is demonstrated end to end
+in CI (the emulated local APIC and IOAPIC, both arming paths scheduled,
+delivery through the KVM events path; the full arc and the remaining
+slivers - replay-exact delivery positions and the accelerated stored
+deadlines - are recorded in the timer-arming design doc). The next
+slices, in order: runnable guest entities, virtual-clock reads, and
 guest-side input consumption
 between KVM exits. Controlled injection is not general interrupt determinism:
 the guest can still service an injected interrupt at an uncontrolled
@@ -416,17 +425,20 @@ measurement, a KVM host, or a product decision - not on design.
    every budget, which retires the question.
 2. **The execution plane (Priority 1).** The arming arc is settled:
    the filter, the arm records, and the delivery pairing are landed,
-   and the halt-time delivery probe settled its own frontier with the
+   the halt-time delivery probe settled its own frontier with the
    kernel's own account (`LOC: 0` - the in-kernel irqchip never
    surfaces a userspace-asserted timer vector, so hold-mode timer
-   determinism requires the userspace APIC;
-   [deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)
-   records the full arc: the mechanism, four probed attempts with
-   their evidence, and the option analysis). The kernel-visible
-   diagnostic loop (kernel log and interrupt account on the COM2
-   debug console, retained per run) is standing infrastructure for
-   the next KVM-host slice. Then runnable guest entities and
-   virtual-clock reads. The forks' remaining sliver
+   determinism requires the userspace APIC), and the userspace APIC
+   itself is now landed with its workload demonstrated end to end in
+   CI
+   ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)
+   records the full arc: the mechanism, the probed attempts with
+   their evidence, the CPUID/MSR/TSC-frequency exposure the guest
+   needs to see the APIC at all, and the option analysis). The
+   kernel-visible diagnostic loop (kernel log and interrupt account
+   on the COM2 debug console, retained per run) is standing
+   infrastructure for the next KVM-host slice. Then runnable guest
+   entities and virtual-clock reads. The forks' remaining sliver
    (executing from the nearest checkpoint) is analyzed in
    [checkpoint-addressed-forks.md](docs/design/checkpoint-addressed-forks.md).
 3. **Product operations (Priority 6).** A hosted campaign service on
