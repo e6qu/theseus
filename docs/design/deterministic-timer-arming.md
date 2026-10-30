@@ -794,3 +794,22 @@ today's honest divergence.
    stall boundary is now precisely known: the boot completes every
    initcall through clk_disable_unused and blocks before "Freeing
    unused kernel image (initmem) memory" with zero timer deliveries.
+   **The xAPIC MMIO arm path (the stall root cause, fix pending):**
+   KVM's in-kernel PIT cannot be created without an in-kernel irqchip
+   (create_pit2 fails with ENOENT), so the PIT is architecturally
+   unavailable in the userspace-APIC machine and the setup_pit call
+   was reverted. That leaves the LAPIC clockevent as the only working
+   timer, and the kernel arms it through xAPIC MMIO writes: the
+   userspace-APIC CPUID clears the x2APIC feature bit, so the guest
+   runs in xAPIC mode and writes the TMICT through the LAPIC MMIO page
+   (0xFEE00380) rather than the x2APIC MSRs. Only the WRMSR arm path
+   schedules the generation-gated host-paced wake today; the MMIO
+   exit handling delivers the write to the UserspaceLapicMmio adapter
+   but never schedules a wake. The guest then arms the timer, halts,
+   the vCPU blocks in KVM_RUN with no exits to observe the TMCCT
+   countdown, and the boot stalls at the initcall/console boundary
+   with zero timer deliveries. The fix: schedule the same wake from
+   the MMIO exit handling when the write lands in the TMICT/TDCR
+   range, sharing the arithmetic and the stream-replay admission with
+   the WRMSR path (the arm records must stay identical in kind so
+   retained replays keep matching).

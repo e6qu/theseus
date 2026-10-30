@@ -357,13 +357,11 @@ pub fn build_microvm_for_boot(
                 "userspace APIC installed: no in-kernel irqchip; the local APIC \
                  and the IOAPIC are emulated and delivery rides KVM_INTERRUPT"
             );
-            // The guest kernel's fallback clockevent programs the i8254
-            // ports; without an in-kernel PIT those writes go nowhere and
-            // the LAPIC clockevent never takes over. The PIT's GSI 2
-            // output then flows through the emulated IOAPIC.
-            vm.setup_pit().map_err(|error| {
-                StartMicrovmError::ApplyVirtualTime(error.to_string())
-            })?;
+            // No PIT here: KVM's in-kernel PIT requires an in-kernel
+            // irqchip (create_pit2 fails with ENOENT otherwise). The
+            // kernel's LAPIC clockevent is the working timer; its xAPIC
+            // MMIO TMICT arm path schedules the host-paced wake from the
+            // MMIO exit handling in vstate::vcpu.
             for vcpu in &mut vcpus {
                 vcpu.enable_userspace_apic(
                     ioapic.clone(),
