@@ -202,6 +202,16 @@ impl KvmVm {
         self.fd()
             .create_irq_chip()
             .map_err(KvmVmError::VmSetIrqChip)?;
+        self.setup_pit()
+    }
+
+    /// Creates an in-kernel PIT without an irqchip. The userspace-APIC
+    /// machine has no in-kernel irqchip, but the guest kernel's fallback
+    /// clockevent (`hpet_time_init` -> `setup_pit_timer`) programs the
+    /// i8254 ports; without the PIT device model those writes go nowhere
+    /// and the LAPIC clockevent never takes over from a working timer.
+    /// The PIT's GSI 2 output then flows through the emulated IOAPIC.
+    pub fn setup_pit(&self) -> Result<(), KvmVmError> {
         // We need to enable the emulation of a dummy speaker port stub so that writing to port 0x61
         // (i.e. KVM_SPEAKER_BASE_ADDRESS) does not trigger an exit to user space.
         let pit_config = kvm_pit_config {
