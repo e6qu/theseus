@@ -115,12 +115,13 @@ Workloads, faults, and campaigns:
   output-only, `debug_serial_out_path`) carries kernel diagnostics on a
   channel separate from the workload's data port. The halt frontier
   (making the delivery position virtual) is in What remains. The
-  userspace APIC mode (`userspace_apic`) is landed and its workload is
-  demonstrated: an emulated local APIC and IOAPIC replace the in-kernel
-  irqchip, both arming paths (the x2APIC MSRs and the xAPIC MMIO page)
-  schedule generation-gated host-paced wakes, delivery rides the KVM
-  events path, and the CI probe boots the guest through /init, runs the
-  serial sensor handshake, and reads the measurement back.
+  userspace APIC mode (`userspace_apic`) is landed: an emulated local
+  APIC and IOAPIC replace the in-kernel irqchip, both arming paths
+  (the x2APIC MSRs and the xAPIC MMIO page) schedule generation-gated
+  host-paced wakes, and delivery rides the KVM events path. The CI
+  probe's boot still stalls at the initcall boundary with the guest
+  never arming the LAPIC timer (no TSC-deadline write, no nonzero
+  TMICT), so the workload is not yet demonstrated under this mode.
 
 Investigation:
 
@@ -264,13 +265,15 @@ next actor and payload; guest reset is a terminal admission turn. Fixed-run
 replay enforces the complete stream; portable checkpoint-backed campaigns
 enforce its explicit host-input projection.
 
-The userspace APIC is landed and its workload is demonstrated end to end
-in CI (the emulated local APIC and IOAPIC, both arming paths scheduled,
-delivery through the KVM events path; the full arc and the remaining
-slivers - replay-exact delivery positions and the accelerated stored
-deadlines - are recorded in the timer-arming design doc). The next
-slices, in order: runnable guest entities, virtual-clock reads, and
-guest-side input consumption
+The userspace APIC is landed (the emulated local APIC and IOAPIC,
+delivery through the KVM events path), but its guest still never arms
+the LAPIC timer - the CI probe's boot stalls at the initcall boundary
+before /init with zero timer deliveries, so the timer-arming frontier
+is not settled (the full arc, the instrumentation, and the open
+questions are recorded in the timer-arming design doc). The next
+slices, in order: settle the userspace APIC's arming frontier, then
+runnable guest entities, virtual-clock reads, and guest-side input
+consumption
 between KVM exits. Controlled injection is not general interrupt determinism:
 the guest can still service an injected interrupt at an uncontrolled
 instruction boundary.
@@ -429,12 +432,12 @@ measurement, a KVM host, or a product decision - not on design.
    kernel's own account (`LOC: 0` - the in-kernel irqchip never
    surfaces a userspace-asserted timer vector, so hold-mode timer
    determinism requires the userspace APIC), and the userspace APIC
-   itself is now landed with its workload demonstrated end to end in
-   CI
+   itself is landed though its guest still stalls before /init
+   without arming the LAPIC timer
    ([deterministic-timer-arming.md](docs/design/deterministic-timer-arming.md)
    records the full arc: the mechanism, the probed attempts with
    their evidence, the CPUID/MSR/TSC-frequency exposure the guest
-   needs to see the APIC at all, and the option analysis). The
+   needs to see the APIC at all, and the open questions). The
    kernel-visible diagnostic loop (kernel log and interrupt account
    on the COM2 debug console, retained per run) is standing
    infrastructure for the next KVM-host slice. Then runnable guest

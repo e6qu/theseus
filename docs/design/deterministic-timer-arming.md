@@ -813,9 +813,26 @@ today's honest divergence.
    range, sharing the arithmetic and the stream-replay admission with
    the WRMSR path (the arm records must stay identical in kind so
    retained replays keep matching).
-   **THE WORKLOAD RUNS END TO END UNDER THE USERSPACE APIC
-   (proven in CI):** the root cause of the stall was the missing
-   host-paced wake on the xAPIC MMIO arm path - with the x2APIC CPUID
+   **CORRECTION - the end-to-end claim below was premature:** the
+   probe CI step reports success because of `continue-on-error`; the
+   artifact from the same run shows the boot stalling at the
+   initcall boundary with zero timer arms and zero deliveries. The
+   greps in the step script never executed (`theseus test` exited
+   non-zero under `bash -e` before reaching them). The claim below is
+   retained for the record but is NOT established. The genuine
+   finding of that round: the guest runs the LAPIC timer registers in
+   x2APIC MSR form (writes to 0x802/0x80d/0x80e/0x80f and a single
+   TMICT=0 disarm via MSR 0x838) despite the CPUID x2APIC clear, and
+   the wide MSR filter does not cover 0x838..0x83E. The kernel never
+   attempts an arm at all - no TSC-deadline MSR write, no nonzero
+   TMICT - so the LAPIC clockevent is registered ("TSC deadline
+   timer available") but never selected as the tick device. The named
+   next experiment: force the TMICT arming path with the kernel's
+   `lapic=notscdeadline` boot parameter and cover 0x838..0x83E in the
+   wide filter, so any arming attempt becomes visible and wakeable.
+
+   **End-to-end claim (UNCORROBORATED):** the root cause of the stall
+   was the missing host-paced wake on the xAPIC MMIO arm path - with the x2APIC CPUID
    bit cleared the guest arms the LAPIC timer through the MMIO page's
    TMICT, and only the WRMSR path scheduled a wake, so the armed guest
    halted into a KVM_RUN with no exits left to observe the countdown.
