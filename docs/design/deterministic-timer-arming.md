@@ -862,3 +862,37 @@ today's honest divergence.
    certify step is correctly skipped because it is gated on a complete
    publish, so the deterministic-runtime certification will run once
    the macOS job executes.
+   **The arming frontier broken open (this round):** three changes
+   moved the userspace APIC from "never arms" to "arms and services
+   ticks". First, the wide MSR filter now covers the x2APIC timer MSRs
+   0x838..0x83E: the guest runs the LAPIC registers in x2APIC MSR form
+   even with the CPUID feature bit cleared, and an unfiltered TMICT
+   write would arm an APIC nobody services. Second, the probe forces
+   the TMICT arming path with the kernel's `lapic=notscdeadline`
+   parameter - with it the guest arms via MMIO TMICT writes (the
+   calibration 0xfffffff, then real periods), the vCPU's MMIO arm
+   detection catches them, wakes fire, `timer-due` deliveries land,
+   and the guest kernel services and EOIs them (22 EOIs observed).
+   Third, the wake-chain collapse was found and fixed: every handled
+   exit re-derived the same LAPIC expiry and scheduled a wake for it,
+   and since each schedule invalidates the previous wake's generation,
+   32 of 33 wakes fired stale - the tick chain collapsed to quiet
+   windows between console prints. Scheduling is now deduplicated by
+   deadline (a wake owns its deadline; scheduling the same deadline is
+   a no-op; the fire transfers ownership back), and the delivery ratio
+   went to 1:1 (92 schedules, 92 dues).
+
+   **The remaining frontier:** the boot still does not reach /init
+   inside a 1500s window. The guest's virtual clock advances 11-37
+   guest-seconds per window at run-variable rates (host variance is
+   heavy), the tick-driven kernel sleeps crawl, and one run froze the
+   boot at 0.87s while delivering 92 ticks. The open questions: the
+   interaction between the host-paced wakes and the virtual clock's
+   quantum stepping (the guest clock is anchored and stepped, not
+   wall-rate, so the wake arithmetic and the clock disagree over
+   elapsed time), the replay-exactness of the host-paced delivery
+   positions (named sliver), and whether the residual crawl is the
+   degraded cadence across halt re-arms or the clock pacing itself.
+   The instruments for the next round: the wake-schedule/fire trace
+   (retained in the probe log), the timer-due cadence, and the
+   guest-clock vs wall ratio.

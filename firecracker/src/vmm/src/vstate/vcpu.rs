@@ -1352,6 +1352,11 @@ pub struct Vcpu {
     /// The latest arm's generation. Each arm supersedes the previous
     /// wake; a stale wake must not deliver early.
     timer_arm_generation: Arc<AtomicU64>,
+    /// The deadline a pending wake owns (0 = none). Schedules for the
+    /// same deadline are deduplicated: every handled exit re-derives
+    /// the same expiry, and each schedule would invalidate the
+    /// previous wake's generation so only the final one ever fired.
+    pending_wake_deadline: Arc<AtomicU64>,
     /// The userspace APIC mode (no in-kernel irqchip): the local APIC
     /// state and its virtual-clock timer live here, and GSI devices
     /// deliver through the userspace IOAPIC.
@@ -1438,6 +1443,7 @@ impl Vcpu {
             hold_kernel_timers: false,
             halt_timer_delivery: false,
             timer_arm_generation: Arc::new(AtomicU64::new(0)),
+            pending_wake_deadline: Arc::new(AtomicU64::new(0)),
             userspace_apic: false,
             lapic: Arc::new(Mutex::new(
                 crate::devices::userspace_apic::UserspaceLapic::default(),
@@ -1499,16 +1505,40 @@ impl Vcpu {
         let interval_ns = deadline_ticks.saturating_sub(tsc_now) * 1_000_000
             / u64::from(tsc_khz)
             / u64::from(self.timer_speed.max(1));
+        // Every handled exit re-derives the same expiry and would
+        // schedule it again; each schedule invalidates the previous
+        // wake's generation, so only the final one ever fires. Dedupe:
+        // a wake for this exact deadline is already pending.
+        if self
+            .pending_wake_deadline
+            .load(Ordering::SeqCst)
+            == deadline_ticks
+        {
+            return Ok(());
+        }
+        self.pending_wake_deadline
+            .store(deadline_ticks, Ordering::SeqCst);
         let machine_execution = Arc::clone(&self.machine_execution);
         let generation = Arc::clone(&self.timer_arm_generation);
+        let pending_wake_deadline = Arc::clone(&self.pending_wake_deadline);
         let arm_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
+        info!(
+            "vcpu:{}:wake-schedule gen={arm_generation} interval_ns={interval_ns} \
+             deadline={deadline_ticks} tsc_now={tsc_now}",
+            self.kvm_vcpu.index
+        );
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_nanos(interval_ns));
             // A stale wake (a newer arm superseded this one) must not
             // deliver early.
-            if generation.load(Ordering::SeqCst) == arm_generation {
-                machine_execution.request_timer_wake();
+            let stale = generation.load(Ordering::SeqCst) != arm_generation;
+            if stale {
+                return;
             }
+            // Ownership transfers to the run loop; a later arm for the
+            // same deadline must schedule a fresh wake.
+            pending_wake_deadline.store(0, Ordering::SeqCst);
+            machine_execution.request_timer_wake();
         });
         Ok(())
     }
