@@ -1502,11 +1502,20 @@ impl Vcpu {
         let machine_execution = Arc::clone(&self.machine_execution);
         let generation = Arc::clone(&self.timer_arm_generation);
         let arm_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
+        info!(
+            "vcpu:{}:wake-schedule gen={arm_generation} interval_ns={interval_ns} \
+             deadline={deadline_ticks} tsc_now={tsc_now}",
+            self.kvm_vcpu.index
+        );
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_nanos(interval_ns));
             // A stale wake (a newer arm superseded this one) must not
             // deliver early.
-            if generation.load(Ordering::SeqCst) == arm_generation {
+            let stale = generation.load(Ordering::SeqCst) != arm_generation;
+            info!(
+                "vcpu-wake-thread: fire gen={arm_generation} stale={stale}"
+            );
+            if !stale {
                 machine_execution.request_timer_wake();
             }
         });
