@@ -324,6 +324,17 @@ impl KvmVm {
                     msr_count: 1,
                     bitmap: &deadline_bitmap,
                 },
+                // The x2APIC timer MSRs: the guest can run the LAPIC
+                // registers in x2APIC MSR form even with the CPUID
+                // feature bit cleared (it enables x2APIC through the
+                // APIC-base MSR), and an unfiltered TMICT write would
+                // arm an APIC nobody services.
+                MsrFilterRange {
+                    flags: MsrFilterRangeFlags::READ | MsrFilterRangeFlags::WRITE,
+                    base: 0x838,
+                    msr_count: 7,
+                    bitmap: &bitmap,
+                },
             ]
         } else {
             vec![
