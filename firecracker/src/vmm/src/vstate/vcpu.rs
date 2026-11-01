@@ -1532,6 +1532,7 @@ impl Vcpu {
             // A stale wake (a newer arm superseded this one) must not
             // deliver early.
             let stale = generation.load(Ordering::SeqCst) != arm_generation;
+            info!("vcpu-wake: fire gen={arm_generation} stale={stale}");
             if stale {
                 return;
             }
@@ -2217,6 +2218,13 @@ impl Vcpu {
         if self.machine_execution.timer_wake_requested() {
             self.machine_execution.clear_timer_wake();
             if self.userspace_apic {
+                info!(
+                    "vcpu:{}:wake-observed tsc_now={}",
+                    self.kvm_vcpu.index,
+                    self.kvm_vcpu
+                        .guest_tsc()
+                        .unwrap_or(0)
+                );
                 let tsc_now = self
                     .kvm_vcpu
                     .guest_tsc()
