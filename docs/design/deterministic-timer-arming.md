@@ -949,3 +949,25 @@ today's honest divergence.
    in the logs, and every delivered tick is verifiably queued in KVM.
    The boot's remaining distance to /init is the tick-consumption
    reliability inside KVM's halt handling.
+   **The queue-only delivery and the stall's character (this
+   round):** delivering ticks through KVM_INTERRUPT alone (dropping
+   the double events-path injection) is neutral at the boundary - all
+   30 ticks queue, the guest EOIs 21 - and the chain itself is now
+   verified clean: 30 schedules, 30 fires (one 1756-second calibration
+   wake excepted), 30 dues, 1:1 end to end. The stall's character is
+   now pinned: the guest halts with its timer DISARMED (schedules stop
+   entirely; no TMICT activity) roughly 11-12 guest-seconds in, right
+   after the last initcall and before the "Freeing unused kernel
+   image (initmem) memory" print - the exact window where
+   kernel_init_freeable opens /dev/console. The working hypothesis:
+   the console tty open blocks untimed on the modem/carrier state (the
+   guest then disarms its only wake source in idle and waits for a
+   serial interrupt that a static MSR never raises), consistent with
+   the earlier zero-tick-era symptoms (stty EIO, failed tty writes)
+   where the boot crossed /init only because the broken tty open
+   failed fast instead of blocking. The hung-task detector cannot
+   name the blocked task: the shipped 6.1 kernel lacks
+   CONFIG_DETECT_HUNG_TASK. Next levers: add that config and rebuild
+   the kernel (the guest would name its own blocked task and stack),
+   or force the serial MSR's modem-connected bits (DCD/DSR/CTS) in the
+   device layer so the console open completes.
