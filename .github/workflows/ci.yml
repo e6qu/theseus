@@ -135,7 +135,9 @@ jobs:
         working-directory: docs/tutorials/04-read-serial
         # Experimental: the probe iterates on the userspace APIC's boot
         # contract; its findings ride the retained diagnostics without
-        # gating the merge.
+        # gating the merge. It runs even when the native gates flake -
+        # the probe's diagnostics are the point.
+        if: always() && !cancelled()
         continue-on-error: true
         run: |
           cp work/guest/vmlinux-debug work/guest/vmlinux-debug.probe
