@@ -2243,6 +2243,37 @@ impl Vcpu {
                         .map_err(|error| {
                             VcpuError::UnhandledKvmExit(error.to_string())
                         })?;
+                } else {
+                    // The wake fired with nothing due (the guest disarmed
+                    // or a delivery already advanced the expiry): without
+                    // a re-schedule the chain orphans here and a halted
+                    // guest waits forever. Re-arm from the LAPIC's current
+                    // expiry.
+                    let (expiry, divide) = {
+                        let lapic = self.lapic.lock().expect(
+                            "userspace local APIC lock poisoned",
+                        );
+                        (
+                            lapic.next_expiry((lapic.lvt_timer() >> 17) & 0x3),
+                            lapic.divide_config(),
+                        )
+                    };
+                    if let Some(expiry) = expiry {
+                        let tsc_khz =
+                            self.kvm_vcpu.cached_tsc_khz().unwrap_or(0);
+                        if tsc_khz > 0 {
+                            info!(
+                                "vcpu:{}:userspace-apic:wake-rearm expiry={expiry} \
+                                 divide={divide} tsc_now={tsc_now}",
+                                self.kvm_vcpu.index
+                            );
+                            self.schedule_userspace_timer_wake(
+                                expiry,
+                                tsc_now,
+                                tsc_khz,
+                            )?;
+                        }
+                    }
                 }
             } else {
                 self.handle_timer_wake()?;
