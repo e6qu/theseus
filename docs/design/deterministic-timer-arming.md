@@ -896,3 +896,31 @@ today's honest divergence.
    The instruments for the next round: the wake-schedule/fire trace
    (retained in the probe log), the timer-due cadence, and the
    guest-clock vs wall ratio.
+   **The wake-chain race found and fixed (this round):** the trace
+   instrumentation exposed the delivery collapse: the MMIO arm block,
+   the WRMSR arm path, and the run loop's observe path each scheduled
+   wakes with deadlines computed from different tsc bases, and the
+   generation gate (each schedule invalidates the previous wake) turned
+   the three-racer pile-up into 32-of-33 stale fires - thousands of
+   schedules, no fires, no deliveries, while the guest kept re-arming.
+   The observe path is now the single scheduler (the arm paths only
+   write the LAPIC and log), scheduling is deduplicated by deadline
+   with ownership transferring back on fire, and a wake that fires with
+   nothing due re-arms from the LAPIC's current expiry instead of
+   orphaning the chain. The delivery ratio went to 1:1 (schedules,
+   fires, observations, dues all matching).
+
+   **The named residual:** while the console drives exits the chain
+   runs and the guest services ticks (EOIs observed), but only about a
+   third of delivered ticks reach the guest when it is halted - dues
+   logged, EOIs missing - and the tick cadence rides the console-print
+   exits (~3/s instead of the armed 250Hz), so the boot's tick-driven
+   sleeps crawl and /init is still not reached in-window. The next
+   diagnostic frontier: the events-path injection versus a halted
+   KVM_RUN (the pending interrupt is written between runs and should
+   deliver at entry; the EOIs say it sometimes does not), and whether
+   the guest's NOHZ idle disarms the clockevent in the stall window
+   (the schedules stopped entirely at the stall point, consistent with
+   either a blocked KVM_RUN the kick does not break or a disarmed
+   LAPIC). The wake-schedule/fire/observed/due trace lines are
+   retained for that work.
