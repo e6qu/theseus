@@ -1008,15 +1008,25 @@ impl KvmVcpu {
                 libc::EINVAL,
             )));
         }
-        match self.inject_lapic_vector(vector as u8) {
-            Ok(_) => Ok(()),
+        let queued = match self.inject_lapic_vector(vector as u8) {
+            Ok(queued) => queued,
             Err(KvmVcpuError::InjectInterrupt(error))
                 if error.errno() == libc::ENXIO || error.errno() == libc::ENODEV =>
             {
-                Ok(())
+                // Under the in-kernel irqchip the ioctl refuses and
+                // KVM's own APIC owns the delivery: an acknowledged
+                // no-op, not an error.
+                crate::logger::info!(
+                    "vcpu-timer-inject: vector={vector} refused-irqchip"
+                );
+                return Ok(());
             }
-            Err(error) => Err(error),
-        }
+            Err(error) => return Err(error),
+        };
+        crate::logger::info!(
+            "vcpu-timer-inject: vector={vector} queued={queued}"
+        );
+        Ok(())
     }
 
     /// The guest's live TSC value. Valid between `KVM_RUN` calls, like
