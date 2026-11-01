@@ -924,3 +924,28 @@ today's honest divergence.
    either a blocked KVM_RUN the kick does not break or a disarmed
    LAPIC). The wake-schedule/fire/observed/due trace lines are
    retained for that work.
+   **The delivery mechanism verified at the KVM boundary (this
+   round):** the queue's lapic-timer injections now log their
+   KVM_INTERRUPT result: every injection queues (`queued=true`) - KVM
+   holds each delivered tick correctly in the userspace-APIC mode.
+   The residual gap is therefore downstream of KVM: of 31 queued
+   interrupts the guest's handler EOI'd 21, and the cadence still
+   rides the console-print exits. The two live suspects, refined:
+   (1) the guest consumes the pending interrupt only in windows where
+   it runs with IF=1, and between dues it is halted or in an
+   interrupt-shadowed window - the wake-to-entry handoff drops ticks
+   silently inside KVM; (2) the guest's clockevent layer may be
+   re-programming through paths whose arms are no longer observed
+   (the single-scheduler change made the observe path the only wake
+   source, and it schedules from the LAPIC's expiry, which is correct
+   - but a guest that disarms and re-arms rapidly between
+   observations could still slip windows). The instruments are in
+   place: wake-schedule, fire (with the stale flag), wake-observed,
+   timer-due, wake-rearm, and the injection result per tick.
+
+   **Round tally:** the wake-chain races are fixed (single scheduler,
+   deadline dedup with ownership transfer, the orphan re-arm, the
+   three-scheduler invalidation collapse), the arm paths are visible
+   in the logs, and every delivered tick is verifiably queued in KVM.
+   The boot's remaining distance to /init is the tick-consumption
+   reliability inside KVM's halt handling.
