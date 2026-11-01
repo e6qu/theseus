@@ -15,6 +15,18 @@ kmsg starting
 /bin/busybox ls /dev/ttyS0 > /dev/kmsg 2>&1 || kmsg no ttyS0 node
 
 # A Raspberry Pi exposes its UART as a TTY too (commonly ttyAMA0 or ttyS0).
+# The port route: write the handshake straight to the UART registers
+# (0x3f8 = 1016) instead of through the tty layer. The runner watches
+# the serial capture for THES:M:42 and feeds the sensor response into
+# the UART input; the reads pull it from the receive register.
+kmsg port route next
+printf 'THES:M:42\n' | /bin/busybox dd of=/dev/port bs=1 seek=1016 conv=notrunc 2>/dev/null && kmsg port write done || kmsg port write failed
+/bin/busybox sleep 2
+measurement=$(/bin/busybox dd if=/dev/port bs=1 skip=1016 count=6 2>/dev/null)
+kmsg "port read: $measurement"
+printf 'sensor reading: %s\n' "$measurement" | /bin/busybox dd of=/dev/port bs=1 seek=1016 conv=notrunc 2>/dev/null
+kmsg port report done
+kmsg port route done
 kmsg stty next
 /bin/busybox stty -echo -opost 2>/tmp/e </dev/ttyS0 || kmsg "stty err: $(/bin/busybox cat /tmp/e) rc=$?"
 kmsg stty done
