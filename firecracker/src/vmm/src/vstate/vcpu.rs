@@ -1532,6 +1532,7 @@ impl Vcpu {
             // A stale wake (a newer arm superseded this one) must not
             // deliver early.
             let stale = generation.load(Ordering::SeqCst) != arm_generation;
+            info!("vcpu-wake: fire gen={arm_generation} stale={stale}");
             if stale {
                 return;
             }
@@ -2217,6 +2218,13 @@ impl Vcpu {
         if self.machine_execution.timer_wake_requested() {
             self.machine_execution.clear_timer_wake();
             if self.userspace_apic {
+                info!(
+                    "vcpu:{}:wake-observed tsc_now={}",
+                    self.kvm_vcpu.index,
+                    self.kvm_vcpu
+                        .guest_tsc()
+                        .unwrap_or(0)
+                );
                 let tsc_now = self
                     .kvm_vcpu
                     .guest_tsc()
@@ -2243,6 +2251,37 @@ impl Vcpu {
                         .map_err(|error| {
                             VcpuError::UnhandledKvmExit(error.to_string())
                         })?;
+                } else {
+                    // The wake fired with nothing due (the guest disarmed
+                    // or a delivery already advanced the expiry): without
+                    // a re-schedule the chain orphans here and a halted
+                    // guest waits forever. Re-arm from the LAPIC's current
+                    // expiry.
+                    let (expiry, divide) = {
+                        let lapic = self.lapic.lock().expect(
+                            "userspace local APIC lock poisoned",
+                        );
+                        (
+                            lapic.next_expiry((lapic.lvt_timer() >> 17) & 0x3),
+                            lapic.divide_config(),
+                        )
+                    };
+                    if let Some(expiry) = expiry {
+                        let tsc_khz =
+                            self.kvm_vcpu.cached_tsc_khz().unwrap_or(0);
+                        if tsc_khz > 0 {
+                            info!(
+                                "vcpu:{}:userspace-apic:wake-rearm expiry={expiry} \
+                                 divide={divide} tsc_now={tsc_now}",
+                                self.kvm_vcpu.index
+                            );
+                            self.schedule_userspace_timer_wake(
+                                expiry,
+                                tsc_now,
+                                tsc_khz,
+                            )?;
+                        }
+                    }
                 }
             } else {
                 self.handle_timer_wake()?;
@@ -2466,47 +2505,12 @@ impl Vcpu {
                         "vcpu:{}:userspace-apic:wr:{:#x}={:#x} tsc_now={tsc_now}",
                         self.kvm_vcpu.index, index, data
                     );
-                    // The arm schedules its own wake: KVM emulates the
-                    // halt in-kernel and never surfaces the boundary, so
-                    // the delivery needs a host-paced wake that fires at
-                    // the deadline whether the guest is running, halted,
-                    // or blocked in KVM_RUN. Both arming registers
-                    // schedule it: the TSC-deadline's deadline is
-                    // absolute, the TMICT's is one period out.
-                    let tsc_khz = self
-                        .kvm_vcpu
-                        .cached_tsc_khz()
-                        .map_err(|error| {
-                            VcpuError::UnhandledKvmExit(error.to_string())
-                        })?;
-                    let wake_deadline = match (index, data) {
-                        (MSR_IA32_TSC_DEADLINE, d) if d != 0 => Some(d),
-                        (crate::devices::userspace_apic::MSR_X2APIC_TMICT, d)
-                            if d != 0 =>
-                        {
-                            let period = d
-                                * crate::devices::userspace_apic::divider(
-                                    self.lapic
-                                        .lock()
-                                        .expect("userspace local APIC lock poisoned")
-                                        .divide_config(),
-                                );
-                            Some(tsc_now + period)
-                        }
-                        _ => None,
-                    };
-                    if let Some(deadline_ticks) = wake_deadline {
-                        info!(
-                            "vcpu:{}:userspace-apic:arm msr={index:#x} value={data:#x} \
-                             tsc_now={tsc_now}",
-                            self.kvm_vcpu.index
-                        );
-                        self.schedule_userspace_timer_wake(
-                            deadline_ticks,
-                            tsc_now,
-                            tsc_khz,
-                        )?;
-                    }
+                    // No schedule here: the run loop's observe path is
+                    // the single scheduler, reading the LAPIC's own
+                    // stored expiry. A second scheduler with a different
+                    // tsc base produced a different deadline for the same
+                    // arm, and each schedule invalidated the other's
+                    // generation until every wake fired stale.
                     return Ok(VcpuEmulation::Handled);
                 }
                 // Copy the exit's payload out and drop the run-buffer
@@ -2711,11 +2715,14 @@ impl Vcpu {
                     &self.execution_ledger,
                     &self.machine_execution,
                 );
-                // The write has now landed in the LAPIC through the bus;
-                // schedule the host-paced wake from the LAPIC's own stored
-                // arm exactly as the WRMSR path does. Without it the
-                // armed guest halts and the vCPU blocks in KVM_RUN with
-                // no exits left to observe the TMCCT countdown.
+                // The write has now landed in the LAPIC through the bus.
+                // Log the arm but do NOT schedule here: the run loop's
+                // observe path is the single scheduler, reading the
+                // LAPIC's own stored expiry. Two schedulers with
+                // different tsc bases produced different deadlines for
+                // the same arm, and each schedule invalidated the other's
+                // generation until every wake fired stale and the chain
+                // died while the guest kept re-arming.
                 #[cfg(target_arch = "x86_64")]
                 if mmio_timer_arm.is_some() {
                     let tmict = self
@@ -2724,31 +2731,10 @@ impl Vcpu {
                         .expect("userspace local APIC lock poisoned")
                         .initial_count();
                     if tmict != 0 {
-                        let tsc_now = self.kvm_vcpu.guest_tsc().map_err(|error| {
-                            VcpuError::UnhandledKvmExit(error.to_string())
-                        })?;
-                        let tsc_khz = self
-                            .kvm_vcpu
-                            .cached_tsc_khz()
-                            .map_err(|error| {
-                                VcpuError::UnhandledKvmExit(error.to_string())
-                            })?;
-                        let period = u64::from(tmict)
-                            * crate::devices::userspace_apic::divider(
-                                self.lapic
-                                    .lock()
-                                    .expect("userspace local APIC lock poisoned")
-                                    .divide_config(),
-                            );
                         info!(
-                            "vcpu:{}:userspace-apic:arm mmio-tmict={tmict:#x} tsc_now={tsc_now}",
+                            "vcpu:{}:userspace-apic:arm mmio-tmict={tmict:#x}",
                             self.kvm_vcpu.index
                         );
-                        self.schedule_userspace_timer_wake(
-                            tsc_now + period,
-                            tsc_now,
-                            tsc_khz,
-                        )?;
                     }
                 }
                 // A vmentry refused while events are blocked by MOV SS:
