@@ -452,6 +452,17 @@ where
     fn read(&mut self, _base: u64, offset: u64, data: &mut [u8]) {
         if let (Ok(offset), 1) = (u8::try_from(offset), data.len()) {
             data[0] = self.serial.read(offset);
+            // A virtual serial port always has a modem connected: report
+            // DCD, DSR, and CTS on every modem-status read outside
+            // loopback mode. Without the carrier bit the guest's tty
+            // layer blocks the /dev/console open waiting for a line
+            // that will never come (the boot then sits halted before
+            // /init with its timer disarmed), and the serial driver's
+            // modem handling degrades into the EIO failures the probe
+            // observed on tty writes.
+            if offset == 6 && self.serial.state().modem_control & 0x10 == 0 {
+                data[0] |= 0xB0;
+            }
             if offset == 0
                 && self.serial.state().in_buffer.is_empty()
                 && let Err(error) = self.flush_pending_input()
