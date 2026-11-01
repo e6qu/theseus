@@ -1685,9 +1685,11 @@ impl Vcpu {
                 self.kvm_vcpu.index
             );
             self.last_timer_vector = Some(vector);
-            self.kvm_vcpu
-                .inject_vector_via_events(vector)
-                .map_err(|error| VcpuError::UnhandledKvmExit(error.to_string()))?;
+            // Queue-only: KVM_INTERRUPT holds the vector until the
+            // guest's next IF=1 window. The events path (injected=1)
+            // lands in whatever window the guest is in - lost when
+            // IF=0 - and occupies the pipeline so this call returns
+            // EAGAIN and the tick drops.
             self.machine_execution
                 .request_interrupt("lapic-timer", u32::from(vector), true)
                 .map_err(|error| {
@@ -2241,11 +2243,8 @@ impl Vcpu {
                         "vcpu:{}:userspace-apic:wake vector={vector} tsc_now={tsc_now}",
                         self.kvm_vcpu.index
                     );
-                    self.kvm_vcpu
-                        .inject_vector_via_events(vector)
-                        .map_err(|error| {
-                            VcpuError::UnhandledKvmExit(error.to_string())
-                        })?;
+                    // Queue-only, for the same reason as the handled-exit
+                    // delivery above.
                     self.machine_execution
                         .request_interrupt("lapic-timer", u32::from(vector), true)
                         .map_err(|error| {

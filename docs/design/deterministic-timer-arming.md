@@ -949,3 +949,53 @@ today's honest divergence.
    in the logs, and every delivered tick is verifiably queued in KVM.
    The boot's remaining distance to /init is the tick-consumption
    reliability inside KVM's halt handling.
+   **The queue-only delivery and the stall's character (this
+   round):** delivering ticks through KVM_INTERRUPT alone (dropping
+   the double events-path injection) is neutral at the boundary - all
+   30 ticks queue, the guest EOIs 21 - and the chain itself is now
+   verified clean: 30 schedules, 30 fires (one 1756-second calibration
+   wake excepted), 30 dues, 1:1 end to end. The stall's character is
+   now pinned: the guest halts with its timer DISARMED (schedules stop
+   entirely; no TMICT activity) roughly 11-12 guest-seconds in, right
+   after the last initcall and before the "Freeing unused kernel
+   image (initmem) memory" print - the exact window where
+   kernel_init_freeable opens /dev/console. The working hypothesis:
+   the console tty open blocks untimed on the modem/carrier state (the
+   guest then disarms its only wake source in idle and waits for a
+   serial interrupt that a static MSR never raises), consistent with
+   the earlier zero-tick-era symptoms (stty EIO, failed tty writes)
+   where the boot crossed /init only because the broken tty open
+   failed fast instead of blocking. The hung-task detector cannot
+   name the blocked task: the shipped 6.1 kernel lacks
+   CONFIG_DETECT_HUNG_TASK. Next levers: add that config and rebuild
+   the kernel (the guest would name its own blocked task and stack),
+   or force the serial MSR's modem-connected bits (DCD/DSR/CTS) in the
+   device layer so the console open completes.
+   **The runner-pool noise window (noted):** the queue-only branch's
+   native gates failed three reruns in a row on rotating steps (the
+   UART replay, then the whole-topology replay, then the topology
+   certification) while the diff provably cannot affect those steps
+   (userspace-APIC-only paths; main's identical steps passed in the
+   prior run). The divergences name lapic-timer turns in the hold-mode
+   stream - the documented arming-nondeterminism residual, where a
+   host whose in-kernel timer asserts on a different cadence diverges
+   loudly at replay. The branch is held open as the experiment carrier
+   until the pool quiets, per the earlier timer-speed precedent.
+   **The console-free boot reaches /init (this round):** removing
+   `console=ttyS0` from the probe's boot arguments dissolved the
+   kernel-side stall entirely - the boot crossed the last initcall,
+   and the probe's init is now running (its environment echo and the
+   stty step appear at 4.99 guest seconds in the debug log, which
+   carries the earlyprintk COM2 output and is already part of the
+   probe artifact). The kernel-side blocker was the ttyS0 console's
+   own state machine at the /dev/console open; the carrier-force and
+   queue-only delivery changes remain correct hygiene but were not
+   the kernel-side key. The init's own first ttyS0 access (stty) is
+   the new last mile: it blocks with the tick chain alive, no oops,
+   no output. The instrument for the next round: the init's tty steps
+   already bracket with kmsg diagnostics; the serial IRQ path (GSI 4
+   through the emulated IOAPIC) and the uart_startup's interaction
+   with the emulated serial state are the named suspects. The
+   delivery-side facts stand: every tick queues in KVM, the wake
+   chain is 1:1, and the probe is now console-free with the kernel's
+   full earlyprintk output in firecracker-debug.log.
