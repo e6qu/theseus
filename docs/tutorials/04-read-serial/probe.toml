@@ -1,9 +1,13 @@
 # The userspace APIC probe: the no-irqchip configuration, the debug
 # kernel (ftrace), and the boot arguments that keep the kernel's local
-# APIC alive while sidestepping the hrtimer high-res switch. The probe
-# asserts the workload's completion and the timer deliveries - not the
-# hold path's arming assertions. See
-# docs/design/deterministic-timer-arming.md for the frontier map.
+# APIC alive while sidestepping the hrtimer high-res switch. The
+# workload rides the raw UART ports (/dev/port at 0x3f8): the tty
+# layer's open handshake is the remaining frontier and the probe's
+# assertions only need the UART registers. The console is left off so
+# the kernel's stall point cannot re-enter through the /dev/console
+# open; the kernel's output rides the COM2 earlyprintk in
+# firecracker-debug.log. See docs/design/deterministic-timer-arming.md
+# for the frontier map.
 version = 1
 
 [runtime]
