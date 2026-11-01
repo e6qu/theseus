@@ -971,3 +971,13 @@ today's honest divergence.
    the kernel (the guest would name its own blocked task and stack),
    or force the serial MSR's modem-connected bits (DCD/DSR/CTS) in the
    device layer so the console open completes.
+   **The runner-pool noise window (noted):** the queue-only branch's
+   native gates failed three reruns in a row on rotating steps (the
+   UART replay, then the whole-topology replay, then the topology
+   certification) while the diff provably cannot affect those steps
+   (userspace-APIC-only paths; main's identical steps passed in the
+   prior run). The divergences name lapic-timer turns in the hold-mode
+   stream - the documented arming-nondeterminism residual, where a
+   host whose in-kernel timer asserts on a different cadence diverges
+   loudly at replay. The branch is held open as the experiment carrier
+   until the pool quiets, per the earlier timer-speed precedent.
