@@ -196,3 +196,4 @@ orchestrator/pivot/target/
 .github/wexp-*
 .github/hrd*/
 .github/wexp-*/
+.github/proof*/
