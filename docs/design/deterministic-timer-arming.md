@@ -981,3 +981,21 @@ today's honest divergence.
    host whose in-kernel timer asserts on a different cadence diverges
    loudly at replay. The branch is held open as the experiment carrier
    until the pool quiets, per the earlier timer-speed precedent.
+   **The console-free boot reaches /init (this round):** removing
+   `console=ttyS0` from the probe's boot arguments dissolved the
+   kernel-side stall entirely - the boot crossed the last initcall,
+   and the probe's init is now running (its environment echo and the
+   stty step appear at 4.99 guest seconds in the debug log, which
+   carries the earlyprintk COM2 output and is already part of the
+   probe artifact). The kernel-side blocker was the ttyS0 console's
+   own state machine at the /dev/console open; the carrier-force and
+   queue-only delivery changes remain correct hygiene but were not
+   the kernel-side key. The init's own first ttyS0 access (stty) is
+   the new last mile: it blocks with the tick chain alive, no oops,
+   no output. The instrument for the next round: the init's tty steps
+   already bracket with kmsg diagnostics; the serial IRQ path (GSI 4
+   through the emulated IOAPIC) and the uart_startup's interaction
+   with the emulated serial state are the named suspects. The
+   delivery-side facts stand: every tick queues in KVM, the wake
+   chain is 1:1, and the probe is now console-free with the kernel's
+   full earlyprintk output in firecracker-debug.log.
