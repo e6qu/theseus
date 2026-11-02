@@ -40,6 +40,16 @@ for byte in $(printf '%s' "$measurement" | /bin/busybox od -An -tu1 | /bin/busyb
 done
 kmsg port report done
 kmsg port route done
+# The workload is complete: the handshake and the sensor read rode the
+# raw UART registers. Reboot cleanly - the tty layer's open handshake
+# remains the open frontier and the probe does not need it.
+for byte in $(printf '%s' 'THES:M:reboot
+' | /bin/busybox od -An -tu1 | /bin/busybox tr -s ' ' | /bin/busybox sed 's/^ //;s/ $//;s/ /\n/g' | /bin/busybox grep -v '^$'); do
+    port_write "$byte" || true
+done
+kmsg reboot next
+/bin/busybox reboot -f || kmsg "reboot failed $?"
+exit 0
 kmsg stty next
 /bin/busybox stty -echo -opost 2>/tmp/e </dev/ttyS0 || kmsg "stty err: $(/bin/busybox cat /tmp/e) rc=$?"
 kmsg stty done
