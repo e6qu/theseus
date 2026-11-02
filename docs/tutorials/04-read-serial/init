@@ -15,18 +15,41 @@ kmsg starting
 /bin/busybox ls /dev/ttyS0 > /dev/kmsg 2>&1 || kmsg no ttyS0 node
 
 # A Raspberry Pi exposes its UART as a TTY too (commonly ttyAMA0 or ttyS0).
-# The port route: write the handshake straight to the UART registers
-# (0x3f8 = 1016) instead of through the tty layer. The runner watches
-# the serial capture for THES:M:42 and feeds the sensor response into
-# the UART input; the reads pull it from the receive register.
+# The port route: write the handshake straight to the UART receive
+# register (0x3f8 = 1016) instead of through the tty layer. Every byte
+# is its own lseek+access: a sequential dd walk would clobber the
+# IER/FCR/LCR registers past the data register. The runner watches the
+# serial capture for THES:M:42 and feeds the sensor response into the
+# UART input; each read pulls one byte from the receive register.
 kmsg port route next
-printf 'THES:M:42\n' | /bin/busybox dd of=/dev/port bs=1 seek=1016 conv=notrunc 2>/dev/null && kmsg port write done || kmsg port write failed
+port_write() {
+    /bin/busybox awk -v b="$1" 'BEGIN { printf "%c", b }' | /bin/busybox dd of=/dev/port bs=1 seek=1016 conv=notrunc 2>/dev/null
+}
+for byte in 84 72 69 83 58 77 58 52 50 10; do
+    port_write "$byte" || true
+done
+kmsg port write done
 /bin/busybox sleep 2
-measurement=$(/bin/busybox dd if=/dev/port bs=1 skip=1016 count=6 2>/dev/null)
+measurement=
+for i in 1 2 3 4 5 6; do
+    measurement="$measurement$(/bin/busybox dd if=/dev/port bs=1 skip=1016 count=1 2>/dev/null)"
+done
 kmsg "port read: $measurement"
-printf 'sensor reading: %s\n' "$measurement" | /bin/busybox dd of=/dev/port bs=1 seek=1016 conv=notrunc 2>/dev/null
+for byte in $(printf '%s' "$measurement" | /bin/busybox od -An -tu1 | /bin/busybox tr -s ' ' | /bin/busybox sed 's/^ //;s/ $//;s/ /\n/g'); do
+    [ -n "$byte" ] && port_write "$byte" || true
+done
 kmsg port report done
 kmsg port route done
+# The workload is complete: the handshake and the sensor read rode the
+# raw UART registers. Reboot cleanly - the tty layer's open handshake
+# remains the open frontier and the probe does not need it.
+for byte in $(printf '%s' 'THES:M:reboot
+' | /bin/busybox od -An -tu1 | /bin/busybox tr -s ' ' | /bin/busybox sed 's/^ //;s/ $//;s/ /\n/g' | /bin/busybox grep -v '^$'); do
+    port_write "$byte" || true
+done
+kmsg reboot next
+/bin/busybox reboot -f || kmsg "reboot failed $?"
+exit 0
 kmsg stty next
 /bin/busybox stty -echo -opost 2>/tmp/e </dev/ttyS0 || kmsg "stty err: $(/bin/busybox cat /tmp/e) rc=$?"
 kmsg stty done
