@@ -999,3 +999,30 @@ today's honest divergence.
    delivery-side facts stand: every tick queues in KVM, the wake
    chain is 1:1, and the probe is now console-free with the kernel's
    full earlyprintk output in firecracker-debug.log.
+   **The port-route workload runs, and a new intermittent crash
+   (this round):** with the init's workload routed through the raw
+   UART registers (/dev/port at 0x3f8, per-byte lseek+access), the
+   complete sensor handshake executed under the userspace APIC: the
+   marker written, the runner fed the response, the init read "21.5C"
+   back, and the report written - the tty layer's open handshake was
+   the blocker and the workload does not need it. A clean-reboot
+   completion was attempted and the runs then exposed an intermittent
+   guest crash: "Fatal exception in interrupt" with CR2 in the
+   cpu_entry_area's guard region (the entry-trampoline stack guard),
+   at variable points (3.19s at /init in one run, 0.503s right when
+   the timer armed in another), correlating with the injection rate -
+   the faster the synthetic ticks arrive, the sooner the crash.
+   Disabling KPTI did not help (the crash moved earlier). The queue's
+   injection result is verified queued=true on every tick, so the
+   drop is inside KVM's entry/delivery path under rapid synthetic
+   injection - the next diagnostic frontier, with the full trace set
+   retained. The pti=off experiment was reverted; the port route and
+   the reboot completion remain in the probe init.
+
+   **Housekeeping:** the probe artifact's serial capture is
+   console-free (the marker still reaches it through the port writes)
+   and the kernel's full output rides the debug log; the probe step
+   now runs with if: always() so the flaky native gates cannot starve
+   the diagnostics; the userspace-APIC wake-chain work landed through
+   PRs #519-#521 and this branch carries the port route, the MSR
+   carrier bits, and the trace set.
