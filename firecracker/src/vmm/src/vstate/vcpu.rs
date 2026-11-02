@@ -1502,9 +1502,18 @@ impl Vcpu {
         tsc_now: u64,
         tsc_khz: u32,
     ) -> Result<(), VcpuError> {
-        let interval_ns = deadline_ticks.saturating_sub(tsc_now) * 1_000_000
+        let mut interval_ns = deadline_ticks.saturating_sub(tsc_now) * 1_000_000
             / u64::from(tsc_khz)
             / u64::from(self.timer_speed.max(1));
+        // A delivery-rate floor: the entry-path crash under rapid
+        // synthetic injection correlates with the rate, and the boot
+        // needs jiffies to advance, not 250 of them per second. The
+        // guest's jiffies run at the floor's rate and every timeout
+        // simply takes longer in wall time.
+        const WAKE_FLOOR_NS: u64 = 20_000_000;
+        if interval_ns < WAKE_FLOOR_NS {
+            interval_ns = WAKE_FLOOR_NS;
+        }
         // Every handled exit re-derives the same expiry and would
         // schedule it again; each schedule invalidates the previous
         // wake's generation, so only the final one ever fires. Dedupe:

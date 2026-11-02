@@ -1,0 +1,249 @@
+2026-11-02T00:48:49.274754234 [anonymous-instance:main] Running Firecracker v1.17.0-dev
+2026-11-02T00:48:49.274941988 [anonymous-instance:main] Listening on API socket ("/home/runner/work/theseus/theseus/docs/tutorials/04-read-serial/work/probe/firecracker.sock").
+2026-11-02T00:48:49.275078564 [anonymous-instance:fc_api] API server started.
+2026-11-02T00:48:49.293979844 [anonymous-instance:fc_api] The API server received a Put request on "/boot-source" with body "{\"boot_args\":\"earlyprintk=serial,0x2f8,keep reboot=k panic=-1 loglevel=8 initcall_debug i8042.nopnp i8042.noaux hung_task_timeout_secs=5 highres=off lapic=notscdeadline 8250_core.skip_txen_test=1\",\"initrd_path\":\"/home/runner/work/theseus/theseus/docs/tutorials/04-read-serial/work/probe/artifacts/initramfs\",\"kernel_image_path\":\"/home/runner/work/theseus/theseus/docs/tutorials/04-read-serial/work/probe/artifacts/vmlinux\"}".
+2026-11-02T00:48:49.294099880 [anonymous-instance:fc_api] The request was executed successfully. Status code: 204 No Content.
+2026-11-02T00:48:49.294338479 [anonymous-instance:fc_api] The API server received a Put request on "/machine-config" with body "{\"mem_size_mib\":128,\"vcpu_count\":1,\"virtual_time\":{\"exits_per_tick\":10,\"filter_timer_msrs\":true,\"halt_timer_delivery\":false,\"hold_kernel_timers\":true,\"tick_ns\":1000000,\"userspace_apic\":true}}".
+2026-11-02T00:48:49.294422548 [anonymous-instance:fc_api] The request was executed successfully. Status code: 204 No Content.
+2026-11-02T00:48:49.294607296 [anonymous-instance:fc_api] The API server received a Put request on "/serial" with body "{\"debug_serial_out_path\":\"/home/runner/work/theseus/theseus/docs/tutorials/04-read-serial/work/probe/firecracker-debug.log\",\"serial_out_path\":\"/home/runner/work/theseus/theseus/docs/tutorials/04-read-serial/work/probe/serial.log\"}".
+2026-11-02T00:48:49.294671416 [anonymous-instance:fc_api] The request was executed successfully. Status code: 204 No Content.
+2026-11-02T00:48:49.294841566 [anonymous-instance:fc_api] The API server received a Put request on "/execution" with body "{\"evidence_path\":\"/home/runner/work/theseus/theseus/docs/tutorials/04-read-serial/work/probe/execution.json\",\"replay_trace_path\":null}".
+2026-11-02T00:48:49.294895939 [anonymous-instance:fc_api] The request was executed successfully. Status code: 204 No Content.
+2026-11-02T00:48:49.295046151 [anonymous-instance:fc_api] The API server received a Put request on "/actions" with body "{\"action_type\":\"InstanceStart\"}".
+2026-11-02T00:48:49.296266710 [anonymous-instance:main] userspace-apic:rd:0x803=0x0 tsc_now=0
+2026-11-02T00:48:49.296283361 [anonymous-instance:main] apic page probe: found, version bytes [00, 00, 00, 00]
+2026-11-02T00:48:49.296288942 [anonymous-instance:main] userspace APIC installed: no in-kernel irqchip; the local APIC and the IOAPIC are emulated and delivery rides KVM_INTERRUPT
+2026-11-02T00:48:49.296530647 [anonymous-instance:main] userspace APIC: the DSDT omits the GED device
+2026-11-02T00:48:49.316446216 [anonymous-instance:main] Artificially kick devices
+2026-11-02T00:48:49.316495969 [anonymous-instance:fc_vcpu 0] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-11-02T00:48:49.316558426 [anonymous-instance:fc_api] The request was executed successfully. Status code: 204 No Content.
+2026-11-02T00:48:49.342463462 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0xcf8:0x4 failed: Failed to find address range.
+2026-11-02T00:48:49.342485844 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:49.342532331 [anonymous-instance:fc_vcpu 0] vcpu: IO read @ 0xcfc:0x2 failed: Failed to find address range.
+2026-11-02T00:48:49.342554212 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:49.343122652 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:49.343154352 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:49.343192414 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:49.343239122 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:49.343271653 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:49.343300137 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:49.343325093 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:49.343349630 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:49.447597129 [anonymous-instance:fc_vcpu 0] userspace-apic:rd:0x802=0x0 tsc_now=370564262
+2026-11-02T00:48:49.447652112 [anonymous-instance:fc_vcpu 0] userspace-apic:rd:0x803=0x0 tsc_now=370916278
+2026-11-02T00:48:49.499466840 [anonymous-instance:fc_vcpu 0] userspace-apic:rd:0x802=0x0 tsc_now=497630205
+2026-11-02T00:48:49.584025787 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:rd:0x1b=0x0 tsc_now=704455873
+2026-11-02T00:48:49.685169343 [anonymous-instance:fc_vcpu 0] userspace-apic:rd:0x802=0x0 tsc_now=951511717
+2026-11-02T00:48:49.687465775 [anonymous-instance:fc_vcpu 0] userspace-apic:rd:0x80f=0x0 tsc_now=957349405
+2026-11-02T00:48:49.687523364 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x80f=0x0 tsc_now=957486826
+2026-11-02T00:48:49.687558129 [anonymous-instance:fc_vcpu 0] userspace-apic:rd:0x802=0x0 tsc_now=957596022
+2026-11-02T00:48:49.687601431 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x80e=0xffffffff tsc_now=957693802
+2026-11-02T00:48:49.687641667 [anonymous-instance:fc_vcpu 0] userspace-apic:rd:0x80d=0x0 tsc_now=957798368
+2026-11-02T00:48:49.687676522 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x80d=0x1000000 tsc_now=957883995
+2026-11-02T00:48:49.687716417 [anonymous-instance:fc_vcpu 0] userspace-apic:rd:0x808=0x0 tsc_now=957982510
+2026-11-02T00:48:49.687755982 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x808=0x10 tsc_now=958074458
+2026-11-02T00:48:49.687803351 [anonymous-instance:fc_vcpu 0] userspace-apic:rd:0x820=0x0 tsc_now=958190294
+2026-11-02T00:48:49.688332387 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x80f=0x1ff tsc_now=959483233
+2026-11-02T00:48:49.688410554 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x835=0x700 tsc_now=959679870
+2026-11-02T00:48:49.688449928 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x836=0x400 tsc_now=959771794
+2026-11-02T00:48:49.688557100 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x837=0xfe tsc_now=960040412
+2026-11-02T00:48:49.812665756 [anonymous-instance:fc_vcpu 0] 21 messages were suppressed due to rate limiting
+2026-11-02T00:48:49.812676947 [anonymous-instance:fc_vcpu 0] userspace-apic:rd:0x802=0x0 tsc_now=1260255474
+2026-11-02T00:48:49.812742380 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x832=0x300ec tsc_now=1263676850
+2026-11-02T00:48:49.812824475 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x83e=0x3 tsc_now=1263908375
+2026-11-02T00:48:49.812870251 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:arm mmio-tmict=0xfffffff
+2026-11-02T00:48:49.812885099 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=1 interval_ns=1756281609 deadline=5558972528 tsc_now=1264110549
+2026-11-02T00:48:49.845023768 [anonymous-instance:fc_vcpu 0] 19822 messages were suppressed due to rate limiting
+2026-11-02T00:48:49.845034889 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:49.921292920 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:arm mmio-tmict=0x953bd
+2026-11-02T00:48:49.921314660 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=2 interval_ns=3949497 deadline=1538920945 tsc_now=1529262730
+2026-11-02T00:48:49.925472418 [anonymous-instance:-] vcpu-wake: fire gen=2 stale=false
+2026-11-02T00:48:49.925552578 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=1539608761
+2026-11-02T00:48:49.925579779 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=1539686500
+2026-11-02T00:48:49.925603564 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:49.925619694 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:49.925695467 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=3 interval_ns=3572192 deadline=1548701121 tsc_now=1539965579
+2026-11-02T00:48:49.929271579 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=1548722345
+2026-11-02T00:48:49.929293620 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=4 interval_ns=3990691 deadline=1558481297 tsc_now=1548722345
+2026-11-02T00:48:49.929361528 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:49.929374753 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:49.929435769 [anonymous-instance:-] vcpu-wake: fire gen=3 stale=true
+2026-11-02T00:48:49.933285034 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=1558536824
+2026-11-02T00:48:49.933307035 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=5 interval_ns=3976663 deadline=1568261473 tsc_now=1558536824
+2026-11-02T00:48:49.933346981 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:49.933364744 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:49.933499849 [anonymous-instance:-] vcpu-wake: fire gen=4 stale=true
+2026-11-02T00:48:49.937273873 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=1568291156
+2026-11-02T00:48:49.937300022 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=6 interval_ns=3987232 deadline=1578041649 tsc_now=1568291156
+2026-11-02T00:48:49.937340107 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:49.937358051 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:49.937426210 [anonymous-instance:-] vcpu-wake: fire gen=5 stale=true
+2026-11-02T00:48:49.941269815 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=1578054651
+2026-11-02T00:48:49.941290814 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=7 interval_ns=3994053 deadline=1587821825 tsc_now=1578054651
+2026-11-02T00:48:49.941330719 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:49.941348513 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:49.941431029 [anonymous-instance:-] vcpu-wake: fire gen=6 stale=true
+2026-11-02T00:48:49.945264995 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=1587830813
+2026-11-02T00:48:49.945287508 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=8 interval_ns=3995694 deadline=1597602001 tsc_now=1587830813
+2026-11-02T00:48:49.945328525 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:49.945349805 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:49.945429335 [anonymous-instance:-] vcpu-wake: fire gen=7 stale=true
+2026-11-02T00:48:49.949284522 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=1597660801
+2026-11-02T00:48:49.949304860 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=9 interval_ns=3975325 deadline=1607382177 tsc_now=1597660801
+2026-11-02T00:48:49.949343794 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:49.949364963 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:49.949426871 [anonymous-instance:-] vcpu-wake: fire gen=8 stale=true
+2026-11-02T00:48:49.953296905 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=1607469180
+2026-11-02T00:48:49.953318055 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=10 interval_ns=3963792 deadline=1617162353 tsc_now=1607469180
+2026-11-02T00:48:49.953361767 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:49.953376785 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:49.954102362 [anonymous-instance:-] vcpu-wake: fire gen=9 stale=true
+2026-11-02T00:48:49.957270695 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=1617190290
+2026-11-02T00:48:49.957331730 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:49.957350546 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:49.957426578 [anonymous-instance:-] vcpu-wake: fire gen=10 stale=true
+2026-11-02T00:48:49.961481122 [anonymous-instance:-] vcpu-wake: fire gen=11 stale=false
+2026-11-02T00:48:49.961770356 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=1628178809
+2026-11-02T00:48:49.961782859 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=1628229671
+2026-11-02T00:48:49.961799410 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:49.961806935 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:49.965270765 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=1636754446
+2026-11-02T00:48:49.969267248 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=1646526198
+2026-11-02T00:48:50.145481350 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=2077426734
+2026-11-02T00:48:50.145507068 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake-rearm expiry=2086610801 divide=3 tsc_now=2077494991
+2026-11-02T00:48:50.189366821 [anonymous-instance:fc_vcpu 0] 72 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.189380296 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x80b=0x0 tsc_now=2184470542
+2026-11-02T00:48:50.313274649 [anonymous-instance:fc_vcpu 0] 89 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.313285991 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=100 interval_ns=3947924 deadline=2497378193 tsc_now=2487723824
+2026-11-02T00:48:50.342275041 [anonymous-instance:fc_vcpu 0] 17963 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.342283727 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:50.425271546 [anonymous-instance:fc_vcpu 0] 115 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.425284460 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:50.425304688 [anonymous-instance:fc_vcpu 0] 115 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.425308325 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:50.425359963 [anonymous-instance:-] 115 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.425369361 [anonymous-instance:-] vcpu-wake: fire gen=127 stale=true
+2026-11-02T00:48:50.433191905 [anonymous-instance:fc_vcpu 0] 115 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.433202145 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=2781004039
+2026-11-02T00:48:50.689298178 [anonymous-instance:fc_vcpu 0] 124 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.689311784 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x80b=0x0 tsc_now=3406951795
+2026-11-02T00:48:50.809391506 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=3700928373
+2026-11-02T00:48:50.809414920 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=3701013780
+2026-11-02T00:48:50.813157846 [anonymous-instance:fc_vcpu 0] 124 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.813168667 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=225 interval_ns=3990986 deadline=3719900193 tsc_now=3710140520
+2026-11-02T00:48:50.842283122 [anonymous-instance:fc_vcpu 0] 21459 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.842297059 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:50.913286011 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=3954988693
+2026-11-02T00:48:50.913310627 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=3955079196
+2026-11-02T00:48:50.917277755 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=3964759342
+2026-11-02T00:48:50.917299576 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=3964833994
+2026-11-02T00:48:50.921275811 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=3974537072
+2026-11-02T00:48:50.921297642 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=3974610547
+2026-11-02T00:48:50.925278255 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=3984324038
+2026-11-02T00:48:50.925297752 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=3984394451
+2026-11-02T00:48:50.925315024 [anonymous-instance:fc_vcpu 0] 124 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.925318752 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:50.925330233 [anonymous-instance:fc_vcpu 0] 124 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.925333049 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:50.929233782 [anonymous-instance:-] 125 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.929247859 [anonymous-instance:-] vcpu-wake: fire gen=253 stale=false
+2026-11-02T00:48:50.929300537 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=3994160396
+2026-11-02T00:48:50.929315896 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=3994220788
+2026-11-02T00:48:50.933277263 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=4003885181
+2026-11-02T00:48:50.933297771 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=4003956598
+2026-11-02T00:48:50.937266021 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=4013643457
+2026-11-02T00:48:50.937283464 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=4013705908
+2026-11-02T00:48:50.941258798 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=4023410211
+2026-11-02T00:48:50.941275920 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=4023468815
+2026-11-02T00:48:50.945257605 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=4033185098
+2026-11-02T00:48:50.989119733 [anonymous-instance:fc_vcpu 0] 118 messages were suppressed due to rate limiting
+2026-11-02T00:48:50.989129651 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=4140463175
+2026-11-02T00:48:51.189185874 [anonymous-instance:fc_vcpu 0] 124 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.189196504 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x80b=0x0 tsc_now=4629480847
+2026-11-02T00:48:51.313096778 [anonymous-instance:fc_vcpu 0] 124 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.313107137 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=350 interval_ns=3981459 deadline=4942422193 tsc_now=4932685816
+2026-11-02T00:48:51.342279713 [anonymous-instance:fc_vcpu 0] 15207 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.342294331 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:51.397254029 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake-rearm expiry=5147805889 divide=3 tsc_now=5138488952
+2026-11-02T00:48:51.425265238 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake-rearm expiry=5216267121 divide=3 tsc_now=5206999159
+2026-11-02T00:48:51.425280456 [anonymous-instance:fc_vcpu 0] 124 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.425283833 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:51.425304000 [anonymous-instance:fc_vcpu 0] 124 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.425309701 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:51.429221962 [anonymous-instance:-] 124 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.429238724 [anonymous-instance:-] vcpu-wake: fire gen=378 stale=true
+2026-11-02T00:48:51.433068036 [anonymous-instance:fc_vcpu 0] 85 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.433077784 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=5226089241
+2026-11-02T00:48:51.689115548 [anonymous-instance:fc_vcpu 0] 124 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.689135456 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x80b=0x0 tsc_now=5851984518
+2026-11-02T00:48:51.693252035 [anonymous-instance:fc_vcpu 0] 31 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.693263547 [anonymous-instance:fc_vcpu 0] userspace-apic:rd:0x83e=0x3 tsc_now=5862196608
+2026-11-02T00:48:51.693330773 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:arm mmio-tmict=0x953bd
+2026-11-02T00:48:51.693373824 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:arm mmio-tmict=0x62bfb
+2026-11-02T00:48:51.696134211 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:arm mmio-tmict=0x91813
+2026-11-02T00:48:51.696186439 [anonymous-instance:fc_vcpu 0] 38 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.696197931 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=5869546142
+2026-11-02T00:48:51.696232756 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake-rearm expiry=5878810768 divide=3 tsc_now=5869566918
+2026-11-02T00:48:51.700104935 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:arm mmio-tmict=0x9253b
+2026-11-02T00:48:51.700170188 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake-rearm expiry=5888593533 divide=3 tsc_now=5879255492
+2026-11-02T00:48:51.704110686 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:arm mmio-tmict=0x921e1
+2026-11-02T00:48:51.704176039 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake-rearm expiry=5898373949 divide=3 tsc_now=5889053140
+2026-11-02T00:48:51.708108361 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:arm mmio-tmict=0x925d7
+2026-11-02T00:48:51.708169867 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake-rearm expiry=5908156486 divide=3 tsc_now=5898818938
+2026-11-02T00:48:51.712157894 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:arm mmio-tmict=0x9197f
+2026-11-02T00:48:51.712248004 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake-rearm expiry=5917928980 divide=3 tsc_now=5908782721
+2026-11-02T00:48:51.716172221 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:arm mmio-tmict=0x906a9
+2026-11-02T00:48:51.716292387 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake-rearm expiry=5927703352 divide=3 tsc_now=5918664281
+2026-11-02T00:48:51.720114893 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:arm mmio-tmict=0x91fca
+2026-11-02T00:48:51.724118048 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:arm mmio-tmict=0x91c2e
+2026-11-02T00:48:51.744184963 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake-rearm expiry=5996190818 divide=3 tsc_now=5986876495
+2026-11-02T00:48:51.748161178 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake-rearm expiry=6005972891 divide=3 tsc_now=5996609463
+2026-11-02T00:48:51.816127751 [anonymous-instance:fc_vcpu 0] 126 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.816138801 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=477 interval_ns=3865512 deadline=6172263366 tsc_now=6162810530
+2026-11-02T00:48:51.844157555 [anonymous-instance:fc_vcpu 0] 35 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.844170339 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=6231342934
+2026-11-02T00:48:51.844292108 [anonymous-instance:fc_vcpu 0] 21390 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.844301896 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:51.920170664 [anonymous-instance:fc_vcpu 0] 15 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.920181575 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake-rearm expiry=6426587817 divide=3 tsc_now=6417241217
+2026-11-02T00:48:51.928021753 [anonymous-instance:fc_vcpu 0] 125 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.928030941 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:51.928038144 [anonymous-instance:fc_vcpu 0] 150 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.928041030 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:51.928104589 [anonymous-instance:-] 127 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.928113826 [anonymous-instance:-] vcpu-wake: fire gen=505 stale=false
+2026-11-02T00:48:51.928186163 [anonymous-instance:fc_vcpu 0] 43 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.928199829 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=6436880809
+2026-11-02T00:48:51.931993560 [anonymous-instance:fc_vcpu 0] 105 messages were suppressed due to rate limiting
+2026-11-02T00:48:51.932003068 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=6446156435
+2026-11-02T00:48:52.056178129 [anonymous-instance:fc_vcpu 0] 18 messages were suppressed due to rate limiting
+2026-11-02T00:48:52.056190513 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=6749816908
+2026-11-02T00:48:52.188077210 [anonymous-instance:fc_vcpu 0] 250 messages were suppressed due to rate limiting
+2026-11-02T00:48:52.188087921 [anonymous-instance:fc_vcpu 0] userspace-apic:wr:0x80b=0x0 tsc_now=7072220321
+2026-11-02T00:48:52.196123176 [anonymous-instance:fc_vcpu 0] 117 messages were suppressed due to rate limiting
+2026-11-02T00:48:52.196132995 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:arm mmio-tmict=0x9236b
+2026-11-02T00:48:52.316152884 [anonymous-instance:fc_vcpu 0] 126 messages were suppressed due to rate limiting
+2026-11-02T00:48:52.316166140 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-schedule gen=604 interval_ns=3851635 deadline=7394978029 tsc_now=7385559127
+2026-11-02T00:48:52.323889118 [anonymous-instance:fc_vcpu 0] vcpu: IO read @ 0x87:0x1 failed: Failed to find address range.
+2026-11-02T00:48:52.342273655 [anonymous-instance:fc_vcpu 0] 17521 messages were suppressed due to rate limiting
+2026-11-02T00:48:52.342282652 [anonymous-instance:fc_vcpu 0] Failed to observe the in-kernel timer: VcpuGetLapic(Error(22))
+2026-11-02T00:48:52.400184929 [anonymous-instance:fc_vcpu 0] 93 messages were suppressed due to rate limiting
+2026-11-02T00:48:52.400196241 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake-rearm expiry=7600394176 divide=3 tsc_now=7591061697
+2026-11-02T00:48:52.428030978 [anonymous-instance:fc_vcpu 0] 124 messages were suppressed due to rate limiting
+2026-11-02T00:48:52.428040025 [anonymous-instance:fc_vcpu 0] vcpu-timer-inject: vector=236 queued=true
+2026-11-02T00:48:52.428051176 [anonymous-instance:fc_vcpu 0] 224 messages were suppressed due to rate limiting
+2026-11-02T00:48:52.428054111 [anonymous-instance:fc_vcpu 0] Requested a vCPU run with immediate_exit enabled. The operation was skipped
+2026-11-02T00:48:52.428112400 [anonymous-instance:-] 125 messages were suppressed due to rate limiting
+2026-11-02T00:48:52.428126798 [anonymous-instance:-] vcpu-wake: fire gen=631 stale=false
+2026-11-02T00:48:52.428220394 [anonymous-instance:fc_vcpu 0] 105 messages were suppressed due to rate limiting
+2026-11-02T00:48:52.428255240 [anonymous-instance:fc_vcpu 0] vcpu:0:wake-observed tsc_now=7659697393
+2026-11-02T00:48:52.432016730 [anonymous-instance:fc_vcpu 0] 119 messages were suppressed due to rate limiting
+2026-11-02T00:48:52.432026709 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:timer-due vector=236 tsc_now=7668906576
+2026-11-02T00:48:52.580175009 [anonymous-instance:fc_vcpu 0] 4 messages were suppressed due to rate limiting
+2026-11-02T00:48:52.580188685 [anonymous-instance:fc_vcpu 0] vcpu:0:userspace-apic:wake vector=236 tsc_now=8031185920
+2026-11-02T01:13:49.327643794 [anonymous-instance:fc_api] The API server received a Patch request on "/vm" with body "{\"state\":\"Paused\"}".
+2026-11-02T01:13:49.327814390 [anonymous-instance:main] 'pause vm' VMM action took 75 us.
+2026-11-02T01:13:49.327849371 [anonymous-instance:fc_api] The request was executed successfully. Status code: 204 No Content.
+2026-11-02T01:13:49.327859490 [anonymous-instance:fc_api] 'pause vm' API request took 239 us.
+2026-11-02T01:13:49.328058595 [anonymous-instance:fc_api] The API server received a Patch request on "/execution" with body "{}".
+2026-11-02T01:13:49.331482446 [anonymous-instance:fc_api] The request was executed successfully. Status code: 204 No Content.
